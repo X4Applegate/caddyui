@@ -196,7 +196,8 @@ Bug reports and issues are triaged by the maintainer with Claude's assistance. I
 
 [CaddyUI Source Available License 1.0](LICENSE)
 
-- **Free** for individuals, non-profits, educational institutions, and small businesses (< 50 employees and < $5M revenue).
+- **Free** for personal use — homelab, home server, VPS, or any individual self-hosting.
+- **Free** for non-profits, educational institutions, and small businesses (< 50 employees and < $5M revenue).
 - **Free** for any organization using it internally (not reselling it).
 - **Commercial license required** to offer CaddyUI as a hosted/managed service.
 
