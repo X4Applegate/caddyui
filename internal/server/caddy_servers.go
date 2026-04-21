@@ -179,12 +179,14 @@ func (s *Server) selectServer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
+	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
 		Name:     serverCookie,
 		Value:    strconv.FormatInt(id, 10),
 		Path:     "/",
 		MaxAge:   60 * 60 * 24 * 365, // 1 year
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 	ref := r.Header.Get("Referer")

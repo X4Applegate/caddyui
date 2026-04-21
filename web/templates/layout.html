@@ -98,7 +98,7 @@ if ('serviceWorker' in navigator) {
       <div class="px-3 py-2 border-b border-ink-100">
         <p class="text-[10px] font-semibold uppercase tracking-wider text-ink-400 mb-1">Active Server</p>
         <form id="server-picker-form" method="post" action="">
-          <select onchange="document.getElementById('server-picker-form').action='/servers/'+this.value+'/select';document.getElementById('server-picker-form').submit();"
+          <select onchange="var _id=parseInt(this.value,10);if(_id>0){document.getElementById('server-picker-form').action='/servers/'+_id+'/select';document.getElementById('server-picker-form').submit();}"
             class="w-full text-xs bg-ink-50 border border-ink-200 rounded-md px-2 py-1.5 text-ink-700 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-100">
             {{range .Servers}}
             <option value="{{.ID}}" {{if and $.CurrentServer (eq $.CurrentServer.ID .ID)}}selected{{end}}>
