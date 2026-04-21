@@ -5,11 +5,24 @@ COPY . .
 ARG VERSION=dev
 RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/caddyui ./cmd/caddyui
 
-FROM alpine:3.19
-RUN apk add --no-cache ca-certificates tzdata
+FROM alpine:3.22
+# Upgrade all packages to pick up latest security patches, then add only
+# what we need. ca-certificates is required for outbound HTTPS (Turnstile,
+# webhook, Docker Hub update checks). tzdata is needed for time-zone support.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates tzdata
+
+# Run as a non-root user for better security posture.
+RUN addgroup -S caddyui && adduser -S -G caddyui caddyui
+
 WORKDIR /app
 COPY --from=build /out/caddyui /app/caddyui
-RUN mkdir -p /data
+
+# Create the data directory and make it owned by the app user.
+RUN mkdir -p /data && chown -R caddyui:caddyui /data /app
+
+USER caddyui
+
 EXPOSE 8080
 ENV CADDYUI_DB=/data/caddyui.db \
     CADDYUI_LISTEN=:8080 \
