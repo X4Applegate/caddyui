@@ -1,0 +1,69 @@
+{{define "title"}}Activity · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Activity log</h1>
+  <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+    Every mutation CaddyUI makes — create / update / delete of proxies, redirects, advanced routes,
+    certificates, plus every sync and snapshot. Newest first; last 500 shown.
+  </p>
+</div>
+
+<div class="mb-3">
+  <input id="activity-search" type="search" placeholder="Filter by actor, action, target, or detail…" autocomplete="off"
+    class="w-full max-w-sm rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+</div>
+
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden overflow-x-auto">
+  <table class="w-full text-sm" id="activity-table">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-3 font-medium">When</th>
+        <th class="px-5 py-3 font-medium">Actor</th>
+        <th class="px-5 py-3 font-medium">Action</th>
+        <th class="px-5 py-3 font-medium">Target</th>
+        <th class="px-5 py-3 font-medium">Detail</th>
+        <th class="px-5 py-3 font-medium">Result</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Entries}}
+      <tr class="border-t border-ink-100 align-top hover:bg-ink-50/60 transition {{if not .Success}}bg-red-50/40{{end}}"
+          data-search="{{.Actor}} {{.Action}} {{.Target}} {{.Detail}}">
+        <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-500">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+        <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-600">{{.Actor}}</td>
+        <td class="px-5 py-3 font-mono text-xs whitespace-nowrap text-ink-800">{{.Action}}</td>
+        <td class="px-5 py-3 font-mono text-xs text-ink-500 whitespace-nowrap">{{.Target}}</td>
+        <td class="px-5 py-3 text-xs text-ink-600 break-all max-w-xs">{{if .Detail}}{{.Detail}}{{else}}<span class="text-ink-300">—</span>{{end}}</td>
+        <td class="px-5 py-3 whitespace-nowrap">
+          {{if .Success}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>ok</span>
+          {{else}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>failed</span>
+          {{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="6" class="px-5 py-16 text-center">
+          <div class="text-ink-400 text-sm">No activity yet.</div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function() {
+  var input = document.getElementById('activity-search');
+  if (!input) return;
+  input.addEventListener('input', function() {
+    var q = this.value.toLowerCase().trim();
+    var rows = document.querySelectorAll('#activity-table tbody tr[data-search]');
+    rows.forEach(function(row) {
+      row.style.display = (!q || row.dataset.search.toLowerCase().includes(q)) ? '' : 'none';
+    });
+  });
+})();
+</script>
+{{end}}

@@ -1,0 +1,32 @@
+{{define "title"}}Sign in · CaddyUI{{end}}
+{{define "content"}}
+<div class="max-w-md mx-auto mt-20">
+  <div class="flex items-center gap-2.5 justify-center mb-6">
+    <span class="relative inline-flex items-center justify-center w-10 h-10 rounded-xl bg-brand-500 shadow-card">
+      <svg viewBox="0 0 24 24" fill="none" class="w-5 h-5 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+    </span>
+    <span class="text-xl font-semibold tracking-tight text-ink-900">CaddyUI</span>
+  </div>
+
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-8">
+    <h1 class="text-lg font-semibold text-ink-900 mb-1">Welcome back</h1>
+    <p class="text-sm text-ink-500 mb-6">Sign in to manage your Caddy routes.</p>
+
+    {{if .Error}}
+    <div class="bg-red-50 border border-red-200 text-red-800 px-3 py-2 rounded-lg mb-4 text-sm">{{.Error}}</div>
+    {{end}}
+
+    <form method="post" action="/login" class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Email</label>
+        <input name="email" type="email" required autofocus class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Password</label>
+        <input name="password" type="password" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <button class="w-full inline-flex items-center justify-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm py-2.5 rounded-lg shadow-sm transition">Sign in</button>
+    </form>
+  </div>
+</div>
+{{end}}

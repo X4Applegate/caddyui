@@ -1,0 +1,89 @@
+{{define "title"}}{{if .Host.ID}}Edit{{else}}New{{end}} Redirection · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <a href="/redirection-hosts" class="text-xs text-ink-500 hover:text-ink-900 transition inline-flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+    Back to redirections
+  </a>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Host.ID}}Edit Redirection{{else}}New Redirection{{end}}</h1>
+</div>
+
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm max-w-3xl">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Host.ID}}/redirection-hosts/{{.Host.ID}}{{else}}/redirection-hosts{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Domain names <span class="text-ink-400 font-normal">(comma separated)</span></label>
+    <input name="domains" value="{{.Host.Domains}}" required placeholder="old.example.com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+  </div>
+
+  <div class="grid grid-cols-12 gap-3">
+    <div class="col-span-3">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Scheme</label>
+      <select name="forward_scheme" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="auto" {{if eq .Host.ForwardScheme "auto"}}selected{{end}}>auto</option>
+        <option value="http" {{if eq .Host.ForwardScheme "http"}}selected{{end}}>http</option>
+        <option value="https" {{if eq .Host.ForwardScheme "https"}}selected{{end}}>https</option>
+      </select>
+    </div>
+    <div class="col-span-6">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Forward Domain</label>
+      <input name="forward_domain" value="{{.Host.ForwardDomain}}" required placeholder="new.example.com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div class="col-span-3">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">HTTP Code</label>
+      <select name="forward_http_code" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        {{$code := .Host.ForwardHTTPCode}}
+        <option value="301" {{if eq $code 301}}selected{{end}}>301</option>
+        <option value="302" {{if eq $code 302}}selected{{end}}>302</option>
+        <option value="307" {{if eq $code 307}}selected{{end}}>307</option>
+        <option value="308" {{if eq $code 308}}selected{{end}}>308</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="pt-2">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">Options</div>
+    <div class="grid grid-cols-2 gap-3">
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="preserve_path" {{if .Host.PreservePath}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Preserve path</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_enabled" {{if .Host.SSLEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Auto SSL</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_forced" {{if .Host.SSLForced}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Force SSL</label>
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">TLS Certificate</label>
+    <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <option value="0" {{if eq .Host.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
+      {{range .Certificates}}
+      <option value="{{.ID}}" {{if eq $.Host.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
+      {{end}}
+    </select>
+    <p class="text-xs text-ink-500 mt-1.5"><a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a></p>
+  </div>
+
+  {{if .OtherServers}}
+  <div class="pt-4 border-t border-ink-100">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
+    <p class="text-xs text-ink-400 mb-3">Push a copy of this redirect to additional servers at the same time. Certificates are not mirrored — each server will use its own auto-SSL.</p>
+    <div class="space-y-2">
+      {{range .OtherServers}}
+      <label class="flex items-center gap-2.5 cursor-pointer select-none">
+        <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+        {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
+        <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+      </label>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  <div class="flex items-center gap-3 pt-4 border-t border-ink-100">
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Host.ID}}Save changes{{else}}Create{{end}}</button>
+    <a href="/redirection-hosts" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
+  </div>
+</form>
+{{end}}

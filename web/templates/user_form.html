@@ -1,0 +1,75 @@
+{{define "title"}}{{if .Target.ID}}Edit{{else}}New{{end}} User · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <a href="/users" class="text-xs text-ink-500 hover:text-ink-900 transition inline-flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+    Back to users
+  </a>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Target.ID}}Edit User{{else}}New User{{end}}</h1>
+</div>
+
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm max-w-2xl">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Target.ID}}/users/{{.Target.ID}}{{else}}/users{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-2xl">
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Email</label>
+    {{if .Target.ID}}
+      <input value="{{.Target.Email}}" disabled class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-ink-50 text-ink-500" />
+      <p class="text-xs text-ink-500 mt-1.5">Email is the login identifier and can't be changed here.</p>
+    {{else}}
+      <input name="email" type="email" value="{{.Target.Email}}" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    {{end}}
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Name <span class="text-ink-400 font-normal">(optional)</span></label>
+    <input name="name" value="{{.Target.Name}}" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+  </div>
+
+  <div>
+    <div class="text-sm font-medium text-ink-800 mb-2">Role</div>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
+        <input type="radio" name="role" value="admin" {{if eq .Target.Role "admin"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
+        <div>
+          <div class="text-sm font-medium text-ink-900">Admin</div>
+          <div class="text-xs text-ink-500 mt-0.5">Full access. Can manage routes, certs, and users.</div>
+        </div>
+      </label>
+      <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
+        <input type="radio" name="role" value="user" {{if eq .Target.Role "user"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
+        <div>
+          <div class="text-sm font-medium text-ink-900">User</div>
+          <div class="text-xs text-ink-500 mt-0.5">Can create and manage their own routes only.</div>
+        </div>
+      </label>
+      <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
+        <input type="radio" name="role" value="view" {{if eq .Target.Role "view"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
+        <div>
+          <div class="text-sm font-medium text-ink-900">View</div>
+          <div class="text-xs text-ink-500 mt-0.5">Read-only. Can see but can't modify anything.</div>
+        </div>
+      </label>
+    </div>
+  </div>
+
+  <div class="pt-2 border-t border-ink-100 space-y-4">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">{{if .Target.ID}}Change password{{else}}Password{{end}}</div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Password {{if .Target.ID}}<span class="text-ink-400 font-normal text-xs">(leave blank to keep current)</span>{{end}}</label>
+      <input name="password" type="password" {{if not .Target.ID}}required{{end}} minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Confirm password</label>
+      <input name="password_confirm" type="password" {{if not .Target.ID}}required{{end}} minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+  </div>
+
+  <div class="flex items-center gap-3 pt-4 border-t border-ink-100">
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Target.ID}}Save changes{{else}}Create user{{end}}</button>
+    <a href="/users" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
+  </div>
+</form>
+{{end}}

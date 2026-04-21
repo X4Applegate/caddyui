@@ -1,0 +1,192 @@
+{{define "title"}}{{if .Host.ID}}Edit{{else}}New{{end}} Proxy Host · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <a href="/proxy-hosts" class="text-xs text-ink-500 hover:text-ink-900 transition inline-flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+    Back to proxy hosts
+  </a>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Host.ID}}Edit Proxy Host{{else}}New Proxy Host{{end}}</h1>
+</div>
+
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 font-mono text-xs max-w-3xl whitespace-pre-wrap break-all">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Host.ID}}/proxy-hosts/{{.Host.ID}}{{else}}/proxy-hosts{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Domain names <span class="text-ink-400 font-normal">(comma separated)</span></label>
+    <input name="domains" value="{{.Host.Domains}}" required placeholder="example.com, www.example.com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+    <div class="sm:col-span-3">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Scheme</label>
+      <select name="forward_scheme" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="http" {{if eq .Host.ForwardScheme "http"}}selected{{end}}>http</option>
+        <option value="https" {{if eq .Host.ForwardScheme "https"}}selected{{end}}>https</option>
+      </select>
+    </div>
+    <div class="sm:col-span-6">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Forward Host / IP</label>
+      <input name="forward_host" value="{{.Host.ForwardHost}}" required placeholder="192.168.1.10 or backend-container" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div class="sm:col-span-3">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Port</label>
+      <input name="forward_port" value="{{if .Host.ForwardPort}}{{.Host.ForwardPort}}{{end}}" type="number" min="1" max="65535" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+  </div>
+
+  <div class="pt-2">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">Options</div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_enabled" {{if .Host.SSLEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Auto SSL (Let's Encrypt)</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_forced" {{if .Host.SSLForced}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Force SSL (HTTPS redirect)</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="http2_support" {{if .Host.HTTP2Support}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> HTTP/2</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="websocket_support" {{if .Host.WebsocketSupport}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> WebSocket support</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="block_common_exploits" {{if .Host.BlockCommonExploits}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Block common exploits</label>
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">TLS Certificate</label>
+    <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <option value="0" {{if eq .Host.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
+      {{range .Certificates}}
+      <option value="{{.ID}}" {{if eq $.Host.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
+      {{end}}
+    </select>
+    <p class="text-xs text-ink-500 mt-1.5">Select a custom certificate or let Caddy manage it automatically. <a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a></p>
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Advanced config <span class="text-ink-400 font-normal">(optional Caddyfile directives)</span></label>
+    <textarea name="advanced_config" rows="6" spellcheck="false" placeholder="header X-Frame-Options DENY&#10;encode gzip zstd&#10;request_body {&#10;    max_size 100MB&#10;}" class="w-full rounded-lg border border-ink-200 px-3 py-2 font-mono text-xs bg-ink-50 focus:bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.Host.AdvancedConfig}}</textarea>
+    <p class="text-xs text-ink-500 mt-1.5">
+      Extra Caddyfile directives that run before <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code> — headers, compression,
+      body limits, matchers, etc. Validated via Caddy's <code class="font-mono bg-ink-100 px-1 rounded">/adapt</code> on save.
+      Terminal handlers are rejected: <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code>, <code class="font-mono bg-ink-100 px-1 rounded">redir</code>,
+      <code class="font-mono bg-ink-100 px-1 rounded">respond</code>, <code class="font-mono bg-ink-100 px-1 rounded">file_server</code> can't be used here —
+      create an <a href="/raw-routes/new" class="text-brand-600 hover:text-brand-700">Advanced route</a> for those.
+    </p>
+  </div>
+
+  {{/* Feature C: IP Allowlist */}}
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">IP Allowlist <span class="text-ink-400 font-normal">(optional, comma-separated CIDRs)</span></label>
+    <input name="access_list" value="{{.Host.AccessList}}" placeholder="192.168.1.0/24, 10.0.0.0/8"
+      class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    <p class="text-xs text-ink-500 mt-1.5">Leave blank to allow all IPs. Only listed CIDRs will be forwarded; others get 403.</p>
+  </div>
+
+  {{/* Feature D: Extra Upstreams */}}
+  <div class="pt-4 border-t border-ink-100">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">Extra Upstreams <span class="font-normal normal-case">(load balancing)</span></div>
+    <p class="text-xs text-ink-400 mb-3">Add additional upstream servers for round-robin load balancing. The primary Forward Host above is always included.</p>
+    <div id="eu-list" class="space-y-2">
+      {{range .Host.ExtraUpstreamList}}
+      <div class="eu-row flex items-center gap-2">
+        <input type="text" name="extra_upstream" value="{{.}}" placeholder="192.168.1.2:8080"
+          class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <button type="button" onclick="this.closest('.eu-row').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">&#x2715;</button>
+      </div>
+      {{end}}
+    </div>
+    <button type="button" id="eu-add" class="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700 font-medium mt-2 transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add upstream
+    </button>
+  </div>
+
+  <div class="pt-4 border-t border-ink-100">
+    <div class="flex items-center justify-between mb-3">
+      <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Basic Auth</div>
+      <label class="flex items-center gap-2 text-sm text-ink-700 cursor-pointer">
+        <input type="checkbox" id="ba-toggle" name="basicauth_enabled" {{if .Host.BasicAuthEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        Require login
+      </label>
+    </div>
+    <div id="ba-section" class="{{if not .Host.BasicAuthEnabled}}hidden{{end}} space-y-2">
+      <p class="text-xs text-ink-400 mb-3">Users must authenticate via HTTP Basic Auth before reaching the upstream. Passwords are bcrypt-hashed and never stored in plain text.</p>
+      <div id="ba-users" class="space-y-2">
+        {{range .Host.BasicAuthUserList}}
+        <div class="ba-row flex items-center gap-2">
+          <input type="text" name="basicauth_user" value="{{.Username}}" placeholder="username" autocomplete="off"
+            class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+          <input type="password" name="basicauth_pass" value="" placeholder="new password (blank to keep)"
+            class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+          <input type="hidden" name="basicauth_hash" value="{{.BcryptHash}}" />
+          <button type="button" onclick="this.closest('.ba-row').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">✕</button>
+        </div>
+        {{end}}
+      </div>
+      <button type="button" id="ba-add" class="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700 font-medium mt-1 transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add user
+      </button>
+    </div>
+  </div>
+
+  {{if .OtherServers}}
+  <div class="pt-4 border-t border-ink-100">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
+    <p class="text-xs text-ink-400 mb-3">Push a copy of this config to additional servers at the same time. Certificates are not mirrored — each server will use its own auto-SSL.</p>
+    <div class="space-y-2">
+      {{range .OtherServers}}
+      <label class="flex items-center gap-2.5 cursor-pointer select-none">
+        <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+        {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
+        <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+      </label>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  <div class="flex items-center gap-3 pt-4 border-t border-ink-100">
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Host.ID}}Save changes{{else}}Create{{end}}</button>
+    <a href="/proxy-hosts" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
+  </div>
+</form>
+
+<script>
+(function() {
+  var toggle = document.getElementById('ba-toggle');
+  var section = document.getElementById('ba-section');
+  if (toggle && section) {
+    toggle.addEventListener('change', function() {
+      section.classList.toggle('hidden', !this.checked);
+    });
+  }
+  var addBtn = document.getElementById('ba-add');
+  var container = document.getElementById('ba-users');
+  if (addBtn && container) {
+    addBtn.addEventListener('click', function() {
+      var row = document.createElement('div');
+      row.className = 'ba-row flex items-center gap-2';
+      row.innerHTML = '<input type="text" name="basicauth_user" placeholder="username" autocomplete="off" class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />'
+        + '<input type="password" name="basicauth_pass" placeholder="password" class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />'
+        + '<input type="hidden" name="basicauth_hash" value="" />'
+        + '<button type="button" onclick="this.closest(\'.ba-row\').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">\u2715</button>';
+      container.appendChild(row);
+      row.querySelector('input[name="basicauth_user"]').focus();
+    });
+  }
+
+  // Feature D: extra upstreams dynamic rows.
+  var euAdd = document.getElementById('eu-add');
+  var euList = document.getElementById('eu-list');
+  if (euAdd && euList) {
+    euAdd.addEventListener('click', function() {
+      var row = document.createElement('div');
+      row.className = 'eu-row flex items-center gap-2';
+      row.innerHTML = '<input type="text" name="extra_upstream" placeholder="192.168.1.2:8080" class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />'
+        + '<button type="button" onclick="this.closest(\'.eu-row\').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">\u2715</button>';
+      euList.appendChild(row);
+      row.querySelector('input[name="extra_upstream"]').focus();
+    });
+  }
+})();
+</script>
+{{end}}

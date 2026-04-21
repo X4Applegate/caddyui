@@ -1,0 +1,93 @@
+CaddyUI Source Available License 1.0
+=====================================
+
+Copyright (c) 2025 Richard Applegate
+
+DEFINITIONS
+-----------
+
+"Software" means the CaddyUI source code, documentation, and associated files
+made available under this License.
+
+"Licensor" means the copyright holder(s) identified above.
+
+"You" means the individual or legal entity exercising rights under this License.
+
+"Small Business" means an organization that, at the time of use, has both:
+  (a) fewer than 50 full-time equivalent employees, AND
+  (b) annual gross revenue below USD $5,000,000 (five million US dollars).
+
+"Permitted Entity" means any individual person, non-profit organization,
+educational institution, or Small Business.
+
+"Competing Service" means a product or service that is substantially similar in
+purpose to the Software and is offered to third parties (whether for free or for
+a fee) as a hosted or managed service.
+
+GRANT OF RIGHTS — PERMITTED ENTITIES
+--------------------------------------
+
+Subject to the conditions below, the Licensor grants Permitted Entities a
+worldwide, royalty-free, non-exclusive, non-sublicensable license to:
+
+  1. Use, copy, and run the Software for any internal purpose.
+  2. Study and modify the Software.
+  3. Distribute unmodified or modified copies of the Software to other
+     Permitted Entities, provided the same license terms apply.
+  4. Self-host the Software for your own organization's internal use.
+
+GRANT OF RIGHTS — ALL ENTITIES (INTERNAL USE)
+-----------------------------------------------
+
+Any organization — regardless of size — may use and self-host the Software
+solely for its own internal operations without a commercial license, provided
+the use is not a Competing Service.
+
+RESTRICTIONS
+------------
+
+You may NOT, without a separate written commercial license from the Licensor:
+
+  1. Offer the Software, or any substantially similar derivative of it, as a
+     Competing Service to third parties.
+  2. Sell, sublicense, or commercially distribute the Software as a standalone
+     product.
+  3. Remove or alter this License notice, copyright notices, or attribution
+     requirements from any copy or derivative of the Software.
+
+CONDITIONS
+----------
+
+Any permitted use or distribution must:
+
+  1. Retain this License file and all copyright notices.
+  2. Clearly state any modifications made to the Software.
+  3. Not imply endorsement by the Licensor.
+
+ATTRIBUTION
+-----------
+
+This project was built with assistance from Claude (Anthropic). Any
+distribution of the Software or a derivative must preserve this attribution
+notice.
+
+NO WARRANTY
+-----------
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
+LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+COMMERCIAL LICENSING
+--------------------
+
+If your organization does not qualify as a Permitted Entity and you require a
+commercial license, or if you wish to offer the Software as a Competing Service,
+please contact the Licensor to discuss terms.
+
+Contact: admin@richardapplegate.io
+
+This license was last revised: 2025-04-21

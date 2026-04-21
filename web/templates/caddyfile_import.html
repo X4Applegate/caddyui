@@ -1,0 +1,83 @@
+{{define "title"}}Paste Caddyfile · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Paste Caddyfile</h1>
+  <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+    Paste one or more site blocks. Each block goes through Caddy's
+    <code class="font-mono text-xs bg-ink-100 px-1 rounded">/adapt</code> to convert it to JSON,
+    then stored as an Advanced route. The original Caddyfile text is kept alongside the JSON so
+    the UI shows your familiar syntax.
+  </p>
+  <p class="text-sm text-ink-500 mt-2 max-w-2xl">
+    Snippet definitions <code class="font-mono text-xs bg-ink-100 px-1 rounded">(name) { ... }</code>
+    and the global options block are skipped automatically. Snippets from the mounted Caddyfile are
+    auto-loaded — so you can <code class="font-mono text-xs bg-ink-100 px-1 rounded">import common_security_headers</code>
+    without pasting the definition.
+  </p>
+</div>
+
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 max-w-4xl">
+  <div class="font-medium text-sm">Import failed</div>
+  <div class="text-xs mt-1 font-mono whitespace-pre-wrap break-all">{{.Error}}</div>
+  {{if .Hint}}<div class="text-xs mt-3 text-red-900 bg-red-100 border border-red-200 rounded-lg p-2">{{.Hint}}</div>{{end}}
+</div>
+{{end}}
+
+{{if .Results}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden mb-6 max-w-4xl">
+  <div class="bg-ink-50/50 px-5 py-3 text-xs uppercase tracking-wider text-ink-600 font-medium border-b border-ink-100">
+    {{if .Created}}Imported {{.Created}} route(s){{else}}No routes imported{{end}}
+  </div>
+  <table class="w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-3 font-medium">Block</th>
+        <th class="px-5 py-3 font-medium">Status</th>
+        <th class="px-5 py-3 font-medium">Detail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Results}}
+      <tr class="border-t border-ink-100 align-top">
+        <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.Head}}</td>
+        <td class="px-5 py-3">
+          {{if eq .Status "created"}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">created</span>
+          {{else if eq .Status "skipped"}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">skipped</span>
+          {{else}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700">error</span>
+          {{end}}
+        </td>
+        <td class="px-5 py-3 text-ink-600 font-mono text-xs">{{.Message}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div class="mb-6">
+  <a href="/raw-routes" class="text-sm text-brand-600 hover:text-brand-700">View Advanced routes &rarr;</a>
+</div>
+{{end}}
+
+<form method="post" action="/caddyfile-import" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-4xl">
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Caddyfile</label>
+    <textarea name="caddyfile" rows="18" required spellcheck="false"
+      class="w-full rounded-lg border border-ink-200 px-3 py-2.5 font-mono text-xs bg-ink-50 focus:bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition"
+      placeholder="example.com {&#10;    reverse_proxy localhost:3000&#10;}&#10;&#10;wg-health.example.com {&#10;    tls /path/fullchain.pem /path/privkey.pem&#10;    root * /srv/wg-health&#10;    rewrite * /status&#10;    file_server&#10;}">{{.Input}}</textarea>
+    <p class="text-xs text-ink-500 mt-1.5">
+      Multiple site blocks are OK. Caddy validates each during adapt — blocks with typos are
+      reported and skipped, the rest import.
+    </p>
+  </div>
+  <div class="flex items-center gap-3 pt-2 border-t border-ink-100">
+    <button class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+      Import as Advanced routes
+    </button>
+    <a href="/raw-routes" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
+  </div>
+</form>
+{{end}}

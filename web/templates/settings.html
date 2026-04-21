@@ -1,0 +1,249 @@
+{{define "title"}}Settings · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Settings</h1>
+  <p class="text-sm text-ink-500 mt-1">Application-wide settings for notifications and email.</p>
+</div>
+
+{{if .Success}}
+<div class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">Settings saved successfully.</div>
+{{end}}
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="/settings" class="max-w-2xl space-y-6">
+
+  {{/* ── SMTP ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">Email (SMTP)</div>
+      <p class="text-xs text-ink-500">CaddyUI will send email alerts for certificate expiry and proxy upstream health changes.</p>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div class="sm:col-span-2">
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">SMTP Host</label>
+        <input name="smtp_host" value="{{.SMTPHost}}" type="text" placeholder="smtp.example.com"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Port</label>
+        <input name="smtp_port" value="{{.SMTPPort}}" type="number" min="1" max="65535" placeholder="587"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Security</label>
+      <div class="flex flex-wrap gap-4">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="smtp_security" value="starttls" {{if eq .SMTPSecurity "starttls"}}checked{{end}} class="accent-brand-600" />
+          <span class="text-ink-700">STARTTLS <span class="text-ink-400">(port 587)</span></span>
+        </label>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="smtp_security" value="tls" {{if eq .SMTPSecurity "tls"}}checked{{end}} class="accent-brand-600" />
+          <span class="text-ink-700">TLS / SSL <span class="text-ink-400">(port 465)</span></span>
+        </label>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="radio" name="smtp_security" value="none" {{if eq .SMTPSecurity "none"}}checked{{end}} class="accent-brand-600" />
+          <span class="text-ink-700">None <span class="text-ink-400">(port 25)</span></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Username</label>
+        <input name="smtp_username" value="{{.SMTPUsername}}" type="text" autocomplete="off" placeholder="user@example.com"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">
+          Password
+          <span class="text-ink-400 font-normal text-xs ml-1">(leave blank to keep existing)</span>
+        </label>
+        <input name="smtp_password" value="" type="password" autocomplete="new-password" placeholder="••••••••"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+    </div>
+
+    <div class="flex items-start gap-2 pt-1">
+      <input type="hidden" name="smtp_skip_verify" value="0" />
+      <input id="smtp_skip_verify" name="smtp_skip_verify" type="checkbox" value="1" {{if .SMTPSkipVerify}}checked{{end}}
+        class="mt-0.5 accent-brand-600 cursor-pointer" />
+      <label for="smtp_skip_verify" class="text-sm text-ink-700 cursor-pointer">
+        Skip TLS certificate verification
+        <span class="block text-xs text-ink-400 font-normal mt-0.5">Use only if your mail server uses a self-signed or untrusted certificate. Disables certificate chain validation.</span>
+      </label>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">From address</label>
+        <input name="smtp_from" value="{{.SMTPFrom}}" type="email" placeholder="caddyui@example.com"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">To address(es)</label>
+        <input name="smtp_to" value="{{.SMTPTo}}" type="text" placeholder="admin@example.com, ops@example.com"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-500 mt-1.5">Comma-separate multiple recipients.</p>
+      </div>
+    </div>
+  </div>
+
+  {{/* ── Notifications / Webhook ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">Notification Thresholds</div>
+      <p class="text-xs text-ink-500">Controls when cert-expiry and upstream alerts are sent (via email and/or webhook).</p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Notify days before cert expiry</label>
+      <input name="days_before" value="{{.DaysBefore}}" type="number" min="1" max="365"
+        class="w-32 rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Alert when a custom certificate has fewer than this many days left. Default: 14.</p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Webhook URL <span class="text-ink-400 font-normal">(optional)</span></label>
+      <input name="webhook_url" value="{{.WebhookURL}}" type="url" placeholder="https://hooks.example.com/notify"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Optional. CaddyUI will POST JSON payloads here in addition to email. Upstream checks run every 5 minutes; cert checks run every 24 hours.</p>
+    </div>
+  </div>
+
+  <div class="flex items-center gap-3">
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save settings</button>
+  </div>
+</form>
+
+{{/* ── Test buttons ── */}}
+<div class="max-w-2xl mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+  {{if .SMTPConfigured}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
+    <div class="text-sm font-semibold text-ink-800 mb-1">Test Email</div>
+    <p class="text-xs text-ink-400 mb-4">Send a test message to <span class="font-mono">{{.SMTPTo}}</span> to verify SMTP works.</p>
+    <div class="flex items-center gap-3">
+      <button id="test-email-btn" onclick="testEmail()" class="inline-flex items-center bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">
+        Send test email
+      </button>
+      <span id="test-email-result" class="text-sm"></span>
+    </div>
+  </div>
+  {{end}}
+
+  {{if .WebhookURL}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
+    <div class="text-sm font-semibold text-ink-800 mb-1">Test Webhook</div>
+    <p class="text-xs text-ink-400 mb-4">POST a test payload to the configured webhook URL.</p>
+    <div class="flex items-center gap-3">
+      <button id="test-webhook-btn" onclick="testWebhook()" class="inline-flex items-center bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">
+        Send test webhook
+      </button>
+      <span id="test-result" class="text-sm"></span>
+    </div>
+  </div>
+  {{end}}
+</div>
+
+{{/* ── Notifier status ── */}}
+<div class="max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-6">
+  <div class="text-sm font-semibold text-ink-800 mb-3">Notifier Status</div>
+  <div id="notifier-status" class="text-sm text-ink-600">
+    <span class="text-ink-400 text-xs">Loading…</span>
+  </div>
+</div>
+
+{{/* ── Backup ── */}}
+<div class="max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-5">
+  <div class="text-sm font-semibold text-ink-800 mb-1">Database Backup</div>
+  <p class="text-xs text-ink-500 mb-3">Download a consistent snapshot of the CaddyUI database. To restore, stop the server, replace the <code class="bg-ink-100 px-1 rounded text-xs">caddyui.db</code> file, and restart.</p>
+  <a href="/backup" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    Download Backup
+  </a>
+</div>
+
+<script>
+function testEmail() {
+  var btn = document.getElementById('test-email-btn');
+  var result = document.getElementById('test-email-result');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  fetch('/settings/test-email', {method: 'POST'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        result.textContent = '✓ Sent!';
+        result.className = 'text-sm text-brand-700';
+      } else {
+        result.textContent = 'Failed: ' + (d.error || 'unknown error');
+        result.className = 'text-sm text-red-700';
+      }
+    })
+    .catch(function(e) {
+      result.textContent = 'Error: ' + e.message;
+      result.className = 'text-sm text-red-700';
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = 'Send test email';
+    });
+}
+
+function testWebhook() {
+  var btn = document.getElementById('test-webhook-btn');
+  var result = document.getElementById('test-result');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  fetch('/settings/test-webhook', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      result.textContent = d.ok ? '✓ Sent! HTTP ' + d.status_code : 'Failed';
+      result.className = d.ok ? 'text-sm text-brand-700' : 'text-sm text-red-700';
+    })
+    .catch(function(e) {
+      result.textContent = 'Error: ' + e.message;
+      result.className = 'text-sm text-red-700';
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = 'Send test webhook';
+    });
+}
+
+(function() {
+  fetch('/api/notifier-status')
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) {
+      if (!d) return;
+      var el = document.getElementById('notifier-status');
+      var certCheck  = d.last_check    ? new Date(d.last_check).toLocaleString()    : 'Never';
+      var upCheck    = d.upstream_check ? new Date(d.upstream_check).toLocaleString() : 'Never';
+      var certList   = (d.last_notified || []).map(function(n) {
+        return '<span class="font-mono">' + n.domain + '</span> (' + n.days_left + 'd left)';
+      }).join(', ') || '<span class="text-ink-400">None</span>';
+
+      var upAlerts = (d.upstream_alerts || []).slice(-10).reverse();
+      var upHtml = upAlerts.length ? upAlerts.map(function(a) {
+        var cls = a.event === 'down' ? 'text-red-600' : 'text-brand-700';
+        return '<span class="font-mono">' + a.upstream + '</span> '
+          + '<span class="' + cls + '">' + a.event + '</span>'
+          + ' on ' + a.server
+          + ' <span class="text-ink-400">(' + new Date(a.alerted_at).toLocaleString() + ')</span>';
+      }).join('<br>') : '<span class="text-ink-400">None</span>';
+
+      el.innerHTML = '<dl class="space-y-2 text-xs">'
+        + '<div class="flex gap-2"><dt class="text-ink-400 w-36 shrink-0">Cert check</dt><dd class="text-ink-700">' + certCheck + '</dd></div>'
+        + '<div class="flex gap-2"><dt class="text-ink-400 w-36 shrink-0">Cert alerts sent</dt><dd class="text-ink-700">' + certList + '</dd></div>'
+        + '<div class="flex gap-2"><dt class="text-ink-400 w-36 shrink-0">Upstream check</dt><dd class="text-ink-700">' + upCheck + '</dd></div>'
+        + '<div class="flex gap-2 items-start"><dt class="text-ink-400 w-36 shrink-0">Upstream alerts</dt><dd class="text-ink-700 space-y-0.5">' + upHtml + '</dd></div>'
+        + '</dl>';
+    })
+    .catch(function() {});
+})();
+</script>
+{{end}}

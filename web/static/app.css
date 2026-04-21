@@ -1,0 +1,126 @@
+/* CaddyUI base styles — tokens are in layout.html's tailwind.config */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Form controls use the brand focus ring instead of the browser default. */
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* Scrollbar polish for code blocks. */
+pre::-webkit-scrollbar { height: 8px; width: 8px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: rgb(71 85 105 / 0.4); border-radius: 4px; }
+pre::-webkit-scrollbar-thumb:hover { background: rgb(71 85 105 / 0.6); }
+
+/* Details arrow alignment. */
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 0.25rem;
+  transition: transform 120ms ease;
+  font-size: 0.7em;
+}
+details[open] > summary::before { transform: rotate(90deg); }
+
+/* ── Dark mode overrides ── */
+html.dark { color-scheme: dark; }
+html.dark body { background-color: #0f172a; color: #e2e8f0; }
+
+/* Backgrounds */
+html.dark .bg-white { background-color: #1e293b !important; }
+html.dark .bg-white\/95 { background-color: rgba(30,41,59,0.95) !important; }
+html.dark .bg-ink-50 { background-color: #0f172a !important; }
+html.dark .bg-ink-50\/50 { background-color: rgba(15,23,42,0.5) !important; }
+html.dark .bg-ink-100 { background-color: #263347 !important; }
+html.dark .min-h-screen { background-color: #0f172a !important; }
+
+/* Borders */
+html.dark .border-ink-200 { border-color: #334155 !important; }
+html.dark .border-ink-100 { border-color: #263347 !important; }
+html.dark .divide-ink-100 > * + * { border-color: #263347 !important; }
+
+/* Text */
+html.dark .text-ink-900 { color: #f8fafc !important; }
+html.dark .text-ink-800 { color: #f1f5f9 !important; }
+html.dark .text-ink-700 { color: #e2e8f0 !important; }
+html.dark .text-ink-600 { color: #cbd5e1 !important; }
+html.dark .text-ink-500 { color: #94a3b8 !important; }
+html.dark .text-ink-400 { color: #64748b !important; }
+
+/* Hover states */
+html.dark .hover\:bg-ink-50:hover { background-color: #1e293b !important; }
+html.dark .hover\:bg-ink-100:hover { background-color: #334155 !important; }
+html.dark .hover\:bg-ink-200:hover { background-color: #3d4f66 !important; }
+html.dark .hover\:bg-ink-50\/60:hover { background-color: rgba(30,41,59,0.6) !important; }
+html.dark .hover\:text-ink-900:hover { color: #f8fafc !important; }
+html.dark .hover\:text-ink-700:hover { color: #e2e8f0 !important; }
+
+/* Form inputs */
+html.dark input,
+html.dark textarea,
+html.dark select { background-color: #1e293b !important; border-color: #334155 !important; color: #e2e8f0 !important; }
+html.dark input::placeholder,
+html.dark textarea::placeholder { color: #64748b !important; }
+
+/* Tables */
+html.dark table { color: #e2e8f0; }
+html.dark .hover\:bg-purple-50\/60:hover { background-color: rgba(76,29,149,0.15) !important; }
+html.dark .bg-purple-50\/30 { background-color: rgba(76,29,149,0.08) !important; }
+
+/* Brand (green) colour family */
+html.dark .bg-brand-50 { background-color: rgba(16,185,129,0.12) !important; }
+html.dark .bg-brand-100 { background-color: rgba(16,185,129,0.2) !important; }
+html.dark .text-brand-700 { color: #34d399 !important; }
+html.dark .text-brand-600 { color: #34d399 !important; }
+html.dark .hover\:text-brand-700:hover { color: #6ee7b7 !important; }
+html.dark .hover\:text-brand-600:hover { color: #6ee7b7 !important; }
+html.dark .hover\:bg-brand-100:hover { background-color: rgba(16,185,129,0.2) !important; }
+html.dark .border-brand-200 { border-color: rgba(16,185,129,0.3) !important; }
+html.dark .text-brand-800 { color: #a7f3d0 !important; }
+
+/* Red (error/delete) colour family */
+html.dark .bg-red-50 { background-color: rgba(239,68,68,0.1) !important; }
+html.dark .border-red-200 { border-color: rgba(239,68,68,0.3) !important; }
+html.dark .text-red-800 { color: #fca5a5 !important; }
+html.dark .text-red-700 { color: #f87171 !important; }
+html.dark .text-red-600 { color: #f87171 !important; }
+html.dark .text-red-500 { color: #fca5a5 !important; }
+html.dark .hover\:text-red-700:hover { color: #fca5a5 !important; }
+html.dark .bg-red-50\/40 { background-color: rgba(239,68,68,0.08) !important; }
+
+/* Amber (warning) colour family */
+html.dark .bg-amber-50 { background-color: rgba(180,120,0,0.15) !important; }
+html.dark .border-amber-200 { border-color: rgba(217,119,6,0.4) !important; }
+html.dark .text-amber-800 { color: #fcd34d !important; }
+
+/* Blue (custom SSL) colour family */
+html.dark .bg-blue-50 { background-color: rgba(59,130,246,0.1) !important; }
+html.dark .border-blue-200 { border-color: rgba(59,130,246,0.3) !important; }
+html.dark .text-blue-700 { color: #93c5fd !important; }
+
+/* Purple (advanced routes) colour family */
+html.dark .bg-purple-50 { background-color: rgba(139,92,246,0.1) !important; }
+html.dark .bg-purple-100 { background-color: rgba(139,92,246,0.2) !important; }
+html.dark .border-purple-200 { border-color: rgba(139,92,246,0.35) !important; }
+html.dark .text-purple-700 { color: #c4b5fd !important; }
+
+/* Misc */
+html.dark .shadow-card { box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.4) !important; }
+html.dark .has-\[\:checked\]\:bg-brand-50\/50:has(:checked) { background-color: rgba(16,185,129,0.1) !important; }
+html.dark .has-\[\:checked\]\:border-brand-500:has(:checked) { border-color: #10b981 !important; }
+html.dark pre { background-color: #0f172a !important; border-color: #334155 !important; }
+html.dark code { background-color: #263347 !important; color: #e2e8f0 !important; }
+html.dark .bg-ink-900 { background-color: #020617 !important; }
+html.dark .text-ink-100 { color: #f1f5f9 !important; }
+html.dark .text-ink-300 { color: #475569 !important; }

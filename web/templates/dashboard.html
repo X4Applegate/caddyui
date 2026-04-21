@@ -1,0 +1,235 @@
+{{define "title"}}Dashboard · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex items-start justify-between mb-8 gap-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Dashboard</h1>
+    <p class="text-sm text-ink-500 mt-1">Overview of your active Caddy server.</p>
+  </div>
+  <form method="post" action="/caddy/reload">
+    <button class="inline-flex items-center gap-1.5 bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 text-sm font-medium px-4 py-2 rounded-lg transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      Sync Caddy
+    </button>
+  </form>
+</div>
+
+{{if .ExpiringSoon}}
+<div class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">
+  ⚠️ {{.ExpiringSoon}} certificate(s) expiring within 30 days — <a href="/certificates" class="underline">view certificates</a>
+</div>
+{{end}}
+
+{{/* ── System stats ── */}}
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6"
+     id="sys-stats"
+     data-sid="{{if .CurrentServer}}{{.CurrentServer.ID}}{{else}}1{{end}}">
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3">
+    <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-1">Uptime</div>
+    <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-uptime">—</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3">
+    <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-1">Load (1m)</div>
+    <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-load">—</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3">
+    <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-1">Memory used</div>
+    <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-mem">—</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3">
+    <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-1">Memory %</div>
+    <div class="flex items-center gap-2 mt-1">
+      <div class="flex-1 bg-ink-100 rounded-full h-1.5">
+        <div class="bg-brand-500 h-1.5 rounded-full transition-all" id="stat-mem-bar" style="width:0%"></div>
+      </div>
+      <span class="text-xs font-medium text-ink-600 tabular-nums" id="stat-mem-pct">0%</span>
+    </div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3">
+    <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-1">Active requests</div>
+    <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-reqs">—</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3">
+    <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-1">Upstreams</div>
+    <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-ups">—</div>
+  </div>
+</div>
+
+{{if .CurrentServer}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-6">
+  <div class="flex items-start justify-between gap-4 flex-wrap">
+    <div class="flex items-center gap-3 min-w-0">
+      {{if eq .CurrentServer.Status "online"}}
+      <span class="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-brand-50 shrink-0">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-brand-600"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+      </span>
+      {{else if eq .CurrentServer.Status "offline"}}
+      <span class="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-red-50 shrink-0">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-red-500"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+      </span>
+      {{else}}
+      <span class="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-ink-100 shrink-0">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-ink-400"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+      </span>
+      {{end}}
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="font-semibold text-ink-900 text-base">{{.CurrentServer.Name}}</span>
+          {{if eq .CurrentServer.Status "online"}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>online</span>
+          {{else if eq .CurrentServer.Status "offline"}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>offline</span>
+          {{else}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>unknown</span>
+          {{end}}
+          {{if eq .CurrentServer.Type "managed"}}
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">Managed</span>
+          {{else}}
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">External</span>
+          {{end}}
+        </div>
+        <div class="text-xs font-mono text-ink-400 mt-0.5 truncate">{{.CurrentServer.AdminURL}}</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-5 text-xs text-ink-500 flex-wrap">
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Last contact</div>
+        {{if .CurrentServer.LastContactAt.Valid}}
+        <span class="font-medium text-ink-700">{{.CurrentServer.LastContactAt.Time.Format "Jan 2, 3:04 PM"}}</span>
+        {{else}}<span class="text-ink-400 italic">never</span>{{end}}
+      </div>
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Last sync</div>
+        {{if .LastSync}}
+        <span class="font-medium text-ink-700">{{.LastSync.Format "Jan 2, 3:04 PM"}}</span>
+        {{else}}<span class="text-ink-400 italic">never</span>{{end}}
+      </div>
+      {{if eq .User.Role "admin"}}
+      <a href="/servers/{{.CurrentServer.ID}}/config" class="text-ink-400 hover:text-brand-600 transition text-[11px] font-medium">View live config →</a>
+      {{end}}
+    </div>
+  </div>
+
+  <div class="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+    <a href="/proxy-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-brand-50 transition">
+      <span class="text-2xl font-semibold text-ink-900 group-hover:text-brand-700 tabular-nums">{{len .ProxyHosts}}</span>
+      <span class="text-xs text-ink-500 group-hover:text-brand-600 leading-tight">Proxy<br>Hosts</span>
+    </a>
+    <a href="/proxy-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-green-50 transition">
+      <span class="text-2xl font-semibold text-ink-900 group-hover:text-green-700 tabular-nums">{{.EnabledHosts}}</span>
+      <span class="text-xs text-ink-500 group-hover:text-green-600 leading-tight">Enabled<br>Proxies</span>
+    </a>
+    <a href="/proxy-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-ink-100 transition">
+      <span class="text-2xl font-semibold text-ink-900 group-hover:text-ink-700 tabular-nums">{{.DisabledHosts}}</span>
+      <span class="text-xs text-ink-500 group-hover:text-ink-600 leading-tight">Disabled<br>Proxies</span>
+    </a>
+    <a href="/redirection-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-blue-50 transition">
+      <span class="text-2xl font-semibold text-ink-900 group-hover:text-blue-700 tabular-nums">{{len .RedirectionHosts}}</span>
+      <span class="text-xs text-ink-500 group-hover:text-blue-600 leading-tight">Redirec-<br>tions</span>
+    </a>
+    <a href="/raw-routes" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-purple-50 transition">
+      <span class="text-2xl font-semibold text-ink-900 group-hover:text-purple-700 tabular-nums">{{.RawCount}}</span>
+      <span class="text-xs text-ink-500 group-hover:text-purple-600 leading-tight">Raw<br>Routes</span>
+    </a>
+    <a href="/certificates" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-amber-50 transition">
+      <span class="text-2xl font-semibold text-ink-900 group-hover:text-amber-700 tabular-nums">{{.CertCount}}</span>
+      <span class="text-xs text-ink-500 group-hover:text-amber-600 leading-tight">Certifi-<br>cates</span>
+    </a>
+  </div>
+</div>
+{{end}}
+
+<div class="flex items-center justify-between mb-3">
+  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recent proxy hosts</h2>
+  <a href="/proxy-hosts" class="text-xs text-ink-500 hover:text-ink-900 transition">View all &rarr;</a>
+</div>
+
+{{/* Mobile cards */}}
+<div class="md:hidden space-y-2">
+  {{range .ProxyHosts}}
+  <a href="/proxy-hosts/{{.ID}}/edit" class="block bg-white border border-ink-200 rounded-xl shadow-card p-4 hover:border-brand-300 transition">
+    <div class="flex items-start justify-between gap-2 mb-1">
+      <div class="flex flex-wrap gap-1 min-w-0">
+        {{range splitDomains .Domains}}<span class="font-mono text-sm font-medium text-brand-700 break-all">{{.}}</span>{{end}}
+      </div>
+      {{if .Enabled}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>on</span>
+      {{else}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</span>
+      {{end}}
+    </div>
+    <div class="text-xs font-mono text-ink-400">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</div>
+  </a>
+  {{else}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-10 text-center">
+    <div class="text-ink-400 text-sm">No proxy hosts yet.</div>
+    <a href="/proxy-hosts/new" class="inline-block mt-2 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Create your first</a>
+  </div>
+  {{end}}
+</div>
+
+{{/* Desktop table */}}
+<div class="hidden md:block bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-3 font-medium">Source</th>
+        <th class="px-5 py-3 font-medium">Destination</th>
+        <th class="px-5 py-3 font-medium">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .ProxyHosts}}
+      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+        <td class="px-5 py-3">
+          <div class="flex flex-wrap gap-1">
+            {{range splitDomains .Domains}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="font-mono text-xs text-brand-700 hover:text-brand-800 hover:underline">{{.}}</a>{{end}}
+          </div>
+        </td>
+        <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</td>
+        <td class="px-5 py-3">
+          {{if .Enabled}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
+          {{else}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>disabled</span>
+          {{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="3" class="px-5 py-12 text-center">
+          <div class="text-ink-400 text-sm">No proxy hosts yet.</div>
+          <a href="/proxy-hosts/new" class="inline-block mt-2 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Create your first</a>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function() {
+  var sid = document.getElementById('sys-stats').dataset.sid || '1';
+  fetch('/api/system-stats?sid=' + sid)
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.uptime)       document.getElementById('stat-uptime').textContent = d.uptime;
+      if (d.load1)        document.getElementById('stat-load').textContent   = d.load1 + ' / ' + d.load5;
+      if (d.mem_used_mb)  document.getElementById('stat-mem').textContent    = d.mem_used_mb + ' MB / ' + d.mem_total_mb + ' MB';
+      if (d.mem_pct !== undefined) {
+        document.getElementById('stat-mem-bar').style.width  = d.mem_pct + '%';
+        document.getElementById('stat-mem-pct').textContent  = d.mem_pct + '%';
+      }
+      var reqs = d.active_requests;
+      document.getElementById('stat-reqs').textContent = (reqs !== undefined) ? reqs : '—';
+      var h = d.healthy_upstreams, t = d.total_upstreams;
+      if (t !== undefined) {
+        var el = document.getElementById('stat-ups');
+        el.textContent = h + ' / ' + t + ' healthy';
+        el.classList.toggle('text-red-600', h < t);
+        el.classList.toggle('text-brand-700', h === t && t > 0);
+      }
+    })
+    .catch(function(){});
+})();
+</script>
+{{end}}

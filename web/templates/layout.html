@@ -1,0 +1,226 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <script>(function(){try{var t=localStorage.getItem('caddyui-theme');if(t==='dark'||(t===null&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark')}}catch(e){}})();</script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>{{block "title" .}}CaddyUI{{end}}</title>
+  <meta name="theme-color" content="#059669" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="CaddyUI" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/static/icon-192.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#ecfdf5',
+              100: '#d1fae5',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857',
+            },
+            ink: {
+              50:  '#f8fafc',
+              100: '#f1f5f9',
+              200: '#e2e8f0',
+              300: '#cbd5e1',
+              400: '#94a3b8',
+              500: '#64748b',
+              600: '#475569',
+              700: '#334155',
+              800: '#1e293b',
+              900: '#0f172a',
+            },
+          },
+          boxShadow: {
+            card: '0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06)',
+          },
+        },
+      },
+    }
+  </script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body class="min-h-screen bg-ink-50 text-ink-800 antialiased">
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/sw.js').catch(function(e) {
+      console.warn('SW registration failed:', e);
+    });
+  });
+}
+</script>
+  {{if .User}}
+  <header class="md:hidden sticky top-0 z-20 flex items-center justify-between bg-white border-b border-ink-200 px-4 py-3">
+    <a href="/" class="flex items-center gap-2 min-w-0">
+      <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-500 shadow-card shrink-0">
+        <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </span>
+      {{if .CurrentServer}}
+      <span class="text-sm font-semibold tracking-tight text-ink-900 truncate">{{.CurrentServer.Name}}</span>
+      {{if eq .CurrentServer.Status "online"}}<span class="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0"></span>
+      {{else if eq .CurrentServer.Status "offline"}}<span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
+      {{else}}<span class="w-1.5 h-1.5 rounded-full bg-ink-400 shrink-0"></span>{{end}}
+      {{else}}
+      <span class="text-base font-semibold tracking-tight text-ink-900">CaddyUI</span>
+      {{end}}
+    </a>
+    <button type="button" aria-label="Open navigation" onclick="document.getElementById('sidebar').classList.remove('-translate-x-full');document.getElementById('sidebar-scrim').classList.remove('hidden');" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+  </header>
+  <div id="sidebar-scrim" class="hidden md:hidden fixed inset-0 z-20 bg-ink-900/40" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');this.classList.add('hidden');"></div>
+  <div class="flex min-h-screen md:h-screen md:overflow-hidden">
+    <aside id="sidebar" class="fixed md:static inset-y-0 left-0 z-30 w-60 shrink-0 bg-white border-r border-ink-200 flex flex-col transform -translate-x-full md:translate-x-0 transition-transform">
+      <div class="px-5 py-5 border-b border-ink-200 flex items-center justify-between">
+        <a href="/" class="flex items-center gap-2.5">
+          <span class="relative inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-500 shadow-card">
+            <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="text-base font-semibold tracking-tight text-ink-900">CaddyUI</span>
+        </a>
+        <button type="button" aria-label="Close navigation" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');document.getElementById('sidebar-scrim').classList.add('hidden');" class="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-500 hover:bg-ink-100 transition">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      {{if and .Servers (gt (len .Servers) 1)}}
+      <div class="px-3 py-2 border-b border-ink-100">
+        <p class="text-[10px] font-semibold uppercase tracking-wider text-ink-400 mb-1">Active Server</p>
+        <form id="server-picker-form" method="post" action="">
+          <select onchange="document.getElementById('server-picker-form').action='/servers/'+this.value+'/select';document.getElementById('server-picker-form').submit();"
+            class="w-full text-xs bg-ink-50 border border-ink-200 rounded-md px-2 py-1.5 text-ink-700 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-100">
+            {{range .Servers}}
+            <option value="{{.ID}}" {{if and $.CurrentServer (eq $.CurrentServer.ID .ID)}}selected{{end}}>
+              {{.Name}}{{if eq .Status "online"}} ●{{else if eq .Status "offline"}} ○{{end}}
+            </option>
+            {{end}}
+          </select>
+        </form>
+      </div>
+      {{end}}
+      <nav class="flex-1 overflow-y-auto px-3 py-4 text-sm">
+        {{$sec := .Section}}
+        {{template "navItem" (dict "Section" $sec "Active" "dashboard" "Href" "/" "Label" "Dashboard" "Icon" "dashboard")}}
+
+        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">Routes</div>
+        {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" "Proxy Hosts" "Icon" "proxy")}}
+        {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" "Redirections" "Icon" "redirect")}}
+        {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" "Advanced" "Icon" "code")}}
+
+        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">Config</div>
+        {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" "Certificates" "Icon" "lock")}}
+        {{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}
+        {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
+
+        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">System</div>
+        {{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}
+        {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" "Activity" "Icon" "pulse")}}
+        {{if eq .User.Role "admin"}}
+        {{template "navItem" (dict "Section" $sec "Active" "servers" "Href" "/servers" "Label" "Caddy Servers" "Icon" "server")}}
+        {{template "navItem" (dict "Section" $sec "Active" "users" "Href" "/users" "Label" "Users" "Icon" "users")}}
+        {{template "navItem" (dict "Section" $sec "Active" "settings" "Href" "/settings" "Label" "Settings" "Icon" "settings")}}
+        {{end}}
+      </nav>
+
+      <div class="border-t border-ink-200 px-4 py-3 text-xs">
+        {{if .AppVersion}}
+        <div class="flex items-center gap-1.5 mb-2">
+          <span class="text-[10px] font-mono text-ink-400">CaddyUI {{.AppVersion}}</span>
+          <span id="update-badge" class="hidden inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 cursor-pointer" title="Click to dismiss"></span>
+        </div>
+        {{end}}
+        <div class="flex items-center gap-2.5">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-ink-100 text-ink-600 font-medium">
+            {{if .User.Email}}{{slice .User.Email 0 1}}{{else}}?{{end}}
+          </span>
+          <div class="flex-1 min-w-0">
+            <div class="truncate text-ink-800 font-medium">{{.User.Email}}</div>
+            <div class="flex items-center gap-2 mt-0.5">
+              <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded {{if eq .User.Role "admin"}}bg-purple-100 text-purple-700{{else}}bg-ink-100 text-ink-600{{end}}">{{.User.Role}}</span>
+              <a href="/totp/setup" class="text-[10px] text-ink-400 hover:text-brand-600 transition">2FA</a>
+              <form method="post" action="/logout">
+                <button class="text-ink-400 hover:text-red-500 transition">Sign out</button>
+              </form>
+              <button type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="ml-auto text-ink-400 hover:text-ink-700 transition">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="flex-1 min-w-0 flex flex-col md:overflow-y-auto">
+      {{if .CurrentServer}}
+      <div class="sticky top-0 z-10 border-b border-ink-100 bg-white/95 backdrop-blur-sm px-4 sm:px-6 md:px-8 py-2 flex items-center gap-3 min-w-0">
+        {{if eq .CurrentServer.Status "online"}}
+        <span class="w-2 h-2 rounded-full bg-brand-500 shrink-0"></span>
+        {{else if eq .CurrentServer.Status "offline"}}
+        <span class="w-2 h-2 rounded-full bg-red-500 shrink-0"></span>
+        {{else}}
+        <span class="w-2 h-2 rounded-full bg-ink-400 shrink-0"></span>
+        {{end}}
+        <span class="text-sm font-semibold text-ink-800 shrink-0">{{.CurrentServer.Name}}</span>
+        <span class="text-ink-200 shrink-0">|</span>
+        <span class="text-xs font-mono text-ink-400 truncate hidden sm:block">{{.CurrentServer.AdminURL}}</span>
+        {{if and .Servers (gt (len .Servers) 1)}}
+        <a href="/servers" class="ml-auto text-xs text-ink-400 hover:text-brand-600 transition shrink-0 whitespace-nowrap">Switch server</a>
+        {{end}}
+      </div>
+      {{end}}
+      <main class="flex-1">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 md:px-8 py-6 md:py-8">
+          {{block "content" .}}{{end}}
+        </div>
+      </main>
+    </div>
+  </div>
+  {{else}}
+  <main class="max-w-6xl mx-auto p-6">
+    {{block "content" .}}{{end}}
+  </main>
+  {{end}}
+{{if .User}}
+<script>
+(function() {
+  var badge = document.getElementById('update-badge');
+  if (!badge) return;
+  var DISMISS_KEY = 'caddyui-update-dismissed';
+  fetch('/api/version-check')
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) {
+      if (!d || !d.has_update) return;
+      var dismissed = '';
+      try { dismissed = localStorage.getItem(DISMISS_KEY) || ''; } catch(e) {}
+      if (dismissed === d.latest) return; // already dismissed this version
+      badge.textContent = '↑ ' + d.latest + ' available';
+      badge.classList.remove('hidden');
+      badge.addEventListener('click', function() {
+        try { localStorage.setItem(DISMISS_KEY, d.latest); } catch(e) {}
+        badge.classList.add('hidden');
+      });
+    })
+    .catch(function() {});
+})();
+</script>
+{{end}}
+</body>
+</html>{{end}}
+
+{{define "navItem"}}
+<a href="{{.Href}}" class="group flex items-center gap-2.5 px-2.5 py-2 rounded-md transition {{if eq .Section .Active}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-100 hover:text-ink-900{{end}}">
+  <span class="w-4 h-4 shrink-0 {{if eq .Section .Active}}text-brand-600{{else}}text-ink-400 group-hover:text-ink-600{{end}}">{{template "icon" .Icon}}</span>
+  <span>{{.Label}}</span>
+</a>
+{{end}}
+
+{{define "icon"}}{{if eq . "dashboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>{{else if eq . "proxy"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>{{else if eq . "redirect"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>{{else if eq . "code"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>{{else if eq . "lock"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{else if eq . "download"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{else if eq . "clipboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>{{else if eq . "camera"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>{{else if eq . "pulse"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>{{else if eq . "users"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>{{else if eq . "server"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>{{else if eq . "settings"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>{{end}}{{end}}

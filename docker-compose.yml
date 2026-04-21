@@ -1,0 +1,48 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddyui-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      CADDY_ADMIN: 0.0.0.0:2019
+    command: caddy run --config /config/caddy/autosave.json --resume --adapter json
+    networks:
+      - caddyui
+
+  caddyui:
+    build: .
+    image: caddyui:latest
+    container_name: caddyui
+    restart: unless-stopped
+    depends_on:
+      - caddy
+    ports:
+      - "8081:8080"
+    volumes:
+      - caddyui_data:/data
+      # Mount the same Caddyfile Caddy reads so paste-import can auto-load
+      # snippet definitions. Read-only — caddyui never writes it.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      CADDYUI_DB: /data/caddyui.db
+      CADDYUI_LISTEN: :8080
+      CADDY_ADMIN_URL: http://caddy:2019
+      CADDYFILE_PATH: /etc/caddy/Caddyfile
+    networks:
+      - caddyui
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddyui_data:
+
+networks:
+  caddyui:
+    driver: bridge

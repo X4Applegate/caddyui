@@ -1,0 +1,147 @@
+{{define "title"}}Advanced routes · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-4 sm:gap-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Advanced routes</h1>
+    <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+      For anything CaddyUI can't model as a simple proxy or redirect — per-path routing, multiple
+      upstreams, file servers, custom handlers. Entries show their original Caddyfile when
+      imported via paste.
+    </p>
+  </div>
+  <div class="flex items-center gap-2 flex-wrap sm:flex-nowrap sm:whitespace-nowrap">
+    <a href="/caddyfile-import" class="inline-flex items-center gap-1.5 bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 text-sm font-medium px-4 py-2 rounded-lg transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+      Paste Caddyfile
+    </a>
+    <a href="/raw-routes/new" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      New Route
+    </a>
+  </div>
+</div>
+
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden overflow-x-auto">
+  <table class="hidden md:table w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-3 font-medium">Label</th>
+        <th class="px-5 py-3 font-medium">Config</th>
+        {{if eq .User.Role "admin"}}<th class="px-5 py-3 font-medium">Owner</th>{{end}}
+        <th class="px-5 py-3 font-medium">Status</th>
+        <th class="px-5 py-3 font-medium text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr class="border-t border-ink-100 align-top hover:bg-ink-50/60 transition">
+        <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.Label}}</td>
+        <td class="px-5 py-3">
+          {{if .CaddyfileSrc}}
+          <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-w-xl">{{.CaddyfileSrc}}</pre>
+          <details class="mt-2">
+            <summary class="cursor-pointer text-ink-400 hover:text-ink-600 text-xs transition">view adapted JSON</summary>
+            <pre class="mt-2 bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-w-xl">{{prettyJSON .JSONData}}</pre>
+          </details>
+          {{else}}
+          <details>
+            <summary class="cursor-pointer text-ink-500 hover:text-ink-700 text-xs transition">view JSON</summary>
+            <pre class="mt-2 bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-w-xl">{{prettyJSON .JSONData}}</pre>
+          </details>
+          <div class="text-xs text-ink-400 mt-1">No Caddyfile source — re-import via Paste Caddyfile to show it here.</div>
+          {{end}}
+        </td>
+        {{if eq $.User.Role "admin"}}
+        <td class="px-5 py-3 text-xs text-ink-500">
+          {{if .OwnerEmail}}{{.OwnerEmail}}{{else}}<span class="text-ink-400">global</span>{{end}}
+        </td>
+        {{end}}
+        <td class="px-5 py-3">
+          {{if .Enabled}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
+          {{else}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>disabled</span>
+          {{end}}
+          {{if .CertificateID}}
+            <div class="text-xs text-ink-500 mt-1.5">custom cert #{{.CertificateID}}</div>
+          {{else}}
+            <div class="text-xs text-ink-400 mt-1.5">auto TLS</div>
+          {{end}}
+        </td>
+        <td class="px-5 py-3 text-right whitespace-nowrap">
+          <a href="/raw-routes/{{.ID}}/edit" class="text-ink-500 hover:text-ink-900 text-sm transition mr-3">Edit</a>
+          <form method="post" action="/raw-routes/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete this advanced route? It will stop being sent to Caddy on next sync.')">
+            <button class="text-red-600 hover:text-red-700 text-sm transition">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="{{if eq .User.Role "admin"}}5{{else}}4{{end}}" class="px-5 py-16 text-center">
+          <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          </div>
+          <div class="text-ink-600 text-sm font-medium">No advanced routes</div>
+          <div class="text-ink-400 text-xs mt-1">Paste a Caddyfile block or write raw JSON.</div>
+          <div class="mt-3 flex items-center justify-center gap-4 text-sm">
+            <a href="/caddyfile-import" class="text-brand-600 hover:text-brand-700 font-medium">Paste Caddyfile</a>
+            <span class="text-ink-300">·</span>
+            <a href="/raw-routes/new" class="text-brand-600 hover:text-brand-700 font-medium">Write JSON</a>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <div class="md:hidden divide-y divide-ink-100">
+    {{range .Rows}}
+    <div class="p-4 space-y-3">
+      <div class="flex items-start justify-between gap-3">
+        <div class="font-mono text-xs text-ink-800 break-all min-w-0">{{.Label}}</div>
+        {{if .Enabled}}
+          <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
+        {{else}}
+          <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>disabled</span>
+        {{end}}
+      </div>
+      <div class="text-xs {{if .CertificateID}}text-ink-500{{else}}text-ink-400{{end}}">{{if .CertificateID}}custom cert #{{.CertificateID}}{{else}}auto TLS{{end}}</div>
+      {{if eq $.User.Role "admin"}}<div class="text-xs text-ink-500">Owner: {{if .OwnerEmail}}{{.OwnerEmail}}{{else}}<span class="text-ink-400">global</span>{{end}}</div>{{end}}
+      {{if .CaddyfileSrc}}
+      <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto">{{.CaddyfileSrc}}</pre>
+      <details>
+        <summary class="cursor-pointer text-ink-400 hover:text-ink-600 text-xs transition">view adapted JSON</summary>
+        <pre class="mt-2 bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-80">{{prettyJSON .JSONData}}</pre>
+      </details>
+      {{else}}
+      <details>
+        <summary class="cursor-pointer text-ink-500 hover:text-ink-700 text-xs transition">view JSON</summary>
+        <pre class="mt-2 bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-80">{{prettyJSON .JSONData}}</pre>
+      </details>
+      {{end}}
+      <div class="flex items-center gap-4 pt-2 border-t border-ink-100 text-sm">
+        <a href="/raw-routes/{{.ID}}/edit" class="inline-flex items-center gap-1 text-brand-600 hover:text-brand-700 font-medium transition">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Edit
+        </a>
+        <form method="post" action="/raw-routes/{{.ID}}/delete" class="inline ml-auto" onsubmit="return confirm('Delete this advanced route? It will stop being sent to Caddy on next sync.')">
+          <button class="text-red-600 hover:text-red-700 transition">Delete</button>
+        </form>
+      </div>
+    </div>
+    {{else}}
+    <div class="px-5 py-16 text-center">
+      <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </div>
+      <div class="text-ink-600 text-sm font-medium">No advanced routes</div>
+      <div class="mt-3 flex items-center justify-center gap-4 text-sm">
+        <a href="/caddyfile-import" class="text-brand-600 hover:text-brand-700 font-medium">Paste Caddyfile</a>
+        <span class="text-ink-300">·</span>
+        <a href="/raw-routes/new" class="text-brand-600 hover:text-brand-700 font-medium">Write JSON</a>
+      </div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

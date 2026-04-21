@@ -1,0 +1,163 @@
+{{define "title"}}Snapshots · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex items-start justify-between mb-8 gap-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Config snapshots</h1>
+    <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+      Point-in-time copies of Caddy's full live config. Auto-snapshots are taken before every sync
+      (newest 20 kept). Manual snapshots are never pruned. Restoring pushes a snapshot via
+      <code class="font-mono text-xs bg-ink-100 px-1 rounded">/load</code> after validation,
+      and auto-snapshots the current state first so the restore itself is undoable.
+    </p>
+  </div>
+  <form method="post" action="/snapshots" class="flex items-center gap-2 whitespace-nowrap">
+    <input name="note" placeholder="note (optional)" class="rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+    <button class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      Take snapshot
+    </button>
+  </form>
+</div>
+
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-4">
+  <div class="flex items-start gap-3 mb-3">
+    <span class="w-9 h-9 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    </span>
+    <div>
+      <div class="text-sm font-medium text-ink-900">Import snapshot from file</div>
+      <div class="text-xs text-ink-500 mt-0.5 max-w-xl">
+        Upload a JSON file (previously downloaded snapshot, or any Caddy
+        <code class="font-mono bg-ink-100 px-1 rounded">/config</code> export). Stored as a manual
+        snapshot — restore it explicitly once it's in the list.
+      </div>
+    </div>
+  </div>
+  <form method="post" action="/snapshots/upload" enctype="multipart/form-data" class="flex flex-wrap items-center gap-2">
+    <input type="file" name="file" accept="application/json,.json" required class="text-xs text-ink-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-ink-200 file:bg-white file:text-ink-700 file:text-xs file:font-medium file:cursor-pointer file:hover:bg-ink-50" />
+    <input name="note" placeholder="note (optional)" class="flex-1 min-w-[200px] rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+    <button class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition whitespace-nowrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Upload
+    </button>
+  </form>
+</div>
+
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-6 flex items-center justify-between gap-4">
+  <div class="flex items-start gap-3">
+    <span class="w-9 h-9 rounded-lg {{if .AutoSnapshots}}bg-brand-50 text-brand-600{{else}}bg-ink-100 text-ink-400{{end}} flex items-center justify-center shrink-0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+    </span>
+    <div>
+      <div class="text-sm font-medium text-ink-900">Auto-snapshots</div>
+      <div class="text-xs text-ink-500 mt-0.5 max-w-xl">
+        When enabled, CaddyUI captures the live config before every sync and every restore.
+        Disable to stop pre-sync snapshots — manual snapshots still work either way.
+      </div>
+    </div>
+  </div>
+  <form method="post" action="/snapshots/auto" class="flex items-center gap-3 whitespace-nowrap">
+    <input type="hidden" name="enabled" value="{{if .AutoSnapshots}}0{{else}}1{{end}}" />
+    {{if .AutoSnapshots}}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>on</span>
+      <button class="text-sm text-ink-600 hover:text-ink-900 font-medium transition">Disable</button>
+    {{else}}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</span>
+      <button class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition">Enable</button>
+    {{end}}
+  </form>
+</div>
+
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+  <table class="hidden lg:table w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-3 font-medium">When</th>
+        <th class="px-5 py-3 font-medium">Source</th>
+        <th class="px-5 py-3 font-medium">Note</th>
+        <th class="px-5 py-3 font-medium">Size</th>
+        <th class="px-5 py-3 font-medium">Config</th>
+        <th class="px-5 py-3 font-medium text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Snapshots}}
+      <tr class="border-t border-ink-100 align-top hover:bg-ink-50/60 transition">
+        <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-600">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+        <td class="px-5 py-3">
+          {{if eq .Source "manual"}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">manual</span>
+          {{else}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">auto</span>
+          {{end}}
+        </td>
+        <td class="px-5 py-3 text-xs text-ink-700">{{.Note}}</td>
+        <td class="px-5 py-3 text-xs text-ink-500 whitespace-nowrap">{{.SizeKB}} KB</td>
+        <td class="px-5 py-3">
+          <details>
+            <summary class="cursor-pointer text-ink-500 hover:text-ink-700 text-xs transition">view JSON</summary>
+            <pre class="mt-2 bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-w-2xl max-h-96">{{.ConfigJSON}}</pre>
+          </details>
+        </td>
+        <td class="px-5 py-3 text-right whitespace-nowrap">
+          <a href="/snapshots/{{.ID}}/download" class="text-ink-500 hover:text-ink-900 text-sm transition mr-3">Download</a>
+          <form method="post" action="/snapshots/{{.ID}}/restore" class="inline" onsubmit="return confirm('Restore this snapshot? Caddy will reload with this exact config. Current state will be auto-snapshotted first.')">
+            <button class="text-ink-500 hover:text-ink-900 text-sm transition mr-3">Restore</button>
+          </form>
+          <form method="post" action="/snapshots/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete this snapshot?')">
+            <button class="text-red-600 hover:text-red-700 text-sm transition">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="6" class="px-5 py-16 text-center">
+          <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          </div>
+          <div class="text-ink-600 text-sm font-medium">No snapshots yet</div>
+          <div class="text-ink-400 text-xs mt-1">They'll appear here after your next Caddy sync.</div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <div class="lg:hidden divide-y divide-ink-100">
+    {{range .Snapshots}}
+    <div class="p-4 space-y-3">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="text-xs text-ink-600 whitespace-nowrap">{{.CreatedAt.Format "2006-01-02 15:04"}}</div>
+          {{if .Note}}<div class="text-sm text-ink-800 mt-0.5 break-words">{{.Note}}</div>{{end}}
+        </div>
+        {{if eq .Source "manual"}}
+          <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">manual</span>
+        {{else}}
+          <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">auto</span>
+        {{end}}
+      </div>
+      <div class="text-xs text-ink-500">{{.SizeKB}} KB</div>
+      <details>
+        <summary class="cursor-pointer text-ink-500 hover:text-ink-700 text-xs transition">view JSON</summary>
+        <pre class="mt-2 bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-80">{{.ConfigJSON}}</pre>
+      </details>
+      <div class="flex items-center gap-4 pt-2 border-t border-ink-100 text-sm">
+        <a href="/snapshots/{{.ID}}/download" class="text-ink-600 hover:text-ink-900 transition">Download</a>
+        <form method="post" action="/snapshots/{{.ID}}/restore" class="inline" onsubmit="return confirm('Restore this snapshot? Caddy will reload with this exact config. Current state will be auto-snapshotted first.')">
+          <button class="text-ink-600 hover:text-ink-900 transition">Restore</button>
+        </form>
+        <form method="post" action="/snapshots/{{.ID}}/delete" class="inline ml-auto" onsubmit="return confirm('Delete this snapshot?')">
+          <button class="text-red-600 hover:text-red-700 transition">Delete</button>
+        </form>
+      </div>
+    </div>
+    {{else}}
+    <div class="p-10 text-center">
+      <div class="text-ink-600 text-sm font-medium">No snapshots yet</div>
+      <div class="text-ink-400 text-xs mt-1">They'll appear after your next sync.</div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

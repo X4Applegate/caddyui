@@ -1,0 +1,72 @@
+{{define "title"}}{{if .Target.ID}}Edit{{else}}Add{{end}} Caddy Server · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <a href="/servers" class="text-xs text-ink-400 hover:text-ink-600 transition inline-flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+    Caddy Servers
+  </a>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Target.ID}}Edit server{{else}}Add a Caddy server{{end}}</h1>
+  <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+    CaddyUI reaches each server over its admin API (default port 2019). Make sure this host can
+    route to the URL you enter — over WireGuard, Tailscale, or a private LAN.
+  </p>
+</div>
+
+{{if .Error}}
+<div class="mb-6 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Target.ID}}/servers/{{.Target.ID}}{{else}}/servers{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100">
+  <div class="p-6 space-y-4">
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
+      <input type="text" name="name" required value="{{.Target.Name}}" placeholder="Edge · DMZ · xCave"
+        class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+      <p class="text-xs text-ink-500 mt-1.5">A short label you'll recognize in the list.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Admin URL</label>
+      <input type="text" name="admin_url" required value="{{.Target.AdminURL}}" placeholder="http://10.0.0.2:2019"
+        class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Where Caddy's admin API is reachable from this host. No trailing slash.</p>
+    </div>
+  </div>
+
+  <div class="p-6 space-y-4">
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-2">Type</label>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label class="cursor-pointer rounded-lg border border-ink-200 p-3 transition hover:border-ink-300 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
+          <input type="radio" name="type" value="managed" class="sr-only" {{if or (eq .Target.Type "managed") (not .Target.Type)}}checked{{end}} />
+          <div class="text-sm font-medium text-ink-800">Managed</div>
+          <div class="text-xs text-ink-500 mt-0.5">CaddyUI pushes config here.</div>
+        </label>
+        <label class="cursor-pointer rounded-lg border border-ink-200 p-3 transition hover:border-ink-300 has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50/50">
+          <input type="radio" name="type" value="external" class="sr-only" {{if eq .Target.Type "external"}}checked{{end}} />
+          <div class="text-sm font-medium text-ink-800">External</div>
+          <div class="text-xs text-ink-500 mt-0.5">Monitor only — don't push.</div>
+        </label>
+      </div>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Tags</label>
+      <input type="text" name="tags" value="{{.Target.Tags}}" placeholder="homelab, edge, dmz"
+        class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Optional comma-separated labels for your own organization.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Caddy Version</label>
+      <input type="text" name="version" value="{{.Target.Version}}" placeholder="v2.11.2"
+        class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Optional. Run <code class="bg-ink-100 px-1 rounded">docker exec &lt;caddy&gt; caddy version</code> to find it.</p>
+    </div>
+  </div>
+
+  <div class="p-6 flex items-center gap-3">
+    <button class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+      {{if .Target.ID}}Save changes{{else}}Add server{{end}}
+    </button>
+    <a href="/servers" class="text-sm text-ink-500 hover:text-ink-700 transition">Cancel</a>
+  </div>
+</form>
+{{end}}

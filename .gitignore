@@ -1,0 +1,49 @@
+# Binaries
+/caddyui
+/out/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Database files — never commit live data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Environment & secrets
+.env
+.env.*
+*.env
+secrets/
+credentials/
+
+# Go toolchain
+vendor/
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Docker volumes (if bind-mounted locally)
+data/
+caddy_data/
+caddy_config/
+
+# Build artifacts
+dist/
+bin/
