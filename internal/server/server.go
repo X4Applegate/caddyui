@@ -4110,6 +4110,46 @@ func (s *Server) cfCreateDNSRecord(hostID int64, p *models.ProxyHost) {
 	}
 }
 
+// cfUpdateAllRecords deletes and recreates every Cloudflare-managed A record
+// across all proxy hosts, pointing them at newIP. Called in a goroutine when
+// the server IP setting changes so existing records stay in sync automatically.
+func (s *Server) cfUpdateAllRecords(newIP string) {
+	cf := s.cfClient()
+	if cf == nil {
+		return
+	}
+	hosts, err := models.ListProxyHostsWithCFRecords(s.DB)
+	if err != nil {
+		log.Printf("CF DNS: list managed hosts for IP update: %v", err)
+		return
+	}
+	if len(hosts) == 0 {
+		return
+	}
+	proxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
+	proxied := proxiedStr == "1"
+	log.Printf("CF DNS: updating %d record(s) to new IP %s", len(hosts), newIP)
+	for _, h := range hosts {
+		domain := strings.TrimSpace(strings.SplitN(h.Domains, ",", 2)[0])
+		if domain == "" {
+			continue
+		}
+		// Delete old record (best-effort — may already be gone).
+		if err := cf.DeleteRecord(h.CFZoneID, h.CFDNSRecordID); err != nil {
+			log.Printf("CF DNS: delete old record %s (%s): %v", h.CFDNSRecordID, domain, err)
+		}
+		// Create replacement record with new IP.
+		rec, err := cf.CreateRecord(h.CFZoneID, "A", domain, newIP, proxied, 1)
+		if err != nil {
+			log.Printf("CF DNS: create new record for %s: %v", domain, err)
+			_ = models.UpdateProxyHostCFRecord(s.DB, h.ID, "", "")
+			continue
+		}
+		_ = models.UpdateProxyHostCFRecord(s.DB, h.ID, rec.ID, h.CFZoneID)
+		log.Printf("CF DNS: updated %s → %s (record %s)", domain, newIP, rec.ID)
+	}
+}
+
 // apiCFZones returns the list of Cloudflare zones accessible with the configured
 // API token as a JSON array. Used by the proxy-host form to populate the zone picker.
 func (s *Server) apiCFZones(w http.ResponseWriter, r *http.Request) {
@@ -4290,6 +4330,9 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("cf_proxied") == "1" {
 		cfProxied = "1"
 	}
+	// Snapshot the current server IP before overwriting — used below to detect
+	// whether we need to retarget all existing Cloudflare DNS records.
+	oldCFServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
 
 	kv := map[string]string{
 		settingNotifyWebhookURL:   webhookURL,
@@ -4321,6 +4364,12 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", "notify+smtp", smtpHost, true)
+
+	// If the server IP changed, retarget all Cloudflare-managed A records in the background.
+	if cfServerIP != "" && cfServerIP != oldCFServerIP {
+		go s.cfUpdateAllRecords(cfServerIP)
+	}
+
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }
 
