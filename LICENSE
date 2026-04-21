@@ -62,6 +62,11 @@ You may NOT, without a separate written commercial license from the Licensor:
      product.
   3. Remove or alter this License notice, copyright notices, or attribution
      requirements from any copy or derivative of the Software.
+  4. Rebrand or white-label the Software — you may not remove, replace, or
+     obscure the "CaddyUI" name, logo, or branding, and you may not distribute
+     the Software or any derivative under a different product name, whether
+     publicly or privately. Forks for personal modification are permitted
+     provided they are not redistributed under a different name.
 
 CONDITIONS
 ----------
@@ -71,6 +76,10 @@ Any permitted use or distribution must:
   1. Retain this License file and all copyright notices.
   2. Clearly state any modifications made to the Software.
   3. Not imply endorsement by the Licensor.
+  4. Preserve the "CaddyUI" product name and original branding in any
+     distributed copy or derivative. The name "CaddyUI" and the copyright
+     holder's attribution must remain visible in the UI, documentation,
+     and any accompanying materials.
 
 ATTRIBUTION
 -----------
