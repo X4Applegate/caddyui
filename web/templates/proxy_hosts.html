@@ -107,9 +107,9 @@
 </div>
 
 {{/* ── Desktop table ── */}}
-<div class="hidden md:block bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+<div class="hidden md:block bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden">
   <table class="w-full text-sm" id="proxy-table">
-    <thead class="bg-ink-50/50 text-left">
+    <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         <th class="px-5 py-3 font-medium">Source</th>
         <th class="px-5 py-3 font-medium">Destination</th>
@@ -119,9 +119,9 @@
         <th class="px-5 py-3 font-medium text-right">Actions</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody class="divide-y divide-ink-200">
       {{range .Hosts}}
-      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}">
+      <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}">
         <td class="px-5 py-3">
           <div class="flex flex-wrap gap-1">
             {{range splitDomains .Domains}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="font-mono text-xs text-brand-700 hover:text-brand-800 hover:underline">{{.}}</a>{{end}}
@@ -170,7 +170,7 @@
       </tr>
       {{end}}
       {{range .AdvancedRows}}
-      <tr class="border-t border-ink-100 bg-purple-50/30 hover:bg-purple-50/60 transition">
+      <tr class="bg-purple-50/40 hover:bg-purple-50/70 transition">
         <td class="px-5 py-3">
           {{if .Hosts}}
             <div class="flex flex-wrap gap-1">
@@ -199,7 +199,7 @@
       </tr>
       {{end}}
       {{if and (not .Hosts) (not .AdvancedRows)}}
-      <tr>
+      <tr class="bg-white">
         <td colspan="{{if eq .User.Role "admin"}}6{{else}}5{{end}}" class="px-5 py-16 text-center">
           <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><path d="M5 12h14M12 5l7 7-7 7"/></svg>

@@ -21,9 +21,9 @@
   </div>
 </div>
 
-<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden overflow-x-auto">
+<div class="bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden overflow-x-auto">
   <table class="hidden md:table w-full text-sm">
-    <thead class="bg-ink-50/50 text-left">
+    <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         <th class="px-5 py-3 font-medium">Label</th>
         <th class="px-5 py-3 font-medium">Config</th>
@@ -32,9 +32,9 @@
         <th class="px-5 py-3 font-medium text-right">Actions</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody class="divide-y divide-ink-200">
       {{range .Rows}}
-      <tr class="border-t border-ink-100 align-top hover:bg-ink-50/60 transition">
+      <tr class="bg-white align-top hover:bg-brand-50/30 transition">
         <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.Label}}</td>
         <td class="px-5 py-3">
           {{if .CaddyfileSrc}}
@@ -76,7 +76,7 @@
         </td>
       </tr>
       {{else}}
-      <tr>
+      <tr class="bg-white">
         <td colspan="{{if eq .User.Role "admin"}}5{{else}}4{{end}}" class="px-5 py-16 text-center">
           <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>

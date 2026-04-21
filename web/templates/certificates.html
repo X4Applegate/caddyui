@@ -56,9 +56,9 @@
 </div>
 
 {{/* ── Desktop table ── */}}
-<div class="hidden md:block bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+<div class="hidden md:block bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden">
   <table class="w-full text-sm">
-    <thead class="bg-ink-50/50 text-left">
+    <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         <th class="px-5 py-3 font-medium">Name</th>
         <th class="px-5 py-3 font-medium">Domains</th>
@@ -67,9 +67,9 @@
         <th class="px-5 py-3 font-medium text-right">Actions</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody class="divide-y divide-ink-200">
       {{range .Certs}}
-      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+      <tr class="bg-white hover:bg-brand-50/30 transition">
         <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.Name}}</td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.Domains}}</td>
         <td class="px-5 py-3">
@@ -102,7 +102,7 @@
         </td>
       </tr>
       {{else}}
-      <tr>
+      <tr class="bg-white">
         <td colspan="5" class="px-5 py-16 text-center">
           <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -123,17 +123,17 @@
     <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Caddy-managed (ACME)</h2>
     <span class="text-xs text-ink-400">Auto-issued by Let's Encrypt / ZeroSSL</span>
   </div>
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+  <div class="bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden">
     <table class="w-full text-sm hidden md:table">
-      <thead class="bg-ink-50/50 text-left">
+      <thead class="bg-ink-100 text-left border-b border-ink-200">
         <tr class="text-xs uppercase tracking-wider text-ink-500">
           <th class="px-5 py-3 font-medium">Domain</th>
           <th class="px-5 py-3 font-medium">Managed by</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody class="divide-y divide-ink-200">
         {{range .AutoDomains}}
-        <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+        <tr class="bg-white hover:bg-brand-50/30 transition">
           <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.}}</td>
           <td class="px-5 py-3">
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">
