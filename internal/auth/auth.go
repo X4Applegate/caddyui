@@ -77,18 +77,25 @@ func UserFromSession(db *sql.DB, token string) (*models.User, error) {
 	return models.GetUserByID(db, userID)
 }
 
-func SetSessionCookie(w http.ResponseWriter, token string, expires time.Time) {
+// isSecure returns true when the request arrived over HTTPS (direct TLS or
+// via a reverse-proxy that sets X-Forwarded-Proto).
+func isSecure(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+}
+
+func SetSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookie,
 		Value:    token,
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
+		Secure:   isSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func ClearSessionCookie(w http.ResponseWriter) {
+func ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookie,
 		Value:    "",
@@ -96,6 +103,7 @@ func ClearSessionCookie(w http.ResponseWriter) {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   isSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }

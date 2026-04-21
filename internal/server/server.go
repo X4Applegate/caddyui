@@ -17,6 +17,7 @@ import (
 	"log"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -279,7 +280,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		u, err := auth.UserFromSession(s.DB, cookie.Value)
 		if err != nil || u == nil {
-			auth.ClearSessionCookie(w)
+			auth.ClearSessionCookie(w, r)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
@@ -377,11 +378,39 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	auth.SetSessionCookie(w, tok, exp)
+	auth.SetSessionCookie(w, r, tok, exp)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // --- Login ---
+
+const (
+	settingTurnstileSiteKey   = "turnstile_site_key"
+	settingTurnstileSecretKey = "turnstile_secret_key"
+)
+
+// verifyTurnstile calls the Cloudflare Turnstile siteverify endpoint.
+// Returns true when the challenge token is valid.
+func verifyTurnstile(secretKey, token, remoteIP string) (bool, error) {
+	resp, err := http.PostForm("https://challenges.cloudflare.com/turnstile/v0/siteverify",
+		url.Values{
+			"secret":   {secretKey},
+			"response": {token},
+			"remoteip": {remoteIP},
+		})
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, err
+	}
+	return result.Success, nil
+}
+
 func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 	n, err := models.CountUsers(s.DB)
 	if err != nil {
@@ -392,16 +421,41 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, "login.html", nil)
+	siteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
+	s.render(w, r, "login.html", map[string]any{"TurnstileSiteKey": siteKey})
 }
 
 func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
+
+	siteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
+	secretKey, _ := models.GetSetting(s.DB, settingTurnstileSecretKey)
+
+	// Verify Turnstile challenge when configured.
+	if secretKey != "" {
+		token := r.FormValue("cf-turnstile-response")
+		remoteIP := r.RemoteAddr
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			remoteIP = strings.SplitN(fwd, ",", 2)[0]
+		}
+		ok, err := verifyTurnstile(secretKey, token, strings.TrimSpace(remoteIP))
+		if err != nil || !ok {
+			s.render(w, r, "login.html", map[string]any{
+				"Error":            "Security check failed. Please try again.",
+				"TurnstileSiteKey": siteKey,
+			})
+			return
+		}
+	}
+
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw := r.FormValue("password")
 	u, err := models.GetUserByEmail(s.DB, email)
 	if err != nil || !auth.CheckPassword(u.PasswordHash, pw) {
-		s.render(w, r, "login.html", map[string]any{"Error": "Invalid email or password"})
+		s.render(w, r, "login.html", map[string]any{
+			"Error":            "Invalid email or password",
+			"TurnstileSiteKey": siteKey,
+		})
 		return
 	}
 	if u.TOTPEnabled && u.TOTPSecret != "" {
@@ -423,7 +477,7 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	auth.SetSessionCookie(w, tok, exp)
+	auth.SetSessionCookie(w, r, tok, exp)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -431,7 +485,7 @@ func (s *Server) postLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(auth.SessionCookie); err == nil {
 		_ = auth.DeleteSession(s.DB, c.Value)
 	}
-	auth.ClearSessionCookie(w)
+	auth.ClearSessionCookie(w, r)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -480,7 +534,7 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	auth.SetSessionCookie(w, sessionTok, exp)
+	auth.SetSessionCookie(w, r, sessionTok, exp)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -4047,21 +4101,27 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	smtpConfigured := smtpHost != "" && smtpTo != ""
 
+	turnstileSiteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
+	turnstileSecretKey, _ := models.GetSetting(s.DB, settingTurnstileSecretKey)
+
 	success := r.URL.Query().Get("saved") == "1"
 	s.render(w, r, "settings.html", map[string]any{
-		"User":             s.currentUser(r),
-		"WebhookURL":       webhookURL,
-		"DaysBefore":       daysBefore,
-		"SMTPHost":         smtpHost,
-		"SMTPPort":         smtpPort,
-		"SMTPUsername":     smtpUsername,
-		"SMTPFrom":         smtpFrom,
-		"SMTPTo":           smtpTo,
-		"SMTPSecurity":     smtpSecurity,
-		"SMTPSkipVerify":   smtpSkipVerify == "1",
-		"SMTPConfigured":   smtpConfigured,
-		"Success":          success,
-		"Section":          "settings",
+		"User":                 s.currentUser(r),
+		"WebhookURL":           webhookURL,
+		"DaysBefore":           daysBefore,
+		"SMTPHost":             smtpHost,
+		"SMTPPort":             smtpPort,
+		"SMTPUsername":         smtpUsername,
+		"SMTPFrom":             smtpFrom,
+		"SMTPTo":               smtpTo,
+		"SMTPSecurity":         smtpSecurity,
+		"SMTPSkipVerify":       smtpSkipVerify == "1",
+		"SMTPConfigured":       smtpConfigured,
+		"TurnstileSiteKey":     turnstileSiteKey,
+		"TurnstileSecretKey":   turnstileSecretKey,
+		"TurnstileEnabled":     turnstileSiteKey != "" && turnstileSecretKey != "",
+		"Success":              success,
+		"Section":              "settings",
 	})
 }
 
@@ -4092,16 +4152,21 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		smtpSecurity = "starttls"
 	}
 
+	turnstileSiteKey := strings.TrimSpace(r.FormValue("turnstile_site_key"))
+	turnstileSecretKey := strings.TrimSpace(r.FormValue("turnstile_secret_key"))
+
 	kv := map[string]string{
-		settingNotifyWebhookURL: webhookURL,
-		settingNotifyDaysBefore: strconv.Itoa(daysBefore),
-		settingSMTPHost:         smtpHost,
-		settingSMTPPort:         smtpPort,
-		settingSMTPUsername:     smtpUsername,
-		settingSMTPFrom:         smtpFrom,
-		settingSMTPTo:           smtpTo,
-		settingSMTPSecurity:     smtpSecurity,
-		settingSMTPSkipVerify:   smtpSkipVerify,
+		settingNotifyWebhookURL:   webhookURL,
+		settingNotifyDaysBefore:   strconv.Itoa(daysBefore),
+		settingSMTPHost:           smtpHost,
+		settingSMTPPort:           smtpPort,
+		settingSMTPUsername:       smtpUsername,
+		settingSMTPFrom:           smtpFrom,
+		settingSMTPTo:             smtpTo,
+		settingSMTPSecurity:       smtpSecurity,
+		settingSMTPSkipVerify:     smtpSkipVerify,
+		settingTurnstileSiteKey:   turnstileSiteKey,
+		settingTurnstileSecretKey: turnstileSecretKey,
 	}
 	// Only overwrite password if a new one was supplied (blank = keep existing).
 	if smtpPassword != "" {
@@ -4127,13 +4192,19 @@ func (s *Server) postTestWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "No webhook URL configured", http.StatusBadRequest)
 		return
 	}
+	// Validate that webhookURL is a safe http/https URL before making the request.
+	parsedWebhook, parseErr := url.Parse(webhookURL)
+	if parseErr != nil || (parsedWebhook.Scheme != "http" && parsedWebhook.Scheme != "https") || parsedWebhook.Host == "" {
+		http.Error(w, "Invalid webhook URL — must begin with http:// or https://", http.StatusBadRequest)
+		return
+	}
 	payload := map[string]any{
 		"event":     "test",
 		"message":   "CaddyUI webhook test",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(webhookURL, "application/json", bytes.NewReader(body))
+	resp, err := http.Post(parsedWebhook.String(), "application/json", bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "Webhook POST failed: "+err.Error(), http.StatusBadGateway)
 		return

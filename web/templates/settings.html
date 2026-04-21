@@ -115,6 +115,33 @@
     </div>
   </div>
 
+  {{/* ── Cloudflare Turnstile ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="flex items-center gap-2 mb-0.5">
+        <div class="text-sm font-semibold text-ink-900">Cloudflare Turnstile</div>
+        {{if .TurnstileEnabled}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>active</span>
+        {{else}}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
+        {{end}}
+      </div>
+      <p class="text-xs text-ink-500">Adds a CAPTCHA challenge to the login page to block automated attacks. Get your keys at <a href="https://dash.cloudflare.com/?to=/:account/turnstile" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">dash.cloudflare.com → Turnstile</a>. Leave blank to disable.</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Site Key <span class="text-ink-400 font-normal text-xs">(public)</span></label>
+        <input name="turnstile_site_key" value="{{.TurnstileSiteKey}}" type="text" autocomplete="off" placeholder="0x4AAAAAAA…"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span></label>
+        <input name="turnstile_secret_key" value="{{.TurnstileSecretKey}}" type="password" autocomplete="new-password" placeholder="0x4AAAAAAA…"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+    </div>
+  </div>
+
   <div class="flex items-center gap-3">
     <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save settings</button>
   </div>
