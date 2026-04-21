@@ -254,6 +254,23 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+
+	// Cloudflare DNS columns on proxy_hosts (CF DNS integration).
+	for _, col := range []struct{ name, def string }{
+		{"cf_dns_record_id", "TEXT NOT NULL DEFAULT ''"},
+		{"cf_zone_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := columnExists(db, "proxy_hosts", col.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE proxy_hosts ADD COLUMN %s %s`, col.name, col.def)); err != nil {
+				return fmt.Errorf("add %s to proxy_hosts: %w", col.name, err)
+			}
+		}
+	}
+
 	return nil
 }
 

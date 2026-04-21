@@ -26,6 +26,7 @@ import (
 
 	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
+	"github.com/X4Applegate/caddyui/internal/cloudflare"
 	"github.com/X4Applegate/caddyui/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -183,6 +184,9 @@ func (s *Server) Routes() http.Handler {
 
 		// Update-check: fetches latest tag from Docker Hub (cached 1h).
 		r.Get("/api/version-check", s.apiVersionCheck)
+
+		// Cloudflare DNS: list zones accessible with the configured API token.
+		r.Get("/api/cf-zones", s.apiCFZones)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -387,6 +391,11 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 const (
 	settingTurnstileSiteKey   = "turnstile_site_key"
 	settingTurnstileSecretKey = "turnstile_secret_key"
+
+	// Cloudflare DNS integration.
+	settingCFAPIToken = "cf_api_token"
+	settingCFServerIP = "cf_server_ip"
+	settingCFProxied  = "cf_proxied"
 )
 
 // verifyTurnstile calls the Cloudflare Turnstile siteverify endpoint.
@@ -1003,11 +1012,14 @@ type certView struct {
 
 func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
+	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
 	s.render(w, r, "proxy_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
+		"CFEnabled":    cfToken != "" && cfServerIP != "",
 		"Section":      "proxy",
 	})
 }
@@ -1019,6 +1031,11 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		return nil, err
 	}
 	certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
+	// Only capture CF zone if the "manage DNS" checkbox is checked.
+	cfZoneID := ""
+	if r.FormValue("cf_manage") == "on" {
+		cfZoneID = strings.TrimSpace(r.FormValue("cf_zone_id"))
+	}
 	return &models.ProxyHost{
 		Domains:             strings.TrimSpace(r.FormValue("domains")),
 		ForwardScheme:       r.FormValue("forward_scheme"),
@@ -1033,6 +1050,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		Enabled:             r.FormValue("enabled") == "on",
 		CertificateID:       certID,
 		AccessList:          strings.TrimSpace(r.FormValue("access_list")),
+		CFZoneID:            cfZoneID,
 	}, nil
 }
 
@@ -1077,6 +1095,10 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Cloudflare DNS: create A record if a zone was selected.
+	if p.CFZoneID != "" {
+		s.cfCreateDNSRecord(id, p)
+	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.syncCaddy(s.currentServerID(r), p.CertificateID != 0)
 	if len(deployTo) > 0 {
@@ -1101,11 +1123,14 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
+	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
 	s.render(w, r, "proxy_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
+		"CFEnabled":    cfToken != "" && cfServerIP != "",
 		"Section":      "proxy",
 	})
 }
@@ -1154,9 +1179,36 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
 	deployTo := parseDeployTo(r)
 	old, _ := models.GetProxyHost(s.DB, id)
+
+	// Cloudflare DNS: lifecycle management.
+	// Determine if the primary domain changed (we only track the first domain).
+	oldDomain := ""
+	if old != nil {
+		oldDomain = strings.TrimSpace(strings.SplitN(old.Domains, ",", 2)[0])
+	}
+	newDomain := strings.TrimSpace(strings.SplitN(p.Domains, ",", 2)[0])
+	cfZoneChanged := old != nil && old.CFZoneID != p.CFZoneID
+	cfDomainChanged := oldDomain != newDomain
+	needDeleteOld := old != nil && old.CFDNSRecordID != "" && (p.CFZoneID == "" || cfZoneChanged || cfDomainChanged)
+	if needDeleteOld {
+		if cf := s.cfClient(); cf != nil {
+			if err := cf.DeleteRecord(old.CFZoneID, old.CFDNSRecordID); err != nil {
+				log.Printf("CF DNS: delete old record %s: %v", old.CFDNSRecordID, err)
+			}
+		}
+		p.CFDNSRecordID = ""
+	} else if old != nil {
+		p.CFDNSRecordID = old.CFDNSRecordID // preserve unchanged record ID
+	}
+	needCreateNew := p.CFZoneID != "" && (p.CFDNSRecordID == "" || cfDomainChanged || cfZoneChanged)
+
 	if err := models.UpdateProxyHost(s.DB, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Create new CF record after successful DB save.
+	if needCreateNew {
+		s.cfCreateDNSRecord(p.ID, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
@@ -1176,6 +1228,14 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		if old == nil || !old.OwnerID.Valid || old.OwnerID.Int64 != cu.ID {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
+		}
+	}
+	// Cloudflare DNS: delete managed record before removing host.
+	if old != nil && old.CFDNSRecordID != "" {
+		if cf := s.cfClient(); cf != nil {
+			if err := cf.DeleteRecord(old.CFZoneID, old.CFDNSRecordID); err != nil {
+				log.Printf("CF DNS: delete record %s on host delete: %v", old.CFDNSRecordID, err)
+			}
 		}
 	}
 	if err := models.DeleteProxyHost(s.DB, id); err != nil {
@@ -4009,6 +4069,67 @@ func fetchLatestDockerTag(namespace, image string) (string, error) {
 	return best, nil
 }
 
+// --- Cloudflare DNS helpers ---
+
+// cfClient builds a Cloudflare API client from the configured API token.
+// Returns nil if no token is stored.
+func (s *Server) cfClient() *cloudflare.Client {
+	token, _ := models.GetSetting(s.DB, settingCFAPIToken)
+	if token == "" {
+		return nil
+	}
+	return cloudflare.New(token)
+}
+
+// cfCreateDNSRecord creates an A record in Cloudflare for the first domain of
+// the proxy host and stores the resulting record ID in the database.
+func (s *Server) cfCreateDNSRecord(hostID int64, p *models.ProxyHost) {
+	cf := s.cfClient()
+	if cf == nil {
+		return
+	}
+	serverIP, _ := models.GetSetting(s.DB, settingCFServerIP)
+	if serverIP == "" {
+		log.Printf("CF DNS: server IP not configured — skipping record creation for host %d", hostID)
+		return
+	}
+	proxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
+	proxied := proxiedStr == "1"
+	domain := strings.SplitN(p.Domains, ",", 2)[0]
+	domain = strings.TrimSpace(domain)
+	if domain == "" || p.CFZoneID == "" {
+		return
+	}
+	rec, err := cf.CreateRecord(p.CFZoneID, "A", domain, serverIP, proxied, 1)
+	if err != nil {
+		log.Printf("CF DNS: create record for %s: %v", domain, err)
+		return
+	}
+	if err := models.UpdateProxyHostCFRecord(s.DB, hostID, rec.ID, p.CFZoneID); err != nil {
+		log.Printf("CF DNS: store record ID for host %d: %v", hostID, err)
+	}
+}
+
+// apiCFZones returns the list of Cloudflare zones accessible with the configured
+// API token as a JSON array. Used by the proxy-host form to populate the zone picker.
+func (s *Server) apiCFZones(w http.ResponseWriter, r *http.Request) {
+	cf := s.cfClient()
+	w.Header().Set("Content-Type", "application/json")
+	if cf == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Cloudflare API token not configured in Settings"})
+		return
+	}
+	zones, err := cf.ListZones()
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(zones)
+}
+
+
 // semverValid returns true for tags like v1.2.3.
 func semverValid(v string) bool {
 	if len(v) < 6 || v[0] != 'v' {
@@ -4104,6 +4225,10 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
 	turnstileSecretKey, _ := models.GetSetting(s.DB, settingTurnstileSecretKey)
 
+	cfAPIToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
+	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
+	cfProxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
+
 	success := r.URL.Query().Get("saved") == "1"
 	s.render(w, r, "settings.html", map[string]any{
 		"User":                 s.currentUser(r),
@@ -4120,6 +4245,10 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"TurnstileSiteKey":     turnstileSiteKey,
 		"TurnstileSecretKey":   turnstileSecretKey,
 		"TurnstileEnabled":     turnstileSiteKey != "" && turnstileSecretKey != "",
+		"CFAPITokenSet":        cfAPIToken != "",
+		"CFServerIP":           cfServerIP,
+		"CFProxied":            cfProxiedStr == "1",
+		"CFDNSEnabled":         cfAPIToken != "" && cfServerIP != "",
 		"Success":              success,
 		"Section":              "settings",
 	})
@@ -4155,6 +4284,13 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey := strings.TrimSpace(r.FormValue("turnstile_site_key"))
 	turnstileSecretKey := strings.TrimSpace(r.FormValue("turnstile_secret_key"))
 
+	cfAPIToken := strings.TrimSpace(r.FormValue("cf_api_token"))
+	cfServerIP := strings.TrimSpace(r.FormValue("cf_server_ip"))
+	cfProxied := "0"
+	if r.FormValue("cf_proxied") == "1" {
+		cfProxied = "1"
+	}
+
 	kv := map[string]string{
 		settingNotifyWebhookURL:   webhookURL,
 		settingNotifyDaysBefore:   strconv.Itoa(daysBefore),
@@ -4167,6 +4303,12 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingSMTPSkipVerify:     smtpSkipVerify,
 		settingTurnstileSiteKey:   turnstileSiteKey,
 		settingTurnstileSecretKey: turnstileSecretKey,
+		settingCFServerIP:         cfServerIP,
+		settingCFProxied:          cfProxied,
+	}
+	// Only overwrite API token if a new one was supplied (blank = keep existing).
+	if cfAPIToken != "" {
+		kv[settingCFAPIToken] = cfAPIToken
 	}
 	// Only overwrite password if a new one was supplied (blank = keep existing).
 	if smtpPassword != "" {

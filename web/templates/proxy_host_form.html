@@ -127,6 +127,36 @@
     </div>
   </div>
 
+  {{/* ── Cloudflare DNS ── */}}
+  {{if .CFEnabled}}
+  <div class="pt-4 border-t border-ink-100">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-1.5">
+        <svg viewBox="0 0 32 20" fill="none" class="w-6 h-4 text-orange-400" aria-hidden="true">
+          <path d="M22.1 8.6c-.2-.8-.8-1.4-1.6-1.6C19.9 4.1 17.2 2 14 2c-2.6 0-4.9 1.3-6.3 3.3-.4-.1-.9-.2-1.3-.2C4 5.1 2 7.1 2 9.5c0 .2 0 .4.1.6H2C.9 10.1 0 11 0 12.1s.9 2 2 2h20c1.1 0 2-.9 2-2 0-1-.7-1.8-1.6-1.9.1-.3.1-.7-.3-1.6z" fill="currentColor"/>
+        </svg>
+        <span class="text-xs uppercase tracking-wider text-ink-500 font-medium">Cloudflare DNS</span>
+      </div>
+      <label class="flex items-center gap-2 text-sm text-ink-700 cursor-pointer">
+        <input type="checkbox" id="cf-toggle" name="cf_manage" {{if .Host.CFDNSRecordID}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        Manage DNS record
+      </label>
+    </div>
+    <div id="cf-section" class="{{if not .Host.CFDNSRecordID}}hidden{{end}} space-y-3">
+      <p class="text-xs text-ink-400">CaddyUI will create an A record for the first domain in the selected Cloudflare zone when you save, and remove it when you delete this host.</p>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Zone</label>
+        <select id="cf-zone-select" name="cf_zone_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="">Loading zones…</option>
+        </select>
+      </div>
+      {{if .Host.CFDNSRecordID}}
+      <p class="text-xs text-green-600">✓ DNS record active &mdash; record ID: <span class="font-mono">{{.Host.CFDNSRecordID}}</span></p>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
   {{if .OtherServers}}
   <div class="pt-4 border-t border-ink-100">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
@@ -173,6 +203,45 @@
       row.querySelector('input[name="basicauth_user"]').focus();
     });
   }
+
+  // Cloudflare DNS zone picker.
+  (function() {
+    var cfToggle = document.getElementById('cf-toggle');
+    var cfSection = document.getElementById('cf-section');
+    var cfZoneSelect = document.getElementById('cf-zone-select');
+    if (!cfToggle || !cfSection || !cfZoneSelect) return;
+    var cfCurrentZone = '{{.Host.CFZoneID}}';
+    var cfLoaded = false;
+    function loadZones() {
+      if (cfLoaded) return;
+      cfLoaded = true;
+      fetch('/api/cf-zones')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) {
+            cfZoneSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+            return;
+          }
+          if (!data || data.length === 0) {
+            cfZoneSelect.innerHTML = '<option value="">No zones found</option>';
+            return;
+          }
+          cfZoneSelect.innerHTML = data.map(function(z) {
+            var sel = (z.id === cfCurrentZone) ? ' selected' : '';
+            return '<option value="' + z.id + '"' + sel + '>' + z.name + ' (' + z.id + ')</option>';
+          }).join('');
+          if (!cfCurrentZone) cfZoneSelect.selectedIndex = 0;
+        })
+        .catch(function(e) {
+          cfZoneSelect.innerHTML = '<option value="">Failed to load zones: ' + e.message + '</option>';
+        });
+    }
+    cfToggle.addEventListener('change', function() {
+      cfSection.classList.toggle('hidden', !this.checked);
+      if (this.checked) loadZones();
+    });
+    if (cfToggle.checked) loadZones();
+  })();
 
   // Feature D: extra upstreams dynamic rows.
   var euAdd = document.getElementById('eu-add');
