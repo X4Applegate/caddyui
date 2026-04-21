@@ -1,27 +1,45 @@
 FROM golang:1.24-alpine AS build
-WORKDIR /src
 
+# Install ca-certificates and tzdata in the build stage so they can be
+# copied into the scratch final image. Create a dedicated non-root user.
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S -g 10001 caddyui && \
+    adduser  -S -G caddyui -u 10001 caddyui
+
+WORKDIR /src
 COPY . .
 ARG VERSION=dev
-RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/caddyui ./cmd/caddyui
+RUN go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -ldflags="-s -w -X main.Version=${VERSION}" \
+      -o /out/caddyui ./cmd/caddyui
 
-FROM alpine:3.22
-# Upgrade all packages to pick up latest security patches, then add only
-# what we need. ca-certificates is required for outbound HTTPS (Turnstile,
-# webhook, Docker Hub update checks). tzdata is needed for time-zone support.
-RUN apk upgrade --no-cache && \
-    apk add --no-cache ca-certificates tzdata
+# Pre-create the data directory with the correct ownership so the volume
+# initialises correctly when Docker creates it on first run.
+RUN mkdir -p /out/data && chown 10001:10001 /out/data
 
-# Run as a non-root user for better security posture.
-RUN addgroup -S caddyui && adduser -S -G caddyui caddyui
+# ── Final stage: scratch ──────────────────────────────────────────────────
+# scratch has no shell, no package manager, and no OS packages, so there
+# are zero OS-level CVEs in the final image.
+FROM scratch
 
-WORKDIR /app
+# HTTPS trust roots (needed for Turnstile verification, webhooks, update checks)
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Timezone database (needed for correct time formatting in logs and schedules)
+COPY --from=build /usr/share/zoneinfo /usr/share/zoneinfo
+
+# User/group files so USER directive and the app can resolve the username
+COPY --from=build /etc/passwd /etc/passwd
+COPY --from=build /etc/group  /etc/group
+
+# Application binary
 COPY --from=build /out/caddyui /app/caddyui
 
-# Create the data directory and make it owned by the app user.
-RUN mkdir -p /data && chown -R caddyui:caddyui /data /app
+# Pre-created data directory (owned by caddyui uid 10001)
+COPY --from=build --chown=10001:10001 /out/data /data
 
-USER caddyui
+USER 10001
 
 EXPOSE 8080
 ENV CADDYUI_DB=/data/caddyui.db \
