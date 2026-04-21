@@ -24,7 +24,7 @@
 </div>
 
 {{/* ── Mobile card list ── */}}
-<div class="md:hidden space-y-2" id="proxy-cards">
+<div class="lg:hidden space-y-2" id="proxy-cards">
   {{range .Hosts}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-4" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}">
     <div class="flex items-start justify-between gap-2 mb-2">
@@ -108,7 +108,7 @@
 </div>
 
 {{/* ── Desktop table ── */}}
-<div class="hidden md:block bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden">
+<div class="hidden lg:block bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden">
   <table class="w-full text-sm" id="proxy-table">
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
