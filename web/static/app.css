@@ -75,6 +75,9 @@ html.dark textarea::placeholder { color: #64748b !important; }
 
 /* Tables */
 html.dark table { color: #e2e8f0; }
+html.dark .hover\:bg-brand-50\/30:hover { background-color: rgba(59,130,246,0.08) !important; }
+html.dark .bg-purple-50\/40 { background-color: rgba(76,29,149,0.1) !important; }
+html.dark .hover\:bg-purple-50\/70:hover { background-color: rgba(76,29,149,0.2) !important; }
 html.dark .hover\:bg-purple-50\/60:hover { background-color: rgba(76,29,149,0.15) !important; }
 html.dark .bg-purple-50\/30 { background-color: rgba(76,29,149,0.08) !important; }
 
