@@ -78,17 +78,18 @@ html.dark table { color: #e2e8f0; }
 html.dark .hover\:bg-purple-50\/60:hover { background-color: rgba(76,29,149,0.15) !important; }
 html.dark .bg-purple-50\/30 { background-color: rgba(76,29,149,0.08) !important; }
 
-/* Brand colour family — dark mode uses sky-blue for better contrast */
-html.dark .bg-brand-50 { background-color: rgba(14,165,233,0.12) !important; }
-html.dark .bg-brand-100 { background-color: rgba(14,165,233,0.2) !important; }
-html.dark .text-brand-700 { color: #38bdf8 !important; }
-html.dark .text-brand-600 { color: #38bdf8 !important; }
-html.dark .hover\:text-brand-700:hover { color: #7dd3fc !important; }
-html.dark .hover\:text-brand-600:hover { color: #7dd3fc !important; }
-html.dark .hover\:text-brand-800:hover { color: #bae6fd !important; }
-html.dark .hover\:bg-brand-100:hover { background-color: rgba(14,165,233,0.2) !important; }
-html.dark .border-brand-200 { border-color: rgba(14,165,233,0.3) !important; }
-html.dark .text-brand-800 { color: #bae6fd !important; }
+/* Brand colour family — blue palette, dark mode uses blue-400/300 for contrast */
+html.dark .bg-brand-50 { background-color: rgba(59,130,246,0.12) !important; }
+html.dark .bg-brand-100 { background-color: rgba(59,130,246,0.2) !important; }
+html.dark .text-brand-700 { color: #60a5fa !important; }
+html.dark .text-brand-600 { color: #60a5fa !important; }
+html.dark .hover\:text-brand-700:hover { color: #93c5fd !important; }
+html.dark .hover\:text-brand-600:hover { color: #93c5fd !important; }
+html.dark .hover\:text-brand-800:hover { color: #bfdbfe !important; }
+html.dark .hover\:bg-brand-100:hover { background-color: rgba(59,130,246,0.2) !important; }
+html.dark .border-brand-200 { border-color: rgba(59,130,246,0.3) !important; }
+html.dark .hover\:border-brand-300:hover { border-color: rgba(59,130,246,0.5) !important; }
+html.dark .text-brand-800 { color: #93c5fd !important; }
 
 /* Red (error/delete) colour family */
 html.dark .bg-red-50 { background-color: rgba(239,68,68,0.1) !important; }
@@ -118,8 +119,8 @@ html.dark .text-purple-700 { color: #c4b5fd !important; }
 
 /* Misc */
 html.dark .shadow-card { box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.4) !important; }
-html.dark .has-\[\:checked\]\:bg-brand-50\/50:has(:checked) { background-color: rgba(14,165,233,0.1) !important; }
-html.dark .has-\[\:checked\]\:border-brand-500:has(:checked) { border-color: #0ea5e9 !important; }
+html.dark .has-\[\:checked\]\:bg-brand-50\/50:has(:checked) { background-color: rgba(59,130,246,0.1) !important; }
+html.dark .has-\[\:checked\]\:border-brand-500:has(:checked) { border-color: #3b82f6 !important; }
 html.dark pre { background-color: #0f172a !important; border-color: #334155 !important; }
 html.dark code { background-color: #263347 !important; color: #e2e8f0 !important; }
 html.dark .bg-ink-900 { background-color: #020617 !important; }
