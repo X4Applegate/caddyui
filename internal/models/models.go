@@ -443,6 +443,30 @@ func UpdateProxyHostCFRecord(db *sql.DB, id int64, recordID, zoneID string) erro
 	return err
 }
 
+// ListProxyHostsWithCFRecords returns a lightweight slice of all proxy hosts
+// that have an active Cloudflare-managed DNS record. Only the fields needed
+// for CF record lifecycle management are populated.
+func ListProxyHostsWithCFRecords(db *sql.DB) ([]ProxyHost, error) {
+	rows, err := db.Query(`
+		SELECT id, domains, cf_dns_record_id, cf_zone_id
+		FROM proxy_hosts
+		WHERE cf_dns_record_id != '' AND cf_zone_id != ''
+		ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProxyHost
+	for rows.Next() {
+		var p ProxyHost
+		if err := rows.Scan(&p.ID, &p.Domains, &p.CFDNSRecordID, &p.CFZoneID); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ToggleProxyHost flips the enabled flag on a proxy host and returns the new state.
 func ToggleProxyHost(db *sql.DB, id int64) (bool, error) {
 	if _, err := db.Exec(`UPDATE proxy_hosts SET enabled = 1 - enabled, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
