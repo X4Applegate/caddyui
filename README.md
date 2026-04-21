@@ -134,7 +134,7 @@ Add additional Caddy instances under **System → Caddy Servers**. Switch the ac
 ## Building from Source
 
 ```bash
-git clone https://github.com/applegater/caddyui.git
+git clone https://github.com/X4Applegate/caddyui.git
 cd caddyui
 go build -o caddyui ./cmd/caddyui
 ./caddyui

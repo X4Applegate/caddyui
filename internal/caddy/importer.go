@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/applegater/caddyui/internal/models"
+	"github.com/X4Applegate/caddyui/internal/models"
 )
 
 type ImportResult struct {

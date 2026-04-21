@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/applegater/caddyui/internal/caddy"
-	"github.com/applegater/caddyui/internal/db"
-	"github.com/applegater/caddyui/internal/server"
-	"github.com/applegater/caddyui/web"
+	"github.com/X4Applegate/caddyui/internal/caddy"
+	"github.com/X4Applegate/caddyui/internal/db"
+	"github.com/X4Applegate/caddyui/internal/server"
+	"github.com/X4Applegate/caddyui/web"
 )
 
 func main() {

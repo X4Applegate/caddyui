@@ -32,7 +32,7 @@ Thank you for your interest in contributing! This document explains how to get i
 ### Run Locally
 
 ```bash
-git clone https://github.com/applegater/caddyui.git
+git clone https://github.com/X4Applegate/caddyui.git
 cd caddyui
 
 # Start a local Caddy for testing

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/applegater/caddyui/internal/models"
+	"github.com/X4Applegate/caddyui/internal/models"
 	"golang.org/x/crypto/bcrypt"
 )
 

@@ -1,4 +1,4 @@
-module github.com/applegater/caddyui
+module github.com/X4Applegate/caddyui
 
 go 1.22
 

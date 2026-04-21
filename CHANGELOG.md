@@ -95,13 +95,13 @@ First stable release. Combines all features developed during the v0.x series.
 
 ---
 
-[1.0.0]: https://github.com/applegater/caddyui/releases/tag/v1.0.0
-[0.0.20]: https://github.com/applegater/caddyui/releases/tag/v0.0.20
-[0.0.19]: https://github.com/applegater/caddyui/releases/tag/v0.0.19
-[0.0.18]: https://github.com/applegater/caddyui/releases/tag/v0.0.18
-[0.0.17]: https://github.com/applegater/caddyui/releases/tag/v0.0.17
-[0.0.16]: https://github.com/applegater/caddyui/releases/tag/v0.0.16
-[0.0.15]: https://github.com/applegater/caddyui/releases/tag/v0.0.15
-[0.0.14]: https://github.com/applegater/caddyui/releases/tag/v0.0.14
-[0.0.13]: https://github.com/applegater/caddyui/releases/tag/v0.0.13
-[0.0.12]: https://github.com/applegater/caddyui/releases/tag/v0.0.12
+[1.0.0]: https://github.com/X4Applegate/caddyui/releases/tag/v1.0.0
+[0.0.20]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.20
+[0.0.19]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.19
+[0.0.18]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.18
+[0.0.17]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.17
+[0.0.16]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.16
+[0.0.15]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.15
+[0.0.14]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.14
+[0.0.13]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.13
+[0.0.12]: https://github.com/X4Applegate/caddyui/releases/tag/v0.0.12

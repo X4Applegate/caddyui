@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/applegater/caddyui/internal/models"
+	"github.com/X4Applegate/caddyui/internal/models"
 )
 
 type Client struct {

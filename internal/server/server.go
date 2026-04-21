@@ -23,9 +23,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/applegater/caddyui/internal/auth"
-	"github.com/applegater/caddyui/internal/caddy"
-	"github.com/applegater/caddyui/internal/models"
+	"github.com/X4Applegate/caddyui/internal/auth"
+	"github.com/X4Applegate/caddyui/internal/caddy"
+	"github.com/X4Applegate/caddyui/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	totplib "github.com/pquerna/otp/totp"
