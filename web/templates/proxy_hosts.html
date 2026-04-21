@@ -55,6 +55,7 @@
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">no SSL</span>
         {{end}}
         {{if .BasicAuthEnabled}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-50 text-purple-700">auth</span>{{end}}
+        {{if .CFDNSRecordID}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-700" title="DNS managed by Cloudflare"><svg class="w-2.5 h-2.5" viewBox="0 0 32 20" fill="currentColor"><path d="M22.1 8.6c-.2-.8-.8-1.4-1.6-1.6C19.9 4.1 17.2 2 14 2c-2.6 0-4.9 1.3-6.3 3.3-.4-.1-.9-.2-1.3-.2C4 5.1 2 7.1 2 9.5c0 .2 0 .4.1.6H2C.9 10.1 0 11 0 12.1s.9 2 2 2h20c1.1 0 2-.9 2-2 0-1-.7-1.8-1.6-1.9.1-.3.1-.7-.3-1.6z"/></svg>CF DNS</span>{{end}}
         {{if eq $.User.Role "admin"}}
           {{if .OwnerEmail}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-600">{{.OwnerEmail}}</span>{{else}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-400">global</span>{{end}}
         {{end}}
@@ -126,6 +127,7 @@
           <div class="flex flex-wrap gap-1">
             {{range splitDomains .Domains}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>{{end}}
           </div>
+          {{if .CFDNSRecordID}}<span class="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-xs font-medium bg-orange-50 text-orange-600" title="DNS A record managed by Cloudflare (record: {{.CFDNSRecordID}})"><svg class="w-2.5 h-2.5 shrink-0" viewBox="0 0 32 20" fill="currentColor"><path d="M22.1 8.6c-.2-.8-.8-1.4-1.6-1.6C19.9 4.1 17.2 2 14 2c-2.6 0-4.9 1.3-6.3 3.3-.4-.1-.9-.2-1.3-.2C4 5.1 2 7.1 2 9.5c0 .2 0 .4.1.6H2C.9 10.1 0 11 0 12.1s.9 2 2 2h20c1.1 0 2-.9 2-2 0-1-.7-1.8-1.6-1.9.1-.3.1-.7-.3-1.6z"/></svg>CF DNS</span>{{end}}
         </td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">
           <span class="inline-flex items-center gap-1.5">

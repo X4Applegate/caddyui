@@ -56,6 +56,8 @@ type ProxyHost struct {
 	ExtraUpstreams      string // JSON: []string of "host:port" entries
 	OwnerID             sql.NullInt64
 	OwnerEmail          string // populated via JOIN for display
+	CFDNSRecordID       string // Cloudflare DNS record ID (empty = not managed)
+	CFZoneID            string // Cloudflare zone ID the record lives in
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -259,7 +261,8 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
                COALESCE(ph.certificate_id, 0), ph.created_at, ph.updated_at,
                ph.basicauth_enabled, COALESCE(ph.basicauth_users, '[]'),
                COALESCE(ph.access_list, ''), COALESCE(ph.extra_upstreams, '[]'),
-               COALESCE(ph.owner_id, 0), COALESCE(u.email, '')
+               COALESCE(ph.owner_id, 0), COALESCE(u.email, ''),
+               COALESCE(ph.cf_dns_record_id,''), COALESCE(ph.cf_zone_id,'')
         FROM proxy_hosts ph
         LEFT JOIN users u ON u.id = ph.owner_id
         WHERE ph.server_id = ? ORDER BY ph.id DESC`, serverID)
@@ -271,7 +274,8 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
                COALESCE(ph.certificate_id, 0), ph.created_at, ph.updated_at,
                ph.basicauth_enabled, COALESCE(ph.basicauth_users, '[]'),
                COALESCE(ph.access_list, ''), COALESCE(ph.extra_upstreams, '[]'),
-               COALESCE(ph.owner_id, 0), COALESCE(u.email, '')
+               COALESCE(ph.owner_id, 0), COALESCE(u.email, ''),
+               COALESCE(ph.cf_dns_record_id,''), COALESCE(ph.cf_zone_id,'')
         FROM proxy_hosts ph
         LEFT JOIN users u ON u.id = ph.owner_id
         WHERE ph.server_id = ? AND ph.owner_id = ? ORDER BY ph.id DESC`, serverID, viewerID)
@@ -293,6 +297,7 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
 			&bae, &p.BasicAuthUsers,
 			&p.AccessList, &p.ExtraUpstreams,
 			&ownerID, &p.OwnerEmail,
+			&p.CFDNSRecordID, &p.CFZoneID,
 		); err != nil {
 			return nil, err
 		}
@@ -322,7 +327,8 @@ func GetProxyHost(db *sql.DB, id int64) (*ProxyHost, error) {
                COALESCE(certificate_id, 0), created_at, updated_at,
                basicauth_enabled, COALESCE(basicauth_users, '[]'),
                COALESCE(access_list, ''), COALESCE(extra_upstreams, '[]'),
-               COALESCE(owner_id, 0)
+               COALESCE(owner_id, 0),
+               COALESCE(cf_dns_record_id,''), COALESCE(cf_zone_id,'')
         FROM proxy_hosts WHERE id = ?`, id).Scan(
 		&p.ID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
@@ -330,6 +336,7 @@ func GetProxyHost(db *sql.DB, id int64) (*ProxyHost, error) {
 		&bae, &p.BasicAuthUsers,
 		&p.AccessList, &p.ExtraUpstreams,
 		&ownerID,
+		&p.CFDNSRecordID, &p.CFZoneID,
 	)
 	if err != nil {
 		return nil, err
@@ -377,8 +384,9 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
         INSERT INTO proxy_hosts (server_id, domains, forward_scheme, forward_host, forward_port,
             websocket_support, block_common_exploits, ssl_enabled, ssl_forced,
             http2_support, advanced_config, enabled, certificate_id,
-            basicauth_enabled, basicauth_users, access_list, extra_upstreams, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            basicauth_enabled, basicauth_users, access_list, extra_upstreams, owner_id,
+            cf_dns_record_id, cf_zone_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -387,6 +395,7 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		boolInt(p.BasicAuthEnabled), p.BasicAuthUsers,
 		p.AccessList, p.ExtraUpstreams,
 		nilIfZero(ownerID),
+		p.CFDNSRecordID, p.CFZoneID,
 	)
 	if err != nil {
 		return 0, err
@@ -410,6 +419,7 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             http2_support=?, advanced_config=?, enabled=?, certificate_id=?,
             basicauth_enabled=?, basicauth_users=?,
             access_list=?, extra_upstreams=?,
+            cf_dns_record_id=?, cf_zone_id=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -417,8 +427,19 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		boolInt(p.SSLEnabled), boolInt(p.SSLForced), boolInt(p.HTTP2Support),
 		p.AdvancedConfig, boolInt(p.Enabled), nilIfZero(p.CertificateID),
 		boolInt(p.BasicAuthEnabled), p.BasicAuthUsers,
-		p.AccessList, p.ExtraUpstreams, p.ID,
+		p.AccessList, p.ExtraUpstreams,
+		p.CFDNSRecordID, p.CFZoneID,
+		p.ID,
 	)
+	return err
+}
+
+// UpdateProxyHostCFRecord stores the Cloudflare DNS record ID and zone ID after
+// a record is created or cleared. Used after host creation/update to persist the
+// record ID returned by the Cloudflare API without re-running the full update.
+func UpdateProxyHostCFRecord(db *sql.DB, id int64, recordID, zoneID string) error {
+	_, err := db.Exec(`UPDATE proxy_hosts SET cf_dns_record_id=?, cf_zone_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		recordID, zoneID, id)
 	return err
 }
 
