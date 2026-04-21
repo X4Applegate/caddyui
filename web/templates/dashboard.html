@@ -149,7 +149,7 @@
   <a href="/proxy-hosts/{{.ID}}/edit" class="block bg-white border border-ink-200 rounded-xl shadow-card p-4 hover:border-brand-300 transition">
     <div class="flex items-start justify-between gap-2 mb-1">
       <div class="flex flex-wrap gap-1 min-w-0">
-        {{range splitDomains .Domains}}<span class="font-mono text-sm font-medium text-brand-700 break-all">{{.}}</span>{{end}}
+        {{range splitDomains .Domains}}<span class="domain-pill break-all">{{.}}</span>{{end}}
       </div>
       {{if .Enabled}}
         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>on</span>
@@ -182,7 +182,7 @@
       <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
         <td class="px-5 py-3">
           <div class="flex flex-wrap gap-1">
-            {{range splitDomains .Domains}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="font-mono text-xs text-brand-700 hover:text-brand-800 hover:underline">{{.}}</a>{{end}}
+            {{range splitDomains .Domains}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>{{end}}
           </div>
         </td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</td>

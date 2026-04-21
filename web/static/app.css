@@ -33,6 +33,30 @@ details > summary::before {
 }
 details[open] > summary::before { transform: rotate(90deg); }
 
+/* Domain name pills — used on all list tables */
+.domain-pill {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.375rem;
+  background-color: #eff6ff;
+  color: #1d4ed8;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.domain-pill:hover { background-color: #dbeafe; text-decoration: underline; }
+
+html.dark .domain-pill {
+  background-color: #1e3a5f !important;
+  color: #bfdbfe !important;
+}
+html.dark .domain-pill:hover {
+  background-color: #1e4080 !important;
+  color: #ffffff !important;
+}
+
 /* ── Dark mode overrides ── */
 html.dark { color-scheme: dark; }
 html.dark body { background-color: #0f172a; color: #e2e8f0; }
