@@ -18,6 +18,14 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 |-----------------|--------------|
 | ![Edit Proxy Host](docs/screenshots/edit-proxy-host.png) | ![Certificates](docs/screenshots/certificates.png) |
 
+| Caddy Servers | Snapshots |
+|---------------|-----------|
+| ![Caddy Servers](docs/screenshots/caddy-servers.png) | ![Snapshots](docs/screenshots/snapshots.png) |
+
+| User Management | Settings & Notifications |
+|-----------------|--------------------------|
+| ![New User](docs/screenshots/new-user.png) | ![Settings](docs/screenshots/settings.png) |
+
 ---
 
 ## Features
