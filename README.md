@@ -8,6 +8,18 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 
 ---
 
+## Screenshots
+
+| Dashboard | Proxy Hosts |
+|-----------|-------------|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Proxy Hosts](docs/screenshots/proxy-hosts.png) |
+
+| Edit Proxy Host | Certificates |
+|-----------------|--------------|
+| ![Edit Proxy Host](docs/screenshots/edit-proxy-host.png) | ![Certificates](docs/screenshots/certificates.png) |
+
+---
+
 ## Features
 
 - **Proxy Hosts** — point domains at upstream services with one-click TLS via Caddy's automatic HTTPS
