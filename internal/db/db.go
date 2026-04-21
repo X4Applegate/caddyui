@@ -120,10 +120,16 @@ CREATE TABLE IF NOT EXISTS caddy_servers (
 `
 
 func Open(path string) (*sql.DB, error) {
-	conn, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)"
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	// SQLite only supports one writer at a time. Limiting the pool to a single
+	// connection prevents SQLITE_BUSY errors from concurrent goroutines within
+	// the same process. The busy_timeout above handles contention from external
+	// processes (e.g. a brief overlap during container restart).
+	conn.SetMaxOpenConns(1)
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
