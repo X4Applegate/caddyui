@@ -61,7 +61,7 @@ if ('serviceWorker' in navigator) {
 }
 </script>
   {{if .User}}
-  <header class="md:hidden sticky top-0 z-20 flex items-center justify-between bg-white border-b border-ink-200 px-4 py-3">
+  <header class="lg:hidden sticky top-0 z-20 flex items-center justify-between bg-white border-b border-ink-200 px-4 py-3">
     <a href="/" class="flex items-center gap-2 min-w-0">
       <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-500 shadow-card shrink-0">
         <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
@@ -79,9 +79,9 @@ if ('serviceWorker' in navigator) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
   </header>
-  <div id="sidebar-scrim" class="hidden md:hidden fixed inset-0 z-20 bg-ink-900/40" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');this.classList.add('hidden');"></div>
-  <div class="flex min-h-screen md:h-screen md:overflow-hidden">
-    <aside id="sidebar" class="fixed md:static inset-y-0 left-0 z-30 w-60 shrink-0 bg-white border-r border-ink-200 flex flex-col transform -translate-x-full md:translate-x-0 transition-transform">
+  <div id="sidebar-scrim" class="hidden lg:hidden fixed inset-0 z-20 bg-ink-900/40" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');this.classList.add('hidden');"></div>
+  <div class="flex min-h-screen lg:h-screen lg:overflow-hidden">
+    <aside id="sidebar" class="fixed lg:static inset-y-0 left-0 z-30 w-60 shrink-0 bg-white border-r border-ink-200 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform">
       <div class="px-5 py-5 border-b border-ink-200 flex items-center justify-between">
         <a href="/" class="flex items-center gap-2.5">
           <span class="relative inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-500 shadow-card">
@@ -89,7 +89,7 @@ if ('serviceWorker' in navigator) {
           </span>
           <span class="text-base font-semibold tracking-tight text-ink-900">CaddyUI</span>
         </a>
-        <button type="button" aria-label="Close navigation" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');document.getElementById('sidebar-scrim').classList.add('hidden');" class="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-500 hover:bg-ink-100 transition">
+        <button type="button" aria-label="Close navigation" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');document.getElementById('sidebar-scrim').classList.add('hidden');" class="lg:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-500 hover:bg-ink-100 transition">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
@@ -161,7 +161,7 @@ if ('serviceWorker' in navigator) {
       </div>
     </aside>
 
-    <div class="flex-1 min-w-0 flex flex-col md:overflow-y-auto">
+    <div class="flex-1 min-w-0 flex flex-col lg:overflow-y-auto">
       {{if .CurrentServer}}
       <div class="sticky top-0 z-10 border-b border-ink-100 bg-white/95 backdrop-blur-sm px-4 sm:px-6 md:px-8 py-2 flex items-center gap-3 min-w-0">
         {{if eq .CurrentServer.Status "online"}}
@@ -180,7 +180,7 @@ if ('serviceWorker' in navigator) {
       </div>
       {{end}}
       <main class="flex-1">
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 md:px-8 py-6 md:py-8">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
           {{block "content" .}}{{end}}
         </div>
       </main>
