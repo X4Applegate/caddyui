@@ -4183,19 +4183,17 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postTestWebhook(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
-	webhookURL := strings.TrimSpace(r.FormValue("webhook_url"))
+	// Always read the webhook URL from the trusted database — never from the
+	// request body — to prevent server-side request forgery (SSRF).
+	webhookURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL)
 	if webhookURL == "" {
-		webhookURL, _ = models.GetSetting(s.DB, settingNotifyWebhookURL)
-	}
-	if webhookURL == "" {
-		http.Error(w, "No webhook URL configured", http.StatusBadRequest)
+		http.Error(w, "No webhook URL configured. Save your settings first.", http.StatusBadRequest)
 		return
 	}
-	// Validate that webhookURL is a safe http/https URL before making the request.
+	// Validate that the stored URL is a safe http/https endpoint.
 	parsedWebhook, parseErr := url.Parse(webhookURL)
 	if parseErr != nil || (parsedWebhook.Scheme != "http" && parsedWebhook.Scheme != "https") || parsedWebhook.Host == "" {
-		http.Error(w, "Invalid webhook URL — must begin with http:// or https://", http.StatusBadRequest)
+		http.Error(w, "Invalid webhook URL in settings — must begin with http:// or https://", http.StatusBadRequest)
 		return
 	}
 	payload := map[string]any{

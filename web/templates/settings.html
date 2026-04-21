@@ -226,7 +226,7 @@ function testWebhook() {
   var result = document.getElementById('test-result');
   btn.disabled = true;
   btn.textContent = 'Sending…';
-  fetch('/settings/test-webhook', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}})
+  fetch('/settings/test-webhook', {method: 'POST'})
     .then(function(r) { return r.json(); })
     .then(function(d) {
       result.textContent = d.ok ? '✓ Sent! HTTP ' + d.status_code : 'Failed';
