@@ -56,25 +56,24 @@ type ProxyHost struct {
 	ExtraUpstreams      string // JSON: []string of "host:port" entries
 	OwnerID             sql.NullInt64
 	OwnerEmail          string // populated via JOIN for display
-	CFDNSRecordID       string // Cloudflare DNS record ID (empty = not managed)
-	CFZoneID            string // Cloudflare zone ID the record lives in
-	PBDNSRecordID       string // Porkbun DNS record ID (empty = not managed)
-	PBDomain            string // Porkbun base domain the record lives under (e.g. "example.com")
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-}
-
-// DNSProvider returns the active DNS provider for display ("cloudflare",
-// "porkbun", or "" for none). At most one can be active at a time — the
-// proxy host form enforces that via mutually exclusive sections.
-func (p ProxyHost) DNSProvider() string {
-	if p.CFDNSRecordID != "" {
-		return "cloudflare"
-	}
-	if p.PBDNSRecordID != "" {
-		return "porkbun"
-	}
-	return ""
+	// v2.3.0 unified DNS columns. One record per proxy host; provider
+	// identifies which adapter in internal/dns handles lifecycle calls.
+	// Empty DNSProvider means "no managed DNS" — the host's A record is
+	// whatever the user set manually.
+	DNSProvider   string // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
+	DNSZoneID     string // provider-native zone ID (opaque for CF/Hetzner; domain for others)
+	DNSZoneName   string // base domain, e.g. "example.com", for display
+	DNSRecordID   string // record ID returned by the provider after create
+	// Legacy CF/PB columns. Kept for rollback safety — the v2.3.0 migration
+	// copies these into the unified columns above. New writes only touch
+	// the unified columns, so these stay frozen at whatever the last v2.2.x
+	// release left them as.
+	CFDNSRecordID string
+	CFZoneID      string
+	PBDNSRecordID string
+	PBDomain      string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // BasicAuthUserList parses the JSON-encoded BasicAuthUsers string into a slice.
@@ -262,6 +261,54 @@ func CountUsers(db *sql.DB) (int, error) {
 	return n, err
 }
 
+// Column list shared between ListProxyHosts and GetProxyHost. The unified
+// dns_* columns sit at the end; cf_*/pb_* are not read — their data was
+// copied into dns_* by the v2.3.0 migration in internal/db.
+const proxyHostBaseCols = `id, domains, forward_scheme, forward_host, forward_port,
+    websocket_support, block_common_exploits, ssl_enabled, ssl_forced,
+    http2_support, COALESCE(advanced_config, ''), enabled,
+    COALESCE(certificate_id, 0), created_at, updated_at,
+    basicauth_enabled, COALESCE(basicauth_users, '[]'),
+    COALESCE(access_list, ''), COALESCE(extra_upstreams, '[]'),
+    COALESCE(owner_id, 0),
+    COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
+    COALESCE(dns_zone_name,''), COALESCE(dns_record_id,'')`
+
+// scanProxyHost pulls a single row into the struct. Centralises the
+// bool-int unpack so each query site doesn't repeat it.
+func scanProxyHost(s interface {
+	Scan(dest ...any) error
+}, p *ProxyHost, ownerEmail *string) error {
+	var ws, bce, ssl, sslf, h2, en, bae int
+	var ownerID int64
+	dst := []any{
+		&p.ID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
+		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
+		&p.CreatedAt, &p.UpdatedAt,
+		&bae, &p.BasicAuthUsers,
+		&p.AccessList, &p.ExtraUpstreams,
+		&ownerID,
+		&p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID,
+	}
+	if ownerEmail != nil {
+		dst = append(dst, ownerEmail)
+	}
+	if err := s.Scan(dst...); err != nil {
+		return err
+	}
+	p.WebsocketSupport = ws == 1
+	p.BlockCommonExploits = bce == 1
+	p.SSLEnabled = ssl == 1
+	p.SSLForced = sslf == 1
+	p.HTTP2Support = h2 == 1
+	p.Enabled = en == 1
+	p.BasicAuthEnabled = bae == 1
+	if ownerID != 0 {
+		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
+	}
+	return nil
+}
+
 // ListProxyHosts returns proxy hosts for the given server.
 // If isAdmin is true, all hosts are returned and owner email is populated via JOIN.
 // If isAdmin is false, only hosts owned by viewerID are returned.
@@ -270,29 +317,13 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
 	var err error
 	if isAdmin {
 		rows, err = db.Query(`
-        SELECT ph.id, ph.domains, ph.forward_scheme, ph.forward_host, ph.forward_port,
-               ph.websocket_support, ph.block_common_exploits, ph.ssl_enabled, ph.ssl_forced,
-               ph.http2_support, COALESCE(ph.advanced_config, ''), ph.enabled,
-               COALESCE(ph.certificate_id, 0), ph.created_at, ph.updated_at,
-               ph.basicauth_enabled, COALESCE(ph.basicauth_users, '[]'),
-               COALESCE(ph.access_list, ''), COALESCE(ph.extra_upstreams, '[]'),
-               COALESCE(ph.owner_id, 0), COALESCE(u.email, ''),
-               COALESCE(ph.cf_dns_record_id,''), COALESCE(ph.cf_zone_id,''),
-               COALESCE(ph.pb_dns_record_id,''), COALESCE(ph.pb_domain,'')
+        SELECT `+proxyHostBaseCols+`, COALESCE(u.email, '')
         FROM proxy_hosts ph
         LEFT JOIN users u ON u.id = ph.owner_id
         WHERE ph.server_id = ? ORDER BY ph.id DESC`, serverID)
 	} else {
 		rows, err = db.Query(`
-        SELECT ph.id, ph.domains, ph.forward_scheme, ph.forward_host, ph.forward_port,
-               ph.websocket_support, ph.block_common_exploits, ph.ssl_enabled, ph.ssl_forced,
-               ph.http2_support, COALESCE(ph.advanced_config, ''), ph.enabled,
-               COALESCE(ph.certificate_id, 0), ph.created_at, ph.updated_at,
-               ph.basicauth_enabled, COALESCE(ph.basicauth_users, '[]'),
-               COALESCE(ph.access_list, ''), COALESCE(ph.extra_upstreams, '[]'),
-               COALESCE(ph.owner_id, 0), COALESCE(u.email, ''),
-               COALESCE(ph.cf_dns_record_id,''), COALESCE(ph.cf_zone_id,''),
-               COALESCE(ph.pb_dns_record_id,''), COALESCE(ph.pb_domain,'')
+        SELECT `+proxyHostBaseCols+`, COALESCE(u.email, '')
         FROM proxy_hosts ph
         LEFT JOIN users u ON u.id = ph.owner_id
         WHERE ph.server_id = ? AND ph.owner_id = ? ORDER BY ph.id DESC`, serverID, viewerID)
@@ -305,30 +336,11 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
 	var out []ProxyHost
 	for rows.Next() {
 		var p ProxyHost
-		var ws, bce, ssl, sslf, h2, en, bae int
-		var ownerID int64
-		if err := rows.Scan(
-			&p.ID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
-			&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
-			&p.CreatedAt, &p.UpdatedAt,
-			&bae, &p.BasicAuthUsers,
-			&p.AccessList, &p.ExtraUpstreams,
-			&ownerID, &p.OwnerEmail,
-			&p.CFDNSRecordID, &p.CFZoneID,
-			&p.PBDNSRecordID, &p.PBDomain,
-		); err != nil {
+		var email string
+		if err := scanProxyHost(rows, &p, &email); err != nil {
 			return nil, err
 		}
-		p.WebsocketSupport = ws == 1
-		p.BlockCommonExploits = bce == 1
-		p.SSLEnabled = ssl == 1
-		p.SSLForced = sslf == 1
-		p.HTTP2Support = h2 == 1
-		p.Enabled = en == 1
-		p.BasicAuthEnabled = bae == 1
-		if ownerID != 0 {
-			p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
-		}
+		p.OwnerEmail = email
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -336,40 +348,11 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
 
 func GetProxyHost(db *sql.DB, id int64) (*ProxyHost, error) {
 	var p ProxyHost
-	var ws, bce, ssl, sslf, h2, en, bae int
-	var ownerID int64
-	err := db.QueryRow(`
-        SELECT id, domains, forward_scheme, forward_host, forward_port,
-               websocket_support, block_common_exploits, ssl_enabled, ssl_forced,
-               http2_support, COALESCE(advanced_config, ''), enabled,
-               COALESCE(certificate_id, 0), created_at, updated_at,
-               basicauth_enabled, COALESCE(basicauth_users, '[]'),
-               COALESCE(access_list, ''), COALESCE(extra_upstreams, '[]'),
-               COALESCE(owner_id, 0),
-               COALESCE(cf_dns_record_id,''), COALESCE(cf_zone_id,''),
-               COALESCE(pb_dns_record_id,''), COALESCE(pb_domain,'')
-        FROM proxy_hosts WHERE id = ?`, id).Scan(
-		&p.ID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
-		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
-		&p.CreatedAt, &p.UpdatedAt,
-		&bae, &p.BasicAuthUsers,
-		&p.AccessList, &p.ExtraUpstreams,
-		&ownerID,
-		&p.CFDNSRecordID, &p.CFZoneID,
-		&p.PBDNSRecordID, &p.PBDomain,
-	)
-	if err != nil {
+	if err := scanProxyHost(
+		db.QueryRow(`SELECT `+proxyHostBaseCols+` FROM proxy_hosts WHERE id = ?`, id),
+		&p, nil,
+	); err != nil {
 		return nil, err
-	}
-	p.WebsocketSupport = ws == 1
-	p.BlockCommonExploits = bce == 1
-	p.SSLEnabled = ssl == 1
-	p.SSLForced = sslf == 1
-	p.HTTP2Support = h2 == 1
-	p.Enabled = en == 1
-	p.BasicAuthEnabled = bae == 1
-	if ownerID != 0 {
-		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
 	return &p, nil
 }
@@ -405,7 +388,7 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             websocket_support, block_common_exploits, ssl_enabled, ssl_forced,
             http2_support, advanced_config, enabled, certificate_id,
             basicauth_enabled, basicauth_users, access_list, extra_upstreams, owner_id,
-            cf_dns_record_id, cf_zone_id, pb_dns_record_id, pb_domain)
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -415,8 +398,7 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		boolInt(p.BasicAuthEnabled), p.BasicAuthUsers,
 		p.AccessList, p.ExtraUpstreams,
 		nilIfZero(ownerID),
-		p.CFDNSRecordID, p.CFZoneID,
-		p.PBDNSRecordID, p.PBDomain,
+		p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DNSRecordID,
 	)
 	if err != nil {
 		return 0, err
@@ -440,8 +422,7 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             http2_support=?, advanced_config=?, enabled=?, certificate_id=?,
             basicauth_enabled=?, basicauth_users=?,
             access_list=?, extra_upstreams=?,
-            cf_dns_record_id=?, cf_zone_id=?,
-            pb_dns_record_id=?, pb_domain=?,
+            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -450,30 +431,36 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		p.AdvancedConfig, boolInt(p.Enabled), nilIfZero(p.CertificateID),
 		boolInt(p.BasicAuthEnabled), p.BasicAuthUsers,
 		p.AccessList, p.ExtraUpstreams,
-		p.CFDNSRecordID, p.CFZoneID,
-		p.PBDNSRecordID, p.PBDomain,
+		p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DNSRecordID,
 		p.ID,
 	)
 	return err
 }
 
-// UpdateProxyHostCFRecord stores the Cloudflare DNS record ID and zone ID after
-// a record is created or cleared. Used after host creation/update to persist the
-// record ID returned by the Cloudflare API without re-running the full update.
-func UpdateProxyHostCFRecord(db *sql.DB, id int64, recordID, zoneID string) error {
-	_, err := db.Exec(`UPDATE proxy_hosts SET cf_dns_record_id=?, cf_zone_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		recordID, zoneID, id)
+// UpdateProxyHostDNSRecord persists the record ID + zone identifier after
+// a successful provider create/delete. Kept as a minimal UPDATE (instead
+// of round-tripping the full proxy host) so the IP-retarget goroutine and
+// the post-create hook can both use it without racing the main form save.
+//
+// Pass empty strings for all four fields to clear DNS management on a host.
+func UpdateProxyHostDNSRecord(db *sql.DB, id int64, provider, zoneID, zoneName, recordID string) error {
+	_, err := db.Exec(`UPDATE proxy_hosts
+		SET dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
+		    updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`,
+		provider, zoneID, zoneName, recordID, id)
 	return err
 }
 
-// ListProxyHostsWithCFRecords returns a lightweight slice of all proxy hosts
-// that have an active Cloudflare-managed DNS record. Only the fields needed
-// for CF record lifecycle management are populated.
-func ListProxyHostsWithCFRecords(db *sql.DB) ([]ProxyHost, error) {
+// ListProxyHostsWithDNSRecords returns a lightweight slice of all proxy
+// hosts that have an active managed DNS record. Only the fields needed for
+// lifecycle management (IP retarget, bulk delete) are populated — the
+// counterpart to the pre-v2.3.0 ListProxyHostsWith{CF,PB}Records helpers.
+func ListProxyHostsWithDNSRecords(db *sql.DB) ([]ProxyHost, error) {
 	rows, err := db.Query(`
-		SELECT id, domains, cf_dns_record_id, cf_zone_id
+		SELECT id, domains, dns_provider, dns_zone_id, dns_zone_name, dns_record_id
 		FROM proxy_hosts
-		WHERE cf_dns_record_id != '' AND cf_zone_id != ''
+		WHERE dns_provider != '' AND dns_record_id != ''
 		ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
@@ -482,42 +469,7 @@ func ListProxyHostsWithCFRecords(db *sql.DB) ([]ProxyHost, error) {
 	var out []ProxyHost
 	for rows.Next() {
 		var p ProxyHost
-		if err := rows.Scan(&p.ID, &p.Domains, &p.CFDNSRecordID, &p.CFZoneID); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-// UpdateProxyHostPBRecord stores the Porkbun DNS record ID and the base
-// domain the record lives under (Porkbun has no "zone ID" concept). Mirrors
-// UpdateProxyHostCFRecord — used after host create/update to persist the
-// record ID returned by the Porkbun API without re-running the full update.
-func UpdateProxyHostPBRecord(db *sql.DB, id int64, recordID, domain string) error {
-	_, err := db.Exec(`UPDATE proxy_hosts SET pb_dns_record_id=?, pb_domain=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		recordID, domain, id)
-	return err
-}
-
-// ListProxyHostsWithPBRecords returns a lightweight slice of all proxy hosts
-// that have an active Porkbun-managed DNS record. Only the fields needed for
-// PB record lifecycle management are populated — the counterpart to
-// ListProxyHostsWithCFRecords used by the IP-retarget goroutine.
-func ListProxyHostsWithPBRecords(db *sql.DB) ([]ProxyHost, error) {
-	rows, err := db.Query(`
-		SELECT id, domains, pb_dns_record_id, pb_domain
-		FROM proxy_hosts
-		WHERE pb_dns_record_id != '' AND pb_domain != ''
-		ORDER BY id ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ProxyHost
-	for rows.Next() {
-		var p ProxyHost
-		if err := rows.Scan(&p.ID, &p.Domains, &p.PBDNSRecordID, &p.PBDomain); err != nil {
+		if err := rows.Scan(&p.ID, &p.Domains, &p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

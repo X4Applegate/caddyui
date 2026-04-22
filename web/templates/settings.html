@@ -115,71 +115,77 @@
     </div>
   </div>
 
-  {{/* ── Cloudflare DNS ── */}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+  {{/* ── DNS — shared server IP ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-3">
     <div>
-      <div class="flex items-center gap-2 mb-0.5">
-        <div class="text-sm font-semibold text-ink-900">Cloudflare DNS</div>
-        {{if .CFDNSEnabled}}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-700"><span class="w-1.5 h-1.5 rounded-full bg-orange-500"></span>active</span>
-        {{else}}
-          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
-        {{end}}
-      </div>
-      <p class="text-xs text-ink-500">Automatically create and delete DNS A records when proxy hosts are added or removed. Requires a Cloudflare API token with DNS edit permissions. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">Create API token →</a></p>
-    </div>
-    <div>
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">API Token <span class="text-ink-400 font-normal text-xs">(leave blank to keep existing)</span></label>
-      <input name="cf_api_token" value="" type="password" autocomplete="new-password" placeholder="••••••••"
-        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-      {{if .CFAPITokenSet}}<p class="text-xs text-green-600 mt-1">✓ Token is configured.</p>{{end}}
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">DNS · Server IP</div>
+      <p class="text-xs text-ink-500">Public IP of this server. Every enabled DNS provider writes this as the A record content for managed proxy hosts. Changing it retargets all existing records in the background.</p>
     </div>
     <div>
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Server IP <span class="text-ink-400 font-normal">(A record target)</span></label>
-      <input name="cf_server_ip" value="{{.CFServerIP}}" type="text" placeholder="1.2.3.4"
+      <input name="server_ip" value="{{.ServerIP}}" type="text" placeholder="1.2.3.4"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-      <p class="text-xs text-ink-500 mt-1.5">The public IP address of this server. All Cloudflare-managed A records will point here.</p>
-    </div>
-    <div class="flex items-start gap-2">
-      <input type="hidden" name="cf_proxied" value="0" />
-      <input id="cf_proxied" name="cf_proxied" type="checkbox" value="1" {{if .CFProxied}}checked{{end}}
-        class="mt-0.5 accent-brand-600 cursor-pointer" />
-      <label for="cf_proxied" class="text-sm text-ink-700 cursor-pointer">
-        Enable Cloudflare proxy (orange cloud)
-        <span class="block text-xs text-ink-400 font-normal mt-0.5">Routes traffic through Cloudflare's network for DDoS protection and CDN. Disable to use DNS-only mode.</span>
-      </label>
     </div>
   </div>
 
-  {{/* ── Porkbun DNS ── */}}
+  {{/* ── DNS provider credential cards — one per registered provider ── */}}
+  {{range .DNSProviders}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="flex items-center gap-2 mb-0.5">
-        <div class="text-sm font-semibold text-ink-900">Porkbun DNS</div>
-        {{if .PBDNSEnabled}}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-pink-50 text-pink-700"><span class="w-1.5 h-1.5 rounded-full bg-pink-500"></span>active</span>
+        <div class="text-sm font-semibold text-ink-900">{{.DisplayName}} DNS</div>
+        {{if .Enabled}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>active</span>
+        {{else if .Configured}}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="Credentials present but Server IP missing">waiting for server IP</span>
         {{else}}
           <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
         {{end}}
+        <a href="/docs#{{.DocsAnchor}}" class="ml-auto text-xs text-brand-600 hover:underline">Setup guide →</a>
       </div>
-      <p class="text-xs text-ink-500">Automatically create and delete DNS A records on Porkbun-registered domains. Shares the <em>Server IP</em> above with Cloudflare. Requires API access enabled per-domain in the Porkbun control panel. <a href="https://porkbun.com/account/api" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">Get API keys →</a></p>
+      <p class="text-xs text-ink-500">Automatically create and delete DNS records when proxy hosts are added, edited, or removed. Leave every field blank to keep {{.DisplayName}} disabled.</p>
     </div>
+
+    {{range .Credentials}}
     <div>
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">API Key <span class="text-ink-400 font-normal text-xs">(leave blank to keep existing)</span></label>
-      <input name="pb_api_key" value="" type="password" autocomplete="new-password" placeholder="pk1_..."
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">
+        {{.Label}}
+        {{if .Secret}}<span class="text-ink-400 font-normal text-xs">(leave blank to keep existing)</span>{{end}}
+      </label>
+      {{if .Secret}}
+      <input name="{{.Key}}" value="" type="password" autocomplete="new-password" placeholder="{{if .Placeholder}}{{.Placeholder}}{{else}}••••••••{{end}}"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-      {{if .PBAPIKeySet}}<p class="text-xs text-green-600 mt-1">✓ API key is configured.</p>{{end}}
-    </div>
-    <div>
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(leave blank to keep existing)</span></label>
-      <input name="pb_secret_key" value="" type="password" autocomplete="new-password" placeholder="sk1_..."
+      {{if .Configured}}<p class="text-xs text-green-600 mt-1">✓ Configured.</p>{{end}}
+      {{else}}
+      {{/* Non-secret fields (Namecheap API user, whitelisted IP) are shown inline and always-overwrite. */}}
+      <input name="{{.Key}}" value="{{.Value}}" type="text" autocomplete="off" placeholder="{{.Placeholder}}"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-      {{if .PBSecretKeySet}}<p class="text-xs text-green-600 mt-1">✓ Secret key is configured.</p>{{end}}
+      {{end}}
+      {{if .Help}}<p class="text-xs text-ink-500 mt-1.5">{{.Help}}</p>{{end}}
     </div>
+    {{end}}
+
+    {{/* Cloudflare-only: orange-cloud proxy toggle. */}}
+    {{if eq .ID "cloudflare"}}
+    <div class="flex items-start gap-2">
+      <input type="hidden" name="cf_proxied" value="0" />
+      <input id="cf_proxied" name="cf_proxied" type="checkbox" value="1" {{if index .ExtraFlags "Proxied"}}checked{{end}}
+        class="mt-0.5 accent-brand-600 cursor-pointer" />
+      <label for="cf_proxied" class="text-sm text-ink-700 cursor-pointer">
+        Enable Cloudflare proxy (orange cloud)
+        <span class="block text-xs text-ink-400 font-normal mt-0.5">Routes traffic through Cloudflare's network for DDoS protection and CDN. Disable for DNS-only mode.</span>
+      </label>
+    </div>
+    {{end}}
+
+    {{/* Porkbun-only: per-domain API-Access reminder. */}}
+    {{if eq .ID "porkbun"}}
     <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
       <strong>Before each domain works:</strong> on the Porkbun control panel go to <em>Domain Management → Details → API Access</em> and toggle it ON. Without this, the API will reject operations even with valid keys.
     </div>
+    {{end}}
   </div>
+  {{end}}
 
   {{/* ── Cloudflare Turnstile ── */}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
