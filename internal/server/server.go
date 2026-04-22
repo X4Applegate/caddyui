@@ -52,6 +52,14 @@ type Server struct {
 	// Only flip to offline after healthFailThreshold consecutive failures.
 	healthMu       sync.Mutex
 	healthFailures map[int64]int
+
+	// app-response health cache — end-to-end HTTPS GET / result per proxy host,
+	// refreshed by StartAppHealthPoller. Keyed by ProxyHost.ID. Independent of
+	// the TCP/port health (which Caddy's admin API reports): this probes the
+	// public domain through Caddy, so it catches cases where the port is open
+	// but the app is wedged (e.g. DB unreachable, slow startup).
+	appHealthMu sync.RWMutex
+	appHealth   map[int64]appHealthEntry
 }
 
 func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, caddyfilePath string, version string) (*Server, error) {
@@ -59,7 +67,16 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	if err != nil {
 		return nil, err
 	}
-	return &Server{DB: db, Caddy: caddyClient, Templates: tpl, Static: static, CaddyfilePath: caddyfilePath, Version: version, healthFailures: map[int64]int{}}, nil
+	return &Server{
+		DB:             db,
+		Caddy:          caddyClient,
+		Templates:      tpl,
+		Static:         static,
+		CaddyfilePath:  caddyfilePath,
+		Version:        version,
+		healthFailures: map[int64]int{},
+		appHealth:      map[int64]appHealthEntry{},
+	}, nil
 }
 
 // healthFailThreshold is the number of consecutive failed pings required
@@ -3588,9 +3605,23 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 type upstreamHealthResult struct {
 	ID        int64  `json:"id"`
 	Domains   string `json:"domains"`
-	Status    string `json:"status"`    // "ok" or "error"
+	// Status is the port-level (TCP) health: "ok", "error", "unknown", or
+	// "disabled". Sourced from Caddy's /reverse_proxy/upstreams (authoritative
+	// since Caddy is on the upstream's Docker network); falls back to a
+	// direct dial for public/dotted hostnames not yet in Caddy's upstream map.
+	Status    string `json:"status"`
 	LatencyMS int64  `json:"latency_ms"`
 	Error     string `json:"error,omitempty"`
+
+	// AppStatus is the end-to-end HTTP-response health: "ok", "degraded",
+	// "down", "unknown", or "disabled". Sourced from the app-health poller,
+	// which does an HTTPS GET against the public domain every 60s. This is
+	// what catches "port open but app wedged" (e.g. DB connection stuck) —
+	// something Status (TCP) alone can't see.
+	AppStatus    string `json:"app_status,omitempty"`
+	AppCode      int    `json:"app_code,omitempty"`
+	AppLatencyMS int64  `json:"app_latency_ms,omitempty"`
+	AppError     string `json:"app_error,omitempty"`
 }
 
 func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
@@ -3690,6 +3721,23 @@ func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wg.Wait()
+
+	// Layer in cached app-response health (HTTPS GET / from the app-health
+	// poller). Read under the RW lock; the poller writes on its own cadence
+	// so this is a cheap map lookup per host. Hosts we haven't polled yet
+	// (e.g. first ~60s after boot, or just-created hosts) simply leave
+	// AppStatus empty — the UI renders "checking…" in that case.
+	s.appHealthMu.RLock()
+	for i := range results {
+		if e, ok := s.appHealth[results[i].ID]; ok {
+			results[i].AppStatus = e.Status
+			results[i].AppCode = e.Code
+			results[i].AppLatencyMS = e.LatencyMS
+			results[i].AppError = e.Error
+		}
+	}
+	s.appHealthMu.RUnlock()
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(results)
 }

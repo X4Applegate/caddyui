@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.4] — 2026-04-22 · End-to-end "App" health dot (catches "port open but app wedged")
+
+### Added
+- **Second health dot per proxy host** — the destination column on the dashboard and `/proxy-hosts` now shows **two** dots side-by-side:
+  - **Port** (existing): Caddy can TCP-dial the upstream
+  - **App** (new): `HTTPS GET /<primary-domain>/` returned a sensible response end-to-end
+  A new background poller (`StartAppHealthPoller`) hits each enabled host's public URL every 60s with a 5s timeout, follows up to 3 redirects, skips TLS verification, and caches the result. The existing `/api/upstream-health` endpoint now returns both `status` and `app_status` in the same response — no new endpoint.
+- **App-status classification:**
+  - 🟢 `ok` — `2xx` / `3xx` / `401` / `403` (app responded with something)
+  - 🟠 `degraded` — `5xx` or `4xx` other than auth (app misconfigured or erroring)
+  - 🔴 `down` — timeout / connection refused / TLS error
+  - ⚪ `unknown` — DNS doesn't resolve publicly (WG/Tailscale-only edge), wildcard domain, or hasn't been polled yet
+- **Tooltips** on each dot describe *which* check failed and why: `App: responding (HTTP 200 in 142ms)` vs `App: down — context deadline exceeded`
+
+### Why this matters
+The TCP/port dot only tells you Caddy can open a socket to the upstream. In v2.4.3 (status-server + MySQL case) the port dot stayed green for **hours** while the app was actually wedged on a MySQL timeout — every HTTP request hung for ~2 minutes then failed. The new App dot would have flagged that instantly.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.4` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.3] — 2026-04-22 · Amber "unknown" for Docker-named backends + split source actions
 
 ### Added
