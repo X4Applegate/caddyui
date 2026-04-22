@@ -32,7 +32,7 @@
       <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
         <td class="px-5 py-3">
           <div class="font-medium text-ink-800">{{.Name}}</div>
-          {{if .Version}}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-ink-100 text-ink-500 mt-0.5">{{.Version}}</span>{{end}}
+          {{if .Version}}<span class="version-pill mt-0.5" title="Caddy version reported by this server">{{.Version}}</span>{{end}}
         </td>
         <td class="px-5 py-3">
           {{if eq .Status "online"}}
@@ -93,7 +93,7 @@
         <div class="min-w-0">
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-ink-800 font-medium truncate">{{.Name}}</span>
-            {{if .Version}}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-ink-100 text-ink-500">{{.Version}}</span>{{end}}
+            {{if .Version}}<span class="version-pill" title="Caddy version reported by this server">{{.Version}}</span>{{end}}
           </div>
           <div class="font-mono text-xs text-ink-500 break-all mt-0.5">{{.AdminURL}}</div>
         </div>

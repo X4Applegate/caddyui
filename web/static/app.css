@@ -40,21 +40,57 @@ details[open] > summary::before { transform: rotate(90deg); }
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1.4;
-  padding: 0.125rem 0.5rem;
-  border-radius: 0.375rem;
-  background-color: #eff6ff;
-  color: #1d4ed8;
-  transition: background-color 120ms ease, color 120ms ease;
+  padding: 0.2rem 0.625rem;
+  border-radius: 0.5rem;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: #ffffff;
+  border: 1px solid rgba(29, 78, 216, 0.6);
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.25), 0 0 0 1px rgba(59, 130, 246, 0.15);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
-.domain-pill:hover { background-color: #dbeafe; text-decoration: underline; }
+.domain-pill:hover {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.45), 0 0 0 2px rgba(59, 130, 246, 0.25);
+  transform: translateY(-1px);
+  text-decoration: none;
+  color: #ffffff;
+}
 
 html.dark .domain-pill {
-  background-color: #1e3a5f !important;
-  color: #bfdbfe !important;
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(96, 165, 250, 0.5) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(96, 165, 250, 0.2) !important;
 }
 html.dark .domain-pill:hover {
-  background-color: #1e4080 !important;
+  background: linear-gradient(135deg, #60a5fa 0%, #2563eb 100%) !important;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.55), 0 0 0 2px rgba(96, 165, 250, 0.35) !important;
   color: #ffffff !important;
+}
+
+/* Version pills — same blue family as domain-pill, smaller & subtler for secondary info */
+.version-pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.375rem;
+  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+  color: #ffffff;
+  border: 1px solid rgba(37, 99, 235, 0.55);
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2), 0 0 0 1px rgba(59, 130, 246, 0.1);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+html.dark .version-pill {
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(96, 165, 250, 0.45) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(96, 165, 250, 0.15) !important;
 }
 
 /* ── Dark mode overrides ── */

@@ -98,6 +98,41 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 			}
 			return string(out)
 		},
+		// httpCodeName returns the standard reason phrase for common redirect
+		// status codes so templates can surface human-readable descriptions
+		// (e.g. "301 Moved Permanently") on hover/tooltip.
+		"httpCodeName": func(code int) string {
+			switch code {
+			case 301:
+				return "Moved Permanently"
+			case 302:
+				return "Found (Temporary)"
+			case 303:
+				return "See Other"
+			case 307:
+				return "Temporary Redirect"
+			case 308:
+				return "Permanent Redirect"
+			}
+			return ""
+		},
+		// httpCodeDesc returns a plain-English one-liner explaining what a
+		// redirect status code means in practice. Used in tooltips.
+		"httpCodeDesc": func(code int) string {
+			switch code {
+			case 301:
+				return "301 Moved Permanently — cached forever by browsers & search engines. Best for SEO when a URL has permanently changed. May convert POST to GET."
+			case 302:
+				return "302 Found (Temporary) — not cached. Use when the redirect is temporary or might change. May convert POST to GET."
+			case 303:
+				return "303 See Other — always converts the request to GET. Used after form submissions (POST → GET)."
+			case 307:
+				return "307 Temporary Redirect — like 302 but preserves the HTTP method (POST stays POST). Safer for APIs."
+			case 308:
+				return "308 Permanent Redirect — like 301 but preserves the HTTP method. Modern replacement for 301."
+			}
+			return fmt.Sprintf("HTTP %d", code)
+		},
 	}
 	entries, err := fs.ReadDir(tplFS, ".")
 	if err != nil {
@@ -172,6 +207,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/activity", s.listActivityLog)
 		r.Get("/certificates", s.listCertificates)
 		r.Get("/raw-routes", s.listRawRoutes)
+		r.Get("/docs", s.getDocs)
 
 		// Feature B: upstream health check API (authenticated, no requireWrite).
 		r.Get("/api/upstream-health", s.apiUpstreamHealth)
@@ -1828,9 +1864,11 @@ func (s *Server) currentServerID(r *http.Request) int64 {
 
 // caddyForRequest returns a Caddy client pointed at the currently-selected
 // server's admin API. Falls back to the primary client on any lookup error.
+// Credentials (if set on the server row) are threaded into the client so
+// admins can lock the admin API behind HTTP Basic Auth via a reverse proxy.
 func (s *Server) caddyForRequest(r *http.Request) *caddy.Client {
 	if srv, err := models.GetCaddyServer(s.DB, s.currentServerID(r)); err == nil {
-		return caddy.New(srv.AdminURL)
+		return caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	}
 	return s.Caddy
 }
@@ -1838,7 +1876,7 @@ func (s *Server) caddyForRequest(r *http.Request) *caddy.Client {
 // caddyForServer returns a Caddy client for an explicit server ID.
 func (s *Server) caddyForServer(serverID int64) *caddy.Client {
 	if srv, err := models.GetCaddyServer(s.DB, serverID); err == nil {
-		return caddy.New(srv.AdminURL)
+		return caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	}
 	return s.Caddy
 }
@@ -1976,6 +2014,15 @@ func (s *Server) uploadSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Activity log ---
+
+// getDocs renders the in-app tutorial / quick-start guide.
+// Everything here is static, so no DB call is needed.
+func (s *Server) getDocs(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "docs.html", map[string]any{
+		"User":    s.currentUser(r),
+		"Section": "docs",
+	})
+}
 
 func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
 	entries, err := models.ListActivity(s.DB, s.currentServerID(r), 500)
@@ -2516,9 +2563,12 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
 
-// newCaddyClient builds a fresh caddy.Client from any server's AdminURL.
-func newCaddyClient(adminURL string) *caddy.Client {
-	return caddy.New(adminURL)
+// newCaddyClient builds a fresh caddy.Client from any server's AdminURL plus
+// optional HTTP Basic Auth credentials. Credentials are forwarded on every
+// admin call so setups that gate port 2019 behind a reverse-proxy + basic auth
+// (a simpler alternative to WireGuard/Tailscale for remote admin) keep working.
+func newCaddyClient(adminURL, username, password string) *caddy.Client {
+	return caddy.New(adminURL, username, password)
 }
 
 // SyncCaddy is the public entry-point used by external callers (e.g. /caddy/reload).
@@ -2557,7 +2607,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	// syncCaddy is called from HTTP handlers (single goroutine per request) so this
 	// temporary swap is safe as long as we don't sync the same server concurrently.
 	origClient := s.Caddy
-	s.Caddy = newCaddyClient(srv.AdminURL)
+	s.Caddy = newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	defer func() { s.Caddy = origClient }()
 
 	// Use admin view for sync — all routes must be pushed to Caddy regardless of owner.

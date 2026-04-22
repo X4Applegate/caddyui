@@ -35,12 +35,26 @@
       <label class="block text-sm font-medium text-ink-800 mb-1.5">HTTP Code</label>
       <select name="forward_http_code" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         {{$code := .Host.ForwardHTTPCode}}
-        <option value="301" {{if eq $code 301}}selected{{end}}>301</option>
-        <option value="302" {{if eq $code 302}}selected{{end}}>302</option>
-        <option value="307" {{if eq $code 307}}selected{{end}}>307</option>
-        <option value="308" {{if eq $code 308}}selected{{end}}>308</option>
+        <option value="301" {{if eq $code 301}}selected{{end}}>301 — Moved Permanently</option>
+        <option value="302" {{if eq $code 302}}selected{{end}}>302 — Found (Temporary)</option>
+        <option value="307" {{if eq $code 307}}selected{{end}}>307 — Temporary Redirect</option>
+        <option value="308" {{if eq $code 308}}selected{{end}}>308 — Permanent Redirect</option>
       </select>
     </div>
+  </div>
+
+  <div class="bg-brand-50 border border-brand-100 rounded-lg px-4 py-3 text-xs text-ink-700 leading-relaxed">
+    <div class="font-semibold text-brand-700 mb-1.5 flex items-center gap-1.5">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      Which HTTP redirect code should I pick?
+    </div>
+    <ul class="space-y-1 ml-0.5">
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-8">301</span><strong>Moved Permanently</strong> — browsers and search engines cache this forever. Best for SEO when a URL has permanently changed. <span class="text-ink-500">(GET/POST may become GET)</span></li>
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-8">302</span><strong>Found / Temporary</strong> — not cached. Use when the redirect is temporary or might change. <span class="text-ink-500">(GET/POST may become GET)</span></li>
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-8">307</span><strong>Temporary Redirect</strong> — like 302 but <em>preserves</em> the original method (POST stays POST). Safer for APIs.</li>
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-8">308</span><strong>Permanent Redirect</strong> — like 301 but <em>preserves</em> the original method. Modern replacement for 301.</li>
+    </ul>
+    <div class="mt-2 text-ink-500"><strong class="text-ink-700">Not sure?</strong> Pick <span class="font-mono font-semibold">301</span> for permanent domain moves, or <span class="font-mono font-semibold">302</span> for short-term redirects.</div>
   </div>
 
   <div class="pt-2">

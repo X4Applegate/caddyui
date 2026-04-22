@@ -37,7 +37,10 @@
     <div class="flex items-center gap-2 mb-3">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-ink-400 shrink-0"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/></svg>
       <span class="font-mono text-xs text-ink-500 break-all">{{.ForwardScheme}}://{{.ForwardDomain}}</span>
-      <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">{{.ForwardHTTPCode}}</span>
+      <span title="{{httpCodeDesc .ForwardHTTPCode}}" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 cursor-help">
+        <span class="font-mono font-semibold">{{.ForwardHTTPCode}}</span>
+        <span class="text-blue-600/80">{{httpCodeName .ForwardHTTPCode}}</span>
+      </span>
     </div>
     {{if eq $.User.Role "admin"}}
     <div class="text-xs text-ink-500 mb-1">
@@ -85,7 +88,10 @@
         </td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.ForwardScheme}}://{{.ForwardDomain}}</td>
         <td class="px-5 py-3">
-          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">{{.ForwardHTTPCode}}</span>
+          <span title="{{httpCodeDesc .ForwardHTTPCode}}" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 cursor-help">
+            <span class="font-mono font-semibold">{{.ForwardHTTPCode}}</span>
+            <span class="text-blue-600/80 hidden xl:inline">{{httpCodeName .ForwardHTTPCode}}</span>
+          </span>
         </td>
         {{if eq $.User.Role "admin"}}
         <td class="px-5 py-3 text-xs text-ink-500">
