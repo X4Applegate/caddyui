@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.3.2] — 2026-04-22 · Hotfix — zone dropdown "undefined" + missing Actions column
+
+### Fixed
+- **Zone / Domain dropdown showed "undefined"** on the proxy host form after picking a provider — the `/api/dns-zones` response returned `{"ID":"…","Name":"…"}` (Go's default JSON encoding of the struct) but the picker JS reads `z.id` / `z.name`. Added `json:"id"` / `json:"name"` tags to `dns.Zone` (and the same for `dns.Record` while we're there) so the response is properly lowercased. All six providers affected (CF, Porkbun, Namecheap, GoDaddy, DO, Hetzner).
+- **Missing Actions column** in the desktop proxy hosts table — the wrapper div used `overflow-hidden`, which clipped the Edit/Delete buttons off the right edge whenever the table was wider than the viewport. Changed to `overflow-x-auto` + `min-w-[900px]` on the table so the column stays reachable via horizontal scroll.
+
+### Docker
+- Published as `applegater/caddyui:v2.3.2` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.3.1] — 2026-04-22 · Hotfix — ambiguous column name on startup sync
 
 ### Fixed
