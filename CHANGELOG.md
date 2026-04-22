@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.1] — 2026-04-22 · Dashboard UX + correct version string
+
+### Added
+- **Dashboard "Recent proxy hosts" source pills** now link directly to the edit form (`/proxy-hosts/{id}/edit`) instead of the filtered list — click a domain → edit → Save → back at `/proxy-hosts`
+- **Upstream health dot** next to each destination on the dashboard (desktop table and mobile cards), matching the existing indicator on `/proxy-hosts`. Driven by the same `/api/upstream-health` endpoint the list page uses
+- **Example `docker-compose.yml`** sets `CADDYUI_SYNC_ON_START: "1"` so `docker compose restart` automatically rehydrates Caddy from the DB. Still safe on first boot — `SyncCaddy` refuses to push when the DB is empty
+
+### Fixed
+- **UI showed `CaddyUI dev`** instead of the release tag — the published v2.4.0 image was built without `--build-arg VERSION=v2.4.0`, so `var Version = "dev"` was compiled in. Rebuilt v2.4.0 and v2.4.1 with the build arg; both multi-arch manifests were re-pushed
+
+### Docker
+- Published as `applegater/caddyui:v2.4.1` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.0] — 2026-04-22 · Per-server public IPs for managed DNS
 
 ### Added
