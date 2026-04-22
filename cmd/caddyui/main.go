@@ -21,6 +21,12 @@ func main() {
 	listen := envOr("CADDYUI_LISTEN", ":8080")
 	caddyAdmin := envOr("CADDY_ADMIN_URL", "http://caddy:2019")
 	caddyfilePath := envOr("CADDYFILE_PATH", "/etc/caddy/Caddyfile")
+	// Optional HTTP Basic Auth for the bootstrap Caddy admin endpoint. Useful
+	// when port 2019 is wrapped behind a reverse proxy that enforces basic auth
+	// (a simpler alternative to WireGuard/Tailscale for remote admin). Empty
+	// by default — the admin endpoint is assumed to be on an internal network.
+	caddyAdminUser := os.Getenv("CADDY_ADMIN_USER")
+	caddyAdminPass := os.Getenv("CADDY_ADMIN_PASS")
 
 	conn, err := db.Open(dbPath)
 	if err != nil {
@@ -37,12 +43,12 @@ func main() {
 		log.Fatalf("static fs: %v", err)
 	}
 
-	caddyClient := caddy.New(caddyAdmin)
+	caddyClient := caddy.New(caddyAdmin, caddyAdminUser, caddyAdminPass)
 	srv, err := server.New(conn, caddyClient, tplFS, staticFS, caddyfilePath, Version)
 	if err != nil {
 		log.Fatalf("server: %v", err)
 	}
-	if err := srv.SeedBootstrapServer(caddyAdmin); err != nil {
+	if err := srv.SeedBootstrapServer(caddyAdmin, caddyAdminUser, caddyAdminPass); err != nil {
 		log.Fatalf("seed bootstrap server: %v", err)
 	}
 	pollerCtx, cancelPoller := context.WithCancel(context.Background())

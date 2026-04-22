@@ -1,0 +1,371 @@
+{{define "title"}}Docs & Tutorial · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Docs & Tutorial</h1>
+  <p class="text-sm text-ink-500 mt-1">A quick-start guide to every part of CaddyUI. Skim it end-to-end the first time — later you can jump straight to the section you need.</p>
+</div>
+
+{{/* ── Table of contents ── */}}
+<nav class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-8 max-w-3xl">
+  <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">On this page</div>
+  <ul class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+    <li><a href="#what-is" class="text-brand-600 hover:text-brand-700 hover:underline">What is CaddyUI?</a></li>
+    <li><a href="#first-time" class="text-brand-600 hover:text-brand-700 hover:underline">First-time setup</a></li>
+    <li><a href="#proxy-hosts" class="text-brand-600 hover:text-brand-700 hover:underline">Proxy Hosts</a></li>
+    <li><a href="#redirections" class="text-brand-600 hover:text-brand-700 hover:underline">Redirections</a></li>
+    <li><a href="#advanced" class="text-brand-600 hover:text-brand-700 hover:underline">Advanced Routes</a></li>
+    <li><a href="#certificates" class="text-brand-600 hover:text-brand-700 hover:underline">Certificates</a></li>
+    <li><a href="#cloudflare" class="text-brand-600 hover:text-brand-700 hover:underline">Cloudflare DNS</a></li>
+    <li><a href="#import" class="text-brand-600 hover:text-brand-700 hover:underline">Import from Caddy</a></li>
+    <li><a href="#snapshots" class="text-brand-600 hover:text-brand-700 hover:underline">Snapshots & Backup</a></li>
+    <li><a href="#multiserver" class="text-brand-600 hover:text-brand-700 hover:underline">Multi-server</a></li>
+    <li><a href="#users" class="text-brand-600 hover:text-brand-700 hover:underline">Users & 2FA</a></li>
+    <li><a href="#faq" class="text-brand-600 hover:text-brand-700 hover:underline">FAQ & Troubleshooting</a></li>
+  </ul>
+</nav>
+
+<div class="prose prose-sm max-w-3xl space-y-10">
+
+{{/* ── What is CaddyUI? ── */}}
+<section id="what-is" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+    </span>
+    What is CaddyUI?
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>CaddyUI is a web interface for managing <a href="https://caddyserver.com" target="_blank" rel="noopener" class="text-brand-600 hover:text-brand-700">Caddy</a>, the modern HTTPS web server. Instead of editing <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">Caddyfile</code> by hand, you click through a UI to manage reverse-proxy rules, redirects, certificates, and more.</p>
+    <p>Everything you do in the UI is pushed to Caddy's admin API in real time — no restarts, no re-reads.</p>
+    <div class="bg-brand-50 border border-brand-100 rounded-lg px-4 py-3 text-xs text-ink-700">
+      <strong class="text-brand-700">Who this is for:</strong> home-lab users, small teams, anyone with 1 – 20 Caddy servers who wants a faster workflow than editing config files.
+    </div>
+  </div>
+</section>
+
+{{/* ── First-time setup ── */}}
+<section id="first-time" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="20 6 9 17 4 12"/></svg>
+    </span>
+    First-time setup
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>If you're reading this, you're already logged in — so the hardest part is done. For reference, a full first-time setup looks like this:</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>Start Caddy with its admin API exposed on <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">:2019</code> (Docker or bare metal — both work).</li>
+      <li>Start CaddyUI with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">CADDY_ADMIN_URL</code> pointed at that address (the sample <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker-compose.yml</code> does this automatically).</li>
+      <li>Visit <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/setup</code> and create the first admin user. This page only appears when the DB is empty.</li>
+      <li>Optional: visit <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings</a> and enable Cloudflare Turnstile, 2FA, or email notifications.</li>
+    </ol>
+    <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
+      <strong>Don't expose port 2019</strong> to the internet. It has full control over Caddy. Keep it on <code class="px-1 bg-amber-100 rounded font-mono">localhost</code>, a Docker network, or a WireGuard VPN.
+    </div>
+  </div>
+</section>
+
+{{/* ── Proxy Hosts ── */}}
+<section id="proxy-hosts" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </span>
+    Proxy Hosts
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>A <strong>proxy host</strong> says: <em>"requests for <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">my.domain.com</code> should be forwarded to this internal service."</em></p>
+    <p>Click <a href="/proxy-hosts/new" class="text-brand-600 hover:text-brand-700">Proxy Hosts → + New</a> and fill in:</p>
+    <ul class="list-disc ml-5 space-y-1.5">
+      <li><strong>Domain names</strong> — one or more hostnames (comma-separated).</li>
+      <li><strong>Scheme + Host + Port</strong> — where your backend service lives (e.g. <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">http://192.168.1.50:3000</code>).</li>
+      <li><strong>Auto SSL</strong> — leave on unless you want to use a custom certificate. Caddy will auto-provision via Let's Encrypt / ZeroSSL.</li>
+      <li><strong>WebSockets / HTTP/2 / HTTP/3</strong> — all on by default.</li>
+      <li><strong>Access control</strong> — optional IP allow/deny list.</li>
+    </ul>
+    <p>Hit <strong>Save</strong> and the rule is live in Caddy immediately. The source domain pill on the list page is clickable — it opens the domain in a new tab to verify.</p>
+    <div class="bg-ink-50 border border-ink-200 rounded-lg px-4 py-3 text-xs text-ink-600">
+      <strong class="text-ink-800">Tip:</strong> use the <strong>Enabled</strong> toggle to temporarily turn a rule off without deleting it. Great for maintenance windows.
+    </div>
+  </div>
+</section>
+
+{{/* ── Redirections ── */}}
+<section id="redirections" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+    </span>
+    Redirections
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>A <strong>redirection</strong> sends visitors from an old hostname to a new one with a proper HTTP status code. Example: <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">old.example.com → new.example.com</code>.</p>
+    <p>Pick the right code on the form:</p>
+    <ul class="space-y-1.5">
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-10">301</span><strong>Moved Permanently</strong> — browsers & search engines cache forever. Use for permanent domain moves.</li>
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-10">302</span><strong>Found / Temporary</strong> — not cached. Use when the redirect may change.</li>
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-10">307</span><strong>Temporary Redirect</strong> — like 302 but preserves POST/PUT. Safer for APIs.</li>
+      <li><span class="inline-block font-mono font-semibold text-brand-700 w-10">308</span><strong>Permanent Redirect</strong> — like 301 but preserves the HTTP method.</li>
+    </ul>
+    <p><strong>Preserve path</strong> keeps the URL path intact: <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">old.com/blog/post</code> → <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">new.com/blog/post</code>. Turn it off to always land visitors on the root.</p>
+  </div>
+</section>
+
+{{/* ── Advanced routes ── */}}
+<section id="advanced" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+    </span>
+    Advanced Routes
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>For anything the UI forms can't express — header manipulation, path rewrites, custom matchers — paste raw Caddy JSON here. CaddyUI imports it verbatim into <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">apps.http.servers.srv0.routes</code>.</p>
+    <p>Syntax check runs on every save. If Caddy rejects the config, you'll see the error inline and the old config stays live.</p>
+    <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
+      <strong>Heads-up:</strong> advanced routes aren't linked to certificates or the host list. You're responsible for their TLS blocks.
+    </div>
+  </div>
+</section>
+
+{{/* ── Certificates ── */}}
+<section id="certificates" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </span>
+    Certificates
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>For most people, <strong>you don't need this page</strong>. Caddy auto-provisions certificates via Let's Encrypt (or ZeroSSL as a fallback) whenever you create a proxy host with <em>Auto SSL</em> enabled.</p>
+    <p>Use the Certificates page only when you need to:</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li>Upload a bought / internal CA-issued certificate.</li>
+      <li>Use a DNS-01 challenge (for wildcard certs or hosts not reachable over HTTP).</li>
+      <li>Pin a specific cert to a proxy host instead of letting Caddy manage it.</li>
+    </ul>
+  </div>
+</section>
+
+{{/* ── Cloudflare DNS ── */}}
+<section id="cloudflare" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z"/></svg>
+    </span>
+    Cloudflare DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>If your domains are on Cloudflare, CaddyUI can create and manage the A records for you automatically.</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>In <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Cloudflare DNS</a>, paste an <strong>API token</strong> with <em>Zone:Read</em> + <em>DNS:Edit</em> permissions.</li>
+      <li>Enter the <strong>server IP</strong> you want A records to point at.</li>
+      <li>Optional: enable <em>Proxied</em> to route traffic through Cloudflare's CDN.</li>
+    </ol>
+    <p>When you create a proxy host, pick the zone from the dropdown and CaddyUI will create the DNS record and save its ID. Edit the host → the record updates. Delete the host → the record is removed.</p>
+    <p>If you later change the server IP in settings, CaddyUI re-points every record it manages in one shot. Records it didn't create are never touched.</p>
+  </div>
+</section>
+
+{{/* ── Import ── */}}
+<section id="import" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </span>
+    Import from Caddy
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>Already running Caddy with a hand-written config? You don't have to start from scratch.</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><a href="/import" class="text-brand-600 hover:text-brand-700">Import from Caddy</a> — pulls the live JSON config over the admin API and lets you pick which routes to adopt.</li>
+      <li><a href="/caddyfile-import" class="text-brand-600 hover:text-brand-700">Paste Caddyfile</a> — dump a Caddyfile in, preview what it will create, then accept.</li>
+    </ul>
+    <p>Imports are non-destructive: CaddyUI creates its own rules alongside yours. Delete the original routes after you confirm everything works.</p>
+  </div>
+</section>
+
+{{/* ── Snapshots ── */}}
+<section id="snapshots" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+    </span>
+    Snapshots & Backup
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>Every time you save a rule, CaddyUI records a <strong>snapshot</strong> of the full Caddy config. If something goes wrong, open <a href="/snapshots" class="text-brand-600 hover:text-brand-700">Snapshots</a> and restore an earlier version with one click.</p>
+    <p>You can also download the raw config JSON to keep off-box. Admins get a <a href="/backup" class="text-brand-600 hover:text-brand-700">full database backup</a> endpoint for disaster recovery.</p>
+  </div>
+</section>
+
+{{/* ── Multi-server ── */}}
+<section id="multiserver" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+    </span>
+    Multi-server
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>One CaddyUI can manage many Caddy instances. Add them in <a href="/servers" class="text-brand-600 hover:text-brand-700">Caddy Servers</a> by giving each an <em>Admin URL</em>.</p>
+    <p>Five ways to connect — pick whatever matches your setup:</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><strong>Same host / Docker</strong> — <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">http://caddy:2019</code> works fine over the internal Docker network.</li>
+      <li><strong>Unix socket (local-only, zero network exposure)</strong> — <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">unix:///run/caddy-admin.sock</code>. Set <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">admin unix//run/caddy-admin.sock</code> in your Caddyfile, then share the socket path between containers via a bind-mount. Nothing listens on any TCP port — unreachable from the network by design.</li>
+      <li><strong>WireGuard / Tailscale</strong> — wrap traffic in a private overlay and use the peer's tunnel IP. Never expose 2019 on the public internet.</li>
+      <li><strong>Reverse proxy with HTTP Basic Auth</strong> — put Caddy (or nginx) in front of port 2019 with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">basic_auth</code>. Fill in the <em>HTTP Basic Auth</em> section on the server form; CaddyUI sends an <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">Authorization: Basic …</code> header on every call. Simpler than WireGuard when you just need one remote server gated behind a password.</li>
+      <li><strong>SSH reverse-tunnel</strong> — <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">ssh -L 2019:localhost:2019 user@host</code> also works for one-off cases.</li>
+    </ul>
+    <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900 my-3">
+      <strong>🚨 Don't ever expose port 2019 directly on the internet.</strong> The Caddy admin API has no built-in authentication — whoever reaches it owns your server. Pick one of the options above instead.
+    </div>
+    <p>The <em>Also deploy to</em> checkboxes on each form let you push the same rule to several servers at once. Certificates are <em>not</em> mirrored — each server provisions its own.</p>
+  </div>
+</section>
+
+{{/* ── Users & 2FA ── */}}
+<section id="users" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    </span>
+    Users & 2FA
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p><strong>Roles:</strong></p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><span class="inline-block px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-semibold uppercase tracking-wider">admin</span> — full access to every page including users, servers, and settings.</li>
+      <li><span class="inline-block px-1.5 py-0.5 rounded bg-ink-100 text-ink-600 text-[10px] font-semibold uppercase tracking-wider">viewer</span> — read-only. Can see dashboards and lists but can't create / edit / delete.</li>
+    </ul>
+    <p>Each user can enable <strong>TOTP 2FA</strong> on their profile at <a href="/totp/setup" class="text-brand-600 hover:text-brand-700">/totp/setup</a>. Scan the QR with Google Authenticator, Authy, 1Password, etc., enter the 6-digit code, and it's active on next login.</p>
+    <p>Admins can require 2FA at signup via <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings</a> and can reset it on any account from <a href="/users" class="text-brand-600 hover:text-brand-700">Users</a>.</p>
+  </div>
+</section>
+
+{{/* ── FAQ ── */}}
+<section id="faq" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    </span>
+    FAQ & Troubleshooting
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-4">
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">My domain won't get a certificate. Why?</summary>
+      <div class="mt-2 text-ink-600 space-y-1.5">
+        <p>Check, in order:</p>
+        <ol class="list-decimal ml-5 space-y-1">
+          <li>DNS A/AAAA record actually points at this server's public IP.</li>
+          <li>Ports <strong>80</strong> and <strong>443</strong> are open on your firewall and port-forwarded to Caddy.</li>
+          <li>You're not rate-limited by Let's Encrypt (5 fails per account/hostname/hour).</li>
+          <li>For wildcards or internal-only hosts, use a DNS-01 challenge — see Certificates.</li>
+        </ol>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">I changed a rule but the site still shows the old behavior.</summary>
+      <div class="mt-2 text-ink-600">
+        <p>Hard-refresh your browser (Ctrl/Cmd + Shift + R). Clients, CDNs, and service workers cache aggressively. On the Caddy side the config changes on save — no restart needed.</p>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">"attempt to write a readonly database" / "database is locked"</summary>
+      <div class="mt-2 text-ink-600 space-y-1.5">
+        <p><strong>Readonly:</strong> the data volume isn't writable by the container's user (UID 10001). Fix with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">chown -R 10001:10001 /path/to/caddyui_data</code> and add <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">user: "10001:10001"</code> to your compose file.</p>
+        <p><strong>Locked:</strong> transient — CaddyUI uses WAL + busy-timeout to survive contention. If you see it constantly, your storage is very slow (NFS, SMB, etc.). Put the DB on local disk.</p>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">Can I back up just the CaddyUI settings and re-import them?</summary>
+      <div class="mt-2 text-ink-600">
+        <p>Yes. Admins can download a full DB backup from <a href="/backup" class="text-brand-600 hover:text-brand-700">/backup</a>. To restore, stop the container, replace <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/data/caddyui.db</code> with the backup file, start it again.</p>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">Is CaddyUI safe to expose on the internet?</summary>
+      <div class="mt-2 text-ink-600">
+        <p>Yes, if you put it behind HTTPS (Caddy can reverse-proxy to itself) and enable 2FA + Cloudflare Turnstile in Settings. But the <strong>Caddy admin API</strong> on port 2019 must <em>never</em> be public — keep it on a private network.</p>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">How do I secure port 2019 if I don't have WireGuard or Tailscale?</summary>
+      <div class="mt-2 text-ink-600 space-y-2">
+        <p>Caddy's admin API has no built-in password. You have three options that don't need a VPN:</p>
+        <ol class="list-decimal ml-5 space-y-2">
+          <li>
+            <strong>Unix socket (simplest, local-only)</strong> — in your Caddyfile's global block, set
+            <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">admin unix//run/caddy-admin.sock</code>.
+            Bind-mount the socket path into the CaddyUI container (e.g. <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/run/caddy:/run/caddy</code>) and set the server's Admin URL to <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">unix:///run/caddy/caddy-admin.sock</code>. No TCP port is opened at all — nothing to expose.
+          </li>
+          <li>
+            <strong>Reverse proxy with HTTP Basic Auth</strong> — put another Caddy block (or nginx) in front of port 2019 with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">basic_auth</code>. Enter the username/password in the <em>HTTP Basic Auth</em> section when adding the server; CaddyUI will send the credentials on every request. Works across the public internet if you put it behind HTTPS.
+          </li>
+          <li>
+            <strong>UFW / firewall allowlist</strong> — limit inbound port 2019 to known source IPs only. Weakest of the three (IP-based auth isn't great), but fine as a belt-and-suspenders layer on top of options 1 or 2.
+          </li>
+        </ol>
+        <p class="mt-2">Options 1 and 2 are both supported natively on the <a href="/servers" class="text-brand-600 hover:text-brand-700">Caddy Servers</a> form — you can start with a unix socket for local Caddy and add a remote server behind basic auth without changing anything else.</p>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">Example: Caddyfile with Unix socket admin endpoint</summary>
+      <div class="mt-2 text-ink-600 space-y-2">
+        <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto leading-relaxed"><code># Caddyfile
+{
+    admin unix//run/caddy/caddy-admin.sock
+}
+
+# …your site blocks…
+</code></pre>
+        <p>In <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker-compose.yml</code>, share the socket directory between Caddy and CaddyUI:</p>
+        <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto leading-relaxed"><code>services:
+  caddy:
+    volumes:
+      - caddy_admin:/run/caddy
+  caddyui:
+    volumes:
+      - caddy_admin:/run/caddy
+    environment:
+      CADDY_ADMIN_URL: unix:///run/caddy/caddy-admin.sock
+
+volumes:
+  caddy_admin:
+</code></pre>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">Example: Caddy admin behind HTTP Basic Auth</summary>
+      <div class="mt-2 text-ink-600 space-y-2">
+        <p>Run two Caddy instances (or two site blocks in one instance): one hosts your sites, the other terminates TLS and proxies <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/</code> to the admin API with basic auth.</p>
+        <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto leading-relaxed"><code>admin.example.com {
+    basic_auth {
+        caddyui $2a$14$…bcrypt-hash…
+    }
+    reverse_proxy localhost:2019
+}
+</code></pre>
+        <p>Generate the bcrypt hash with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">caddy hash-password</code>. Then add the server in CaddyUI with:</p>
+        <ul class="list-disc ml-5">
+          <li><strong>Admin URL:</strong> <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">https://admin.example.com</code></li>
+          <li><strong>Username:</strong> <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">caddyui</code></li>
+          <li><strong>Password:</strong> the plaintext password that matches the hash</li>
+        </ul>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">Where's the source code?</summary>
+      <div class="mt-2 text-ink-600">
+        <p><a href="https://github.com/X4Applegate/caddyui" target="_blank" rel="noopener" class="text-brand-600 hover:text-brand-700">github.com/X4Applegate/caddyui</a> — MIT-licensed. Issues and PRs welcome.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<div class="pt-4 border-t border-ink-200 text-xs text-ink-500 text-center">
+  Still stuck? Open an issue on <a href="https://github.com/X4Applegate/caddyui/issues" target="_blank" rel="noopener" class="text-brand-600 hover:text-brand-700">GitHub</a> and include your CaddyUI version from the sidebar.
+</div>
+
+</div>
+{{end}}

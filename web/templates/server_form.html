@@ -8,7 +8,8 @@
   <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Target.ID}}Edit server{{else}}Add a Caddy server{{end}}</h1>
   <p class="text-sm text-ink-500 mt-1 max-w-2xl">
     CaddyUI reaches each server over its admin API (default port 2019). Make sure this host can
-    route to the URL you enter — over WireGuard, Tailscale, or a private LAN.
+    route to the URL you enter — over WireGuard, Tailscale, a private LAN, a Unix socket, or a
+    reverse proxy with HTTP Basic Auth.
   </p>
 </div>
 
@@ -28,7 +29,48 @@
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Admin URL</label>
       <input type="text" name="admin_url" required value="{{.Target.AdminURL}}" placeholder="http://10.0.0.2:2019"
         class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
-      <p class="text-xs text-ink-500 mt-1.5">Where Caddy's admin API is reachable from this host. No trailing slash.</p>
+      <div class="text-xs text-ink-500 mt-1.5 space-y-1">
+        <p>Where Caddy's admin API is reachable from this host. No trailing slash. Three forms are accepted:</p>
+        <ul class="ml-4 space-y-0.5">
+          <li><code class="bg-ink-100 px-1 rounded font-mono">http://host:2019</code> — standard TCP (default)</li>
+          <li><code class="bg-ink-100 px-1 rounded font-mono">https://host:2019</code> — if you've wrapped port 2019 in TLS</li>
+          <li><code class="bg-ink-100 px-1 rounded font-mono">unix:///run/caddy-admin.sock</code> — Unix domain socket (local-only, zero network exposure)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  {{/* ── Optional Basic Auth for the admin endpoint ── */}}
+  <div class="p-6 space-y-4">
+    <div>
+      <div class="flex items-center gap-2 mb-1.5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-brand-600"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span class="text-sm font-medium text-ink-800">HTTP Basic Auth <span class="text-ink-400 font-normal">(optional)</span></span>
+      </div>
+      <p class="text-xs text-ink-500 mb-3">
+        For when port 2019 sits behind a reverse proxy that enforces HTTP Basic Auth (a simpler alternative to WireGuard/Tailscale for remote admin). Leave both blank for unauthenticated admin APIs on an internal network.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs text-ink-600 mb-1">Username</label>
+          <input type="text" name="admin_username" value="{{.Target.AdminUsername}}" autocomplete="off" placeholder="admin"
+            class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+        </div>
+        <div>
+          <label class="block text-xs text-ink-600 mb-1">
+            Password
+            {{if and .Target.ID .Target.AdminPassword}}<span class="text-ink-400 font-normal">· leave blank to keep current</span>{{end}}
+          </label>
+          <input type="password" name="admin_password" value="" autocomplete="new-password" placeholder="{{if and .Target.ID .Target.AdminPassword}}••••••••{{else}}secret{{end}}"
+            class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+        </div>
+      </div>
+      {{if and .Target.ID .Target.AdminPassword}}
+      <label class="inline-flex items-center gap-2 mt-3 text-xs text-ink-600 cursor-pointer">
+        <input type="checkbox" name="clear_admin_password" value="1" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        Clear saved password on this server
+      </label>
+      {{end}}
     </div>
   </div>
 

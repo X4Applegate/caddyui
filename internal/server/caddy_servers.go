@@ -4,21 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/models"
 	"github.com/go-chi/chi/v5"
 )
 
+// isValidAdminURL returns true for URLs CaddyUI knows how to dial:
+//   - http:// and https:// for standard TCP (optionally wrapped in TLS)
+//   - unix:// for a Unix domain socket path (e.g. unix:///run/caddy-admin.sock)
+//
+// Empty strings and anything else (file://, ftp://, bare hostnames) are rejected.
+func isValidAdminURL(u string) bool {
+	return strings.HasPrefix(u, "http://") ||
+		strings.HasPrefix(u, "https://") ||
+		strings.HasPrefix(u, "unix://")
+}
+
 // SeedBootstrapServer inserts the first Caddy server using the admin URL the
 // process was launched with. No-op once any server row exists — idempotent so
-// restarts don't resurrect deleted rows.
-func (s *Server) SeedBootstrapServer(adminURL string) error {
+// restarts don't resurrect deleted rows. Optional username/password seed the
+// bootstrap server with HTTP Basic Auth credentials (from CADDY_ADMIN_USER /
+// CADDY_ADMIN_PASS env vars) for setups that gate port 2019 behind a reverse
+// proxy that enforces basic auth.
+func (s *Server) SeedBootstrapServer(adminURL, username, password string) error {
 	n, err := models.CountCaddyServers(s.DB)
 	if err != nil {
 		return err
@@ -27,9 +41,11 @@ func (s *Server) SeedBootstrapServer(adminURL string) error {
 		return nil
 	}
 	_, err = models.CreateCaddyServer(s.DB, &models.CaddyServer{
-		Name:     "Primary",
-		AdminURL: adminURL,
-		Type:     models.CaddyServerTypeManaged,
+		Name:          "Primary",
+		AdminURL:      adminURL,
+		Type:          models.CaddyServerTypeManaged,
+		AdminUsername: username,
+		AdminPassword: password,
 	})
 	return err
 }
@@ -60,11 +76,13 @@ func (s *Server) newServerPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	c := &models.CaddyServer{
-		Name:     strings.TrimSpace(r.FormValue("name")),
-		AdminURL: strings.TrimSpace(r.FormValue("admin_url")),
-		Type:     r.FormValue("type"),
-		Tags:     strings.TrimSpace(r.FormValue("tags")),
-		Version:  strings.TrimSpace(r.FormValue("version")),
+		Name:          strings.TrimSpace(r.FormValue("name")),
+		AdminURL:      strings.TrimSpace(r.FormValue("admin_url")),
+		Type:          r.FormValue("type"),
+		Tags:          strings.TrimSpace(r.FormValue("tags")),
+		Version:       strings.TrimSpace(r.FormValue("version")),
+		AdminUsername: strings.TrimSpace(r.FormValue("admin_username")),
+		AdminPassword: r.FormValue("admin_password"),
 	}
 	renderErr := func(msg string) {
 		s.render(w, r, "server_form.html", map[string]any{
@@ -79,11 +97,11 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c.AdminURL == "" {
-		renderErr("Admin URL is required (e.g. http://10.0.0.2:2019)")
+		renderErr("Admin URL is required (e.g. http://10.0.0.2:2019 or unix:///run/caddy-admin.sock)")
 		return
 	}
-	if !strings.HasPrefix(c.AdminURL, "http://") && !strings.HasPrefix(c.AdminURL, "https://") {
-		renderErr("Admin URL must start with http:// or https://")
+	if !isValidAdminURL(c.AdminURL) {
+		renderErr("Admin URL must start with http://, https://, or unix:///")
 		return
 	}
 	id, err := models.CreateCaddyServer(s.DB, c)
@@ -122,6 +140,15 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 	existing.Type = r.FormValue("type")
 	existing.Tags = strings.TrimSpace(r.FormValue("tags"))
 	existing.Version = strings.TrimSpace(r.FormValue("version"))
+	existing.AdminUsername = strings.TrimSpace(r.FormValue("admin_username"))
+	// Password: if the form submitted a blank value AND the user didn't explicitly
+	// check the "clear password" box, keep the existing one. Protects against
+	// masked-field UX where the password isn't re-typed on every edit.
+	if newPw := r.FormValue("admin_password"); newPw != "" {
+		existing.AdminPassword = newPw
+	} else if r.FormValue("clear_admin_password") == "1" {
+		existing.AdminPassword = ""
+	}
 	renderErr := func(msg string) {
 		s.render(w, r, "server_form.html", map[string]any{
 			"User":    s.currentUser(r),
@@ -134,8 +161,8 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 		renderErr("Name is required")
 		return
 	}
-	if existing.AdminURL == "" || (!strings.HasPrefix(existing.AdminURL, "http://") && !strings.HasPrefix(existing.AdminURL, "https://")) {
-		renderErr("Admin URL must start with http:// or https://")
+	if existing.AdminURL == "" || !isValidAdminURL(existing.AdminURL) {
+		renderErr("Admin URL must start with http://, https://, or unix:///")
 		return
 	}
 	if err := models.UpdateCaddyServer(s.DB, existing); err != nil {
@@ -205,9 +232,9 @@ func (s *Server) viewServerConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, c.AdminURL+"/config/", nil)
-	resp, err := client.Do(req)
+	// Use a caddy.Client so the read respects auth + unix-socket transport.
+	cc := caddy.New(c.AdminURL, c.AdminUsername, c.AdminPassword)
+	_, raw, err := cc.FetchConfig()
 	if err != nil {
 		s.render(w, r, "server_config.html", map[string]any{
 			"User":    s.currentUser(r),
@@ -217,11 +244,9 @@ func (s *Server) viewServerConfig(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	pretty := string(raw)
+	pretty := raw
 	var v any
-	if err := json.Unmarshal(raw, &v); err == nil {
+	if err := json.Unmarshal([]byte(raw), &v); err == nil {
 		if b, err := json.MarshalIndent(v, "", "  "); err == nil {
 			pretty = string(b)
 		}
@@ -230,7 +255,7 @@ func (s *Server) viewServerConfig(w http.ResponseWriter, r *http.Request) {
 		"User":    s.currentUser(r),
 		"Target":  c,
 		"Config":  pretty,
-		"Status":  resp.StatusCode,
+		"Status":  200,
 		"Section": "servers",
 	})
 }
@@ -268,24 +293,22 @@ func (s *Server) pollAllServers(ctx context.Context) {
 }
 
 func (s *Server) pollOneServer(ctx context.Context, srv models.CaddyServer) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.AdminURL+"/config/", nil)
+	// Build a caddy.Client per ping so we pick up any admin URL / credential
+	// changes made via the UI since the last tick, and so the ping goes
+	// through the same transport + auth path as real requests (unix sockets
+	// and basic-auth-wrapped endpoints both work out of the box).
+	client := caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	code, err := client.Ping(pingCtx)
 	if err != nil {
 		_ = models.SetCaddyServerStatus(s.DB, srv.ID, models.CaddyServerStatusOffline, nil)
 		return
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		_ = models.SetCaddyServerStatus(s.DB, srv.ID, models.CaddyServerStatusOffline, nil)
-		return
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	status := models.CaddyServerStatusOnline
-	if resp.StatusCode >= 500 {
+	if code >= 500 {
 		status = models.CaddyServerStatusOffline
 	}
 	now := time.Now()
 	_ = models.SetCaddyServerStatus(s.DB, srv.ID, status, &now)
-
 }

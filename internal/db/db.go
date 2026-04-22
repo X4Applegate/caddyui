@@ -277,6 +277,24 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Admin-API auth columns on caddy_servers. Lets users put Caddy's admin
+	// endpoint behind HTTP Basic Auth (via a reverse proxy) when they can't
+	// use WireGuard/Tailscale to hide port 2019 on a private network.
+	for _, col := range []struct{ name, def string }{
+		{"admin_username", "TEXT NOT NULL DEFAULT ''"},
+		{"admin_password", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := columnExists(db, "caddy_servers", col.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE caddy_servers ADD COLUMN %s %s`, col.name, col.def)); err != nil {
+				return fmt.Errorf("add %s to caddy_servers: %w", col.name, err)
+			}
+		}
+	}
+
 	return nil
 }
 

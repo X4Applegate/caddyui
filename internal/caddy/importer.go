@@ -25,6 +25,7 @@ func (c *Client) FetchConfig() (map[string]any, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	c.applyAuth(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, "", err
@@ -54,6 +55,7 @@ func (c *Client) FetchPath(path string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.applyAuth(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err

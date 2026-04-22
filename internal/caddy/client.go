@@ -2,9 +2,11 @@ package caddy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -12,16 +14,80 @@ import (
 	"github.com/X4Applegate/caddyui/internal/models"
 )
 
+// Client talks to a single Caddy instance's admin API.
+//
+// The AdminURL can be:
+//   - http://host:port  — plain TCP (default Caddy: http://localhost:2019)
+//   - https://host:port — if you've wrapped the admin API behind a TLS proxy
+//   - unix:///path/to/caddy-admin.sock — dials a Unix domain socket instead
+//     of TCP. The path is taken verbatim after "unix://". All HTTP requests
+//     then use a dummy "http://unix/..." scheme; the transport rewrites the
+//     dial target to the socket file.
+//
+// If Username/Password are set, every request includes an
+// `Authorization: Basic <base64(user:pass)>` header so the call can traverse
+// a reverse proxy that enforces HTTP Basic Auth in front of port 2019.
 type Client struct {
 	AdminURL string
-	HTTP     *http.Client
+	Username string
+	Password string
+	// socketPath is populated when AdminURL has the unix:// scheme; the
+	// effective URL sent to the HTTP transport is rewritten to http://unix.
+	socketPath string
+	HTTP       *http.Client
 }
 
-func New(adminURL string) *Client {
-	return &Client{
-		AdminURL: strings.TrimRight(adminURL, "/"),
-		HTTP:     &http.Client{Timeout: 10 * time.Second},
+// New returns a Client configured to talk to adminURL. Pass empty strings for
+// username/password to skip the Authorization header.
+func New(adminURL, username, password string) *Client {
+	adminURL = strings.TrimRight(adminURL, "/")
+	c := &Client{
+		AdminURL: adminURL,
+		Username: username,
+		Password: password,
 	}
+	// Detect unix:// scheme and wire a custom transport that dials the socket.
+	// The caller-facing AdminURL is replaced with http://unix so net/http will
+	// build a valid request; the transport's DialContext ignores the host.
+	if strings.HasPrefix(adminURL, "unix://") {
+		c.socketPath = strings.TrimPrefix(adminURL, "unix://")
+		c.AdminURL = "http://unix"
+		tr := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", c.socketPath)
+			},
+		}
+		c.HTTP = &http.Client{Timeout: 10 * time.Second, Transport: tr}
+		return c
+	}
+	c.HTTP = &http.Client{Timeout: 10 * time.Second}
+	return c
+}
+
+// applyAuth attaches HTTP Basic Auth to req when credentials are configured.
+func (c *Client) applyAuth(req *http.Request) {
+	if c.Username != "" || c.Password != "" {
+		req.SetBasicAuth(c.Username, c.Password)
+	}
+}
+
+// Ping does a cheap GET /config/ against the admin API and returns (status, err).
+// Used by the health poller so it goes through the same transport + auth as
+// the rest of the client (works for unix sockets and basic-auth-wrapped endpoints).
+func (c *Client) Ping(ctx context.Context) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.AdminURL+"/config/", nil)
+	if err != nil {
+		return 0, err
+	}
+	c.applyAuth(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, nil
 }
 
 type LoadedConfig struct {
@@ -69,6 +135,7 @@ func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "text/caddyfile")
+	c.applyAuth(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("caddy adapt: %w", err)
@@ -95,6 +162,7 @@ func (c *Client) send(method, path string, val any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.applyAuth(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("caddy %s %s: %w", method, path, err)
