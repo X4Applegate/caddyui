@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.3.1] — 2026-04-22 · Hotfix — ambiguous column name on startup sync
+
+### Fixed
+- **Startup sync crash** (`SQL logic error: ambiguous column name: id`) — `ListProxyHosts` queries `proxy_hosts` joined with `users` for the owner email, but the shared `proxyHostBaseCols` constant used bare column names (`id`, `domains`, …). SQLite couldn't disambiguate `id` across the two tables and the query failed, aborting startup sync. Fixed by qualifying every column in `proxyHostBaseCols` with the `ph` alias and updating `GetProxyHost` to alias `proxy_hosts AS ph` in its FROM clause. No schema change.
+
+### Docker
+- Published as `applegater/caddyui:v2.3.1` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.3.0] — 2026-04-22 · Multi-Provider DNS (Namecheap, GoDaddy, DigitalOcean, Hetzner)
 
 ### Added
