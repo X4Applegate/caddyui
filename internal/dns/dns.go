@@ -39,19 +39,22 @@ const (
 )
 
 // Zone is a provider-agnostic view of a DNS zone on the user's account.
+// JSON tags are lowercase because the proxy-host form's zone picker JS
+// reads z.id / z.name — without tags Go would marshal "ID"/"Name" and
+// the dropdown would show "undefined".
 type Zone struct {
-	ID   string // provider-native identifier (CF: opaque ID; PB/DO/GD/NC: domain name; Hetzner: opaque ID)
-	Name string // base domain, e.g. "example.com"
+	ID   string `json:"id"`   // provider-native identifier (CF: opaque ID; PB/DO/GD/NC: domain name; Hetzner: opaque ID)
+	Name string `json:"name"` // base domain, e.g. "example.com"
 }
 
 // Record is the minimal record descriptor CaddyUI tracks after creation.
 // Only ID + Name are load-bearing — Name is returned to aid logging.
 type Record struct {
-	ID      string
-	Name    string // FQDN ("app.example.com")
-	Type    string
-	Content string
-	TTL     int
+	ID      string `json:"id"`
+	Name    string `json:"name"` // FQDN ("app.example.com")
+	Type    string `json:"type"`
+	Content string `json:"content"`
+	TTL     int    `json:"ttl"`
 }
 
 // Provider is the interface every DNS integration implements. All methods
