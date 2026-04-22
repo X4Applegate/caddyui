@@ -21,6 +21,7 @@
     <li><a href="#snapshots" class="text-brand-600 hover:text-brand-700 hover:underline">Snapshots & Backup</a></li>
     <li><a href="#multiserver" class="text-brand-600 hover:text-brand-700 hover:underline">Multi-server</a></li>
     <li><a href="#users" class="text-brand-600 hover:text-brand-700 hover:underline">Users & 2FA</a></li>
+    <li><a href="#docker-networking" class="text-brand-600 hover:text-brand-700 hover:underline">Docker networking</a></li>
     <li><a href="#faq" class="text-brand-600 hover:text-brand-700 hover:underline">FAQ & Troubleshooting</a></li>
   </ul>
 </nav>
@@ -264,6 +265,111 @@
   </div>
 </section>
 
+{{/* ── Docker networking ── */}}
+<section id="docker-networking" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="2" y="7" width="6" height="6" rx="1"/><rect x="9" y="4" width="6" height="6" rx="1"/><rect x="9" y="14" width="6" height="6" rx="1"/><rect x="16" y="7" width="6" height="6" rx="1"/><path d="M5 13v2a2 2 0 0 0 2 2h2M19 13v2a2 2 0 0 1-2 2h-2M12 10v4"/></svg>
+    </span>
+    Docker networking: why Caddy can't see your container
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>This trips up <em>everyone</em> running Caddy in Docker. You add a proxy host, the cert issues fine, you open the URL… and get a <strong>502</strong>. Caddy's logs say something like:</p>
+    <pre class="bg-ink-900 text-ink-100 text-xs rounded-lg p-3 overflow-x-auto"><code>dial tcp: lookup status-server on 127.0.0.11:53: server misbehaving
+status: 502</code></pre>
+    <p>That error is Docker's internal DNS (<code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">127.0.0.11</code>) telling Caddy it has no idea what <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">status-server</code> is. Not an SSL problem, not a Caddy bug — a <strong>Docker network</strong> problem.</p>
+
+    <h3 class="font-semibold text-ink-900 mt-4">The rule</h3>
+    <p>Docker's embedded DNS only resolves container names on the <strong>same user-defined network</strong>. If Caddy is on network <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">proxy-net</code> and your upstream container is on <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">status-net</code> (or on the default <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">bridge</code>, which has no DNS at all), Caddy cannot resolve it — full stop.</p>
+
+    <h3 class="font-semibold text-ink-900 mt-4">The fix: one shared network</h3>
+    <p>Create a single network (call it whatever — <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">caddy-net</code> is common) and attach <strong>every</strong> container Caddy needs to reach. Example <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker-compose.yml</code>:</p>
+    <pre class="bg-ink-900 text-ink-100 text-xs rounded-lg p-3 overflow-x-auto"><code>services:
+  caddy:
+    image: caddy:latest
+    networks:
+      - caddy-net
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+
+  caddyui:
+    image: applegater/caddyui:latest
+    networks:
+      - caddy-net
+    environment:
+      CADDY_ADMIN_URL: http://caddy:2019
+    volumes:
+      - caddyui_data:/data
+
+  status-server:
+    image: louislam/uptime-kuma:1
+    networks:
+      - caddy-net
+    volumes:
+      - kuma_data:/app/data
+
+networks:
+  caddy-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddyui_data:
+  kuma_data:</code></pre>
+    <p>Now in CaddyUI's proxy host, the <strong>Forward host</strong> is simply the service name (<code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">status-server</code>) — Docker's DNS resolves it to the container's internal IP.</p>
+
+    <h3 class="font-semibold text-ink-900 mt-4">Already-running containers: bolt them on</h3>
+    <p>If the app you want to expose was already running in a separate <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker-compose.yml</code>, you don't have to merge everything. Make the Caddy network <em>external</em> and import it on the other side:</p>
+    <p>In Caddy's compose file:</p>
+    <pre class="bg-ink-900 text-ink-100 text-xs rounded-lg p-3 overflow-x-auto"><code>networks:
+  caddy-net:
+    name: caddy-net
+    driver: bridge</code></pre>
+    <p>In the other app's compose file:</p>
+    <pre class="bg-ink-900 text-ink-100 text-xs rounded-lg p-3 overflow-x-auto"><code>services:
+  status-server:
+    # … existing config …
+    networks:
+      - default
+      - caddy-net
+
+networks:
+  caddy-net:
+    external: true</code></pre>
+    <p>The upstream keeps its own private network for talking to its database, AND joins <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">caddy-net</code> so Caddy can reach it.</p>
+
+    <h3 class="font-semibold text-ink-900 mt-4">No recompose? Connect a live container</h3>
+    <pre class="bg-ink-900 text-ink-100 text-xs rounded-lg p-3 overflow-x-auto"><code>docker network connect caddy-net status-server</code></pre>
+    <p>Immediate, no restart. (But write it into compose too — this won't survive <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker compose up</code>.)</p>
+
+    <h3 class="font-semibold text-ink-900 mt-4">When the upstream isn't in Docker at all</h3>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><strong>On the same host</strong> (a native systemd service, a bare-metal daemon): use <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">host.docker.internal</code> (Docker Desktop) or <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">172.17.0.1</code> / <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">host-gateway</code> on Linux.</li>
+      <li><strong>On another machine</strong>: use its LAN IP. Make sure the upstream is listening on all interfaces, not just <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">127.0.0.1</code>.</li>
+    </ul>
+
+    <h3 class="font-semibold text-ink-900 mt-4">Quick diagnosis cheat sheet</h3>
+    <pre class="bg-ink-900 text-ink-100 text-xs rounded-lg p-3 overflow-x-auto"><code># what network is Caddy on?
+docker inspect caddy --format '{{`{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}`}}'
+
+# can Caddy resolve the upstream name?
+docker exec caddy nslookup status-server
+# (or: docker exec caddy wget -qO- http://status-server:3001)
+
+# list everything on a given network
+docker network inspect caddy-net</code></pre>
+    <p>If <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">nslookup</code> works but <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">wget</code> fails, the DNS is fine but the upstream port is wrong — double-check the <strong>Forward port</strong> in CaddyUI.</p>
+
+    <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
+      <strong>Rule of thumb:</strong> any new upstream you add needs to either share a network with Caddy or be reached by host/LAN IP. A single <code class="px-1 py-0.5 bg-amber-100 rounded font-mono">caddy-net</code> that every service joins saves a lot of "why can't Caddy see this" debugging later.
+    </div>
+  </div>
+</section>
+
 {{/* ── FAQ ── */}}
 <section id="faq" class="scroll-mt-20">
   <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
@@ -289,6 +395,13 @@
       <summary class="font-medium text-ink-800 cursor-pointer">I changed a rule but the site still shows the old behavior.</summary>
       <div class="mt-2 text-ink-600">
         <p>Hard-refresh your browser (Ctrl/Cmd + Shift + R). Clients, CDNs, and service workers cache aggressively. On the Caddy side the config changes on save — no restart needed.</p>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">My proxy host gets a cert but returns 502 Bad Gateway.</summary>
+      <div class="mt-2 text-ink-600 space-y-1.5">
+        <p>TLS succeeded, but Caddy can't reach the upstream. Usually a Docker network mismatch — if you see <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">lookup <em>name</em> on 127.0.0.11:53: server misbehaving</code> in the logs, your upstream container isn't on the same Docker network as Caddy.</p>
+        <p>See <a href="#docker-networking" class="text-brand-600 hover:text-brand-700">Docker networking</a> above for the full fix — short version: create one shared <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">caddy-net</code> and attach every container Caddy needs to reach.</p>
       </div>
     </details>
     <details class="group">
