@@ -146,7 +146,7 @@
 {{/* Mobile cards */}}
 <div class="lg:hidden space-y-2">
   {{range .ProxyHosts}}
-  <a href="/proxy-hosts/{{.ID}}/edit" class="block bg-white border border-ink-200 rounded-xl shadow-card p-4 hover:border-brand-300 transition">
+  <a href="/proxy-hosts/{{.ID}}/edit" class="block bg-white border border-ink-200 rounded-xl shadow-card p-4 hover:border-brand-300 transition" data-host-id="{{.ID}}">
     <div class="flex items-start justify-between gap-2 mb-1">
       <div class="flex flex-wrap gap-1 min-w-0">
         {{range splitDomains .Domains}}<span class="domain-pill break-all">{{.}}</span>{{end}}
@@ -157,7 +157,10 @@
         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</span>
       {{end}}
     </div>
-    <div class="text-xs font-mono text-ink-400">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</div>
+    <div class="flex items-center gap-1.5 text-xs font-mono text-ink-400">
+      <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Checking..."></span>
+      {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
+    </div>
   </a>
   {{else}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-10 text-center">
@@ -179,13 +182,19 @@
     </thead>
     <tbody>
       {{range .ProxyHosts}}
-      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition" data-host-id="{{.ID}}">
         <td class="px-5 py-3">
           <div class="flex flex-wrap gap-1">
-            {{range splitDomains .Domains}}<a href="/proxy-hosts?q={{.}}" title="Open {{.}} in Proxy Hosts" class="domain-pill">{{.}}</a>{{end}}
+            {{$hostID := .ID}}
+            {{range splitDomains .Domains}}<a href="/proxy-hosts/{{$hostID}}/edit" title="Edit {{.}}" class="domain-pill">{{.}}</a>{{end}}
           </div>
         </td>
-        <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</td>
+        <td class="px-5 py-3 font-mono text-xs text-ink-600">
+          <span class="inline-flex items-center gap-1.5">
+            <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Checking..."></span>
+            {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
+          </span>
+        </td>
         <td class="px-5 py-3">
           {{if .Enabled}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
@@ -230,6 +239,37 @@
       }
     })
     .catch(function(){});
+})();
+
+// Per-host upstream health dots (parity with /proxy-hosts). Refreshes once
+// on load; the poller on the server keeps the cache warm so a reload shows
+// current state.
+(function() {
+  function applyHealth(data) {
+    var byId = {};
+    data.forEach(function(h) { byId[h.id] = h; });
+    document.querySelectorAll('[data-host-id]').forEach(function(el) {
+      var id = parseInt(el.dataset.hostId, 10);
+      var dot = el.querySelector('.health-dot');
+      if (!dot || !byId[id]) return;
+      var h = byId[id];
+      dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500');
+      if (h.status === 'ok') {
+        dot.classList.add('bg-green-500');
+        dot.title = 'Reachable (' + h.latency_ms + 'ms)';
+      } else if (h.status === 'disabled') {
+        dot.classList.add('bg-ink-300');
+        dot.title = 'Disabled';
+      } else {
+        dot.classList.add('bg-red-500');
+        dot.title = 'Unreachable: ' + (h.error || h.status);
+      }
+    });
+  }
+  fetch('/api/upstream-health')
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(data) { if (data) applyHealth(data); })
+    .catch(function() {});
 })();
 </script>
 {{end}}
