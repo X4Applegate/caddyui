@@ -5,6 +5,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.1.1] — 2026-04-22 · Blue PWA Icons & Theme Color
+
+### Changed
+- **PWA icons** — `icon-192.png` and `icon-512.png` regenerated with the new blue gradient (`#3b82f6 → #2563eb`); the white hexagon mark is preserved so the brand identity carries over
+- **manifest theme_color** — updated from green (`#059669`) to blue (`#2563eb`) so the browser chrome and Add-to-Home-Screen splash match the refreshed in-app palette
+
+### Docker
+- Published as `applegater/caddyui:v2.1.1` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
+## [2.1.0] — 2026-04-22 · Blue Theme, Admin API Auth, Unix Sockets, Docs
+
+### Added
+- **HTTP Basic Auth for Caddy admin API** — per-server `admin_username` / `admin_password` fields let you put port 2019 behind a reverse proxy that enforces Basic Auth (simpler alternative to WireGuard/Tailscale for remote admin)
+  - Bootstrap server reads `CADDY_ADMIN_USER` / `CADDY_ADMIN_PASS` env vars
+  - "Leave blank to keep current" UX on edit; explicit **Clear saved password** checkbox so masked inputs can't silently wipe credentials
+  - `caddy.Client` refactored so health poller, config viewer, and sync all flow through the same auth + transport path
+- **Unix domain socket transport** — admin URL now accepts `unix:///run/caddy-admin.sock` for zero network exposure on single-host setups; `http.Transport.DialContext` dials the socket while the URL presents as `http://unix` to the rest of the stack
+- **HTTPS admin URLs** — `https://host:2019` accepted for TLS-wrapped admin APIs
+- **Docs / Tutorial page** (`/docs`) — full walkthrough: first-time setup, proxy hosts, redirections (with HTTP-code explanations), advanced routes, certificates, Cloudflare DNS, import, snapshots, multi-server transports, users & 2FA, and a FAQ
+- **Human-readable HTTP redirect codes** — redirection lists and the edit form now show the name next to the number (301 — Moved Permanently, 302 — Found, 307/308 — Temporary/Permanent Redirect) with a tooltip on hover and an inline explainer panel on the form
+- **`.version-pill`** CSS class — same blue family as domain pills but smaller, so the Caddy server version chip reads as secondary metadata
+
+### Changed
+- **Domain pills** — grey → vivid blue gradient (`#3b82f6 → #2563eb`) with hover lift + soft blue glow; updated for both light and dark modes so proxy host / redirection / advanced route domains "pop" consistently everywhere they appear
+- **Main content container** — widened from `max-w-6xl` to `max-w-[1600px]` so the Actions column stays in-frame on wide monitors
+- **Database migration** — new `admin_username` and `admin_password` columns on `caddy_servers`, applied automatically at startup via `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` check
+
+### Docker
+- Originally published as `applegater/caddyui:v2.1.0` (superseded by v2.1.1 — see above)
+
+---
+
+## [2.0.x] — 2026-04-21 · Concurrency & Mobile Fixes
+
+### Fixed
+- **SQLITE_BUSY under concurrent writes** — enabled WAL mode and `busy_timeout=5000`, capped `SetMaxOpenConns(1)` so the health poller, web requests, and notifier don't trip the SQLite write lock under load
+- **Mobile layout** — raised the responsive breakpoint from `md` (768 px) to `lg` (1024 px) on list pages so narrow-viewport tablets get the mobile card layout instead of a cramped desktop table
+
+### Added
+- **Cloudflare DNS integration** (`internal/cloudflare/`) — optional auto-managed A records for proxy hosts; records auto-retarget when the server IP changes in Settings
+- **Scratch-based Docker image** with SBOM + provenance attestation; non-root UID 10001
+- **Cloudflare Turnstile** login protection (optional)
+
+---
+
 ## [1.0.0] — 2025-04-21 · First Stable Release
 
 The project started as a private tool to manage a home-lab Caddy setup without editing config files by hand.
