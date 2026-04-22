@@ -35,6 +35,10 @@ services:
       CADDYUI_LISTEN: :8080
       CADDY_ADMIN_URL: http://caddy:2019
       CADDYFILE_PATH: /etc/caddy/Caddyfile
+      # Push DB state to Caddy on every startup so `docker compose restart`
+      # rehydrates routes from the CaddyUI DB. Safe: SyncCaddy bails out when
+      # the DB is empty, so first-boot won't wipe an existing Caddyfile.
+      CADDYUI_SYNC_ON_START: "1"
     networks:
       - caddyui
 
