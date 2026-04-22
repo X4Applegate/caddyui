@@ -3641,8 +3641,21 @@ func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Not in Caddy's upstream list yet (newly added / not yet synced).
-		// Fall back to a direct probe — only works for publicly reachable hosts.
+		// Not in Caddy's upstream list yet (newly added / not yet synced,
+		// or using an unmanaged handler the /reverse_proxy/upstreams API
+		// doesn't expose). For Docker-internal backends (no dots in the
+		// hostname — e.g. "status-server", "snipeit-app") a direct probe
+		// from the caddyui container will fail with "no such host" since
+		// caddyui usually isn't on the target's Docker network. Don't flag
+		// that as error — mark it "unknown" (grey dot) so users don't see
+		// a red "down" badge on a backend that's actually working. For
+		// dotted hostnames (e.g. "api.example.com") we still try the probe.
+		if isInternalHostname(h.ForwardHost) {
+			results[i].Status = "unknown"
+			results[i].Error = "caddyui cannot resolve " + h.ForwardHost + " — check via Caddy admin"
+			continue
+		}
+		// Fall back to a direct probe for public / dotted hostnames.
 		wg.Add(1)
 		go func(idx int, h models.ProxyHost) {
 			defer wg.Done()
@@ -3659,8 +3672,16 @@ func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			defer mu.Unlock()
 			if err2 != nil {
-				results[idx].Status = "error"
-				results[idx].Error = err2.Error()
+				// DNS errors → "unknown" not "error": caddyui's network
+				// namespace may legitimately not be able to resolve the
+				// name even though Caddy can.
+				if isDNSError(err2) {
+					results[idx].Status = "unknown"
+					results[idx].Error = err2.Error()
+				} else {
+					results[idx].Status = "error"
+					results[idx].Error = err2.Error()
+				}
 			} else {
 				results[idx].Status = "ok"
 				results[idx].LatencyMS = latency
@@ -3678,6 +3699,41 @@ type caddyUpstreamInfo struct {
 	Address     string `json:"address"`
 	NumRequests int    `json:"num_requests"`
 	Fails       int    `json:"fails"`
+}
+
+// isInternalHostname returns true when the forward host looks like a Docker
+// service name or short intranet hostname — i.e. no dots, not an IP literal,
+// not "localhost". In that case caddyui (in its own container) almost
+// certainly cannot resolve it, but Caddy on the target network can. Use this
+// to downgrade health-probe results from "error" to "unknown" so the UI
+// doesn't flag working backends as down.
+func isInternalHostname(host string) bool {
+	if host == "" || host == "localhost" {
+		return false
+	}
+	if strings.Contains(host, ".") {
+		return false
+	}
+	// IPv6 without brackets or with scope? Anything with a colon is unusual
+	// in ForwardHost (we store port separately) — treat as external.
+	if strings.Contains(host, ":") {
+		return false
+	}
+	return true
+}
+
+// isDNSError returns true when err is a DNS resolution failure (as opposed
+// to a connection refused / timeout / TLS error). DNS failure from the
+// caddyui container doesn't imply the backend is down — Caddy on a
+// different Docker network may resolve it fine.
+func isDNSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "no such host") ||
+		strings.Contains(s, "server misbehaving") ||
+		strings.Contains(s, "Temporary failure in name resolution")
 }
 
 // fetchCaddyUpstreams queries the Caddy admin API for current upstream health.
