@@ -34,7 +34,7 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 - **Redirections** — 301/302/307/308 redirect rules across hostnames
 - **Advanced Routes** — import raw Caddyfile blocks or write JSON directly for anything the UI can't model
 - **Certificates** — manage custom PEM/path certificates; expiry alerts via email and/or webhook
-- **Multi-server** — manage multiple Caddy instances from a single UI; switch with a dropdown
+- **Multi-server** — manage multiple Caddy instances from a single UI; switch with a dropdown. Edge hosts only need Caddy — no CaddyUI container required (see [Agent mode](#agent-mode-edge-only-caddy-no-caddyui))
 - **Multi-user** — admin and user roles; each user sees and manages only their own proxies
 - **Email notifications** — SMTP support (STARTTLS / TLS / plain) for cert-expiry and upstream health alerts
 - **Upstream health** — live health check per proxy; polls Caddy's own admin API so Docker-internal hostnames work correctly
@@ -112,6 +112,50 @@ docker run -d \
   applegater/caddyui:latest
 ```
 
+### Agent mode (edge-only Caddy, no CaddyUI)
+
+For multi-host setups you only need **one** CaddyUI container. Every other
+host — the "agent" or "edge" nodes — runs only Caddy, and the central CaddyUI
+manages them remotely through Caddy's admin API (typically tunneled over
+WireGuard or Tailscale).
+
+On each edge host:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    # --resume is required so admin-API pushes persist across Caddy restarts.
+    command: caddy run --config /config/caddy/autosave.json --resume --adapter json
+    ports:
+      # Bind the admin API to your private tunnel IP (WireGuard / Tailscale).
+      # Do NOT expose :2019 on a public interface.
+      - "10.8.0.2:2019:2019"
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
+```
+
+Then in the central CaddyUI, go to **System → Caddy Servers → Add Server** and
+point it at `http://10.8.0.2:2019` (or whatever private address the edge listens
+on). All proxy hosts, certificates, and routes for that edge are managed from
+the central UI — no database, no UI container, no extra port to expose on the
+edge.
+
+> **Why `--resume`?** In default mode Caddy loads only the Caddyfile at boot
+> and discards anything pushed to the admin API. With `--resume` Caddy boots
+> from `autosave.json` (the last live config it received via the admin API),
+> so CaddyUI's pushes survive `docker compose restart`.
+
 ---
 
 ## Environment Variables
@@ -148,6 +192,8 @@ Configure under **System → Settings → Email (SMTP)**:
 ### Multi-Server
 
 Add additional Caddy instances under **System → Caddy Servers**. Switch the active server with the dropdown in the sidebar. All proxy hosts, redirections, routes, and certificates are scoped per server.
+
+Edge / remote hosts do **not** need to run a CaddyUI container — just Caddy with its admin API reachable over a private network (WireGuard, Tailscale, VPC). See [Agent mode](#agent-mode-edge-only-caddy-no-caddyui) for the minimal compose file.
 
 ---
 
