@@ -261,18 +261,22 @@ func CountUsers(db *sql.DB) (int, error) {
 	return n, err
 }
 
-// Column list shared between ListProxyHosts and GetProxyHost. The unified
-// dns_* columns sit at the end; cf_*/pb_* are not read — their data was
-// copied into dns_* by the v2.3.0 migration in internal/db.
-const proxyHostBaseCols = `id, domains, forward_scheme, forward_host, forward_port,
-    websocket_support, block_common_exploits, ssl_enabled, ssl_forced,
-    http2_support, COALESCE(advanced_config, ''), enabled,
-    COALESCE(certificate_id, 0), created_at, updated_at,
-    basicauth_enabled, COALESCE(basicauth_users, '[]'),
-    COALESCE(access_list, ''), COALESCE(extra_upstreams, '[]'),
-    COALESCE(owner_id, 0),
-    COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
-    COALESCE(dns_zone_name,''), COALESCE(dns_record_id,'')`
+// Column list shared between ListProxyHosts and GetProxyHost. Every column
+// is qualified with the `ph` alias so the same string works inside the
+// users-JOIN SELECTs in ListProxyHosts (where bare `id` would collide with
+// users.id and raise SQLite "ambiguous column name: id"). Callers must
+// alias proxy_hosts AS ph in the FROM clause. The unified dns_* columns
+// sit at the end; cf_*/pb_* are not read — their data was copied into
+// dns_* by the v2.3.0 migration in internal/db.
+const proxyHostBaseCols = `ph.id, ph.domains, ph.forward_scheme, ph.forward_host, ph.forward_port,
+    ph.websocket_support, ph.block_common_exploits, ph.ssl_enabled, ph.ssl_forced,
+    ph.http2_support, COALESCE(ph.advanced_config, ''), ph.enabled,
+    COALESCE(ph.certificate_id, 0), ph.created_at, ph.updated_at,
+    ph.basicauth_enabled, COALESCE(ph.basicauth_users, '[]'),
+    COALESCE(ph.access_list, ''), COALESCE(ph.extra_upstreams, '[]'),
+    COALESCE(ph.owner_id, 0),
+    COALESCE(ph.dns_provider,''), COALESCE(ph.dns_zone_id,''),
+    COALESCE(ph.dns_zone_name,''), COALESCE(ph.dns_record_id,'')`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -349,7 +353,7 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
 func GetProxyHost(db *sql.DB, id int64) (*ProxyHost, error) {
 	var p ProxyHost
 	if err := scanProxyHost(
-		db.QueryRow(`SELECT `+proxyHostBaseCols+` FROM proxy_hosts WHERE id = ?`, id),
+		db.QueryRow(`SELECT `+proxyHostBaseCols+` FROM proxy_hosts ph WHERE ph.id = ?`, id),
 		&p, nil,
 	); err != nil {
 		return nil, err
