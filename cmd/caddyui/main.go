@@ -54,6 +54,11 @@ func main() {
 	pollerCtx, cancelPoller := context.WithCancel(context.Background())
 	defer cancelPoller()
 	srv.StartHealthPoller(pollerCtx)
+	// App-response health poller (v2.4.4): HTTPS GET /<domain> every 60s,
+	// cached and surfaced next to the existing TCP/port health dot. Catches
+	// "port open but app wedged" (e.g. DB unreachable) that the TCP probe
+	// can't see.
+	srv.StartAppHealthPoller(pollerCtx)
 
 	// Feature F: start cert-expiry webhook notifier.
 	server.StartNotifier(conn, caddyClient)

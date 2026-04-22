@@ -158,7 +158,8 @@
       {{end}}
     </div>
     <div class="flex items-center gap-1.5 text-xs font-mono text-ink-400">
-      <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Checking..."></span>
+      <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
+      <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
       {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
     </div>
   </a>
@@ -196,7 +197,8 @@
         </td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">
           <span class="inline-flex items-center gap-1.5">
-            <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Checking..."></span>
+            <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
+            <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
             {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
           </span>
         </td>
@@ -250,28 +252,61 @@
 // on load; the poller on the server keeps the cache warm so a reload shows
 // current state.
 (function() {
+  // Port dot — Caddy can open a TCP connection to the upstream.
+  function paintPort(dot, h) {
+    dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
+    if (h.status === 'ok') {
+      dot.classList.add('bg-green-500');
+      dot.title = 'Port: reachable (' + h.latency_ms + 'ms)';
+    } else if (h.status === 'disabled') {
+      dot.classList.add('bg-ink-300');
+      dot.title = 'Port: disabled';
+    } else if (h.status === 'unknown') {
+      dot.classList.add('bg-amber-400');
+      dot.title = 'Port: unknown (' + (h.error || 'not probeable from caddyui') + ')';
+    } else {
+      dot.classList.add('bg-red-500');
+      dot.title = 'Port: unreachable — ' + (h.error || h.status);
+    }
+  }
+  // App dot — HTTPS GET / reached the app and it returned something sensible.
+  // Empty app_status = poller hasn't run yet (first ~60s after boot); leave grey.
+  function paintApp(dot, h) {
+    dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
+    var s = h.app_status;
+    if (!s) {
+      dot.classList.add('bg-ink-300');
+      dot.title = 'App: checking...';
+      return;
+    }
+    var detail = h.app_code ? ('HTTP ' + h.app_code) : (h.app_error || s);
+    var ms = h.app_latency_ms ? (' in ' + h.app_latency_ms + 'ms') : '';
+    if (s === 'ok') {
+      dot.classList.add('bg-green-500');
+      dot.title = 'App: responding (' + detail + ms + ')';
+    } else if (s === 'disabled') {
+      dot.classList.add('bg-ink-300');
+      dot.title = 'App: disabled';
+    } else if (s === 'unknown') {
+      dot.classList.add('bg-amber-400');
+      dot.title = 'App: unknown (' + (h.app_error || 'not probeable from caddyui') + ')';
+    } else if (s === 'degraded') {
+      dot.classList.add('bg-amber-400');
+      dot.title = 'App: degraded — ' + detail;
+    } else {
+      dot.classList.add('bg-red-500');
+      dot.title = 'App: down — ' + (h.app_error || detail);
+    }
+  }
   function applyHealth(data) {
     var byId = {};
     data.forEach(function(h) { byId[h.id] = h; });
     document.querySelectorAll('[data-host-id]').forEach(function(el) {
       var id = parseInt(el.dataset.hostId, 10);
-      var dot = el.querySelector('.health-dot');
-      if (!dot || !byId[id]) return;
+      if (!byId[id]) return;
       var h = byId[id];
-      dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
-      if (h.status === 'ok') {
-        dot.classList.add('bg-green-500');
-        dot.title = 'Reachable (' + h.latency_ms + 'ms)';
-      } else if (h.status === 'disabled') {
-        dot.classList.add('bg-ink-300');
-        dot.title = 'Disabled';
-      } else if (h.status === 'unknown') {
-        dot.classList.add('bg-amber-400');
-        dot.title = 'Unknown (' + (h.error || 'not probeable from caddyui') + ')';
-      } else {
-        dot.classList.add('bg-red-500');
-        dot.title = 'Unreachable: ' + (h.error || h.status);
-      }
+      el.querySelectorAll('.health-dot').forEach(function(d) { paintPort(d, h); });
+      el.querySelectorAll('.app-dot').forEach(function(d) { paintApp(d, h); });
     });
   }
   fetch('/api/upstream-health')
