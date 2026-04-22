@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.5] — 2026-04-22 · App dot: amber "unknown" for split-horizon DNS (no more false red)
+
+### Fixed
+- **App dot flagging healthy sites as 🔴 `down — connection refused`** when caddyui's container resolves the public domain to a private/RFC1918 IP (`192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`, loopback, ULA, etc.). This happens on LAN setups with split-horizon DNS (router/pihole/unbound hands internal clients the LAN IP of the Caddy host), with `/etc/hosts` overrides, or via Docker's embedded DNS. Your browser sees the public IP and works; caddyui sees the private IP and either can't reach port 443 there or hits something else entirely — the probe result doesn't reflect reality.
+- **App probe now short-circuits to 🟠 `unknown`** when DNS returns only private addresses. Tooltip explains what happened and where the IP came from:
+  > App: unknown — DNS from caddyui points to 192.168.112.7 (private) — probe from here would be misleading; check your browser
+- **Same softening applied post-failure**: if a dial error contains a private IP (Go's format: `dial tcp 192.168.x.x:443: …`), the result is reclassified from "down" to "unknown" — catches DNS-cache/IPv6 races the preflight missed.
+- **No behaviour change for genuine public failures** — if a domain resolves to a public IP and the probe fails (refused / timeout / TLS), it's still 🔴 `down` as before.
+
+### How to read the new state
+If Port is 🟢 and App is 🟠 `unknown (private IP)`, the site is almost certainly working from the public internet — caddyui just can't probe from where it's running. Open in a browser to confirm. If it's working there, nothing to fix.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.5` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.4] — 2026-04-22 · End-to-end "App" health dot (catches "port open but app wedged")
 
 ### Added

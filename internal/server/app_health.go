@@ -127,7 +127,11 @@ func (s *Server) pollAllApps(ctx context.Context) {
 //	ok       — 2xx / 3xx / 401 / 403 (app responded with something sensible)
 //	degraded — 5xx or slow (>appHealthProbeTO)
 //	down     — connection refused / TLS error / timeout
-//	unknown  — domain doesn't resolve publicly (WG/Tailscale-only edge)
+//	unknown  — domain doesn't resolve publicly (WG/Tailscale-only edge),
+//	           resolves only to private/RFC1918 IPs (split-horizon DNS,
+//	           /etc/hosts override, Docker embedded DNS — caddyui's view
+//	           of the world isn't the public internet's view, so refusing
+//	           to judge is the right call), or wildcard domain.
 //
 // Redirects are followed up to appHealthMaxRedirect hops so "/ → /login"
 // ends up as ok (200) rather than showing the 302. Cert validation is
@@ -150,6 +154,22 @@ func (s *Server) probeApp(ctx context.Context, h models.ProxyHost) appHealthEntr
 	// flagging as down.
 	if strings.Contains(primary, "*") {
 		return appHealthEntry{Status: "unknown", Error: "wildcard domain — no specific host to probe", CheckedAt: now}
+	}
+
+	// Preflight: if DNS from caddyui's vantage point resolves the domain
+	// only to private/RFC1918 addresses (split-horizon DNS, /etc/hosts
+	// override, Docker embedded DNS), any probe result here is a view of
+	// caddyui's private network plumbing, not the public reachability the
+	// user cares about. Bail early with "unknown" and a pointed tooltip
+	// instead of showing a misleading red "down" for a site that's fine
+	// from the internet. Handled before the outbound request so we don't
+	// burn a 5s timeout on something we already know won't tell the truth.
+	if ip, onlyPrivate := resolvesOnlyPrivate(primary); onlyPrivate {
+		return appHealthEntry{
+			Status:    "unknown",
+			Error:     fmt.Sprintf("DNS from caddyui points to %s (private) — probe from here would be misleading; check your browser", ip),
+			CheckedAt: now,
+		}
 	}
 
 	// Decide scheme: we always use https because Caddy auto-upgrades, but
@@ -198,6 +218,20 @@ func (s *Server) probeApp(ctx context.Context, h models.ProxyHost) appHealthEntr
 		if isDNSError(err) || isNetDNSError(err) {
 			return appHealthEntry{Status: "unknown", Error: err.Error(), LatencyMS: latency, CheckedAt: now}
 		}
+		// If the dial failed against a private IP, the preflight check
+		// above should've caught this — but DNS caches and IPv6 vs IPv4
+		// races can still slip one through. Re-check the error string for
+		// an embedded private IP (Go error format is
+		// `dial tcp 192.168.x.x:443: connect: connection refused`).
+		// Treat it the same as the preflight case: "unknown", not "down".
+		if ip := privateIPFromErr(err); ip != "" {
+			return appHealthEntry{
+				Status:    "unknown",
+				Error:     fmt.Sprintf("caddyui reached %s (private) — probe from here would be misleading; check your browser", ip),
+				LatencyMS: latency,
+				CheckedAt: now,
+			}
+		}
 		return appHealthEntry{Status: "down", Error: err.Error(), LatencyMS: latency, CheckedAt: now}
 	}
 	defer resp.Body.Close()
@@ -226,4 +260,100 @@ func (s *Server) probeApp(ctx context.Context, h models.ProxyHost) appHealthEntr
 func isNetDNSError(err error) bool {
 	var dnsErr *net.DNSError
 	return errors.As(err, &dnsErr)
+}
+
+// resolvesOnlyPrivate reports whether DNS from caddyui's vantage point
+// returns only non-public addresses for host — i.e. RFC1918 IPv4
+// (10/8, 172.16/12, 192.168/16), IPv4/IPv6 loopback, link-local, or
+// IPv6 ULA (fc00::/7). Returns the first offending IP as a string for
+// tooltip context. Used to short-circuit the App probe in split-horizon
+// DNS setups where caddyui's answer is an internal IP that doesn't
+// match what a public client would see.
+//
+// A "mixed" result (some public, some private) returns false — Go's
+// stdlib dialer will happily fail over to the public address, so the
+// probe can still give a meaningful result.
+func resolvesOnlyPrivate(host string) (string, bool) {
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		// DNS failure is already handled downstream as "unknown" via
+		// isDNSError. Don't claim "onlyPrivate" here just because lookup
+		// bombed — let the real probe run and surface the DNSError.
+		return "", false
+	}
+	firstPrivate := ""
+	for _, ip := range ips {
+		if !isPrivateOrLocalIP(ip) {
+			return "", false
+		}
+		if firstPrivate == "" {
+			firstPrivate = ip.String()
+		}
+	}
+	return firstPrivate, true
+}
+
+// isPrivateOrLocalIP is IsPrivate ∪ loopback ∪ link-local ∪ ULA. We treat
+// all of these as "caddyui's private view" — a probe hitting any of them
+// isn't a trustworthy signal of public reachability.
+func isPrivateOrLocalIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() {
+		return true
+	}
+	// IsPrivate covers RFC1918 + ULA in Go 1.17+. IsUnspecified catches 0.0.0.0 / ::
+	// which dialers should never return from LookupIP but defensively
+	// don't count as "public."
+	if ip.IsUnspecified() {
+		return true
+	}
+	return false
+}
+
+// privateIPFromErr tries to pull a private IP literal out of a Go dial
+// error. Format from the net stdlib looks like:
+//
+//	"dial tcp 192.168.112.7:443: connect: connection refused"
+//	"dial tcp [fc00::1]:443: connect: connection refused"
+//
+// Returns "" if no private IP is found. Intentionally string-based
+// because Go doesn't expose the dialed address as a typed field on
+// net.OpError.Err in a stable way — the error message is the stable
+// contract most callers rely on.
+func privateIPFromErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	// Look for "dial tcp <addr>:<port>" token.
+	const marker = "dial tcp "
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(marker):]
+	// IPv6 bracketed form first.
+	if strings.HasPrefix(rest, "[") {
+		end := strings.Index(rest, "]")
+		if end < 0 {
+			return ""
+		}
+		ipStr := rest[1:end]
+		if ip := net.ParseIP(ipStr); ip != nil && isPrivateOrLocalIP(ip) {
+			return ipStr
+		}
+		return ""
+	}
+	// IPv4: up to the next colon.
+	end := strings.IndexAny(rest, ":,] ")
+	if end < 0 {
+		return ""
+	}
+	ipStr := rest[:end]
+	if ip := net.ParseIP(ipStr); ip != nil && isPrivateOrLocalIP(ip) {
+		return ipStr
+	}
+	return ""
 }
