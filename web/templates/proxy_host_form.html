@@ -127,25 +127,71 @@
     </div>
   </div>
 
-  {{/* ── Cloudflare DNS ── */}}
-  {{if .CFEnabled}}
+  {{/* ── Managed DNS (Cloudflare or Porkbun) ── */}}
+  {{if or .CFEnabled .PBEnabled}}
+  {{$provider := .Host.DNSProvider}}
   <div class="pt-4 border-t border-ink-100">
-    <div class="flex items-center justify-between mb-3">
-      <div class="flex items-center gap-1.5">
-        <svg viewBox="0 0 32 20" fill="none" class="w-6 h-4 text-orange-400" aria-hidden="true">
-          <path d="M22.1 8.6c-.2-.8-.8-1.4-1.6-1.6C19.9 4.1 17.2 2 14 2c-2.6 0-4.9 1.3-6.3 3.3-.4-.1-.9-.2-1.3-.2C4 5.1 2 7.1 2 9.5c0 .2 0 .4.1.6H2C.9 10.1 0 11 0 12.1s.9 2 2 2h20c1.1 0 2-.9 2-2 0-1-.7-1.8-1.6-1.9.1-.3.1-.7-.3-1.6z" fill="currentColor"/>
-        </svg>
-        <span class="text-xs uppercase tracking-wider text-ink-500 font-medium">Cloudflare DNS</span>
-      </div>
-      <label class="flex items-center gap-2 text-sm text-ink-700 cursor-pointer">
-        <input type="checkbox" id="cf-toggle" name="cf_manage" {{if .Host.CFDNSRecordID}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-        Manage DNS record
-      </label>
+    <div class="flex items-center gap-1.5 mb-3">
+      <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-brand-500" aria-hidden="true">
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/>
+      </svg>
+      <span class="text-xs uppercase tracking-wider text-ink-500 font-medium">Managed DNS</span>
     </div>
-    <div id="cf-section" class="{{if not .Host.CFDNSRecordID}}hidden{{end}} space-y-3">
-      <p class="text-xs text-ink-400">CaddyUI will create an A record for the first domain in the selected Cloudflare zone when you save, and remove it when you delete this host.</p>
+    <p class="text-xs text-ink-400 mb-3">CaddyUI can automatically create an A record for the first domain in this host, pointing at the Server IP you set in Settings. The record is deleted when the host is removed. Pick the provider that owns the domain.</p>
+
+    <div class="grid grid-cols-3 gap-2 mb-3" role="radiogroup" aria-label="DNS provider">
+      {{/* None */}}
+      <label class="relative cursor-pointer">
+        <input type="radio" name="dns_provider" value="" {{if eq $provider ""}}checked{{end}} class="peer sr-only" data-dns-radio="none" />
+        <div class="flex flex-col items-center justify-center gap-1 rounded-lg border border-ink-200 bg-white px-3 py-3 text-sm font-medium text-ink-700 peer-checked:border-brand-500 peer-checked:bg-brand-50 peer-checked:text-brand-700 transition">
+          <svg viewBox="0 0 24 24" fill="none" class="w-5 h-5" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          None
+        </div>
+      </label>
+      {{/* Cloudflare */}}
+      {{if .CFEnabled}}
+      <label class="relative cursor-pointer">
+        <input type="radio" name="dns_provider" value="cloudflare" {{if eq $provider "cloudflare"}}checked{{end}} class="peer sr-only" data-dns-radio="cloudflare" />
+        <div class="flex flex-col items-center justify-center gap-1 rounded-lg border border-ink-200 bg-white px-3 py-3 text-sm font-medium text-ink-700 peer-checked:border-orange-500 peer-checked:bg-orange-50 peer-checked:text-orange-700 transition">
+          <svg viewBox="0 0 32 20" fill="none" class="w-6 h-4" aria-hidden="true">
+            <path d="M22.1 8.6c-.2-.8-.8-1.4-1.6-1.6C19.9 4.1 17.2 2 14 2c-2.6 0-4.9 1.3-6.3 3.3-.4-.1-.9-.2-1.3-.2C4 5.1 2 7.1 2 9.5c0 .2 0 .4.1.6H2C.9 10.1 0 11 0 12.1s.9 2 2 2h20c1.1 0 2-.9 2-2 0-1-.7-1.8-1.6-1.9.1-.3.1-.7-.3-1.6z" fill="currentColor"/>
+          </svg>
+          Cloudflare
+        </div>
+      </label>
+      {{else}}
+      <div class="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-ink-200 bg-ink-50 px-3 py-3 text-sm font-medium text-ink-400">
+        <span class="text-xs">Cloudflare</span>
+        <span class="text-[10px]">not configured</span>
+      </div>
+      {{end}}
+      {{/* Porkbun */}}
+      {{if .PBEnabled}}
+      <label class="relative cursor-pointer">
+        <input type="radio" name="dns_provider" value="porkbun" {{if eq $provider "porkbun"}}checked{{end}} class="peer sr-only" data-dns-radio="porkbun" />
+        <div class="flex flex-col items-center justify-center gap-1 rounded-lg border border-ink-200 bg-white px-3 py-3 text-sm font-medium text-ink-700 peer-checked:border-pink-500 peer-checked:bg-pink-50 peer-checked:text-pink-700 transition">
+          <svg viewBox="0 0 24 24" fill="none" class="w-5 h-5" aria-hidden="true">
+            <path d="M8 3c0-.5.4-1 1-1h6c.6 0 1 .5 1 1v3c2 .5 4 2 4 5 0 4-4 5-4 5v4c0 1-1 2-2 2h-4c-1 0-2-1-2-2v-4s-4-1-4-5c0-3 2-4.5 4-5V3z" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="10" cy="10" r="1" fill="currentColor"/>
+            <circle cx="14" cy="10" r="1" fill="currentColor"/>
+          </svg>
+          Porkbun
+        </div>
+      </label>
+      {{else}}
+      <div class="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-ink-200 bg-ink-50 px-3 py-3 text-sm font-medium text-ink-400">
+        <span class="text-xs">Porkbun</span>
+        <span class="text-[10px]">not configured</span>
+      </div>
+      {{end}}
+    </div>
+
+    {{/* Cloudflare zone picker */}}
+    {{if .CFEnabled}}
+    <div id="cf-section" class="{{if ne $provider "cloudflare"}}hidden{{end}} space-y-3 p-3 rounded-lg bg-orange-50/50 border border-orange-100">
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Zone</label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Cloudflare Zone</label>
         <select id="cf-zone-select" name="cf_zone_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
           <option value="">Loading zones…</option>
         </select>
@@ -154,6 +200,23 @@
       <p class="text-xs text-green-600">✓ DNS record active &mdash; record ID: <span class="font-mono">{{.Host.CFDNSRecordID}}</span></p>
       {{end}}
     </div>
+    {{end}}
+
+    {{/* Porkbun domain picker */}}
+    {{if .PBEnabled}}
+    <div id="pb-section" class="{{if ne $provider "porkbun"}}hidden{{end}} space-y-3 p-3 rounded-lg bg-pink-50/50 border border-pink-100">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Porkbun Domain</label>
+        <select id="pb-domain-select" name="pb_domain" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="">Loading domains…</option>
+        </select>
+        <p class="text-xs text-ink-400 mt-1">The domain must have <em>API Access</em> enabled in the Porkbun control panel for this to work.</p>
+      </div>
+      {{if .Host.PBDNSRecordID}}
+      <p class="text-xs text-green-600">✓ DNS record active &mdash; record ID: <span class="font-mono">{{.Host.PBDNSRecordID}}</span></p>
+      {{end}}
+    </div>
+    {{end}}
   </div>
   {{end}}
 
@@ -204,21 +267,26 @@
     });
   }
 
-  // Cloudflare DNS zone picker.
+  // Managed DNS provider picker (Cloudflare / Porkbun).
   (function() {
-    var cfToggle = document.getElementById('cf-toggle');
+    var radios = document.querySelectorAll('input[name="dns_provider"]');
+    if (!radios.length) return;
     var cfSection = document.getElementById('cf-section');
+    var pbSection = document.getElementById('pb-section');
     var cfZoneSelect = document.getElementById('cf-zone-select');
-    if (!cfToggle || !cfSection || !cfZoneSelect) return;
+    var pbDomainSelect = document.getElementById('pb-domain-select');
     var cfCurrentZone = '{{.Host.CFZoneID}}';
+    var pbCurrentDomain = '{{.Host.PBDomain}}';
     var cfLoaded = false;
+    var pbLoaded = false;
+
     function loadZones() {
-      if (cfLoaded) return;
+      if (cfLoaded || !cfZoneSelect) return;
       cfLoaded = true;
       fetch('/api/cf-zones')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-          if (data.error) {
+          if (data && data.error) {
             cfZoneSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
             return;
           }
@@ -236,11 +304,49 @@
           cfZoneSelect.innerHTML = '<option value="">Failed to load zones: ' + e.message + '</option>';
         });
     }
-    cfToggle.addEventListener('change', function() {
-      cfSection.classList.toggle('hidden', !this.checked);
-      if (this.checked) loadZones();
+
+    function loadDomains() {
+      if (pbLoaded || !pbDomainSelect) return;
+      pbLoaded = true;
+      fetch('/api/pb-domains')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data && data.error) {
+            pbDomainSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+            return;
+          }
+          if (!data || data.length === 0) {
+            pbDomainSelect.innerHTML = '<option value="">No domains found</option>';
+            return;
+          }
+          pbDomainSelect.innerHTML = data.map(function(d) {
+            var sel = (d.id === pbCurrentDomain) ? ' selected' : '';
+            return '<option value="' + d.id + '"' + sel + '>' + d.name + '</option>';
+          }).join('');
+          if (!pbCurrentDomain) pbDomainSelect.selectedIndex = 0;
+        })
+        .catch(function(e) {
+          pbDomainSelect.innerHTML = '<option value="">Failed to load domains: ' + e.message + '</option>';
+        });
+    }
+
+    function applyProvider(v) {
+      if (cfSection) cfSection.classList.toggle('hidden', v !== 'cloudflare');
+      if (pbSection) pbSection.classList.toggle('hidden', v !== 'porkbun');
+      if (v === 'cloudflare') loadZones();
+      if (v === 'porkbun')    loadDomains();
+    }
+
+    radios.forEach(function(r) {
+      r.addEventListener('change', function() {
+        if (this.checked) applyProvider(this.value);
+      });
     });
-    if (cfToggle.checked) loadZones();
+
+    // Initial state (in case something was pre-selected by the server).
+    var initial = '';
+    radios.forEach(function(r) { if (r.checked) initial = r.value; });
+    applyProvider(initial);
   })();
 
   // Feature D: extra upstreams dynamic rows.

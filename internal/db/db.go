@@ -277,6 +277,25 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Porkbun DNS columns on proxy_hosts (PB DNS integration). Parallel to the
+	// Cloudflare pair — a host can have one provider active at a time, chosen
+	// in the proxy host form. Porkbun has no "zone ID", so we store the bare
+	// domain name the record lives under instead.
+	for _, col := range []struct{ name, def string }{
+		{"pb_dns_record_id", "TEXT NOT NULL DEFAULT ''"},
+		{"pb_domain", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := columnExists(db, "proxy_hosts", col.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE proxy_hosts ADD COLUMN %s %s`, col.name, col.def)); err != nil {
+				return fmt.Errorf("add %s to proxy_hosts: %w", col.name, err)
+			}
+		}
+	}
+
 	// Admin-API auth columns on caddy_servers. Lets users put Caddy's admin
 	// endpoint behind HTTP Basic Auth (via a reverse proxy) when they can't
 	// use WireGuard/Tailscale to hide port 2019 on a private network.

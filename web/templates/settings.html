@@ -151,6 +151,36 @@
     </div>
   </div>
 
+  {{/* ── Porkbun DNS ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="flex items-center gap-2 mb-0.5">
+        <div class="text-sm font-semibold text-ink-900">Porkbun DNS</div>
+        {{if .PBDNSEnabled}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-pink-50 text-pink-700"><span class="w-1.5 h-1.5 rounded-full bg-pink-500"></span>active</span>
+        {{else}}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
+        {{end}}
+      </div>
+      <p class="text-xs text-ink-500">Automatically create and delete DNS A records on Porkbun-registered domains. Shares the <em>Server IP</em> above with Cloudflare. Requires API access enabled per-domain in the Porkbun control panel. <a href="https://porkbun.com/account/api" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">Get API keys →</a></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">API Key <span class="text-ink-400 font-normal text-xs">(leave blank to keep existing)</span></label>
+      <input name="pb_api_key" value="" type="password" autocomplete="new-password" placeholder="pk1_..."
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      {{if .PBAPIKeySet}}<p class="text-xs text-green-600 mt-1">✓ API key is configured.</p>{{end}}
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(leave blank to keep existing)</span></label>
+      <input name="pb_secret_key" value="" type="password" autocomplete="new-password" placeholder="sk1_..."
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      {{if .PBSecretKeySet}}<p class="text-xs text-green-600 mt-1">✓ Secret key is configured.</p>{{end}}
+    </div>
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <strong>Before each domain works:</strong> on the Porkbun control panel go to <em>Domain Management → Details → API Access</em> and toggle it ON. Without this, the API will reject operations even with valid keys.
+    </div>
+  </div>
+
   {{/* ── Cloudflare Turnstile ── */}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
