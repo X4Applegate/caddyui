@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.2.0] — 2026-04-22 · Porkbun DNS Integration
+
+### Added
+- **Porkbun DNS provider** (`internal/porkbun/`) — second managed-DNS integration alongside Cloudflare. CaddyUI can now create, update, and delete A records on Porkbun-registered domains automatically when proxy hosts change
+  - New Settings card: paste API key + secret key (keep-blank-to-preserve UX) with the Porkbun control-panel "API Access per domain" gotcha called out inline
+  - Proxy host form: replaced the CF-only toggle with a three-way provider radio (**None / Cloudflare / Porkbun**); the Cloudflare zone and Porkbun domain selectors appear conditionally and load on demand
+  - Shared Server IP: Porkbun reuses the same Server IP field already configured for Cloudflare, so switching providers doesn't require re-entering it
+  - IP-change retargeting: when Server IP changes in Settings, every Porkbun-managed record is re-pointed in the background (mirrors existing CF behaviour)
+  - Full lifecycle on proxy-host create / edit / delete, including cross-provider switches (old CF/PB record is cleaned up when you change provider or clear the selection)
+- **Docs page** — new "Porkbun DNS" tutorial section walking through API-key creation, per-domain API Access toggle, and the 600s TTL minimum
+
+### Changed
+- **Dashboard domain pills** — clicking a source domain now jumps to **Proxy Hosts** filtered to that host (with the matching row scrolled into view) instead of opening the live site in a new tab; much more useful for day-to-day management
+
+### Database
+- Added `pb_dns_record_id` and `pb_domain` columns to `proxy_hosts` via the same idempotent `columnExists → ALTER TABLE ADD COLUMN` pattern used elsewhere. Existing Cloudflare records are untouched
+
+### Docker
+- Published as `applegater/caddyui:v2.2.0` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.1.1] — 2026-04-22 · Blue PWA Icons & Theme Color
 
 ### Changed

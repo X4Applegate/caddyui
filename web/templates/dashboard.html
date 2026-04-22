@@ -182,7 +182,7 @@
       <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
         <td class="px-5 py-3">
           <div class="flex flex-wrap gap-1">
-            {{range splitDomains .Domains}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>{{end}}
+            {{range splitDomains .Domains}}<a href="/proxy-hosts?q={{.}}" title="Open {{.}} in Proxy Hosts" class="domain-pill">{{.}}</a>{{end}}
           </div>
         </td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</td>

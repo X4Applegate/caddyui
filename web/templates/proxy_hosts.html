@@ -243,8 +243,8 @@
 (function() {
   var input = document.getElementById('proxy-search');
   if (!input) return;
-  input.addEventListener('input', function() {
-    var q = this.value.toLowerCase().trim();
+  function applyFilter(q) {
+    q = (q || '').toLowerCase().trim();
     // Filter desktop table rows
     document.querySelectorAll('#proxy-table tbody tr[data-search]').forEach(function(row) {
       row.style.display = (!q || row.dataset.search.toLowerCase().includes(q)) ? '' : 'none';
@@ -253,7 +253,24 @@
     document.querySelectorAll('#proxy-cards [data-search]').forEach(function(card) {
       card.style.display = (!q || card.dataset.search.toLowerCase().includes(q)) ? '' : 'none';
     });
-  });
+  }
+  input.addEventListener('input', function() { applyFilter(this.value); });
+
+  // Deep link: /proxy-hosts?q=example.com pre-fills the filter, used by
+  // the dashboard's source pills so clicking a domain drops you here with
+  // only that host visible. Scroll it into view as a visual confirmation.
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var q = params.get('q');
+    if (q) {
+      input.value = q;
+      applyFilter(q);
+      var first = document.querySelector('[data-search]:not([style*="display: none"])');
+      if (first && first.scrollIntoView) {
+        first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  } catch (e) { /* URLSearchParams not supported — ignore */ }
 })();
 
 (function() {

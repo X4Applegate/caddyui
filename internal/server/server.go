@@ -28,6 +28,7 @@ import (
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/cloudflare"
 	"github.com/X4Applegate/caddyui/internal/models"
+	"github.com/X4Applegate/caddyui/internal/porkbun"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	totplib "github.com/pquerna/otp/totp"
@@ -223,6 +224,9 @@ func (s *Server) Routes() http.Handler {
 
 		// Cloudflare DNS: list zones accessible with the configured API token.
 		r.Get("/api/cf-zones", s.apiCFZones)
+
+		// Porkbun DNS: list domains accessible with the configured API key pair.
+		r.Get("/api/pb-domains", s.apiPBDomains)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -432,6 +436,13 @@ const (
 	settingCFAPIToken = "cf_api_token"
 	settingCFServerIP = "cf_server_ip"
 	settingCFProxied  = "cf_proxied"
+
+	// Porkbun DNS integration. Auth is an apikey/secretkey pair (both required
+	// on every request). No separate "proxied" flag — Porkbun is DNS-only.
+	// We reuse the Cloudflare server IP setting as the shared A-record target
+	// (one IP, either provider) rather than storing a duplicate per-provider.
+	settingPBAPIKey    = "pb_api_key"
+	settingPBSecretKey = "pb_secret_key"
 )
 
 // verifyTurnstile calls the Cloudflare Turnstile siteverify endpoint.
@@ -1050,12 +1061,15 @@ func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
 	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
 	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
+	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
 	s.render(w, r, "proxy_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
 		"CFEnabled":    cfToken != "" && cfServerIP != "",
+		"PBEnabled":    pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
 		"Section":      "proxy",
 	})
 }
@@ -1067,10 +1081,19 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		return nil, err
 	}
 	certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
-	// Only capture CF zone if the "manage DNS" checkbox is checked.
+	// DNS provider picker: radio with values "", "cloudflare", or "porkbun".
+	// Each provider captures its own selector only when that radio is active,
+	// so a blank provider or a switch away from a provider wipes the picker
+	// selection cleanly (the record-ID deletion happens further up in the
+	// create/update handlers based on the old vs new values).
+	provider := r.FormValue("dns_provider")
 	cfZoneID := ""
-	if r.FormValue("cf_manage") == "on" {
+	pbDomain := ""
+	switch provider {
+	case "cloudflare":
 		cfZoneID = strings.TrimSpace(r.FormValue("cf_zone_id"))
+	case "porkbun":
+		pbDomain = strings.TrimSpace(r.FormValue("pb_domain"))
 	}
 	return &models.ProxyHost{
 		Domains:             strings.TrimSpace(r.FormValue("domains")),
@@ -1087,6 +1110,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		CertificateID:       certID,
 		AccessList:          strings.TrimSpace(r.FormValue("access_list")),
 		CFZoneID:            cfZoneID,
+		PBDomain:            pbDomain,
 	}, nil
 }
 
@@ -1135,6 +1159,11 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	if p.CFZoneID != "" {
 		s.cfCreateDNSRecord(id, p)
 	}
+	// Porkbun DNS: create A record if a domain was selected. Mutually
+	// exclusive with the CF branch above — the form enforces one provider.
+	if p.PBDomain != "" {
+		s.pbCreateDNSRecord(id, p)
+	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.syncCaddy(s.currentServerID(r), p.CertificateID != 0)
 	if len(deployTo) > 0 {
@@ -1161,12 +1190,15 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
 	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
 	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
+	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
 	s.render(w, r, "proxy_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
 		"CFEnabled":    cfToken != "" && cfServerIP != "",
+		"PBEnabled":    pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
 		"Section":      "proxy",
 	})
 }
@@ -1216,17 +1248,19 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	deployTo := parseDeployTo(r)
 	old, _ := models.GetProxyHost(s.DB, id)
 
-	// Cloudflare DNS: lifecycle management.
+	// DNS lifecycle management (Cloudflare + Porkbun).
 	// Determine if the primary domain changed (we only track the first domain).
 	oldDomain := ""
 	if old != nil {
 		oldDomain = strings.TrimSpace(strings.SplitN(old.Domains, ",", 2)[0])
 	}
 	newDomain := strings.TrimSpace(strings.SplitN(p.Domains, ",", 2)[0])
+	domainChanged := oldDomain != newDomain
+
+	// --- Cloudflare branch ---
 	cfZoneChanged := old != nil && old.CFZoneID != p.CFZoneID
-	cfDomainChanged := oldDomain != newDomain
-	needDeleteOld := old != nil && old.CFDNSRecordID != "" && (p.CFZoneID == "" || cfZoneChanged || cfDomainChanged)
-	if needDeleteOld {
+	needDeleteCF := old != nil && old.CFDNSRecordID != "" && (p.CFZoneID == "" || cfZoneChanged || domainChanged)
+	if needDeleteCF {
 		if cf := s.cfClient(); cf != nil {
 			if err := cf.DeleteRecord(old.CFZoneID, old.CFDNSRecordID); err != nil {
 				log.Printf("CF DNS: delete old record %s: %v", old.CFDNSRecordID, err)
@@ -1236,15 +1270,33 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	} else if old != nil {
 		p.CFDNSRecordID = old.CFDNSRecordID // preserve unchanged record ID
 	}
-	needCreateNew := p.CFZoneID != "" && (p.CFDNSRecordID == "" || cfDomainChanged || cfZoneChanged)
+	needCreateCF := p.CFZoneID != "" && (p.CFDNSRecordID == "" || domainChanged || cfZoneChanged)
+
+	// --- Porkbun branch ---
+	pbDomainChanged := old != nil && old.PBDomain != p.PBDomain
+	needDeletePB := old != nil && old.PBDNSRecordID != "" && (p.PBDomain == "" || pbDomainChanged || domainChanged)
+	if needDeletePB {
+		if pb := s.pbClient(); pb != nil {
+			if err := pb.DeleteRecord(old.PBDomain, old.PBDNSRecordID); err != nil {
+				log.Printf("PB DNS: delete old record %s: %v", old.PBDNSRecordID, err)
+			}
+		}
+		p.PBDNSRecordID = ""
+	} else if old != nil {
+		p.PBDNSRecordID = old.PBDNSRecordID // preserve unchanged record ID
+	}
+	needCreatePB := p.PBDomain != "" && (p.PBDNSRecordID == "" || domainChanged || pbDomainChanged)
 
 	if err := models.UpdateProxyHost(s.DB, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Create new CF record after successful DB save.
-	if needCreateNew {
+	// Create new records (if any) after successful DB save.
+	if needCreateCF {
 		s.cfCreateDNSRecord(p.ID, p)
+	}
+	if needCreatePB {
+		s.pbCreateDNSRecord(p.ID, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
@@ -1271,6 +1323,14 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		if cf := s.cfClient(); cf != nil {
 			if err := cf.DeleteRecord(old.CFZoneID, old.CFDNSRecordID); err != nil {
 				log.Printf("CF DNS: delete record %s on host delete: %v", old.CFDNSRecordID, err)
+			}
+		}
+	}
+	// Porkbun DNS: delete managed record before removing host.
+	if old != nil && old.PBDNSRecordID != "" && old.PBDomain != "" {
+		if pb := s.pbClient(); pb != nil {
+			if err := pb.DeleteRecord(old.PBDomain, old.PBDNSRecordID); err != nil {
+				log.Printf("PB DNS: delete record %s on host delete: %v", old.PBDNSRecordID, err)
 			}
 		}
 	}
@@ -2774,11 +2834,17 @@ func scanTopLevelDirective(src string, banned []string) string {
 
 func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request, p *models.ProxyHost, errMsg string) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
+	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
+	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
 	s.render(w, r, "proxy_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
+		"CFEnabled":    cfToken != "" && cfServerIP != "",
+		"PBEnabled":    pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
 		"Error":        errMsg,
 		"Section":      "proxy",
 	})
@@ -4219,6 +4285,123 @@ func (s *Server) apiCFZones(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(zones)
 }
 
+// --- Porkbun DNS helpers ---
+//
+// Parallel path to the Cloudflare helpers above. At most one provider is
+// active per proxy host; the form enforces that by writing only the
+// columns for the selected provider and clearing the other.
+
+// pbClient builds a Porkbun API client from the stored credentials.
+// Returns nil if either key is missing — both halves are required.
+func (s *Server) pbClient() *porkbun.Client {
+	apiKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	secretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
+	if apiKey == "" || secretKey == "" {
+		return nil
+	}
+	return porkbun.New(apiKey, secretKey)
+}
+
+// pbCreateDNSRecord creates an A record on Porkbun for the first domain of
+// the proxy host and stores the resulting record ID + base domain in the
+// database. The base domain is derived from the form selection (stored in
+// p.PBDomain before this is called).
+func (s *Server) pbCreateDNSRecord(hostID int64, p *models.ProxyHost) {
+	pb := s.pbClient()
+	if pb == nil {
+		return
+	}
+	serverIP, _ := models.GetSetting(s.DB, settingCFServerIP) // shared A-record target
+	if serverIP == "" {
+		log.Printf("PB DNS: server IP not configured — skipping record creation for host %d", hostID)
+		return
+	}
+	fqdn := strings.TrimSpace(strings.SplitN(p.Domains, ",", 2)[0])
+	if fqdn == "" || p.PBDomain == "" {
+		return
+	}
+	sub := porkbun.SubdomainOf(fqdn, p.PBDomain)
+	rec, err := pb.CreateRecord(p.PBDomain, "A", sub, serverIP, 600)
+	if err != nil {
+		log.Printf("PB DNS: create record for %s (domain %s): %v", fqdn, p.PBDomain, err)
+		return
+	}
+	if err := models.UpdateProxyHostPBRecord(s.DB, hostID, rec.ID, p.PBDomain); err != nil {
+		log.Printf("PB DNS: store record ID for host %d: %v", hostID, err)
+	}
+}
+
+// pbUpdateAllRecords deletes and recreates every Porkbun-managed A record
+// across all proxy hosts, pointing them at newIP. Called in a goroutine
+// alongside cfUpdateAllRecords when the server IP setting changes.
+func (s *Server) pbUpdateAllRecords(newIP string) {
+	pb := s.pbClient()
+	if pb == nil {
+		return
+	}
+	hosts, err := models.ListProxyHostsWithPBRecords(s.DB)
+	if err != nil {
+		log.Printf("PB DNS: list managed hosts for IP update: %v", err)
+		return
+	}
+	if len(hosts) == 0 {
+		return
+	}
+	log.Printf("PB DNS: updating %d record(s) to new IP %s", len(hosts), newIP)
+	for _, h := range hosts {
+		fqdn := strings.TrimSpace(strings.SplitN(h.Domains, ",", 2)[0])
+		if fqdn == "" {
+			continue
+		}
+		// Delete old record (best-effort — may already be gone).
+		if err := pb.DeleteRecord(h.PBDomain, h.PBDNSRecordID); err != nil {
+			log.Printf("PB DNS: delete old record %s (%s): %v", h.PBDNSRecordID, fqdn, err)
+		}
+		// Create replacement record with new IP.
+		sub := porkbun.SubdomainOf(fqdn, h.PBDomain)
+		rec, err := pb.CreateRecord(h.PBDomain, "A", sub, newIP, 600)
+		if err != nil {
+			log.Printf("PB DNS: create new record for %s: %v", fqdn, err)
+			_ = models.UpdateProxyHostPBRecord(s.DB, h.ID, "", "")
+			continue
+		}
+		_ = models.UpdateProxyHostPBRecord(s.DB, h.ID, rec.ID, h.PBDomain)
+		log.Printf("PB DNS: updated %s → %s (record %s)", fqdn, newIP, rec.ID)
+	}
+}
+
+// apiPBDomains returns the list of Porkbun domains on the account as a
+// JSON array of {name: "example.com"} objects — kept keyed the same as the
+// Cloudflare zone picker's {id, name} response so the form's JS can render
+// both with minimal branching.
+func (s *Server) apiPBDomains(w http.ResponseWriter, r *http.Request) {
+	pb := s.pbClient()
+	w.Header().Set("Content-Type", "application/json")
+	if pb == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Porkbun API keys not configured in Settings"})
+		return
+	}
+	domains, err := pb.ListDomains()
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	// Shape the response as {name, id} so the picker's JS can treat it like
+	// the Cloudflare zones list. For Porkbun the "id" is just the domain name
+	// (Porkbun URLs use the bare domain in place of a zone ID).
+	type entry struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	out := make([]entry, 0, len(domains))
+	for _, d := range domains {
+		out = append(out, entry{ID: d.Name, Name: d.Name})
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
 
 // semverValid returns true for tags like v1.2.3.
 func semverValid(v string) bool {
@@ -4319,6 +4502,9 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
 	cfProxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
 
+	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
+
 	success := r.URL.Query().Get("saved") == "1"
 	s.render(w, r, "settings.html", map[string]any{
 		"User":                 s.currentUser(r),
@@ -4339,6 +4525,9 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"CFServerIP":           cfServerIP,
 		"CFProxied":            cfProxiedStr == "1",
 		"CFDNSEnabled":         cfAPIToken != "" && cfServerIP != "",
+		"PBAPIKeySet":          pbAPIKey != "",
+		"PBSecretKeySet":       pbSecretKey != "",
+		"PBDNSEnabled":         pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
 		"Success":              success,
 		"Section":              "settings",
 	})
@@ -4381,8 +4570,11 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		cfProxied = "1"
 	}
 	// Snapshot the current server IP before overwriting — used below to detect
-	// whether we need to retarget all existing Cloudflare DNS records.
+	// whether we need to retarget all existing Cloudflare/Porkbun DNS records.
 	oldCFServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
+
+	pbAPIKey := strings.TrimSpace(r.FormValue("pb_api_key"))
+	pbSecretKey := strings.TrimSpace(r.FormValue("pb_secret_key"))
 
 	kv := map[string]string{
 		settingNotifyWebhookURL:   webhookURL,
@@ -4403,6 +4595,13 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	if cfAPIToken != "" {
 		kv[settingCFAPIToken] = cfAPIToken
 	}
+	// Only overwrite Porkbun credentials if new ones were supplied (blank = keep).
+	if pbAPIKey != "" {
+		kv[settingPBAPIKey] = pbAPIKey
+	}
+	if pbSecretKey != "" {
+		kv[settingPBSecretKey] = pbSecretKey
+	}
 	// Only overwrite password if a new one was supplied (blank = keep existing).
 	if smtpPassword != "" {
 		kv[settingSMTPPassword] = smtpPassword
@@ -4415,9 +4614,10 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", "notify+smtp", smtpHost, true)
 
-	// If the server IP changed, retarget all Cloudflare-managed A records in the background.
+	// If the server IP changed, retarget all Cloudflare- and Porkbun-managed A records in the background.
 	if cfServerIP != "" && cfServerIP != oldCFServerIP {
 		go s.cfUpdateAllRecords(cfServerIP)
+		go s.pbUpdateAllRecords(cfServerIP)
 	}
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)

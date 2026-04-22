@@ -16,6 +16,7 @@
     <li><a href="#advanced" class="text-brand-600 hover:text-brand-700 hover:underline">Advanced Routes</a></li>
     <li><a href="#certificates" class="text-brand-600 hover:text-brand-700 hover:underline">Certificates</a></li>
     <li><a href="#cloudflare" class="text-brand-600 hover:text-brand-700 hover:underline">Cloudflare DNS</a></li>
+    <li><a href="#porkbun" class="text-brand-600 hover:text-brand-700 hover:underline">Porkbun DNS</a></li>
     <li><a href="#import" class="text-brand-600 hover:text-brand-700 hover:underline">Import from Caddy</a></li>
     <li><a href="#snapshots" class="text-brand-600 hover:text-brand-700 hover:underline">Snapshots & Backup</a></li>
     <li><a href="#multiserver" class="text-brand-600 hover:text-brand-700 hover:underline">Multi-server</a></li>
@@ -164,6 +165,26 @@
     </ol>
     <p>When you create a proxy host, pick the zone from the dropdown and CaddyUI will create the DNS record and save its ID. Edit the host → the record updates. Delete the host → the record is removed.</p>
     <p>If you later change the server IP in settings, CaddyUI re-points every record it manages in one shot. Records it didn't create are never touched.</p>
+  </div>
+</section>
+
+{{/* ── Porkbun DNS ── */}}
+<section id="porkbun" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M8 3c0-.5.4-1 1-1h6c.6 0 1 .5 1 1v3c2 .5 4 2 4 5 0 4-4 5-4 5v4c0 1-1 2-2 2h-4c-1 0-2-1-2-2v-4s-4-1-4-5c0-3 2-4.5 4-5V3z"/></svg>
+    </span>
+    Porkbun DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>If you registered your domain through Porkbun, CaddyUI can manage DNS A records there too — so your customer never needs to log in to Porkbun to repoint a subdomain.</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>Go to <a href="https://porkbun.com/account/api" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">porkbun.com/account/api</a> and create an API key pair. You'll get a public <em>API Key</em> (starts with <code>pk1_</code>) and a <em>Secret Key</em> (starts with <code>sk1_</code>).</li>
+      <li>In <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Porkbun DNS</a>, paste both keys. The <strong>Server IP</strong> is shared with Cloudflare — set it once in the Cloudflare card and both providers use it.</li>
+      <li><strong>This one trips everyone up:</strong> for each domain you want CaddyUI to manage, open Porkbun → <em>Domain Management</em> → click <em>Details</em> next to the domain → toggle <strong>API Access</strong> to ON. The API will reject requests on any domain where that toggle is off, even with valid keys.</li>
+    </ol>
+    <p>When you create a proxy host, pick <em>Porkbun</em> from the provider picker and choose the base domain. CaddyUI will create an A record (or an empty-name record for the apex) pointing at your server IP and remember its ID. Edit → update, delete → cleanup.</p>
+    <p class="text-xs text-ink-500">Porkbun enforces a minimum TTL of 600 seconds — values below that get silently clamped by the API. Porkbun has no CDN / proxying mode equivalent to Cloudflare's orange cloud.</p>
   </div>
 </section>
 
