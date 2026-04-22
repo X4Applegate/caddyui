@@ -116,5 +116,7 @@ func initialSync(srv *server.Server, cli *caddy.Client) {
 		log.Printf("startup sync failed: %v", err)
 		return
 	}
-	log.Printf("startup sync: pushed DB state to Caddy")
+	// syncCaddy prints "caddy sync skipped: …" on its own when it bails
+	// (empty DB, external server). Don't print a second, contradictory
+	// "pushed DB state" line after that.
 }

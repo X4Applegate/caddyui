@@ -298,17 +298,30 @@ func (s *Server) pollOneServer(ctx context.Context, srv models.CaddyServer) {
 	// through the same transport + auth path as real requests (unix sockets
 	// and basic-auth-wrapped endpoints both work out of the box).
 	client := caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// 8s per ping is comfortable over WireGuard/Tailscale. Below that a
+	// single dropped UDP packet during rekey can exceed the window and flap
+	// the server.
+	pingCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	code, err := client.Ping(pingCtx)
-	if err != nil {
-		_ = models.SetCaddyServerStatus(s.DB, srv.ID, models.CaddyServerStatusOffline, nil)
+	failed := err != nil || code >= 500
+
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	if failed {
+		s.healthFailures[srv.ID]++
+		// Only flip to offline once we've missed healthFailThreshold pings
+		// in a row. Before that, keep the existing status so the dashboard
+		// doesn't flap on transient blips. Still update last-contact is
+		// intentionally NOT set — we didn't actually contact the server.
+		if s.healthFailures[srv.ID] >= healthFailThreshold {
+			_ = models.SetCaddyServerStatus(s.DB, srv.ID, models.CaddyServerStatusOffline, nil)
+		}
 		return
 	}
-	status := models.CaddyServerStatusOnline
-	if code >= 500 {
-		status = models.CaddyServerStatusOffline
-	}
+	// Success → reset the failure counter and mark online with a fresh
+	// last-contact timestamp.
+	s.healthFailures[srv.ID] = 0
 	now := time.Now()
-	_ = models.SetCaddyServerStatus(s.DB, srv.ID, status, &now)
+	_ = models.SetCaddyServerStatus(s.DB, srv.ID, models.CaddyServerStatusOnline, &now)
 }

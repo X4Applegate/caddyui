@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.2] — 2026-04-22 · Stop health poller flapping over WG
+
+### Fixed
+- **Servers flapping "offline" then recovering on manual Sync.** The health poller marked a server offline after **one** failed 5-second ping — over WireGuard/Tailscale a single dropped UDP packet during rekey could miss the window. Now requires 3 consecutive failures before flipping to offline and the per-ping timeout is 8 s. A successful ping always resets the counter immediately
+- **`startup sync: pushed DB state to Caddy` log was printed even when the sync was skipped** (empty DB or external server) — the inner `syncCaddy` already logs `caddy sync skipped: …` in that case, so the second contradictory line is gone
+
+### Docker
+- Published as `applegater/caddyui:v2.4.2` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.1] — 2026-04-22 · Dashboard UX + correct version string
 
 ### Added
