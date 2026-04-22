@@ -138,7 +138,12 @@
       </svg>
       <span class="text-xs uppercase tracking-wider text-ink-500 font-medium">Managed DNS</span>
     </div>
-    <p class="text-xs text-ink-400 mb-3">CaddyUI can automatically create an A record for the first domain in this host, pointing at the Server IP you set in Settings. The record is deleted when the host is removed. Pick the provider that owns the domain, then select the zone.</p>
+    <p class="text-xs text-ink-400 mb-3">CaddyUI can automatically create an A record for the first domain in this host, pointing at this server's public IP. The record is deleted when the host is removed. Pick the provider that owns the domain, then select the zone.</p>
+    {{if .CurrentServerIP}}
+    <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
+    {{else}}
+    <p class="text-xs text-amber-700 mb-3">No public IP configured for this Caddy server yet — set it under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a> before enabling managed DNS.</p>
+    {{end}}
 
     <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
       <div class="sm:col-span-4">

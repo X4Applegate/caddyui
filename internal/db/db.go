@@ -359,6 +359,25 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v2.4.0: per-server public IP. Every Caddy server can have a different
+	// WAN IP, so the A-record target needs to be scoped to the server that
+	// actually serves the proxy host — not a single global setting. If the
+	// column is new, backfill every row from the legacy global cf_server_ip
+	// setting so existing records keep pointing at the right place.
+	hasPublicIP, err := columnExists(db, "caddy_servers", "public_ip")
+	if err != nil {
+		return err
+	}
+	if !hasPublicIP {
+		if _, err := db.Exec(`ALTER TABLE caddy_servers ADD COLUMN public_ip TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add public_ip to caddy_servers: %w", err)
+		}
+		if _, err := db.Exec(`UPDATE caddy_servers SET public_ip = (SELECT value FROM settings WHERE key='cf_server_ip')
+			WHERE public_ip = '' AND EXISTS (SELECT 1 FROM settings WHERE key='cf_server_ip' AND value != '')`); err != nil {
+			return fmt.Errorf("backfill public_ip from legacy global setting: %w", err)
+		}
+	}
+
 	return nil
 }
 
