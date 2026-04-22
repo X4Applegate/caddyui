@@ -46,6 +46,12 @@ type Server struct {
 	versionMu     sync.Mutex
 	latestVersion string
 	versionCheckedAt time.Time
+
+	// health-poller hysteresis: count consecutive failed pings per server so
+	// a single WG/network blip doesn't instantly flap a server to offline.
+	// Only flip to offline after healthFailThreshold consecutive failures.
+	healthMu       sync.Mutex
+	healthFailures map[int64]int
 }
 
 func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, caddyfilePath string, version string) (*Server, error) {
@@ -53,8 +59,13 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	if err != nil {
 		return nil, err
 	}
-	return &Server{DB: db, Caddy: caddyClient, Templates: tpl, Static: static, CaddyfilePath: caddyfilePath, Version: version}, nil
+	return &Server{DB: db, Caddy: caddyClient, Templates: tpl, Static: static, CaddyfilePath: caddyfilePath, Version: version, healthFailures: map[int64]int{}}, nil
 }
+
+// healthFailThreshold is the number of consecutive failed pings required
+// before the health poller flips a server to "offline". Tunable here so WG
+// blips don't cause the dashboard to flap.
+const healthFailThreshold = 3
 
 func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 	funcs := template.FuncMap{
