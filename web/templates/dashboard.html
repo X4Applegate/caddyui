@@ -184,9 +184,14 @@
       {{range .ProxyHosts}}
       <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition" data-host-id="{{.ID}}">
         <td class="px-5 py-3">
-          <div class="flex flex-wrap gap-1">
+          <div class="flex flex-wrap items-center gap-1">
             {{$hostID := .ID}}
-            {{range splitDomains .Domains}}<a href="/proxy-hosts/{{$hostID}}/edit" title="Edit {{.}}" class="domain-pill">{{.}}</a>{{end}}
+            {{range splitDomains .Domains}}<span class="inline-flex items-center gap-0.5">
+              <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
+              <a href="/proxy-hosts/{{$hostID}}/edit" title="Edit proxy host" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-brand-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </a>
+            </span>{{end}}
           </div>
         </td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">
@@ -253,13 +258,16 @@
       var dot = el.querySelector('.health-dot');
       if (!dot || !byId[id]) return;
       var h = byId[id];
-      dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500');
+      dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
       if (h.status === 'ok') {
         dot.classList.add('bg-green-500');
         dot.title = 'Reachable (' + h.latency_ms + 'ms)';
       } else if (h.status === 'disabled') {
         dot.classList.add('bg-ink-300');
         dot.title = 'Disabled';
+      } else if (h.status === 'unknown') {
+        dot.classList.add('bg-amber-400');
+        dot.title = 'Unknown (' + (h.error || 'not probeable from caddyui') + ')';
       } else {
         dot.classList.add('bg-red-500');
         dot.title = 'Unreachable: ' + (h.error || h.status);

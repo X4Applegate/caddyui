@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.3] — 2026-04-22 · Amber "unknown" for Docker-named backends + split source actions
+
+### Added
+- **Dashboard source column now gives you both actions**: clicking the domain pill opens the site in a new tab (previous behaviour was "filter list"; briefly in v2.4.1 it was "edit form"). A small pencil icon beside each pill opens the edit form directly. No more one-or-the-other
+
+### Fixed
+- **Red "down" dot on Docker-container backends** (e.g. `status-server:3000`, `snipeit-app:80`) even when the backend was serving traffic fine. CaddyUI asks Caddy for upstream health first, but when Caddy hasn't registered the upstream (e.g. newly added host), it fell back to a direct HTTP probe from the caddyui container. That probe can't resolve Docker service names because caddyui usually isn't on the target's Docker network. Now:
+  - If the hostname has no dots (looks like a Docker service), skip the direct probe and render **amber "unknown"** with a helpful tooltip
+  - If the direct probe fails with a DNS error (`no such host`), downgrade from "error" to "unknown" for the same reason
+  - The dashboard and `/proxy-hosts` both recognise the new `unknown` state and render an amber dot instead of red
+
+### Docker
+- Published as `applegater/caddyui:v2.4.3` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.2] — 2026-04-22 · Stop health poller flapping over WG
 
 ### Fixed

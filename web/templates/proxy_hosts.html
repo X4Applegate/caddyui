@@ -282,13 +282,16 @@
       var dot = el.querySelector('.health-dot');
       if (!dot || !byId[id]) return;
       var h = byId[id];
-      dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500');
+      dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
       if (h.status === 'ok') {
         dot.classList.add('bg-green-500');
         dot.title = 'Reachable (' + h.latency_ms + 'ms)';
       } else if (h.status === 'disabled') {
         dot.classList.add('bg-ink-300');
         dot.title = 'Disabled';
+      } else if (h.status === 'unknown') {
+        dot.classList.add('bg-amber-400');
+        dot.title = 'Unknown (' + (h.error || 'not probeable from caddyui') + ')';
       } else {
         dot.classList.add('bg-red-500');
         dot.title = 'Unreachable: ' + (h.error || h.status);
