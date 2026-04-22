@@ -505,11 +505,24 @@ func (s *Server) dnsClient(providerID string) dns.Provider {
 	return dns.Build(providerID, s.dnsCreds(providerID))
 }
 
-// serverIP returns the configured public IP that DNS records point at,
-// or "" if not yet set. All providers share this value.
+// serverIP returns the legacy global IP. Kept for the backwards-compat
+// fallback path — new code should use serverIPFor(serverID) instead.
 func (s *Server) serverIP() string {
 	ip, _ := models.GetSetting(s.DB, settingServerIP)
 	return ip
+}
+
+// serverIPFor returns the public IP to use as the A-record target for
+// proxy hosts that live on serverID. Reads caddy_servers.public_ip first,
+// then falls back to the legacy global setting so pre-v2.4.0 databases
+// still resolve to *some* IP while users fill in the per-server column.
+func (s *Server) serverIPFor(serverID int64) string {
+	if serverID > 0 {
+		if srv, err := models.GetCaddyServer(s.DB, serverID); err == nil && strings.TrimSpace(srv.PublicIP) != "" {
+			return strings.TrimSpace(srv.PublicIP)
+		}
+	}
+	return s.serverIP()
 }
 
 // verifyTurnstile calls the Cloudflare Turnstile siteverify endpoint.
@@ -1132,9 +1145,11 @@ type certView struct {
 // Returns a list of descriptors for each enabled provider (keyed for
 // direct use by the form's <select>) plus a boolean "AnyDNSEnabled"
 // the template uses to hide the whole DNS section when nothing is
-// configured.
-func (s *Server) dnsProviderViewData() map[string]any {
-	ip := s.serverIP()
+// configured. serverID is the Caddy server this proxy host will be
+// created on — used to resolve the per-server public IP (v2.4.0) and
+// expose it to the template so the user sees which IP will be written.
+func (s *Server) dnsProviderViewData(serverID int64) map[string]any {
+	ip := s.serverIPFor(serverID)
 	type providerEntry struct {
 		ID          string
 		DisplayName string
@@ -1148,14 +1163,17 @@ func (s *Server) dnsProviderViewData() map[string]any {
 		}
 	}
 	return map[string]any{
-		"DNSProviders":  enabled,
-		"AnyDNSEnabled": len(enabled) > 0,
+		"DNSProviders":    enabled,
+		"AnyDNSEnabled":   len(enabled) > 0,
+		"CurrentServerIP": ip, // shown in the form so users see the A-record target
 	}
 }
 
 // applyDNSViewData merges the DNS picker view data into the given map.
-func (s *Server) applyDNSViewData(m map[string]any) map[string]any {
-	for k, v := range s.dnsProviderViewData() {
+// serverID scopes the per-server IP lookup (v2.4.0) — pass the request's
+// current server so the form renders the right A-record target.
+func (s *Server) applyDNSViewData(serverID int64, m map[string]any) map[string]any {
+	for k, v := range s.dnsProviderViewData(serverID) {
 		m[k] = v
 	}
 	return m
@@ -1163,7 +1181,7 @@ func (s *Server) applyDNSViewData(m map[string]any) map[string]any {
 
 func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
 		"Certificates": certs,
@@ -1269,7 +1287,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	// dnsCreateRecord is a no-op when DNSProvider is empty, so no branch
 	// needed here — just call it unconditionally.
 	if p.DNSProvider != "" && p.DNSZoneID != "" {
-		s.dnsCreateRecord(id, p)
+		s.dnsCreateRecord(s.currentServerID(r), id, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.syncCaddy(s.currentServerID(r), p.CertificateID != 0)
@@ -1295,7 +1313,7 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
@@ -1384,7 +1402,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if needCreate {
-		s.dnsCreateRecord(p.ID, p)
+		s.dnsCreateRecord(s.currentServerID(r), p.ID, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
@@ -2911,7 +2929,7 @@ func scanTopLevelDirective(src string, banned []string) string {
 
 func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request, p *models.ProxyHost, errMsg string) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
@@ -4275,14 +4293,19 @@ func fetchLatestDockerTag(namespace, image string) (string, error) {
 // via models.UpdateProxyHostDNSRecord. Logs errors; does not return them —
 // DNS failures are non-fatal to the caller's main path (host save,
 // IP retarget).
-func (s *Server) dnsCreateRecord(hostID int64, p *models.ProxyHost) {
+//
+// serverID is the Caddy server the host lives on — v2.4.0 reads the
+// per-server public_ip first and falls back to the global setting so
+// multi-server setups get the right A-record content instead of always
+// pointing at server #1's IP.
+func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
 	client := s.dnsClient(p.DNSProvider)
 	if client == nil {
 		return
 	}
-	ip := s.serverIP()
+	ip := s.serverIPFor(serverID)
 	if ip == "" {
-		log.Printf("DNS: server IP not configured — skipping record creation for host %d", hostID)
+		log.Printf("DNS: server IP not configured for server %d — skipping record creation for host %d", serverID, hostID)
 		return
 	}
 	fqdn := dns.FirstDomain(p.Domains)
@@ -4326,16 +4349,17 @@ func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordID string) 
 	}
 }
 
-// dnsUpdateAllRecords retargets every managed DNS record at newIP.
-// Called in a goroutine from postSettings when the shared server IP
-// changes. Walks every provider in a single pass via
-// ListProxyHostsWithDNSRecords — no per-provider fanout needed.
+// dnsUpdateAllRecords retargets managed DNS records at newIP. Pass
+// serverID > 0 to scope the retarget to proxy hosts that live on that
+// Caddy server (v2.4.0 per-server public-IP flow); 0 retargets every
+// managed record regardless of server (used by the legacy global-IP
+// fallback path so pre-v2.4.0 databases still work).
 //
 // We cache provider clients by ID so we build each at most once per call.
 // Records for providers with missing credentials are skipped rather than
 // cleared, so partial credential removal doesn't destroy working records.
-func (s *Server) dnsUpdateAllRecords(newIP string) {
-	hosts, err := models.ListProxyHostsWithDNSRecords(s.DB)
+func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
+	hosts, err := models.ListProxyHostsWithDNSRecords(s.DB, serverID)
 	if err != nil {
 		log.Printf("DNS: list managed hosts for IP update: %v", err)
 		return
@@ -4517,6 +4541,19 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	serverIP := s.serverIP()
 	cfProxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
 
+	// v2.4.0: per-server public IPs. Load every Caddy server so the DNS
+	// card can render one IP input per server. At least one IP is required
+	// for managed DNS to work — either a server row has public_ip set or
+	// the legacy global fallback is populated.
+	caddyServers, _ := models.ListCaddyServers(s.DB)
+	hasAnyServerIP := strings.TrimSpace(serverIP) != ""
+	for _, sr := range caddyServers {
+		if strings.TrimSpace(sr.PublicIP) != "" {
+			hasAnyServerIP = true
+			break
+		}
+	}
+
 	// Build a view-model row per registered DNS provider so the template
 	// can render the cards in a simple range loop. Each card gets:
 	//   ID, DisplayName, DocsAnchor, Credentials (with "Configured" bool),
@@ -4563,7 +4600,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			pv.Credentials = append(pv.Credentials, cv)
 		}
 		pv.Configured = allFilled
-		pv.Enabled = allFilled && serverIP != ""
+		pv.Enabled = allFilled && hasAnyServerIP
 		if d.ID == dns.Cloudflare {
 			pv.ExtraFlags["Proxied"] = cfProxiedStr == "1"
 		}
@@ -4587,6 +4624,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"TurnstileSecretKey": turnstileSecretKey,
 		"TurnstileEnabled":   turnstileSiteKey != "" && turnstileSecretKey != "",
 		"ServerIP":           serverIP,
+		"Servers":            caddyServers,
 		"DNSProviders":       providers,
 		// Back-compat aliases for any embed that still references the old
 		// CF-centric keys. The template itself now uses DNSProviders +
@@ -4694,10 +4732,47 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", "notify+smtp", smtpHost, true)
 
-	// If the server IP changed, retarget every managed DNS record in the
-	// background. dnsUpdateAllRecords walks all providers in one pass.
+	// v2.4.0: per-server public IP update. The settings form submits one
+	// server_ip_<id> field per Caddy server. For each one that changed,
+	// retarget only that server's managed DNS records in the background.
+	//
+	// We collect both the IDs whose IP changed and the new IP each maps to,
+	// then fan out one goroutine per server. No fan-out if nothing changed.
+	if servers, err := models.ListCaddyServers(s.DB); err == nil {
+		type retarget struct {
+			serverID int64
+			newIP    string
+		}
+		var pending []retarget
+		for _, sr := range servers {
+			field := fmt.Sprintf("server_ip_%d", sr.ID)
+			// Only act if the form actually submitted this field — guards
+			// against accidental wipes from partial form POSTs.
+			if _, ok := r.Form[field]; !ok {
+				continue
+			}
+			newIP := strings.TrimSpace(r.FormValue(field))
+			old, err := models.SetCaddyServerPublicIP(s.DB, sr.ID, newIP)
+			if err != nil {
+				log.Printf("settings: save public_ip for server %d: %v", sr.ID, err)
+				continue
+			}
+			if newIP != "" && newIP != strings.TrimSpace(old) {
+				pending = append(pending, retarget{serverID: sr.ID, newIP: newIP})
+			}
+		}
+		for _, t := range pending {
+			sid, ip := t.serverID, t.newIP
+			go s.dnsUpdateAllRecords(sid, ip)
+		}
+	}
+
+	// Legacy global-IP fallback retarget: only fires when the per-server
+	// table is empty (brand-new databases or users who haven't filled in
+	// the new per-server column). Passing serverID=0 walks every managed
+	// host so pre-v2.4.0 behaviour still works.
 	if newServerIP != "" && newServerIP != oldServerIP {
-		go s.dnsUpdateAllRecords(newServerIP)
+		go s.dnsUpdateAllRecords(0, newServerIP)
 	}
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)

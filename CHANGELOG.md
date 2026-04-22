@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.0] — 2026-04-22 · Per-server public IPs for managed DNS
+
+### Added
+- **Per-server public IP** on `caddy_servers` (new `public_ip` column, idempotent migration, auto-backfilled from the legacy global `cf_server_ip` setting on upgrade so existing records keep pointing at the right place)
+- **Settings → DNS** now renders one IP input per registered Caddy server instead of one global field. Each server gets its own row (name · admin URL · editable IP). Editing an IP retargets **only that server's** managed DNS records in the background — a 3-server setup no longer rewrites all six provider record sets when one IP changes
+- **Legacy fallback IP** kept as a collapsible `<details>` block so pre-v2.4.0 setups upgrade cleanly (the migration copies the old single global IP into every server row)
+- **Proxy host form** shows which IP the A record will point at (the current server's public IP), with a direct link to Settings when it's empty
+- **Docs** — new FAQ entry with copy-paste UFW + iptables commands for restricting port 2019 to a single source IP, plus notes on the Docker iptables-bypass pitfall
+
+### Changed
+- `dnsCreateRecord(serverID, hostID, p)` now takes the Caddy server ID so it can resolve the right A-record target per host; the old `serverID`-unaware signature is removed
+- `dnsUpdateAllRecords(serverID, newIP)` now scopes to one server — pass 0 to fall back to global retarget
+- `dnsProviderViewData(serverID)` resolves the per-server IP when rendering the proxy host form; the legacy global-IP check is gone from the picker's "enabled" gate
+- `models.ListProxyHostsWithDNSRecords(db, serverID)` takes a server filter (0 = all)
+
+### Fixed
+- **Zone / Domain dropdown showed "undefined"** on the proxy host form — carried over from v2.3.2 fix (json tags on `dns.Zone`)
+- **Missing Actions column** on the desktop proxy hosts table — carried over from v2.3.2 fix (overflow + min-width)
+
+### Schema
+- `ALTER TABLE caddy_servers ADD COLUMN public_ip TEXT NOT NULL DEFAULT ''`
+- One-time backfill: `UPDATE caddy_servers SET public_ip = (SELECT value FROM settings WHERE key='cf_server_ip') WHERE public_ip = '' AND EXISTS (…)`
+
+### Docker
+- Published as `applegater/caddyui:v2.4.0` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.3.2] — 2026-04-22 · Hotfix — zone dropdown "undefined" + missing Actions column
 
 ### Fixed

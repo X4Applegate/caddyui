@@ -521,10 +521,35 @@ docker network inspect caddy-net</code></pre>
             <strong>Reverse proxy with HTTP Basic Auth</strong> — put another Caddy block (or nginx) in front of port 2019 with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">basic_auth</code>. Enter the username/password in the <em>HTTP Basic Auth</em> section when adding the server; CaddyUI will send the credentials on every request. Works across the public internet if you put it behind HTTPS.
           </li>
           <li>
-            <strong>UFW / firewall allowlist</strong> — limit inbound port 2019 to known source IPs only. Weakest of the three (IP-based auth isn't great), but fine as a belt-and-suspenders layer on top of options 1 or 2.
+            <strong>UFW / firewall allowlist</strong> — limit inbound port 2019 to known source IPs only. Weakest of the three (IP-based auth isn't great), but fine as a belt-and-suspenders layer on top of options 1 or 2. Concrete commands below.
           </li>
         </ol>
         <p class="mt-2">Options 1 and 2 are both supported natively on the <a href="/servers" class="text-brand-600 hover:text-brand-700">Caddy Servers</a> form — you can start with a unix socket for local Caddy and add a remote server behind basic auth without changing anything else.</p>
+      </div>
+    </details>
+    <details class="group">
+      <summary class="font-medium text-ink-800 cursor-pointer">Example: firewall port 2019 to one source IP only (UFW / iptables)</summary>
+      <div class="mt-2 text-ink-600 space-y-2">
+        <p>Use this when CaddyUI and Caddy are on different hosts and you want to block everyone except the CaddyUI host from hitting the admin API. Replace <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">203.0.113.5</code> with CaddyUI's public IP (or WireGuard/Tailscale address).</p>
+        <p class="font-medium mt-3">UFW (Ubuntu / Debian):</p>
+        <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto leading-relaxed"><code># On the Caddy host:
+sudo ufw allow from 203.0.113.5 to any port 2019 proto tcp
+sudo ufw deny 2019/tcp         # everyone else is blocked
+sudo ufw reload
+sudo ufw status numbered       # verify the rule order — allow must come first</code></pre>
+        <p class="font-medium mt-3">iptables (no UFW):</p>
+        <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto leading-relaxed"><code>sudo iptables -A INPUT -p tcp --dport 2019 -s 203.0.113.5 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 2019 -j DROP
+# Persist across reboots:
+sudo apt install iptables-persistent
+sudo netfilter-persistent save</code></pre>
+        <p class="font-medium mt-3">If Caddy runs in Docker:</p>
+        <p>Docker bypasses UFW by writing its own iptables rules. Either:</p>
+        <ul class="list-disc ml-5 space-y-1">
+          <li>Bind Caddy's admin port to the private interface only — in <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker-compose.yml</code> use <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">ports: ["10.8.0.1:2019:2019"]</code> instead of <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">"2019:2019"</code> so it never listens on <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">0.0.0.0</code>, <em>or</em></li>
+          <li>Don't publish port 2019 at all — attach the CaddyUI container to the same Docker network as Caddy, and set the Admin URL to <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">http://caddy:2019</code>. That's what the shipped <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker-compose.yml</code> already does.</li>
+        </ul>
+        <p class="mt-2 text-amber-700"><strong>Check it worked:</strong> from a different machine, run <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">curl -m 5 http://&lt;caddy-host-ip&gt;:2019/config/</code>. It should hang or return "connection refused". From the CaddyUI host it should return JSON.</p>
       </div>
     </details>
     <details class="group">

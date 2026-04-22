@@ -38,6 +38,7 @@ func (u *User) CanWrite() bool { return u != nil && u.Role != RoleView }
 
 type ProxyHost struct {
 	ID                  int64
+	ServerID            int64 // v2.4.0: which caddy_servers row this host belongs to (for per-server public-IP lookup)
 	Domains             string
 	ForwardScheme       string
 	ForwardHost         string
@@ -460,12 +461,19 @@ func UpdateProxyHostDNSRecord(db *sql.DB, id int64, provider, zoneID, zoneName, 
 // hosts that have an active managed DNS record. Only the fields needed for
 // lifecycle management (IP retarget, bulk delete) are populated — the
 // counterpart to the pre-v2.3.0 ListProxyHostsWith{CF,PB}Records helpers.
-func ListProxyHostsWithDNSRecords(db *sql.DB) ([]ProxyHost, error) {
-	rows, err := db.Query(`
-		SELECT id, domains, dns_provider, dns_zone_id, dns_zone_name, dns_record_id
+// Pass serverID > 0 to restrict to that Caddy server (for per-server IP
+// retargeting); 0 means "all servers".
+func ListProxyHostsWithDNSRecords(db *sql.DB, serverID int64) ([]ProxyHost, error) {
+	q := `SELECT id, server_id, domains, dns_provider, dns_zone_id, dns_zone_name, dns_record_id
 		FROM proxy_hosts
-		WHERE dns_provider != '' AND dns_record_id != ''
-		ORDER BY id ASC`)
+		WHERE dns_provider != '' AND dns_record_id != ''`
+	args := []any{}
+	if serverID > 0 {
+		q += ` AND server_id = ?`
+		args = append(args, serverID)
+	}
+	q += ` ORDER BY id ASC`
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +481,7 @@ func ListProxyHostsWithDNSRecords(db *sql.DB) ([]ProxyHost, error) {
 	var out []ProxyHost
 	for rows.Next() {
 		var p ProxyHost
-		if err := rows.Scan(&p.ID, &p.Domains, &p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID); err != nil {
+		if err := rows.Scan(&p.ID, &p.ServerID, &p.Domains, &p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

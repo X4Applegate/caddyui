@@ -115,17 +115,39 @@
     </div>
   </div>
 
-  {{/* ── DNS — shared server IP ── */}}
+  {{/* ── DNS — per-server public IPs (v2.4.0) ── */}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-3">
     <div>
-      <div class="text-sm font-semibold text-ink-900 mb-0.5">DNS · Server IP</div>
-      <p class="text-xs text-ink-500">Public IP of this server. Every enabled DNS provider writes this as the A record content for managed proxy hosts. Changing it retargets all existing records in the background.</p>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">DNS · Server Public IPs</div>
+      <p class="text-xs text-ink-500">Every Caddy server can have its own WAN IP. When a proxy host is created on a server, its managed DNS A record is pointed at that server's IP below. Changing an IP retargets only that server's records in the background.</p>
     </div>
-    <div>
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">Server IP <span class="text-ink-400 font-normal">(A record target)</span></label>
-      <input name="server_ip" value="{{.ServerIP}}" type="text" placeholder="1.2.3.4"
-        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    {{if .Servers}}
+    <div class="space-y-2">
+      {{range .Servers}}
+      <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+        <div class="sm:col-span-4">
+          <div class="text-sm font-medium text-ink-800 truncate">{{.Name}}</div>
+          <div class="text-xs text-ink-400 font-mono truncate" title="{{.AdminURL}}">{{.AdminURL}}</div>
+        </div>
+        <div class="sm:col-span-8">
+          <input name="server_ip_{{.ID}}" value="{{.PublicIP}}" type="text" placeholder="1.2.3.4 — WAN IP of {{.Name}}"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
+      </div>
+      {{end}}
     </div>
+    {{else}}
+    <p class="text-xs text-amber-700">No Caddy servers configured yet — add one under <a href="/servers" class="text-brand-600 hover:underline">System → Caddy Servers</a> first.</p>
+    {{end}}
+    <details class="pt-2 border-t border-ink-100">
+      <summary class="text-xs text-ink-500 cursor-pointer hover:text-ink-700">Legacy fallback IP (optional)</summary>
+      <div class="pt-2">
+        <label class="block text-xs font-medium text-ink-700 mb-1">Default Server IP <span class="text-ink-400 font-normal">(used when a server row above is blank)</span></label>
+        <input name="server_ip" value="{{.ServerIP}}" type="text" placeholder="1.2.3.4"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-400 mt-1">Most users don't need this — set the per-server IPs above instead. Kept for backwards compatibility with pre-v2.4.0 setups.</p>
+      </div>
+    </details>
   </div>
 
   {{/* ── DNS provider credential cards — one per registered provider ── */}}
@@ -137,7 +159,7 @@
         {{if .Enabled}}
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>active</span>
         {{else if .Configured}}
-          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="Credentials present but Server IP missing">waiting for server IP</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="Credentials present but no server public IP set">waiting for server IP</span>
         {{else}}
           <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
         {{end}}
