@@ -17,6 +17,10 @@
     <li><a href="#certificates" class="text-brand-600 hover:text-brand-700 hover:underline">Certificates</a></li>
     <li><a href="#cloudflare" class="text-brand-600 hover:text-brand-700 hover:underline">Cloudflare DNS</a></li>
     <li><a href="#porkbun" class="text-brand-600 hover:text-brand-700 hover:underline">Porkbun DNS</a></li>
+    <li><a href="#namecheap" class="text-brand-600 hover:text-brand-700 hover:underline">Namecheap DNS</a></li>
+    <li><a href="#godaddy" class="text-brand-600 hover:text-brand-700 hover:underline">GoDaddy DNS</a></li>
+    <li><a href="#digitalocean" class="text-brand-600 hover:text-brand-700 hover:underline">DigitalOcean DNS</a></li>
+    <li><a href="#hetzner" class="text-brand-600 hover:text-brand-700 hover:underline">Hetzner DNS</a></li>
     <li><a href="#import" class="text-brand-600 hover:text-brand-700 hover:underline">Import from Caddy</a></li>
     <li><a href="#snapshots" class="text-brand-600 hover:text-brand-700 hover:underline">Snapshots & Backup</a></li>
     <li><a href="#multiserver" class="text-brand-600 hover:text-brand-700 hover:underline">Multi-server</a></li>
@@ -158,14 +162,15 @@
     Cloudflare DNS
   </h2>
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
-    <p>If your domains are on Cloudflare, CaddyUI can create and manage the A records for you automatically.</p>
+    <p>If your domains are on Cloudflare, CaddyUI can create and manage the A records for you automatically. This is the recommended setup because Cloudflare's API is fast, well-documented, and free.</p>
     <ol class="list-decimal ml-5 space-y-1.5">
-      <li>In <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Cloudflare DNS</a>, paste an <strong>API token</strong> with <em>Zone:Read</em> + <em>DNS:Edit</em> permissions.</li>
-      <li>Enter the <strong>server IP</strong> you want A records to point at.</li>
-      <li>Optional: enable <em>Proxied</em> to route traffic through Cloudflare's CDN.</li>
+      <li>First, set the shared <strong>Server IP</strong> at the top of the <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings</a> DNS section — every provider writes this IP into its A records.</li>
+      <li>Create a token at <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">dash.cloudflare.com → API Tokens</a> with <em>Zone:Read</em> + <em>DNS:Edit</em> for the zones you want to manage.</li>
+      <li>Paste the token into <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Cloudflare DNS</a>.</li>
+      <li>Optional: enable <em>Proxied</em> to route traffic through Cloudflare's CDN (orange cloud). Disable to run DNS-only (grey cloud).</li>
     </ol>
-    <p>When you create a proxy host, pick the zone from the dropdown and CaddyUI will create the DNS record and save its ID. Edit the host → the record updates. Delete the host → the record is removed.</p>
-    <p>If you later change the server IP in settings, CaddyUI re-points every record it manages in one shot. Records it didn't create are never touched.</p>
+    <p>When you create a proxy host, pick <em>Cloudflare</em> from the provider dropdown and choose the zone. CaddyUI creates the DNS record, stores its ID, and cleans up on host delete.</p>
+    <p>If you later change the Server IP, CaddyUI re-points every record it manages across all providers in one background pass. Records it didn't create are never touched.</p>
   </div>
 </section>
 
@@ -181,11 +186,90 @@
     <p>If you registered your domain through Porkbun, CaddyUI can manage DNS A records there too — so your customer never needs to log in to Porkbun to repoint a subdomain.</p>
     <ol class="list-decimal ml-5 space-y-1.5">
       <li>Go to <a href="https://porkbun.com/account/api" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">porkbun.com/account/api</a> and create an API key pair. You'll get a public <em>API Key</em> (starts with <code>pk1_</code>) and a <em>Secret Key</em> (starts with <code>sk1_</code>).</li>
-      <li>In <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Porkbun DNS</a>, paste both keys. The <strong>Server IP</strong> is shared with Cloudflare — set it once in the Cloudflare card and both providers use it.</li>
+      <li>In <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Porkbun DNS</a>, paste both keys. The <strong>Server IP</strong> is shared — set it once at the top of the DNS section and every provider uses it.</li>
       <li><strong>This one trips everyone up:</strong> for each domain you want CaddyUI to manage, open Porkbun → <em>Domain Management</em> → click <em>Details</em> next to the domain → toggle <strong>API Access</strong> to ON. The API will reject requests on any domain where that toggle is off, even with valid keys.</li>
     </ol>
     <p>When you create a proxy host, pick <em>Porkbun</em> from the provider picker and choose the base domain. CaddyUI will create an A record (or an empty-name record for the apex) pointing at your server IP and remember its ID. Edit → update, delete → cleanup.</p>
     <p class="text-xs text-ink-500">Porkbun enforces a minimum TTL of 600 seconds — values below that get silently clamped by the API. Porkbun has no CDN / proxying mode equivalent to Cloudflare's orange cloud.</p>
+  </div>
+</section>
+
+{{/* ── Namecheap DNS ── */}}
+<section id="namecheap" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3l18 18"/></svg>
+    </span>
+    Namecheap DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>Namecheap's API is the most finicky of the six — worth reading this whole section before enabling it. The rough edges are all Namecheap's, not ours, but CaddyUI shields you from most of them.</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>Log in to Namecheap and go to <a href="https://ap.www.namecheap.com/settings/tools/apiaccess/" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">Profile → Tools → API Access</a>. Enable <em>API Access</em> and generate a key.</li>
+      <li>On the same page, add your server's public IP to the <strong>Whitelisted IPs</strong> list. Every request carries the IP and Namecheap rejects mismatches.</li>
+      <li>In <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Namecheap DNS</a>, fill in: <em>API User</em> (your Namecheap username), <em>API Key</em>, and <em>Whitelisted IP</em> (the same IP you just whitelisted — usually the same as the shared Server IP).</li>
+    </ol>
+    <p class="text-xs text-ink-500"><strong>Under the hood:</strong> Namecheap's API doesn't support per-record CRUD — every create or delete fetches the full host list, mutates it, and POSTs the whole set back. CaddyUI serialises those calls internally, but if you're hand-editing records in the Namecheap panel <em>at the same time</em> an IP-retarget job is running, you may see one side overwrite the other. Let one finish before starting the other.</p>
+    <p class="text-xs text-ink-500">Namecheap requires <em>at least 20 active domains</em> on your account <strong>or</strong> a positive account balance to unlock API access on sandbox-free production. If the API returns <em>"No Permission"</em>, that's the gate.</p>
+  </div>
+</section>
+
+{{/* ── GoDaddy DNS ── */}}
+<section id="godaddy" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M12 2L4 7v6c0 4.5 3.5 8.5 8 9 4.5-.5 8-4.5 8-9V7l-8-5z"/></svg>
+    </span>
+    GoDaddy DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>GoDaddy offers a clean JSON API, but read the tier gate below before wiring it up — it bites a lot of users.</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>Create a <em>Production</em> key at <a href="https://developer.godaddy.com/keys" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">developer.godaddy.com/keys</a>. You'll get an <em>API Key</em> and an <em>API Secret</em>.</li>
+      <li>Paste both into <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → GoDaddy DNS</a>.</li>
+    </ol>
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <strong>Tier gate:</strong> as of 2024-04 GoDaddy restricts API access to accounts that hold <strong>10 or more domains</strong> or have a <em>Discount Domain Club</em> membership. Keys on smaller accounts return <code class="font-mono">403 ACCESS_DENIED</code> — that error is surfaced verbatim in the proxy host form so you can see it when it happens. This is not a CaddyUI bug; it's a GoDaddy policy.
+    </div>
+    <p class="text-xs text-ink-500"><strong>Under the hood:</strong> GoDaddy doesn't expose stable per-record IDs in its list response. CaddyUI tracks records by the pair <code class="font-mono">type|name</code> — deleting sends <code class="font-mono">DELETE /records/{type}/{name}</code>. If you hand-edit a record's type or name in GoDaddy's panel, CaddyUI may not be able to find it for cleanup on host delete — remove the orphan manually in that case.</p>
+  </div>
+</section>
+
+{{/* ── DigitalOcean DNS ── */}}
+<section id="digitalocean" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="9"/><path d="M12 3v9h9"/></svg>
+    </span>
+    DigitalOcean DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>DigitalOcean's DNS API is free for any account and Just Works. Recommended if your domain nameservers already point at DigitalOcean (ns1/ns2/ns3.digitalocean.com).</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>At <a href="https://cloud.digitalocean.com/account/api/tokens" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">cloud.digitalocean.com → API → Tokens</a>, create a <strong>Personal Access Token</strong> with <em>read</em> + <em>write</em> scopes (DNS needs both).</li>
+      <li>Paste the token into <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → DigitalOcean DNS</a>.</li>
+      <li>The domain must already exist in DigitalOcean's <em>Networking → Domains</em> panel. CaddyUI creates records inside existing zones — it doesn't add the zone itself.</li>
+    </ol>
+    <p class="text-xs text-ink-500">Minimum TTL on DigitalOcean is <strong>30 seconds</strong>. Nameservers must be pointed at DigitalOcean at the registrar for the record to actually resolve — the API will happily create records on zones whose nameservers point elsewhere, but those records are dark until you repoint.</p>
+  </div>
+</section>
+
+{{/* ── Hetzner DNS ── */}}
+<section id="hetzner" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 12h18"/></svg>
+    </span>
+    Hetzner DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>Hetzner's DNS Console is a free, separate product from Hetzner Cloud — you don't need a Hetzner server to use it. Good choice for EU-hosted zones.</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>Go to <a href="https://dns.hetzner.com/settings/api-token" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">dns.hetzner.com → API Tokens</a> and create a token with full DNS permissions.</li>
+      <li>Paste the token into <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Hetzner DNS</a>. The API uses the <code class="font-mono">Auth-API-Token</code> header — CaddyUI sets that automatically, you only paste the token value.</li>
+      <li>The zone (domain) must already be created in Hetzner DNS Console and the registrar's nameservers must point at <code class="font-mono">hydrogen.ns.hetzner.com</code> + <code class="font-mono">helium.ns.hetzner.de</code> + <code class="font-mono">oxygen.ns.hetzner.com</code>.</li>
+    </ol>
+    <p class="text-xs text-ink-500">Hetzner returns opaque zone IDs (not the domain name) — CaddyUI stores both so the proxy-host list and log lines can display the human-readable zone name.</p>
   </div>
 </section>
 

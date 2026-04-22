@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.3.0] — 2026-04-22 · Multi-Provider DNS (Namecheap, GoDaddy, DigitalOcean, Hetzner)
+
+### Added
+- **Four new managed-DNS providers**, all behind a single `dns.Provider` interface in `internal/dns/`:
+  - **Namecheap** (`internal/dns/namecheap.go`) — XML API; serialises mutations since `setHosts` is a full-replace endpoint, synthetic `TYPE|NAME|VALUE` record IDs, splits SLD/TLD for the API call, requires per-account IP whitelisting
+  - **GoDaddy** (`internal/dns/godaddy.go`) — `sso-key` auth, synthetic `TYPE|NAME` record IDs, uses `PATCH /records` (append) rather than `PUT` (replace-all); surfaces the 10-domain-minimum tier gate error verbatim
+  - **DigitalOcean** (`internal/dns/digitalocean.go`) — clean REST API, domain-as-zone-ID, 30s minimum TTL
+  - **Hetzner DNS** (`internal/dns/hetzner.go`) — `Auth-API-Token` header, opaque zone IDs separate from zone names
+- **Unified DNS provider architecture** (`internal/dns/dns.go`):
+  - Common `Provider` interface (`ID`, `DisplayName`, `Ping`, `ListZones`, `CreateRecord`, `DeleteRecord`) every provider implements
+  - Descriptor registry with per-provider `CredentialField` metadata so Settings renders credential cards from a single `{{range .DNSProviders}}` loop — no template branching per provider
+  - Helpers: `SubdomainOf`, `FirstDomain`, `MatchZone` for zone/record name translation
+  - Keep-blank-to-preserve UX on every secret field; non-secret fields (Namecheap API user, whitelisted IP) are always-overwrite
+- **Settings page refactor** — replaced hardcoded CF + PB credential cards with a data-driven loop over `dns.Descriptors()`; new shared "Server IP" field at the top of the DNS section (used by all providers), per-provider active/configured/disabled status pills, inline setup-guide links
+- **Proxy host form refactor** — one provider dropdown + one zone selector (loaded on demand from `/api/dns-zones?provider=<id>`); switching providers clears the stale zone selection, provider-specific hints render inline (Porkbun per-domain API Access reminder, Namecheap IP-whitelist note, GoDaddy tier-gate warning)
+- **Docs** — four new tutorial sections (Namecheap / GoDaddy / DigitalOcean / Hetzner) covering key creation, account requirements, and the provider-specific gotchas
+
+### Changed
+- **Cloudflare + Porkbun** ported to the new `dns.Provider` interface (thin adapters over `internal/cloudflare` and `internal/porkbun`); no behaviour changes, but Settings and the proxy host form are now driven by the registry rather than hardcoded
+- **Server IP setting** renamed from `cf_server_ip` to `server_ip` (the old key is still read for backwards compatibility — existing databases upgrade cleanly)
+- **IP-change retargeting** now walks every managed record across all six providers in a single pass (was CF + PB only)
+- **`/api/cf-zones` and `/api/pb-domains` consolidated** into `/api/dns-zones?provider=<id>` (old routes removed — they were never used outside the proxy host form, which is updated in this release)
+
+### Database
+- Added unified `dns_provider` / `dns_zone_id` / `dns_zone_name` / `dns_record_id` columns to `proxy_hosts` via the idempotent `columnExists → ALTER TABLE` pattern
+- **One-time backfill** at startup: existing rows with `cf_dns_record_id` or `pb_dns_record_id` set are auto-populated into the unified columns (guarded on `dns_provider = ''` so it only runs once). Legacy CF/PB columns are preserved for rollback safety — dropping columns in SQLite requires a table rebuild, which isn't worth the migration risk
+
+### Docker
+- Published as `applegater/caddyui:v2.3.0` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.2.0] — 2026-04-22 · Porkbun DNS Integration
 
 ### Added

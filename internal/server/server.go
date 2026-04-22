@@ -26,9 +26,8 @@ import (
 
 	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
-	"github.com/X4Applegate/caddyui/internal/cloudflare"
+	"github.com/X4Applegate/caddyui/internal/dns"
 	"github.com/X4Applegate/caddyui/internal/models"
-	"github.com/X4Applegate/caddyui/internal/porkbun"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	totplib "github.com/pquerna/otp/totp"
@@ -222,11 +221,10 @@ func (s *Server) Routes() http.Handler {
 		// Update-check: fetches latest tag from Docker Hub (cached 1h).
 		r.Get("/api/version-check", s.apiVersionCheck)
 
-		// Cloudflare DNS: list zones accessible with the configured API token.
-		r.Get("/api/cf-zones", s.apiCFZones)
-
-		// Porkbun DNS: list domains accessible with the configured API key pair.
-		r.Get("/api/pb-domains", s.apiPBDomains)
+		// Unified DNS-provider zones endpoint — /api/dns-zones?provider=<id>.
+		// Replaces the v2.2.x per-provider /api/cf-zones and /api/pb-domains
+		// endpoints with a single handler that routes on ?provider=.
+		r.Get("/api/dns-zones", s.apiDNSZones)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -432,18 +430,87 @@ const (
 	settingTurnstileSiteKey   = "turnstile_site_key"
 	settingTurnstileSecretKey = "turnstile_secret_key"
 
-	// Cloudflare DNS integration.
+	// Shared A-record target — the public IP every DNS provider writes as
+	// its record content. The key name starts with "cf_" for historical
+	// reasons (Cloudflare was the first provider); it's the single source
+	// of truth now regardless of which provider is active.
+	settingServerIP = "cf_server_ip"
+
+	// Cloudflare-specific.
 	settingCFAPIToken = "cf_api_token"
-	settingCFServerIP = "cf_server_ip"
 	settingCFProxied  = "cf_proxied"
 
-	// Porkbun DNS integration. Auth is an apikey/secretkey pair (both required
-	// on every request). No separate "proxied" flag — Porkbun is DNS-only.
-	// We reuse the Cloudflare server IP setting as the shared A-record target
-	// (one IP, either provider) rather than storing a duplicate per-provider.
+	// Legacy alias kept so pre-v2.3.0 code paths referencing
+	// settingCFServerIP continue to compile. Points at the shared key.
+	settingCFServerIP = settingServerIP
+
+	// Porkbun.
 	settingPBAPIKey    = "pb_api_key"
 	settingPBSecretKey = "pb_secret_key"
+
+	// Namecheap (v2.3.0).
+	settingNCAPIUser  = "nc_api_user"
+	settingNCAPIKey   = "nc_api_key"
+	settingNCClientIP = "nc_client_ip"
+
+	// GoDaddy (v2.3.0).
+	settingGDAPIKey    = "gd_api_key"
+	settingGDAPISecret = "gd_api_secret"
+
+	// DigitalOcean (v2.3.0).
+	settingDOAPIToken = "do_api_token"
+
+	// Hetzner DNS (v2.3.0).
+	settingHetznerAPIToken = "hetzner_api_token"
 )
+
+// dnsProviderCredKeys lists every settings-table key that belongs to a DNS
+// provider's credential set. Used by postSettings to walk the new unified
+// form section without hardcoding a branch per provider.
+//
+// Key order mirrors dns.Descriptors() so the Settings page renders cards
+// in the same order credentials are saved.
+var dnsProviderCredKeys = map[string][]string{
+	dns.Cloudflare:   {settingCFAPIToken},
+	dns.Porkbun:      {settingPBAPIKey, settingPBSecretKey},
+	dns.Namecheap:    {settingNCAPIUser, settingNCAPIKey, settingNCClientIP},
+	dns.GoDaddy:      {settingGDAPIKey, settingGDAPISecret},
+	dns.DigitalOcean: {settingDOAPIToken},
+	dns.Hetzner:      {settingHetznerAPIToken},
+}
+
+// dnsCreds returns the current credential map for a provider, reading from
+// the settings table. Pass it straight to dns.Build.
+func (s *Server) dnsCreds(providerID string) map[string]string {
+	creds := map[string]string{}
+	for _, k := range dnsProviderCredKeys[providerID] {
+		v, _ := models.GetSetting(s.DB, k)
+		creds[k] = v
+	}
+	// Cloudflare also needs the proxied flag — it lives alongside the
+	// token in the settings table but isn't a credential field proper.
+	if providerID == dns.Cloudflare {
+		creds["cf_proxied"], _ = models.GetSetting(s.DB, settingCFProxied)
+	}
+	return creds
+}
+
+// dnsClient returns a ready-to-use Provider for the given ID, or nil if
+// credentials aren't configured. Replaces the per-provider cfClient /
+// pbClient helpers.
+func (s *Server) dnsClient(providerID string) dns.Provider {
+	if providerID == "" {
+		return nil
+	}
+	return dns.Build(providerID, s.dnsCreds(providerID))
+}
+
+// serverIP returns the configured public IP that DNS records point at,
+// or "" if not yet set. All providers share this value.
+func (s *Server) serverIP() string {
+	ip, _ := models.GetSetting(s.DB, settingServerIP)
+	return ip
+}
 
 // verifyTurnstile calls the Cloudflare Turnstile siteverify endpoint.
 // Returns true when the challenge token is valid.
@@ -1057,21 +1124,52 @@ type certView struct {
 	DaysLeft  int // positive = days until expiry; negative = already expired
 }
 
+// dnsProviderViewData builds the template data describing which DNS
+// providers have credentials configured. Shared by newProxyHost /
+// editProxyHost / renderProxyHostFormError so the form picker renders
+// consistently across all three entry points.
+//
+// Returns a list of descriptors for each enabled provider (keyed for
+// direct use by the form's <select>) plus a boolean "AnyDNSEnabled"
+// the template uses to hide the whole DNS section when nothing is
+// configured.
+func (s *Server) dnsProviderViewData() map[string]any {
+	ip := s.serverIP()
+	type providerEntry struct {
+		ID          string
+		DisplayName string
+	}
+	enabled := []providerEntry{}
+	if ip != "" {
+		for _, d := range dns.Descriptors() {
+			if dns.CredsComplete(d.ID, s.dnsCreds(d.ID)) {
+				enabled = append(enabled, providerEntry{ID: d.ID, DisplayName: d.DisplayName})
+			}
+		}
+	}
+	return map[string]any{
+		"DNSProviders":  enabled,
+		"AnyDNSEnabled": len(enabled) > 0,
+	}
+}
+
+// applyDNSViewData merges the DNS picker view data into the given map.
+func (s *Server) applyDNSViewData(m map[string]any) map[string]any {
+	for k, v := range s.dnsProviderViewData() {
+		m[k] = v
+	}
+	return m
+}
+
 func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
-	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
-	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
-	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
-	s.render(w, r, "proxy_host_form.html", map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
-		"CFEnabled":    cfToken != "" && cfServerIP != "",
-		"PBEnabled":    pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
 		"Section":      "proxy",
-	})
+	}))
 }
 
 func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
@@ -1081,19 +1179,30 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		return nil, err
 	}
 	certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
-	// DNS provider picker: radio with values "", "cloudflare", or "porkbun".
-	// Each provider captures its own selector only when that radio is active,
-	// so a blank provider or a switch away from a provider wipes the picker
-	// selection cleanly (the record-ID deletion happens further up in the
-	// create/update handlers based on the old vs new values).
-	provider := r.FormValue("dns_provider")
-	cfZoneID := ""
-	pbDomain := ""
-	switch provider {
-	case "cloudflare":
-		cfZoneID = strings.TrimSpace(r.FormValue("cf_zone_id"))
-	case "porkbun":
-		pbDomain = strings.TrimSpace(r.FormValue("pb_domain"))
+	// DNS picker is now a two-field combo: dns_provider selects which
+	// provider (or "" for none) and dns_zone_id is the provider-native
+	// zone identifier. For human display the zone_name is also captured —
+	// the form stashes it in a hidden input whenever the picker changes.
+	provider := strings.ToLower(strings.TrimSpace(r.FormValue("dns_provider")))
+	zoneID := ""
+	zoneName := ""
+	if provider != "" {
+		if _, ok := dns.Lookup(provider); !ok {
+			provider = "" // unknown ID → treat as "no DNS"
+		} else {
+			zoneID = strings.TrimSpace(r.FormValue("dns_zone_id"))
+			zoneName = strings.TrimSpace(r.FormValue("dns_zone_name"))
+			if zoneID == "" {
+				// Picker never captured a zone; treat the whole thing as
+				// unset so we don't try to create a record with no target.
+				provider = ""
+				zoneName = ""
+			}
+			if zoneName == "" {
+				// PB/DO/GD/NC use ID == Name; fall back transparently.
+				zoneName = zoneID
+			}
+		}
 	}
 	return &models.ProxyHost{
 		Domains:             strings.TrimSpace(r.FormValue("domains")),
@@ -1109,8 +1218,9 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		Enabled:             r.FormValue("enabled") == "on",
 		CertificateID:       certID,
 		AccessList:          strings.TrimSpace(r.FormValue("access_list")),
-		CFZoneID:            cfZoneID,
-		PBDomain:            pbDomain,
+		DNSProvider:         provider,
+		DNSZoneID:           zoneID,
+		DNSZoneName:         zoneName,
 	}, nil
 }
 
@@ -1155,14 +1265,11 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Cloudflare DNS: create A record if a zone was selected.
-	if p.CFZoneID != "" {
-		s.cfCreateDNSRecord(id, p)
-	}
-	// Porkbun DNS: create A record if a domain was selected. Mutually
-	// exclusive with the CF branch above — the form enforces one provider.
-	if p.PBDomain != "" {
-		s.pbCreateDNSRecord(id, p)
+	// Unified DNS: create A record if a provider + zone was selected.
+	// dnsCreateRecord is a no-op when DNSProvider is empty, so no branch
+	// needed here — just call it unconditionally.
+	if p.DNSProvider != "" && p.DNSZoneID != "" {
+		s.dnsCreateRecord(id, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.syncCaddy(s.currentServerID(r), p.CertificateID != 0)
@@ -1188,19 +1295,13 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
-	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
-	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
-	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
-	s.render(w, r, "proxy_host_form.html", map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
-		"CFEnabled":    cfToken != "" && cfServerIP != "",
-		"PBEnabled":    pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
 		"Section":      "proxy",
-	})
+	}))
 }
 
 func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
@@ -1248,55 +1349,42 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	deployTo := parseDeployTo(r)
 	old, _ := models.GetProxyHost(s.DB, id)
 
-	// DNS lifecycle management (Cloudflare + Porkbun).
-	// Determine if the primary domain changed (we only track the first domain).
-	oldDomain := ""
+	// Unified DNS lifecycle. A record needs replacing when:
+	//   1. The user switched provider or cleared DNS entirely
+	//   2. The user picked a different zone on the same provider
+	//   3. The primary domain (first in the Domains list) changed
+	// In any of those cases we delete the old record and create a new
+	// one after the DB save succeeds. If nothing changed, we preserve
+	// the existing record ID so the record stays in place.
+	oldDomain := dns.FirstDomain("")
 	if old != nil {
-		oldDomain = strings.TrimSpace(strings.SplitN(old.Domains, ",", 2)[0])
+		oldDomain = dns.FirstDomain(old.Domains)
 	}
-	newDomain := strings.TrimSpace(strings.SplitN(p.Domains, ",", 2)[0])
+	newDomain := dns.FirstDomain(p.Domains)
 	domainChanged := oldDomain != newDomain
 
-	// --- Cloudflare branch ---
-	cfZoneChanged := old != nil && old.CFZoneID != p.CFZoneID
-	needDeleteCF := old != nil && old.CFDNSRecordID != "" && (p.CFZoneID == "" || cfZoneChanged || domainChanged)
-	if needDeleteCF {
-		if cf := s.cfClient(); cf != nil {
-			if err := cf.DeleteRecord(old.CFZoneID, old.CFDNSRecordID); err != nil {
-				log.Printf("CF DNS: delete old record %s: %v", old.CFDNSRecordID, err)
-			}
-		}
-		p.CFDNSRecordID = ""
+	providerChanged := old != nil && old.DNSProvider != p.DNSProvider
+	zoneChanged := old != nil && old.DNSZoneID != p.DNSZoneID
+	needDelete := old != nil && old.DNSRecordID != "" &&
+		(p.DNSProvider == "" || providerChanged || zoneChanged || domainChanged)
+	if needDelete {
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+		p.DNSRecordID = ""
 	} else if old != nil {
-		p.CFDNSRecordID = old.CFDNSRecordID // preserve unchanged record ID
+		// Preserve existing record + zone metadata when nothing routing-
+		// relevant changed. The form doesn't resubmit record IDs, so
+		// without this the DB save would clear it.
+		p.DNSRecordID = old.DNSRecordID
 	}
-	needCreateCF := p.CFZoneID != "" && (p.CFDNSRecordID == "" || domainChanged || cfZoneChanged)
-
-	// --- Porkbun branch ---
-	pbDomainChanged := old != nil && old.PBDomain != p.PBDomain
-	needDeletePB := old != nil && old.PBDNSRecordID != "" && (p.PBDomain == "" || pbDomainChanged || domainChanged)
-	if needDeletePB {
-		if pb := s.pbClient(); pb != nil {
-			if err := pb.DeleteRecord(old.PBDomain, old.PBDNSRecordID); err != nil {
-				log.Printf("PB DNS: delete old record %s: %v", old.PBDNSRecordID, err)
-			}
-		}
-		p.PBDNSRecordID = ""
-	} else if old != nil {
-		p.PBDNSRecordID = old.PBDNSRecordID // preserve unchanged record ID
-	}
-	needCreatePB := p.PBDomain != "" && (p.PBDNSRecordID == "" || domainChanged || pbDomainChanged)
+	needCreate := p.DNSProvider != "" && p.DNSZoneID != "" &&
+		(p.DNSRecordID == "" || providerChanged || zoneChanged || domainChanged)
 
 	if err := models.UpdateProxyHost(s.DB, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Create new records (if any) after successful DB save.
-	if needCreateCF {
-		s.cfCreateDNSRecord(p.ID, p)
-	}
-	if needCreatePB {
-		s.pbCreateDNSRecord(p.ID, p)
+	if needCreate {
+		s.dnsCreateRecord(p.ID, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
@@ -1318,21 +1406,10 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Cloudflare DNS: delete managed record before removing host.
-	if old != nil && old.CFDNSRecordID != "" {
-		if cf := s.cfClient(); cf != nil {
-			if err := cf.DeleteRecord(old.CFZoneID, old.CFDNSRecordID); err != nil {
-				log.Printf("CF DNS: delete record %s on host delete: %v", old.CFDNSRecordID, err)
-			}
-		}
-	}
-	// Porkbun DNS: delete managed record before removing host.
-	if old != nil && old.PBDNSRecordID != "" && old.PBDomain != "" {
-		if pb := s.pbClient(); pb != nil {
-			if err := pb.DeleteRecord(old.PBDomain, old.PBDNSRecordID); err != nil {
-				log.Printf("PB DNS: delete record %s on host delete: %v", old.PBDNSRecordID, err)
-			}
-		}
+	// Unified DNS: delete any managed record before removing the host.
+	// No-op when the host has no DNS-managed record.
+	if old != nil && old.DNSRecordID != "" {
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 	}
 	if err := models.DeleteProxyHost(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2834,20 +2911,14 @@ func scanTopLevelDirective(src string, banned []string) string {
 
 func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request, p *models.ProxyHost, errMsg string) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	cfToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
-	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
-	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
-	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
-	s.render(w, r, "proxy_host_form.html", map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
 		"OtherServers": s.otherManagedServers(r),
-		"CFEnabled":    cfToken != "" && cfServerIP != "",
-		"PBEnabled":    pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
 		"Error":        errMsg,
 		"Section":      "proxy",
-	})
+	}))
 }
 
 // adaptProxyAdvanced converts a proxy host's per-host AdvancedConfig (a Caddyfile
@@ -4185,221 +4256,166 @@ func fetchLatestDockerTag(namespace, image string) (string, error) {
 	return best, nil
 }
 
-// --- Cloudflare DNS helpers ---
-
-// cfClient builds a Cloudflare API client from the configured API token.
-// Returns nil if no token is stored.
-func (s *Server) cfClient() *cloudflare.Client {
-	token, _ := models.GetSetting(s.DB, settingCFAPIToken)
-	if token == "" {
-		return nil
-	}
-	return cloudflare.New(token)
-}
-
-// cfCreateDNSRecord creates an A record in Cloudflare for the first domain of
-// the proxy host and stores the resulting record ID in the database.
-func (s *Server) cfCreateDNSRecord(hostID int64, p *models.ProxyHost) {
-	cf := s.cfClient()
-	if cf == nil {
-		return
-	}
-	serverIP, _ := models.GetSetting(s.DB, settingCFServerIP)
-	if serverIP == "" {
-		log.Printf("CF DNS: server IP not configured — skipping record creation for host %d", hostID)
-		return
-	}
-	proxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
-	proxied := proxiedStr == "1"
-	domain := strings.SplitN(p.Domains, ",", 2)[0]
-	domain = strings.TrimSpace(domain)
-	if domain == "" || p.CFZoneID == "" {
-		return
-	}
-	rec, err := cf.CreateRecord(p.CFZoneID, "A", domain, serverIP, proxied, 1)
-	if err != nil {
-		log.Printf("CF DNS: create record for %s: %v", domain, err)
-		return
-	}
-	if err := models.UpdateProxyHostCFRecord(s.DB, hostID, rec.ID, p.CFZoneID); err != nil {
-		log.Printf("CF DNS: store record ID for host %d: %v", hostID, err)
-	}
-}
-
-// cfUpdateAllRecords deletes and recreates every Cloudflare-managed A record
-// across all proxy hosts, pointing them at newIP. Called in a goroutine when
-// the server IP setting changes so existing records stay in sync automatically.
-func (s *Server) cfUpdateAllRecords(newIP string) {
-	cf := s.cfClient()
-	if cf == nil {
-		return
-	}
-	hosts, err := models.ListProxyHostsWithCFRecords(s.DB)
-	if err != nil {
-		log.Printf("CF DNS: list managed hosts for IP update: %v", err)
-		return
-	}
-	if len(hosts) == 0 {
-		return
-	}
-	proxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
-	proxied := proxiedStr == "1"
-	log.Printf("CF DNS: updating %d record(s) to new IP %s", len(hosts), newIP)
-	for _, h := range hosts {
-		domain := strings.TrimSpace(strings.SplitN(h.Domains, ",", 2)[0])
-		if domain == "" {
-			continue
-		}
-		// Delete old record (best-effort — may already be gone).
-		if err := cf.DeleteRecord(h.CFZoneID, h.CFDNSRecordID); err != nil {
-			log.Printf("CF DNS: delete old record %s (%s): %v", h.CFDNSRecordID, domain, err)
-		}
-		// Create replacement record with new IP.
-		rec, err := cf.CreateRecord(h.CFZoneID, "A", domain, newIP, proxied, 1)
-		if err != nil {
-			log.Printf("CF DNS: create new record for %s: %v", domain, err)
-			_ = models.UpdateProxyHostCFRecord(s.DB, h.ID, "", "")
-			continue
-		}
-		_ = models.UpdateProxyHostCFRecord(s.DB, h.ID, rec.ID, h.CFZoneID)
-		log.Printf("CF DNS: updated %s → %s (record %s)", domain, newIP, rec.ID)
-	}
-}
-
-// apiCFZones returns the list of Cloudflare zones accessible with the configured
-// API token as a JSON array. Used by the proxy-host form to populate the zone picker.
-func (s *Server) apiCFZones(w http.ResponseWriter, r *http.Request) {
-	cf := s.cfClient()
-	w.Header().Set("Content-Type", "application/json")
-	if cf == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Cloudflare API token not configured in Settings"})
-		return
-	}
-	zones, err := cf.ListZones()
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-	json.NewEncoder(w).Encode(zones)
-}
-
-// --- Porkbun DNS helpers ---
+// --- Unified DNS helpers ---
 //
-// Parallel path to the Cloudflare helpers above. At most one provider is
-// active per proxy host; the form enforces that by writing only the
-// columns for the selected provider and clearing the other.
+// Replaces the v2.2.x per-provider helpers (cfClient/cfCreateDNSRecord/...,
+// pbClient/pbCreateDNSRecord/...) with a single code path driven by the
+// dns.Provider registry. A proxy_hosts row carries four DNS columns:
+//   dns_provider  — the provider ID ("cloudflare", "porkbun", ...)
+//   dns_zone_id   — the provider-native zone ID (opaque for CF/Hetzner;
+//                   domain name for PB/DO/GD/NC)
+//   dns_zone_name — the base domain in human-readable form ("example.com")
+//   dns_record_id — the record identifier returned by the provider
+// All mutations happen through dnsCreateRecord / dnsDeleteRecord /
+// dnsUpdateAllRecords — no provider-specific branch lives above this line.
 
-// pbClient builds a Porkbun API client from the stored credentials.
-// Returns nil if either key is missing — both halves are required.
-func (s *Server) pbClient() *porkbun.Client {
-	apiKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
-	secretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
-	if apiKey == "" || secretKey == "" {
-		return nil
+// dnsCreateRecord creates an A record for the first domain of the proxy
+// host. p.DNSProvider / p.DNSZoneID / p.DNSZoneName must be set before
+// calling. On success the record ID is persisted to the proxy_hosts row
+// via models.UpdateProxyHostDNSRecord. Logs errors; does not return them —
+// DNS failures are non-fatal to the caller's main path (host save,
+// IP retarget).
+func (s *Server) dnsCreateRecord(hostID int64, p *models.ProxyHost) {
+	client := s.dnsClient(p.DNSProvider)
+	if client == nil {
+		return
 	}
-	return porkbun.New(apiKey, secretKey)
+	ip := s.serverIP()
+	if ip == "" {
+		log.Printf("DNS: server IP not configured — skipping record creation for host %d", hostID)
+		return
+	}
+	fqdn := dns.FirstDomain(p.Domains)
+	if fqdn == "" || p.DNSZoneID == "" {
+		return
+	}
+	zone := dns.Zone{ID: p.DNSZoneID, Name: p.DNSZoneName}
+	if zone.Name == "" {
+		// Older rows (pre-migration) may not have zone_name populated —
+		// it's optional metadata for most providers. Fall back to the
+		// zone ID which doubles as the domain for PB/DO/GD/NC.
+		zone.Name = p.DNSZoneID
+	}
+	rec, err := client.CreateRecord(zone, fqdn, ip, "A", 0)
+	if err != nil {
+		log.Printf("DNS %s: create record for %s: %v", p.DNSProvider, fqdn, err)
+		return
+	}
+	if err := models.UpdateProxyHostDNSRecord(s.DB, hostID, p.DNSProvider, zone.ID, zone.Name, rec.ID); err != nil {
+		log.Printf("DNS %s: store record ID for host %d: %v", p.DNSProvider, hostID, err)
+	}
 }
 
-// pbCreateDNSRecord creates an A record on Porkbun for the first domain of
-// the proxy host and stores the resulting record ID + base domain in the
-// database. The base domain is derived from the form selection (stored in
-// p.PBDomain before this is called).
-func (s *Server) pbCreateDNSRecord(hostID int64, p *models.ProxyHost) {
-	pb := s.pbClient()
-	if pb == nil {
+// dnsDeleteRecord removes a previously-created record. Best-effort: logs
+// and returns on error (the row is being deleted anyway; a leftover record
+// is a minor annoyance, not a correctness issue).
+func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordID string) {
+	if providerID == "" || recordID == "" {
 		return
 	}
-	serverIP, _ := models.GetSetting(s.DB, settingCFServerIP) // shared A-record target
-	if serverIP == "" {
-		log.Printf("PB DNS: server IP not configured — skipping record creation for host %d", hostID)
+	client := s.dnsClient(providerID)
+	if client == nil {
 		return
 	}
-	fqdn := strings.TrimSpace(strings.SplitN(p.Domains, ",", 2)[0])
-	if fqdn == "" || p.PBDomain == "" {
-		return
+	zone := dns.Zone{ID: zoneID, Name: zoneName}
+	if zone.Name == "" {
+		zone.Name = zoneID
 	}
-	sub := porkbun.SubdomainOf(fqdn, p.PBDomain)
-	rec, err := pb.CreateRecord(p.PBDomain, "A", sub, serverIP, 600)
-	if err != nil {
-		log.Printf("PB DNS: create record for %s (domain %s): %v", fqdn, p.PBDomain, err)
-		return
-	}
-	if err := models.UpdateProxyHostPBRecord(s.DB, hostID, rec.ID, p.PBDomain); err != nil {
-		log.Printf("PB DNS: store record ID for host %d: %v", hostID, err)
+	if err := client.DeleteRecord(zone, recordID); err != nil {
+		log.Printf("DNS %s: delete record %s: %v", providerID, recordID, err)
 	}
 }
 
-// pbUpdateAllRecords deletes and recreates every Porkbun-managed A record
-// across all proxy hosts, pointing them at newIP. Called in a goroutine
-// alongside cfUpdateAllRecords when the server IP setting changes.
-func (s *Server) pbUpdateAllRecords(newIP string) {
-	pb := s.pbClient()
-	if pb == nil {
-		return
-	}
-	hosts, err := models.ListProxyHostsWithPBRecords(s.DB)
+// dnsUpdateAllRecords retargets every managed DNS record at newIP.
+// Called in a goroutine from postSettings when the shared server IP
+// changes. Walks every provider in a single pass via
+// ListProxyHostsWithDNSRecords — no per-provider fanout needed.
+//
+// We cache provider clients by ID so we build each at most once per call.
+// Records for providers with missing credentials are skipped rather than
+// cleared, so partial credential removal doesn't destroy working records.
+func (s *Server) dnsUpdateAllRecords(newIP string) {
+	hosts, err := models.ListProxyHostsWithDNSRecords(s.DB)
 	if err != nil {
-		log.Printf("PB DNS: list managed hosts for IP update: %v", err)
+		log.Printf("DNS: list managed hosts for IP update: %v", err)
 		return
 	}
 	if len(hosts) == 0 {
 		return
 	}
-	log.Printf("PB DNS: updating %d record(s) to new IP %s", len(hosts), newIP)
+	clients := map[string]dns.Provider{}
+	getClient := func(id string) dns.Provider {
+		if c, ok := clients[id]; ok {
+			return c
+		}
+		c := s.dnsClient(id)
+		clients[id] = c
+		return c
+	}
+	log.Printf("DNS: retargeting %d record(s) to %s", len(hosts), newIP)
 	for _, h := range hosts {
-		fqdn := strings.TrimSpace(strings.SplitN(h.Domains, ",", 2)[0])
+		client := getClient(h.DNSProvider)
+		if client == nil {
+			log.Printf("DNS %s: credentials missing — skipping host %d retarget", h.DNSProvider, h.ID)
+			continue
+		}
+		fqdn := dns.FirstDomain(h.Domains)
 		if fqdn == "" {
 			continue
 		}
-		// Delete old record (best-effort — may already be gone).
-		if err := pb.DeleteRecord(h.PBDomain, h.PBDNSRecordID); err != nil {
-			log.Printf("PB DNS: delete old record %s (%s): %v", h.PBDNSRecordID, fqdn, err)
+		zone := dns.Zone{ID: h.DNSZoneID, Name: h.DNSZoneName}
+		if zone.Name == "" {
+			zone.Name = h.DNSZoneID
 		}
-		// Create replacement record with new IP.
-		sub := porkbun.SubdomainOf(fqdn, h.PBDomain)
-		rec, err := pb.CreateRecord(h.PBDomain, "A", sub, newIP, 600)
+		// Delete-then-create semantic. Every provider implementation is
+		// idempotent on delete (silently succeeds if the record is gone),
+		// and recreate gives us a fresh record ID — cleanest across the
+		// whole provider set, even if a tiny window exists where the
+		// record is absent. Users are already dealing with a live IP
+		// change when this runs; a few seconds of DNS flutter is noise.
+		if err := client.DeleteRecord(zone, h.DNSRecordID); err != nil {
+			log.Printf("DNS %s: delete old record %s (%s): %v", h.DNSProvider, h.DNSRecordID, fqdn, err)
+		}
+		rec, err := client.CreateRecord(zone, fqdn, newIP, "A", 0)
 		if err != nil {
-			log.Printf("PB DNS: create new record for %s: %v", fqdn, err)
-			_ = models.UpdateProxyHostPBRecord(s.DB, h.ID, "", "")
+			log.Printf("DNS %s: create new record for %s: %v", h.DNSProvider, fqdn, err)
+			_ = models.UpdateProxyHostDNSRecord(s.DB, h.ID, "", "", "", "")
 			continue
 		}
-		_ = models.UpdateProxyHostPBRecord(s.DB, h.ID, rec.ID, h.PBDomain)
-		log.Printf("PB DNS: updated %s → %s (record %s)", fqdn, newIP, rec.ID)
+		_ = models.UpdateProxyHostDNSRecord(s.DB, h.ID, h.DNSProvider, zone.ID, zone.Name, rec.ID)
+		log.Printf("DNS %s: updated %s → %s (record %s)", h.DNSProvider, fqdn, newIP, rec.ID)
 	}
 }
 
-// apiPBDomains returns the list of Porkbun domains on the account as a
-// JSON array of {name: "example.com"} objects — kept keyed the same as the
-// Cloudflare zone picker's {id, name} response so the form's JS can render
-// both with minimal branching.
-func (s *Server) apiPBDomains(w http.ResponseWriter, r *http.Request) {
-	pb := s.pbClient()
+// apiDNSZones returns the list of zones for the provider specified in the
+// ?provider= query string. Replaces the per-provider apiCFZones /
+// apiPBDomains endpoints with a single handler.
+//
+// Response shape is always [{id, name}] so the form's zone-picker JS
+// renders every provider with the same code path. Cloudflare and Hetzner
+// return real opaque zone IDs; for Porkbun/DO/GoDaddy/Namecheap the ID
+// and name are the same string (the bare domain).
+func (s *Server) apiDNSZones(w http.ResponseWriter, r *http.Request) {
+	provider := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider")))
 	w.Header().Set("Content-Type", "application/json")
-	if pb == nil {
+	if provider == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Porkbun API keys not configured in Settings"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing provider parameter"})
 		return
 	}
-	domains, err := pb.ListDomains()
+	client := s.dnsClient(provider)
+	if client == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "credentials for provider \"" + provider + "\" not configured in Settings"})
+		return
+	}
+	zones, err := client.ListZones()
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	// Shape the response as {name, id} so the picker's JS can treat it like
-	// the Cloudflare zones list. For Porkbun the "id" is just the domain name
-	// (Porkbun URLs use the bare domain in place of a zone ID).
-	type entry struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	out := make([]entry, 0, len(domains))
-	for _, d := range domains {
-		out = append(out, entry{ID: d.Name, Name: d.Name})
-	}
-	json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(zones)
 }
 
 
@@ -4498,38 +4514,88 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
 	turnstileSecretKey, _ := models.GetSetting(s.DB, settingTurnstileSecretKey)
 
-	cfAPIToken, _ := models.GetSetting(s.DB, settingCFAPIToken)
-	cfServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
+	serverIP := s.serverIP()
 	cfProxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
 
-	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
-	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
+	// Build a view-model row per registered DNS provider so the template
+	// can render the cards in a simple range loop. Each card gets:
+	//   ID, DisplayName, DocsAnchor, Credentials (with "Configured" bool),
+	//   Configured (bool summing all credential fields).
+	type credView struct {
+		dns.CredentialField
+		Configured bool
+		// Value is the stored plaintext. Only rendered for non-secret fields
+		// (Namecheap's API user + whitelisted IP) — secret fields are never
+		// echoed back to the page.
+		Value string
+	}
+	type providerView struct {
+		ID          string
+		DisplayName string
+		DocsAnchor  string
+		Credentials []credView
+		Configured  bool   // every field non-empty
+		Enabled     bool   // Configured AND serverIP set
+		ExtraFlags  map[string]any // per-provider extras (e.g. Cloudflare proxied toggle)
+	}
+	var providers []providerView
+	for _, d := range dns.Descriptors() {
+		pv := providerView{
+			ID:          d.ID,
+			DisplayName: d.DisplayName,
+			DocsAnchor:  d.DocsAnchor,
+			ExtraFlags:  map[string]any{},
+		}
+		allFilled := true
+		for _, c := range d.Credentials {
+			v, _ := models.GetSetting(s.DB, c.Key)
+			set := v != ""
+			if !set {
+				allFilled = false
+			}
+			cv := credView{CredentialField: c, Configured: set}
+			// Only expose stored value back to the page for non-secret fields.
+			// Secrets stay keep-blank-to-preserve so they're never rendered
+			// even in a password input's value attribute.
+			if !c.Secret {
+				cv.Value = v
+			}
+			pv.Credentials = append(pv.Credentials, cv)
+		}
+		pv.Configured = allFilled
+		pv.Enabled = allFilled && serverIP != ""
+		if d.ID == dns.Cloudflare {
+			pv.ExtraFlags["Proxied"] = cfProxiedStr == "1"
+		}
+		providers = append(providers, pv)
+	}
 
 	success := r.URL.Query().Get("saved") == "1"
 	s.render(w, r, "settings.html", map[string]any{
-		"User":                 s.currentUser(r),
-		"WebhookURL":           webhookURL,
-		"DaysBefore":           daysBefore,
-		"SMTPHost":             smtpHost,
-		"SMTPPort":             smtpPort,
-		"SMTPUsername":         smtpUsername,
-		"SMTPFrom":             smtpFrom,
-		"SMTPTo":               smtpTo,
-		"SMTPSecurity":         smtpSecurity,
-		"SMTPSkipVerify":       smtpSkipVerify == "1",
-		"SMTPConfigured":       smtpConfigured,
-		"TurnstileSiteKey":     turnstileSiteKey,
-		"TurnstileSecretKey":   turnstileSecretKey,
-		"TurnstileEnabled":     turnstileSiteKey != "" && turnstileSecretKey != "",
-		"CFAPITokenSet":        cfAPIToken != "",
-		"CFServerIP":           cfServerIP,
-		"CFProxied":            cfProxiedStr == "1",
-		"CFDNSEnabled":         cfAPIToken != "" && cfServerIP != "",
-		"PBAPIKeySet":          pbAPIKey != "",
-		"PBSecretKeySet":       pbSecretKey != "",
-		"PBDNSEnabled":         pbAPIKey != "" && pbSecretKey != "" && cfServerIP != "",
-		"Success":              success,
-		"Section":              "settings",
+		"User":               s.currentUser(r),
+		"WebhookURL":         webhookURL,
+		"DaysBefore":         daysBefore,
+		"SMTPHost":           smtpHost,
+		"SMTPPort":           smtpPort,
+		"SMTPUsername":       smtpUsername,
+		"SMTPFrom":           smtpFrom,
+		"SMTPTo":             smtpTo,
+		"SMTPSecurity":       smtpSecurity,
+		"SMTPSkipVerify":     smtpSkipVerify == "1",
+		"SMTPConfigured":     smtpConfigured,
+		"TurnstileSiteKey":   turnstileSiteKey,
+		"TurnstileSecretKey": turnstileSecretKey,
+		"TurnstileEnabled":   turnstileSiteKey != "" && turnstileSecretKey != "",
+		"ServerIP":           serverIP,
+		"DNSProviders":       providers,
+		// Back-compat aliases for any embed that still references the old
+		// CF-centric keys. The template itself now uses DNSProviders +
+		// ServerIP; these stay so custom layouts built against v2.2.x
+		// don't crash during the upgrade cycle.
+		"CFServerIP": serverIP,
+		"CFProxied":  cfProxiedStr == "1",
+		"Success":    success,
+		"Section":    "settings",
 	})
 }
 
@@ -4563,18 +4629,21 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey := strings.TrimSpace(r.FormValue("turnstile_site_key"))
 	turnstileSecretKey := strings.TrimSpace(r.FormValue("turnstile_secret_key"))
 
-	cfAPIToken := strings.TrimSpace(r.FormValue("cf_api_token"))
-	cfServerIP := strings.TrimSpace(r.FormValue("cf_server_ip"))
+	// Shared server IP — the public IP every DNS provider writes as its
+	// record content. Form field name stays as "cf_server_ip" for
+	// backwards compatibility with bookmarked form submissions; the
+	// template can submit it under either name.
+	newServerIP := strings.TrimSpace(r.FormValue("server_ip"))
+	if newServerIP == "" {
+		newServerIP = strings.TrimSpace(r.FormValue("cf_server_ip"))
+	}
 	cfProxied := "0"
 	if r.FormValue("cf_proxied") == "1" {
 		cfProxied = "1"
 	}
-	// Snapshot the current server IP before overwriting — used below to detect
-	// whether we need to retarget all existing Cloudflare/Porkbun DNS records.
-	oldCFServerIP, _ := models.GetSetting(s.DB, settingCFServerIP)
-
-	pbAPIKey := strings.TrimSpace(r.FormValue("pb_api_key"))
-	pbSecretKey := strings.TrimSpace(r.FormValue("pb_secret_key"))
+	// Snapshot the current server IP before overwriting — used below to
+	// detect whether we need to retarget every managed DNS record.
+	oldServerIP := s.serverIP()
 
 	kv := map[string]string{
 		settingNotifyWebhookURL:   webhookURL,
@@ -4588,21 +4657,32 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingSMTPSkipVerify:     smtpSkipVerify,
 		settingTurnstileSiteKey:   turnstileSiteKey,
 		settingTurnstileSecretKey: turnstileSecretKey,
-		settingCFServerIP:         cfServerIP,
+		settingServerIP:           newServerIP,
 		settingCFProxied:          cfProxied,
 	}
-	// Only overwrite API token if a new one was supplied (blank = keep existing).
-	if cfAPIToken != "" {
-		kv[settingCFAPIToken] = cfAPIToken
+
+	// Walk every registered DNS provider and pick up credential fields
+	// from the form. Same keep-blank-to-preserve UX as SMTP password:
+	// leaving a field empty keeps the stored value, so users don't have
+	// to re-enter secrets just to toggle a checkbox. The one exception
+	// is the Namecheap client IP — it's not a secret and users will
+	// expect to edit it inline, so we always overwrite that field.
+	nonSecretKeys := map[string]bool{
+		settingNCAPIUser:  true,
+		settingNCClientIP: true,
 	}
-	// Only overwrite Porkbun credentials if new ones were supplied (blank = keep).
-	if pbAPIKey != "" {
-		kv[settingPBAPIKey] = pbAPIKey
+	for _, d := range dns.Descriptors() {
+		for _, c := range d.Credentials {
+			v := strings.TrimSpace(r.FormValue(c.Key))
+			if v == "" && !nonSecretKeys[c.Key] {
+				// Empty + secret field → preserve existing value.
+				continue
+			}
+			kv[c.Key] = v
+		}
 	}
-	if pbSecretKey != "" {
-		kv[settingPBSecretKey] = pbSecretKey
-	}
-	// Only overwrite password if a new one was supplied (blank = keep existing).
+
+	// SMTP password stays keep-blank-to-preserve.
 	if smtpPassword != "" {
 		kv[settingSMTPPassword] = smtpPassword
 	}
@@ -4614,10 +4694,10 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", "notify+smtp", smtpHost, true)
 
-	// If the server IP changed, retarget all Cloudflare- and Porkbun-managed A records in the background.
-	if cfServerIP != "" && cfServerIP != oldCFServerIP {
-		go s.cfUpdateAllRecords(cfServerIP)
-		go s.pbUpdateAllRecords(cfServerIP)
+	// If the server IP changed, retarget every managed DNS record in the
+	// background. dnsUpdateAllRecords walks all providers in one pass.
+	if newServerIP != "" && newServerIP != oldServerIP {
+		go s.dnsUpdateAllRecords(newServerIP)
 	}
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)

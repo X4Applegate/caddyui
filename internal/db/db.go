@@ -296,6 +296,51 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v2.3.0: unified DNS columns on proxy_hosts. Replaces the per-provider
+	// cf_*/pb_* pair with a single triple (provider + zone ID + record ID)
+	// + a display-only zone name. Old columns stay for rollback safety;
+	// the one-time copy below populates the new ones from whatever legacy
+	// state the row is in. Further DNS providers (Namecheap, GoDaddy,
+	// DigitalOcean, Hetzner) write only to the new columns.
+	for _, col := range []struct{ name, def string }{
+		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},      // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
+		{"dns_zone_id", "TEXT NOT NULL DEFAULT ''"},       // provider-native zone ID (opaque or domain)
+		{"dns_zone_name", "TEXT NOT NULL DEFAULT ''"},     // base domain for display
+		{"dns_record_id", "TEXT NOT NULL DEFAULT ''"},     // record ID returned by the provider after create
+	} {
+		has, err := columnExists(db, "proxy_hosts", col.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE proxy_hosts ADD COLUMN %s %s`, col.name, col.def)); err != nil {
+				return fmt.Errorf("add %s to proxy_hosts: %w", col.name, err)
+			}
+		}
+	}
+	// One-time backfill: populate the unified columns from cf_*/pb_* state
+	// for rows that were written by v2.2.x or earlier. We key on "dns_provider
+	// is blank AND a legacy column is non-blank" so this is idempotent and
+	// safe to run on every startup. (A future admin-UI "reset DNS" action
+	// only clears the new columns, so rerunning this wouldn't resurrect a
+	// cleared record — by then the legacy columns are stale anyway.)
+	if _, err := db.Exec(`UPDATE proxy_hosts
+		SET dns_provider = 'cloudflare',
+		    dns_zone_id = cf_zone_id,
+		    dns_zone_name = cf_zone_id,
+		    dns_record_id = cf_dns_record_id
+		WHERE dns_provider = '' AND cf_dns_record_id != '' AND cf_zone_id != ''`); err != nil {
+		return fmt.Errorf("backfill cloudflare dns columns: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE proxy_hosts
+		SET dns_provider = 'porkbun',
+		    dns_zone_id = pb_domain,
+		    dns_zone_name = pb_domain,
+		    dns_record_id = pb_dns_record_id
+		WHERE dns_provider = '' AND pb_dns_record_id != '' AND pb_domain != ''`); err != nil {
+		return fmt.Errorf("backfill porkbun dns columns: %w", err)
+	}
+
 	// Admin-API auth columns on caddy_servers. Lets users put Caddy's admin
 	// endpoint behind HTTP Basic Auth (via a reverse proxy) when they can't
 	// use WireGuard/Tailscale to hide port 2019 on a private network.
