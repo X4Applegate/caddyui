@@ -107,11 +107,11 @@
 </div>
 
 {{/* ── Desktop table ──
-     Each row is clickable (data-edit-href → /proxy-hosts/<id>/edit) so the
-     explicit "Edit" button in the Actions column was removed; the column
-     now holds only Delete. The JS handler below ignores clicks that land
-     on links/buttons/forms so the domain pill still opens in a new tab
-     and the toggle/Delete controls still own their clicks.
+     Each domain pill is paired with a small pencil icon that navigates to
+     the host's edit page (same pattern as the dashboard table view), so
+     the Edit button in the Actions column stays gone — the column now
+     holds only Delete. The row itself is NOT clickable; the pencil icon
+     is the explicit edit affordance.
 
      The Actions column is position:sticky right-0 so Delete stays on
      screen at any viewport width. Table still min-w-[900px] and scrolls
@@ -134,10 +134,16 @@
     </thead>
     <tbody class="divide-y divide-ink-200">
       {{range .Hosts}}
-      <tr class="bg-white hover:bg-brand-50/30 transition cursor-pointer" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}" data-edit-href="/proxy-hosts/{{.ID}}/edit" title="Click row to edit">
+      <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}">
         <td class="px-5 py-3">
-          <div class="flex flex-wrap gap-1">
-            {{range splitDomains .Domains}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>{{end}}
+          <div class="flex flex-wrap items-center gap-1">
+            {{$hostID := .ID}}
+            {{range splitDomains .Domains}}<span class="inline-flex items-center gap-0.5">
+              <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>
+              <a href="/proxy-hosts/{{$hostID}}/edit" title="Edit proxy host" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-brand-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </a>
+            </span>{{end}}
           </div>
           {{if .CFDNSRecordID}}<span class="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-xs font-medium bg-orange-50 text-orange-600" title="DNS A record managed by Cloudflare (record: {{.CFDNSRecordID}})"><svg class="w-2.5 h-2.5 shrink-0" viewBox="0 0 32 20" fill="currentColor"><path d="M22.1 8.6c-.2-.8-.8-1.4-1.6-1.6C19.9 4.1 17.2 2 14 2c-2.6 0-4.9 1.3-6.3 3.3-.4-.1-.9-.2-1.3-.2C4 5.1 2 7.1 2 9.5c0 .2 0 .4.1.6H2C.9 10.1 0 11 0 12.1s.9 2 2 2h20c1.1 0 2-.9 2-2 0-1-.7-1.8-1.6-1.9.1-.3.1-.7-.3-1.6z"/></svg>CF DNS</span>{{end}}
         </td>
@@ -189,13 +195,26 @@
       </tr>
       {{end}}
       {{range .AdvancedRows}}
-      <tr class="bg-purple-50/40 hover:bg-purple-50/70 transition cursor-pointer" data-edit-href="/raw-routes/{{.ID}}/edit" title="Click row to edit">
+      <tr class="bg-purple-50/40 hover:bg-purple-50/70 transition">
         <td class="px-5 py-3">
+          {{$rawID := .ID}}
           {{if .Hosts}}
-            <div class="flex flex-wrap gap-1">
-              {{range splitDomains .Hosts}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>{{end}}
+            <div class="flex flex-wrap items-center gap-1">
+              {{range splitDomains .Hosts}}<span class="inline-flex items-center gap-0.5">
+                <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>
+                <a href="/raw-routes/{{$rawID}}/edit" title="Edit advanced route" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-purple-600 hover:bg-purple-100 transition" aria-label="Edit {{.}}">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </a>
+              </span>{{end}}
             </div>
-          {{else}}<span class="text-ink-400 text-xs font-mono">{{.Label}}</span>{{end}}
+          {{else}}
+            <span class="inline-flex items-center gap-1">
+              <span class="text-ink-400 text-xs font-mono">{{.Label}}</span>
+              <a href="/raw-routes/{{$rawID}}/edit" title="Edit advanced route" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-purple-600 hover:bg-purple-100 transition" aria-label="Edit">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </a>
+            </span>
+          {{end}}
         </td>
         <td class="px-5 py-3">
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">Advanced</span>
@@ -245,30 +264,9 @@
 {{end}}
 
 <script>
-(function() {
-  // Row / card click → edit page. The Edit button used to live in a
-  // sticky Actions column; removing it freed a good chunk of horizontal
-  // space. Clicks that land on a link, button, form, input, or label are
-  // skipped so the domain pill still opens the external URL and the
-  // enable/disable toggle + Delete button still trigger their own
-  // submissions. Cmd/Ctrl-click and middle-click open edit in a new tab.
-  function onRowClick(e) {
-    var row = e.currentTarget;
-    var href = row.getAttribute('data-edit-href');
-    if (!href) return;
-    if (e.target.closest('a, button, form, input, select, textarea, label')) return;
-    if (e.metaKey || e.ctrlKey || e.button === 1) {
-      window.open(href, '_blank', 'noopener');
-    } else {
-      window.location.href = href;
-    }
-  }
-  document.querySelectorAll('[data-edit-href]').forEach(function(row) {
-    row.addEventListener('click', onRowClick);
-    // Middle-click on tr fires auxclick, not click — handle separately.
-    row.addEventListener('auxclick', function(e) { if (e.button === 1) onRowClick(e); });
-  });
-})();
+// Card-click → edit on mobile is handled globally in layout.html
+// (data-edit-href attribute). Desktop tables use the visible pencil icon
+// next to each domain pill instead (matches the dashboard pattern).
 
 (function() {
   var input = document.getElementById('proxy-search');
