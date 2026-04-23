@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.5] — 2026-04-23 · Cloudflare-proxied cert check + deploying page for advanced routes
+
+### Added
+- **Deploying checklist now runs on advanced (raw) routes too.** Saving or editing an advanced route that has a host matcher (`match[].host[]` in its JSON) now redirects to a **`/raw-routes/{id}/deploying`** page with the same live checklist proxy hosts get — DNS propagation via Cloudflare DoH, HTTPS cert verified via a full TLS handshake with system-trust validation. Path-only / port-only routes (no hostname to probe) skip the page and bounce straight to the list like before. New read-only endpoint: `GET /api/raw-routes/{id}/deploy-status`.
+- **Cloudflare-proxied cert check** (`proxied: true` on proxy hosts; auto-detected on raw routes). The cert probe now dials a resolved Cloudflare edge IP directly with `SNI = fqdn` instead of trying to reach Caddy's origin internally. For orange-cloud domains the user's browser sees CF's Universal SSL cert on the edge, not Caddy's origin cert — and the origin cert might legitimately be self-signed (CF Flexible SSL) or a staging cert, so checking it would false-negative the whole step. This also keeps the probe off the WAN hairpin entirely: CF edge IPs are always outside the LAN, so nothing loops back.
+
+### Implementation notes
+- New helper `firstRawRouteHost(jsonData)` pulls the first hostname out of a raw route's JSON `match[].host[]` array. Defensive against shape drift — returns "" when the JSON doesn't match the canonical Caddy route shape, which lets the save path fall through to the old "redirect to list" behaviour rather than erroring out on a malformed blob.
+- Raw routes don't carry an explicit `proxied` flag (that's a proxy-host setting tied to a DNS provider), so the raw-route deploy-status handler **auto-detects** Cloudflare edge IPs from the DoH resolved IPs via a small `looksLikeCloudflareEdge()` check against the published CF v4 CIDR ranges. Embedded in-binary rather than fetched from `cloudflare.com/ips-v4` on every poll — one less network dependency on the hot path. The ranges only drift a couple times a year and a stale entry here is harmless (proxied-but-treated-as-direct just uses the original dial-caddy-internally path, which still works because CF sends traffic through to origin eventually).
+- `tlsHandshakeOK` signature changed from `(serverID, fqdn)` to `(serverID, fqdn, proxied, resolvedIPs)`. Internal-only helper so no compat story needed; the proxy-host handler passes `resp["proxied"]` + `resp["resolved_ips"]` straight through.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.5` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.4] — 2026-04-23 · Deploying-page cert check works behind hairpin-NAT-less routers
 
 ### Fixed
