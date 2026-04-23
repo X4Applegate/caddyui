@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.4] — 2026-04-23 · Deploying-page cert check works behind hairpin-NAT-less routers
+
+### Fixed
+- **HTTPS certificate step on the deploying page now goes green on self-hosted setups behind consumer routers.** v2.5.2 / v2.5.3 checked cert readiness by performing a TLS handshake against `fqdn:443` from inside the caddyui container. On most prosumer / small-business setups the container resolves the public fqdn to the server's WAN IP and dials *out*, but the router doesn't hairpin WAN traffic back to the LAN — so the handshake times out even when the cert is fully issued and the site works for real users on the real internet. The page would sit on "⏳ Obtaining certificate…" the whole 120 s, time out, and dump you back to the proxy host list with an amber banner — and then clicking the domain would load it instantly over HTTPS, making the banner look wrong.
+- Cert check now dials the Caddy server by its **admin-URL hostname** (the docker service name `caddy` for the primary, or the admin host for remote servers) and sends SNI = the proxy host's fqdn. This bypasses public DNS + WAN hairpin entirely, so the handshake either succeeds with the real cert (if Caddy has issued it) or fails fast (if it's still on the internal self-signed fallback). System trust verification is still on, so a staging-CA or expired cert correctly reports not-ready.
+
+### Changed
+- **"Still deploying after 2 minutes" banner text** softened to **"Still verifying after 2 minutes — the site may already be live. Opening the host list; click the domain to test it directly."** Cert-probe timeouts are often network-layer quirks (CGNAT, IPv6 vs IPv4 mismatch, restrictive egress) rather than actual deployment failures, so the banner now tells the user to try the site rather than implying something's broken.
+
+### Implementation notes
+- New helper `caddyDialHost(serverID)` parses the Caddy server's admin URL and returns its hostname. Unix-socket admin URLs (`unix://` scheme) return empty so the caller falls back to the public fqdn — dialling `:443` doesn't make sense over a unix socket. Works unchanged for remote-server setups where admin URLs are `http://10.x.x.x:2019` or `https://caddy.example.internal:2019`.
+- This is still a **verification** step, not a reachability test. The dial only tests "has Caddy loaded a valid cert for this SNI?" — it intentionally doesn't speak HTTP afterwards. If the origin service behind Caddy is down, cert check still reports green; that's fine, the user has an explicit origin-health view elsewhere.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.4` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.3] — 2026-04-22 · Deploying-page expected-IP fix for multi-server setups
 
 ### Fixed

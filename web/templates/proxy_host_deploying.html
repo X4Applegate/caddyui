@@ -215,7 +215,10 @@
   function redirectSlow() {
     // 2 min passed and we're still not green. Don't block the user —
     // redirect back with an amber banner so they know it's still coming.
-    showBanner('warn', 'Still deploying after 2 minutes — this is usually just slow propagation. Opening the host list; try the site in a minute or two.');
+    // Note: consumer routers without hairpin NAT can make the cert probe
+    // fail from inside the container even after the site is fully live,
+    // so we phrase this as "try opening it" rather than "it's not working."
+    showBanner('warn', 'Still verifying after 2 minutes — the site may already be live. Opening the host list; click the domain to test it directly.');
     setTimeout(function() { window.location.href = '/proxy-hosts?deploy_slow=' + encodeURIComponent(firstDomain); }, 3000);
   }
 
