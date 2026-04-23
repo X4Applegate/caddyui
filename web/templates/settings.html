@@ -210,6 +210,25 @@
     </div>
     {{end}}
 
+    {{/* v2.4.7: per-provider zone allow-list. Especially useful for GoDaddy,
+         whose account-wide API keys can touch every domain on the account —
+         a slip in the zone dropdown would otherwise let CaddyUI manage a
+         domain the user never intended. Leaving this blank keeps the
+         original "all zones allowed" behaviour. */}}
+    <details class="pt-2 border-t border-ink-100" {{if .ZoneAllowlist}}open{{end}}>
+      <summary class="text-xs font-medium text-ink-600 cursor-pointer hover:text-ink-800 flex items-center gap-2">
+        <span>Limit to specific zones</span>
+        {{if .ZoneAllowlist}}<span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-brand-50 text-brand-700">{{len .ZoneAllowlist}} locked</span>{{else}}<span class="text-ink-400 font-normal">(optional — currently unrestricted)</span>{{end}}
+      </summary>
+      <div class="pt-2 space-y-2">
+        <textarea name="{{.ID}}_zone_allowlist" rows="3" placeholder="example.com&#10;other.com"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.ZoneAllowlistRaw}}</textarea>
+        <p class="text-xs text-ink-500">
+          One base domain per line (or comma-separated). When set, CaddyUI will <strong>only</strong> create, update, or delete DNS records on these zones — every other zone the API key can see is hidden from the proxy-host zone picker and refused at the API layer. Leave blank to allow every zone the credentials can reach.
+        </p>
+      </div>
+    </details>
+
     {{/* Clear-credentials button. Only shown when at least one field is
          saved — no point offering to wipe an empty slot. Uses form="..." to
          associate with an external form so clicking does NOT submit the

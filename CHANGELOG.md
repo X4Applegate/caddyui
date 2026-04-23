@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.7] — 2026-04-22 · Per-provider zone allow-list (keep CaddyUI out of domains you don't want it touching)
+
+### Added
+- **Per-provider "Limit to specific zones" textarea** inside each DNS provider card on `/settings`. Enter one base domain per line (or comma-separated). When set, CaddyUI will **only** create, update, or delete DNS records on the listed zones — every other zone the API key can see is:
+  - Hidden from the proxy-host zone picker dropdown (filtered inside `apiDNSZones`)
+  - Refused at the API layer even if a hand-crafted request tries to bypass the UI (`dnsCreateRecord`, `dnsDeleteRecord`, and the IP-retarget loop all call `zoneAllowed` before touching the provider)
+- Empty textarea = unrestricted (original behaviour — every zone the credentials can reach is usable).
+- The textarea auto-expands if you already have an allow-list set, and shows a small `N locked` badge in the summary so you can see at a glance that the provider is constrained.
+
+### Why
+GoDaddy's primary motivation: one API key has blanket access to every domain on the account. If you use CaddyUI to manage just one or two zones, the zone dropdown was previously offering every other domain as a target — one misclick away from writing a record into the wrong zone. Cloudflare / Porkbun / Namecheap / DigitalOcean / Hetzner all have similar exposure when the API scope is account-wide.
+
+### How it behaves under edge cases
+- **Zone removed from allow-list after a proxy host was created:** the host keeps its configured `dns_zone_name`, but `dnsCreateRecord` / `dnsDeleteRecord` / the retarget loop refuse to act. The existing DNS record on the provider stays exactly as-is — CaddyUI stops touching it. If you later re-add the zone, management resumes on the next save / IP change.
+- **"Clear credentials" on a provider:** the allow-list is wiped alongside the API keys so a fresh key entry starts from an unrestricted state (no stale rules you forgot about).
+- **Symmetry on delete:** a disallowed zone is refused for delete too — the point of the allow-list is "don't let CaddyUI touch this zone", which applies to cleanups just as much as to creates.
+
+### Implementation notes
+- New setting key `<providerid>_zone_allowlist` (e.g. `godaddy_zone_allowlist`), comma-separated lowercase base domains, normalised on save (dedup, trim, trailing-dot stripped).
+- `zoneAllowed(providerID, zoneName)` is the single decision point — empty allow-list → allow everything; non-empty → case-insensitive membership check.
+- Saved via the existing `postSettings` form handler (no new route). Textarea accepts commas, spaces, semicolons, or newlines as separators.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.7` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.6] — 2026-04-22 · "Clear credentials" button per DNS provider in Settings
 
 ### Added

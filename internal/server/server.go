@@ -508,6 +508,80 @@ var dnsProviderCredKeys = map[string][]string{
 	dns.Hetzner:      {settingHetznerAPIToken},
 }
 
+// zoneAllowlistKey returns the settings-table key where the per-provider
+// zone allow-list is stored. Format on disk: comma-separated lowercase base
+// domains (e.g. "example.com, other.com"). An empty value means "no
+// restriction" — every zone the credentials can see is usable, which is
+// the original v2.4.5-and-earlier behaviour.
+//
+// v2.4.7: introduced so users whose API keys have broad account access
+// (especially GoDaddy, where a single key can touch every domain on the
+// account) can pin CaddyUI to one or a few zones and guarantee it won't
+// ever touch the rest.
+func zoneAllowlistKey(providerID string) string {
+	return strings.ToLower(strings.TrimSpace(providerID)) + "_zone_allowlist"
+}
+
+// parseZoneAllowlist normalises a raw textarea/CSV value into a slice of
+// lowercase, trimmed base-domain names with duplicates removed. Accepts
+// commas, whitespace, and newlines as separators so the textarea can be
+// line-per-domain or CSV with no difference in behaviour.
+func parseZoneAllowlist(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t' || r == ';'
+	})
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(p)), ".")
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// zoneAllowlist returns the configured allow-list for providerID. An empty
+// slice means "no restriction" (explicitly or implicitly unset).
+func (s *Server) zoneAllowlist(providerID string) []string {
+	raw, _ := models.GetSetting(s.DB, zoneAllowlistKey(providerID))
+	return parseZoneAllowlist(raw)
+}
+
+// zoneAllowed is the single decision point for "is CaddyUI permitted to
+// touch this zone on this provider". Every CreateRecord / DeleteRecord
+// call path should guard on it — filtering the dropdown alone isn't
+// enough, because the dns_zone_name column on a proxy_hosts row could have
+// been written before the allow-list was tightened (or via direct DB
+// editing / API).
+//
+// Matching is case-insensitive and trailing-dot tolerant. An empty
+// allow-list allows everything.
+func (s *Server) zoneAllowed(providerID, zoneName string) bool {
+	allow := s.zoneAllowlist(providerID)
+	if len(allow) == 0 {
+		return true
+	}
+	zoneName = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zoneName)), ".")
+	if zoneName == "" {
+		// Defensive: an unset zone name can't be verified against the
+		// allow-list, so refuse. A properly configured proxy host always
+		// has dns_zone_name populated when dns_provider is non-empty.
+		return false
+	}
+	for _, z := range allow {
+		if z == zoneName {
+			return true
+		}
+	}
+	return false
+}
+
 // dnsCreds returns the current credential map for a provider, reading from
 // the settings table. Pass it straight to dns.Build.
 func (s *Server) dnsCreds(providerID string) map[string]string {
@@ -4435,6 +4509,15 @@ func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
 		// zone ID which doubles as the domain for PB/DO/GD/NC.
 		zone.Name = p.DNSZoneID
 	}
+	// v2.4.7: honour the per-provider zone allow-list as a last-line guard.
+	// The dropdown is already filtered, but the zone name on the row could
+	// have come from an older config / direct DB edit / a user who
+	// tightened the allow-list after the host was created. Refusing here
+	// makes the allow-list a hard safety rail, not just a UI filter.
+	if !s.zoneAllowed(p.DNSProvider, zone.Name) {
+		log.Printf("DNS %s: zone %q not in allow-list — skipping record creation for %s", p.DNSProvider, zone.Name, fqdn)
+		return
+	}
 	rec, err := client.CreateRecord(zone, fqdn, ip, "A", 0)
 	if err != nil {
 		log.Printf("DNS %s: create record for %s: %v", p.DNSProvider, fqdn, err)
@@ -4459,6 +4542,15 @@ func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordID string) 
 	zone := dns.Zone{ID: zoneID, Name: zoneName}
 	if zone.Name == "" {
 		zone.Name = zoneID
+	}
+	// v2.4.7: refuse to delete records in zones the allow-list excludes.
+	// Intentionally symmetric with dnsCreateRecord — "touching a record"
+	// in an excluded zone is exactly what the allow-list is meant to
+	// prevent, even when the touch is a cleanup. Leaves the record in
+	// place; the user can remove it by hand via the provider's console.
+	if !s.zoneAllowed(providerID, zone.Name) {
+		log.Printf("DNS %s: zone %q not in allow-list — leaving record %s in place", providerID, zone.Name, recordID)
+		return
 	}
 	if err := client.DeleteRecord(zone, recordID); err != nil {
 		log.Printf("DNS %s: delete record %s: %v", providerID, recordID, err)
@@ -4507,6 +4599,14 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 		if zone.Name == "" {
 			zone.Name = h.DNSZoneID
 		}
+		// v2.4.7: guard IP retargets against the allow-list too. If a host's
+		// zone was valid when it was created but the user has since
+		// tightened the list, the retarget job leaves that host's record
+		// alone — same policy as dnsCreateRecord / dnsDeleteRecord.
+		if !s.zoneAllowed(h.DNSProvider, zone.Name) {
+			log.Printf("DNS %s: zone %q not in allow-list — skipping retarget for %s", h.DNSProvider, zone.Name, fqdn)
+			continue
+		}
 		// Delete-then-create semantic. Every provider implementation is
 		// idempotent on delete (silently succeeds if the record is gone),
 		// and recreate gives us a fresh record ID — cleanest across the
@@ -4554,6 +4654,25 @@ func (s *Server) apiDNSZones(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+	// v2.4.7: apply the per-provider zone allow-list. If it's set, only
+	// zones whose name is on the list are returned — the proxy-host form's
+	// zone dropdown then literally cannot offer domains the user has
+	// excluded. Empty allow-list = unrestricted (every zone the credentials
+	// can see), which preserves the original behaviour.
+	if allow := s.zoneAllowlist(provider); len(allow) > 0 {
+		allowSet := make(map[string]struct{}, len(allow))
+		for _, a := range allow {
+			allowSet[a] = struct{}{}
+		}
+		filtered := zones[:0]
+		for _, z := range zones {
+			name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(z.Name)), ".")
+			if _, ok := allowSet[name]; ok {
+				filtered = append(filtered, z)
+			}
+		}
+		zones = filtered
 	}
 	_ = json.NewEncoder(w).Encode(zones)
 }
@@ -4683,13 +4802,18 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		Value string
 	}
 	type providerView struct {
-		ID          string
-		DisplayName string
-		DocsAnchor  string
-		Credentials []credView
-		Configured  bool   // every field non-empty
-		Enabled     bool   // Configured AND serverIP set
-		ExtraFlags  map[string]any // per-provider extras (e.g. Cloudflare proxied toggle)
+		ID             string
+		DisplayName    string
+		DocsAnchor     string
+		Credentials    []credView
+		Configured     bool   // every field non-empty
+		Enabled        bool   // Configured AND serverIP set
+		ExtraFlags     map[string]any // per-provider extras (e.g. Cloudflare proxied toggle)
+		// v2.4.7: zone allow-list. ZoneAllowlistRaw is the textarea value
+		// (one domain per line for readability); ZoneAllowlist is the parsed
+		// slice used to render the "N of M zones visible" hint.
+		ZoneAllowlistRaw string
+		ZoneAllowlist    []string
 	}
 	var providers []providerView
 	for _, d := range dns.Descriptors() {
@@ -4719,6 +4843,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		pv.Enabled = allFilled && hasAnyServerIP
 		if d.ID == dns.Cloudflare {
 			pv.ExtraFlags["Proxied"] = cfProxiedStr == "1"
+		}
+		// v2.4.7: load the zone allow-list for this provider so the
+		// textarea renders with the current value. Render one domain per
+		// line (nicer than CSV for hand-editing).
+		pv.ZoneAllowlist = s.zoneAllowlist(d.ID)
+		if len(pv.ZoneAllowlist) > 0 {
+			pv.ZoneAllowlistRaw = strings.Join(pv.ZoneAllowlist, "\n")
 		}
 		providers = append(providers, pv)
 	}
@@ -4848,6 +4979,13 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			kv[c.Key] = v
 		}
+		// v2.4.7: per-provider zone allow-list. Always overwrite — an
+		// empty textarea means "remove the allow-list, accept every zone
+		// again". Normalised form (lowercase, deduped, comma-separated)
+		// is what we persist, even though the textarea offers lines for
+		// readability.
+		allowRaw := r.FormValue(d.ID + "_zone_allowlist")
+		kv[zoneAllowlistKey(d.ID)] = strings.Join(parseZoneAllowlist(allowRaw), ",")
 	}
 
 	// SMTP password stays keep-blank-to-preserve.
@@ -4937,6 +5075,11 @@ func (s *Server) postClearDNSProvider(w http.ResponseWriter, r *http.Request) {
 	if id == dns.Cloudflare {
 		_ = models.SetSetting(s.DB, settingCFProxied, "")
 	}
+	// v2.4.7: also clear the zone allow-list. A user wiping the credentials
+	// usually wants a clean slate — a stale allow-list sitting around means
+	// the next set of keys they enter would silently be restricted by rules
+	// they've forgotten about.
+	_ = models.SetSetting(s.DB, zoneAllowlistKey(id), "")
 
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r),
 		"dns_provider_clear", "dns:"+id, "", true)
