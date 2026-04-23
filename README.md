@@ -4,7 +4,20 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 
 [![License: CaddyUI-SAL 1.0](https://img.shields.io/badge/license-CaddyUI--SAL%201.0-blue)](LICENSE)
 [![Docker Hub](https://img.shields.io/docker/v/applegater/caddyui?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/applegater/caddyui)
-[![Go 1.22](https://img.shields.io/badge/Go-1.22-00ADD8)](https://go.dev/)
+[![Docker Pulls](https://img.shields.io/docker/pulls/applegater/caddyui?label=pulls)](https://hub.docker.com/r/applegater/caddyui)
+[![Go 1.24](https://img.shields.io/badge/Go-1.24-00ADD8)](https://go.dev/)
+
+---
+
+## 🐳 Install
+
+```bash
+docker pull applegater/caddyui:latest
+```
+
+Multi-arch: `linux/amd64` + `linux/arm64` (runs on your Raspberry Pi). SBOM + provenance signed. Non-root (UID 10001).
+
+See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
 
 ---
 
