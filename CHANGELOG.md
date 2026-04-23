@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.11] — 2026-04-22 · Visible pencil-icon next to every identifier (dashboard pattern, now everywhere)
+
+### Changed
+- **Every admin table row now shows a small pencil icon next to the primary identifier** — the same pattern the dashboard already uses for proxy-host domain pills. The icon is the explicit edit affordance; rows themselves are not clickable on desktop. Applied to:
+  - `/proxy-hosts` — pencil next to each domain pill (both regular rows and purple "advanced" rows)
+  - `/redirection-hosts` — pencil next to each domain pill
+  - `/raw-routes` — pencil next to the route `Label`
+  - `/certificates` — pencil next to the cert `Name`
+  - `/users` — pencil next to the user email
+- **The sticky Actions column still only carries Delete** (no Edit button anywhere in the table) — same simplification that v2.4.10 shipped for proxy-hosts, just with a more discoverable alternative now.
+- **Mobile cards are still whole-card-clickable to edit** — small touch targets make a dedicated pencil icon awkward on phones, so the card `data-edit-href` pattern stays. Cmd/Ctrl-click and middle-click still open edit in a new tab on both card and icon.
+
+### Why
+v2.4.10 removed the Edit button from `/proxy-hosts` and made the row clickable, but without a visible affordance some users couldn't tell rows were clickable — "where is edit button like square thing" was reasonable feedback. The dashboard already had a good answer: a tiny pencil icon right next to each domain pill. v2.4.11 just rolls that same pattern out everywhere.
+
+### Implementation notes
+- Icon is `w-6 h-6` wrapper with `w-3.5 h-3.5` SVG (matches the dashboard exactly). `text-ink-400 hover:text-brand-600 hover:bg-ink-100` so it sits quietly at rest and lights up on hover. Advanced-routes uses `hover:text-purple-600 hover:bg-purple-100` to match the purple row tint.
+- Shared card-click handler in `layout.html` stays — it now only matters for mobile cards (`<div data-edit-href>`). Desktop `<tr>` no longer sets `data-edit-href`, so the handler is a no-op there.
+- Users table: the `(you)` marker still appears after the email + icon. Pencil icon still lets you edit yourself; Delete still renders `—` for self.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.11` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.10] — 2026-04-22 · Proxy-hosts rows are now clickable to edit (Edit button removed)
 
 ### Changed

@@ -214,6 +214,33 @@ if ('serviceWorker' in navigator) {
     })
     .catch(function() {});
 })();
+
+// Card-click → edit on mobile. Desktop tables have a visible pencil icon
+// next to the primary identifier (the dashboard pattern), but on mobile
+// the tap target is the whole card — any element with a data-edit-href
+// attribute becomes clickable. Clicks that originate on an interactive
+// child (link, button, form, input, select, textarea, label, plus
+// <details>/<summary> for expanders and <pre> so users can click into a
+// code block to copy from it) are skipped so inline controls keep their
+// own behaviour. Cmd/Ctrl-click and middle-click open edit in a new tab.
+(function() {
+  function navigate(e) {
+    var row = e.currentTarget;
+    var href = row.getAttribute('data-edit-href');
+    if (!href) return;
+    if (e.target.closest('a, button, form, input, select, textarea, label, details, summary, pre')) return;
+    if (e.metaKey || e.ctrlKey || e.button === 1) {
+      window.open(href, '_blank', 'noopener');
+    } else {
+      window.location.href = href;
+    }
+  }
+  document.querySelectorAll('[data-edit-href]').forEach(function(row) {
+    row.addEventListener('click', navigate);
+    // Middle-click on <tr>/<div> fires auxclick rather than click.
+    row.addEventListener('auxclick', function(e) { if (e.button === 1) navigate(e); });
+  });
+})();
 </script>
 {{end}}
 </body>
