@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.3] — 2026-04-22 · Deploying-page expected-IP fix for multi-server setups
+
+### Fixed
+- **Deploying page now compares against the right server IP.** The v2.5.2 "deploying" checklist read `host.ServerID` from a `GetProxyHost` result, but `proxyHostBaseCols` (the shared SELECT list) had never included `ph.server_id` — so `ServerID` came back as `0` on every read, and `serverIPFor(0)` fell through to the legacy global `server_public_ip` setting. On single-server installs that global happened to be correct, so nobody noticed; on multi-server setups the page would show e.g. `Got 50.191.208.172 — waiting for '50.191.208.169'` even though the DNS record had been correctly written with `.172` via the same request's `currentServerID(r)`. Added `ph.server_id` to `proxyHostBaseCols` and scanned it into `ProxyHost.ServerID` in `scanProxyHost`, so every read now carries the host's server binding. Affects `GetProxyHost` + both `ListProxyHosts` variants — all three funnel through the shared scanner.
+
+### Implementation notes
+- The column has existed in the DB since v2.4.0 (`ALTER TABLE proxy_hosts ADD COLUMN server_id INTEGER NOT NULL DEFAULT 1` in `internal/db/db.go`), so no migration is needed — this was purely a SELECT / Scan oversight that v2.5.2 surfaced because it was the first read path that actually consumed `host.ServerID`.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.3` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.2] — 2026-04-22 · "Deploying…" page after save
 
 ### Added
