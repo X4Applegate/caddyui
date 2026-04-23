@@ -184,3 +184,36 @@ func (g *godaddyProvider) DeleteRecord(zone Zone, recordID string) error {
 		"/domains/"+url.PathEscape(zone.ID)+"/records/"+url.PathEscape(rtype)+"/"+url.PathEscape(name),
 		nil, nil)
 }
+
+// FindRecord returns every record on the domain whose short name matches
+// the subdomain derived from fqdn. GoDaddy's /records endpoint supports
+// filtering by name in the path (/records/{type}/{name}) but that forces
+// us to pre-pick a type. Listing all of them and filtering client-side is
+// simpler and keeps parity with how CreateRecord decides which type to use
+// (A by default).
+func (g *godaddyProvider) FindRecord(zone Zone, fqdn string) ([]Record, error) {
+	var raw []struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+		Data string `json:"data"`
+		TTL  int    `json:"ttl"`
+	}
+	if err := g.do("GET", "/domains/"+url.PathEscape(zone.ID)+"/records?limit=500", nil, &raw); err != nil {
+		return nil, err
+	}
+	want := SubdomainOf(fqdn, zone.Name)
+	out := []Record{}
+	for _, r := range raw {
+		if !strings.EqualFold(r.Name, want) {
+			continue
+		}
+		out = append(out, Record{
+			ID:      r.Type + "|" + r.Name,
+			Name:    fqdn,
+			Type:    r.Type,
+			Content: r.Data,
+			TTL:     r.TTL,
+		})
+	}
+	return out, nil
+}

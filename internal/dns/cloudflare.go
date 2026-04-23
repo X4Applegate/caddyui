@@ -96,3 +96,24 @@ func (c *cloudflareProvider) CreateRecord(zone Zone, fqdn, content, rtype string
 func (c *cloudflareProvider) DeleteRecord(zone Zone, recordID string) error {
 	return c.client.DeleteRecord(zone.ID, recordID)
 }
+
+// FindRecord returns every record whose name matches fqdn. Cloudflare's
+// ListRecords accepts a `name=` filter and matches exactly against the FQDN,
+// so we let the API do the filtering — no client-side pass is needed.
+func (c *cloudflareProvider) FindRecord(zone Zone, fqdn string) ([]Record, error) {
+	raw, err := c.client.ListRecords(zone.ID, fqdn)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Record, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, Record{
+			ID:      r.ID,
+			Name:    r.Name,
+			Type:    r.Type,
+			Content: r.Content,
+			TTL:     r.TTL,
+		})
+	}
+	return out, nil
+}

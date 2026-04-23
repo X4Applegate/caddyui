@@ -2,6 +2,8 @@ package dns
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/X4Applegate/caddyui/internal/porkbun"
 )
@@ -102,4 +104,32 @@ func (p *porkbunProvider) CreateRecord(zone Zone, fqdn, content, rtype string, t
 func (p *porkbunProvider) DeleteRecord(zone Zone, recordID string) error {
 	// zone.ID is the domain name for Porkbun — the record ID is scoped to it.
 	return p.client.DeleteRecord(zone.ID, recordID)
+}
+
+// FindRecord pulls every record on the domain and filters by name. Porkbun
+// has no server-side name filter on /dns/retrieve, so we pay the scan — but
+// a single domain rarely exceeds a few dozen records, so the extra bytes
+// are cheap.
+func (p *porkbunProvider) FindRecord(zone Zone, fqdn string) ([]Record, error) {
+	raw, err := p.client.ListRecords(zone.ID)
+	if err != nil {
+		return nil, err
+	}
+	want := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(fqdn)), ".")
+	out := []Record{}
+	for _, r := range raw {
+		name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.Name)), ".")
+		if name != want {
+			continue
+		}
+		ttl, _ := strconv.Atoi(r.TTL)
+		out = append(out, Record{
+			ID:      r.ID,
+			Name:    r.Name,
+			Type:    r.Type,
+			Content: r.Content,
+			TTL:     ttl,
+		})
+	}
+	return out, nil
 }

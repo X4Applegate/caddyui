@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -162,4 +163,39 @@ func (h *hetznerProvider) CreateRecord(zone Zone, fqdn, content, rtype string, t
 
 func (h *hetznerProvider) DeleteRecord(zone Zone, recordID string) error {
 	return h.do("DELETE", "/records/"+url.PathEscape(recordID), nil, nil)
+}
+
+// FindRecord returns every record in the zone whose name matches the
+// subdomain derived from fqdn. Hetzner's /records endpoint supports a
+// zone_id filter but not a name filter, so we scan client-side. Per_page
+// max is 100 — zones with more than that would need pagination, but any
+// single hostname still lands on the first page of its group.
+func (h *hetznerProvider) FindRecord(zone Zone, fqdn string) ([]Record, error) {
+	var resp struct {
+		Records []struct {
+			ID    string `json:"id"`
+			Type  string `json:"type"`
+			Name  string `json:"name"`
+			Value string `json:"value"`
+			TTL   int    `json:"ttl"`
+		} `json:"records"`
+	}
+	if err := h.do("GET", "/records?zone_id="+url.QueryEscape(zone.ID)+"&per_page=100", nil, &resp); err != nil {
+		return nil, err
+	}
+	want := SubdomainOf(fqdn, zone.Name)
+	out := []Record{}
+	for _, r := range resp.Records {
+		if !strings.EqualFold(r.Name, want) {
+			continue
+		}
+		out = append(out, Record{
+			ID:      r.ID,
+			Name:    fqdn,
+			Type:    r.Type,
+			Content: r.Value,
+			TTL:     r.TTL,
+		})
+	}
+	return out, nil
 }

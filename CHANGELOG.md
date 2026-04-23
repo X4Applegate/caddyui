@@ -5,6 +5,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.8] — 2026-04-22 · Sticky Actions column + "DNS record already exists" warning on proxy-host save
+
+### Fixed
+- **Actions column now sticks to the right edge of every admin table**, so Edit / Delete / Select / Restore stay visible no matter how narrow the viewport. Previously the final column scrolled off-screen on narrow windows (reported on the proxy-hosts page in particular). Applied the same `position: sticky` + opaque-background pattern to:
+  - `/proxy-hosts` (Actions column was the original offender; purple "advanced" rows get a matching `bg-purple-50` so the sticky cell doesn't look transparent)
+  - `/redirection-hosts`, `/raw-routes`, `/certificates`, `/servers`, `/users`, `/snapshots`
+- Wrappers switched from `overflow-hidden` to `overflow-x-auto` with a `min-w` on the table so the other columns scroll underneath the pinned Actions cell rather than being cut off.
+
+### Added — "DNS record already exists" warning on the proxy-host form
+- New **existing-record warning banner** inside the Managed DNS section of the proxy-host form. As soon as you pick provider + zone and enter a first domain, CaddyUI queries the provider for records at that FQDN. If one (or more) exist, an amber warning shows up with:
+  - A line listing what's already there (e.g. `A → 203.0.113.10, CNAME → example.pages.dev`)
+  - **"Override (delete & recreate)"** button — flips the banner green and sets a hidden form flag so the backend will delete every matching record before creating the new A record on save
+  - **"Keep existing record"** button — dismisses the warning; save proceeds normally (provider-dependent: Cloudflare/DO/Hetzner append a duplicate A, Porkbun errors, GoDaddy PATCH appends, Namecheap's `setHosts` replaces the whole host list anyway)
+- **Cancel = just don't save** — the form's existing Cancel link still works. The banner's dismiss button only clears the *warning*, not the form.
+
+### Why
+Before this, saving a proxy host that targeted a domain with an existing A record was a quiet coin flip: the outcome depended on the provider's write semantics, and users only discovered what happened by checking DNS afterwards. Now the collision is surfaced at edit time, with a conscious Cancel / Override choice.
+
+### Implementation notes
+- **New `FindRecord(zone, fqdn) ([]Record, error)` method on the `dns.Provider` interface**, implemented in all six adapters:
+  - Cloudflare — uses the existing `ListRecords(zoneID, name)` server-side filter
+  - Porkbun — `ListRecords(domain)` + client-side filter (no server-side name filter on the `/dns/retrieve` endpoint)
+  - Namecheap — reuses `fetchHosts(sld, tld)` + filters on short name (same one-fetch cost as every other call on this provider)
+  - GoDaddy — `GET /v1/domains/{domain}/records?limit=500` + client-side filter; emits the same synthetic `TYPE|NAME` record IDs that `DeleteRecord` already consumes
+  - DigitalOcean — `GET /v2/domains/{domain}/records?per_page=200` + client-side filter
+  - Hetzner — `GET /records?zone_id=<id>&per_page=100` + client-side filter
+- **New endpoint `GET /api/dns-zones/check-record?provider=&zone=&zone_name=&fqdn=`** returning `{ok, exists, records}`. Allow-list guarded (symmetrical with `apiDNSZones`).
+- **New backend helper `dnsOverrideExistingRecord(p)`** called by `createProxyHost` / `updateProxyHost` when the form submits with `override_dns=1`. Best-effort: looks up every matching record, deletes them, logs per-record outcomes; the subsequent `dnsCreateRecord` then lands on a clean zone regardless of provider-specific semantics. Respects the per-provider zone allow-list from v2.4.7.
+- **Front-end:** the existing DNS picker IIFE in `proxy_host_form.html` was extended with a debounced `checkExistingRecord()` that fires on provider / zone / domain change, caches the last result so switching back and forth doesn't refetch, and resets override / dismiss state whenever the (provider, zone, fqdn) triple changes.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.8` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.7] — 2026-04-22 · Per-provider zone allow-list (keep CaddyUI out of domains you don't want it touching)
 
 ### Added

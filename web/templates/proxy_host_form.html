@@ -174,6 +174,35 @@
     {{if .Host.DNSRecordID}}
     <p class="text-xs text-green-600 mt-3">✓ DNS record active &mdash; record ID: <span class="font-mono">{{.Host.DNSRecordID}}</span></p>
     {{end}}
+
+    {{/* v2.4.8: "DNS record already exists" warning. Populated by JS when
+         provider + zone + first domain are all set and the provider reports
+         existing records at that FQDN. Hidden until then. */}}
+    <div id="dns-record-warn" class="hidden mt-3 rounded-lg border px-3 py-2 text-xs">
+      <div class="flex items-start gap-2">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0 mt-0.5" id="dns-record-warn-icon" aria-hidden="true">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <div class="flex-1 min-w-0">
+          <div id="dns-record-warn-msg" class="font-medium"></div>
+          <div id="dns-record-warn-detail" class="mt-1 font-mono text-[11px] opacity-80 break-all"></div>
+          <div id="dns-record-warn-actions" class="mt-2 flex flex-wrap items-center gap-2">
+            <button type="button" id="dns-record-override" class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 text-xs font-medium transition">
+              Override (delete &amp; recreate)
+            </button>
+            <button type="button" id="dns-record-dismiss" class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-ink-200 bg-white text-ink-700 hover:bg-ink-50 text-xs font-medium transition">
+              Keep existing record
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {{/* Hidden flag: "1" means "user accepted override — backend should
+         delete existing record first, then create a new one". Any other
+         value = normal create (backend append / provider-dependent). */}}
+    <input type="hidden" id="dns-override" name="override_dns" value="0" />
   </div>
   {{end}}
 
@@ -308,15 +337,158 @@
       }
     }
 
+    // ── v2.4.8: existing-record warning ─────────────────────────────
+    // When provider + zone + first domain are all set, hit
+    // /api/dns-zones/check-record and — if a record already exists — show
+    // a warning banner with "Override" / "Keep" choices. Override sets a
+    // hidden flag the backend reads to delete-then-create on save.
+    var domainsIn      = document.querySelector('input[name="domains"]');
+    var warnBox        = document.getElementById('dns-record-warn');
+    var warnMsg        = document.getElementById('dns-record-warn-msg');
+    var warnDetail     = document.getElementById('dns-record-warn-detail');
+    var warnActions    = document.getElementById('dns-record-warn-actions');
+    var overrideBtn    = document.getElementById('dns-record-override');
+    var dismissBtn     = document.getElementById('dns-record-dismiss');
+    var overrideInput  = document.getElementById('dns-override');
+    // When the user has explicitly dismissed the warning for the current
+    // (provider,zone,fqdn) triple, we don't re-show the banner until
+    // something about the triple changes. Keyed on a composite string.
+    var dismissedFor = '';
+
+    function firstDomain() {
+      if (!domainsIn) return '';
+      var v = (domainsIn.value || '').split(',')[0] || '';
+      return v.trim().toLowerCase();
+    }
+
+    function hideWarn() {
+      if (!warnBox) return;
+      warnBox.classList.add('hidden');
+      warnBox.className = 'hidden mt-3 rounded-lg border px-3 py-2 text-xs';
+    }
+
+    function showWarn(fqdn, records, overridden) {
+      if (!warnBox) return;
+      if (overridden) {
+        // Green "you chose override" state — show but don't re-prompt.
+        warnBox.className = 'mt-3 rounded-lg border px-3 py-2 text-xs bg-green-50 border-green-200 text-green-800';
+        warnMsg.textContent = 'Override selected — existing record for ' + fqdn + ' will be deleted and recreated on save.';
+        warnDetail.textContent = records.map(function(r) {
+          return r.type + ' → ' + (r.content || '');
+        }).join(', ');
+        warnActions.classList.add('hidden');
+        return;
+      }
+      warnBox.className = 'mt-3 rounded-lg border px-3 py-2 text-xs bg-amber-50 border-amber-200 text-amber-800';
+      warnMsg.textContent = records.length === 1
+        ? 'A DNS record for ' + fqdn + ' already exists.'
+        : 'DNS records for ' + fqdn + ' already exist (' + records.length + ').';
+      warnDetail.textContent = records.map(function(r) {
+        return r.type + ' → ' + (r.content || '');
+      }).join(', ');
+      warnActions.classList.remove('hidden');
+    }
+
+    var lastCheck = { key: '', records: null, overridden: false };
+    var checkTimer = null;
+
+    function triple() {
+      return (providerSel.value || '') + '|' +
+             (zoneSel.value || '') + '|' +
+             firstDomain();
+    }
+
+    function checkExistingRecord() {
+      var provider = providerSel.value;
+      var zoneID   = zoneSel.value;
+      var zoneName = zoneNameIn ? zoneNameIn.value : '';
+      var fqdn     = firstDomain();
+      var key      = triple();
+      // Clear state if any piece is missing — no check to run.
+      if (!provider || !zoneID || !fqdn) {
+        lastCheck = { key: '', records: null, overridden: false };
+        overrideInput.value = '0';
+        hideWarn();
+        return;
+      }
+      // Same triple, already checked — don't refetch. If the user flipped
+      // to override, keep showing the green state.
+      if (key === lastCheck.key) {
+        if (lastCheck.records && lastCheck.records.length > 0 && key !== dismissedFor) {
+          showWarn(fqdn, lastCheck.records, lastCheck.overridden);
+        }
+        return;
+      }
+      // New triple — reset override + dismiss state.
+      overrideInput.value = '0';
+      dismissedFor = '';
+      fetch('/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
+            '&zone=' + encodeURIComponent(zoneID) +
+            '&zone_name=' + encodeURIComponent(zoneName) +
+            '&fqdn=' + encodeURIComponent(fqdn))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!data || !data.ok) {
+            // Lookup failed (bad creds, network, etc.) — silently hide.
+            // The user can still save; backend will handle whatever happens.
+            lastCheck = { key: key, records: null, overridden: false };
+            hideWarn();
+            return;
+          }
+          lastCheck = { key: key, records: data.records || [], overridden: false };
+          if (data.exists && lastCheck.records.length > 0) {
+            showWarn(fqdn, lastCheck.records, false);
+          } else {
+            hideWarn();
+          }
+        })
+        .catch(function() {
+          lastCheck = { key: key, records: null, overridden: false };
+          hideWarn();
+        });
+    }
+
+    function scheduleCheck() {
+      clearTimeout(checkTimer);
+      checkTimer = setTimeout(checkExistingRecord, 400);
+    }
+
+    if (overrideBtn) {
+      overrideBtn.addEventListener('click', function() {
+        if (!lastCheck.records) return;
+        overrideInput.value = '1';
+        lastCheck.overridden = true;
+        showWarn(firstDomain(), lastCheck.records, true);
+      });
+    }
+    if (dismissBtn) {
+      dismissBtn.addEventListener('click', function() {
+        overrideInput.value = '0';
+        dismissedFor = triple();
+        hideWarn();
+      });
+    }
+    if (domainsIn) {
+      domainsIn.addEventListener('input', scheduleCheck);
+    }
+
     providerSel.addEventListener('change', function() {
       // Once the user changes provider, invalidate the preselected zone ID
       // so we don't force a stale value into the new provider's list.
       currentZoneID = '';
       applyProvider(this.value);
+      // Provider change = new triple; reset the check.
+      scheduleCheck();
     });
-    zoneSel.addEventListener('change', syncZoneName);
+    zoneSel.addEventListener('change', function() {
+      syncZoneName();
+      scheduleCheck();
+    });
 
     applyProvider(providerSel.value);
+    // Kick off an initial check on page load (edit-host flow with prefilled
+    // provider/zone/domain) so the warning shows immediately where relevant.
+    scheduleCheck();
   })();
 
   // Feature D: extra upstreams dynamic rows.
