@@ -253,4 +253,73 @@ if ('serviceWorker' in navigator) {
 </a>
 {{end}}
 
+{{/* Captcha widget partial (v2.5.0).
+
+     Pass the current page's context via `.` and this renders the right
+     loader + submit hook for whichever provider is active.
+
+     Expected fields on the passed dict:
+       .CaptchaProvider  — "off" | "turnstile" | "recaptcha"
+       .CaptchaSiteKey   — public key for the active provider
+       .CaptchaEnabled   — precomputed bool
+       .FormID           — id attribute of the <form> to gate
+                           (caller sets this; see login.html etc.)
+
+     Turnstile: the managed widget renders as <div class="cf-turnstile">
+     and populates cf-turnstile-response in the form automatically. The
+     form's regular submit button works as-is.
+
+     reCAPTCHA v3: invisible. We load api.js then hook the form's submit
+     event — first submit triggers grecaptcha.execute to get a token,
+     drops it into a hidden input, and re-submits. Without this hook the
+     first click would submit without a token and the server would reject. */}}
+{{define "captchaWidget"}}
+{{if .CaptchaEnabled}}
+  {{if eq .CaptchaProvider "turnstile"}}
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+    <div class="flex justify-center mt-2 mb-1">
+      <div class="cf-turnstile" data-sitekey="{{.CaptchaSiteKey}}" data-theme="auto"></div>
+    </div>
+  {{else if eq .CaptchaProvider "recaptcha"}}
+    <script src="https://www.google.com/recaptcha/api.js?render={{.CaptchaSiteKey}}"></script>
+    <input type="hidden" name="g-recaptcha-response" id="g-recaptcha-response-{{.FormID}}" />
+    <script>
+    (function() {
+      var form = document.getElementById({{.FormID | printf "%q"}});
+      var hidden = document.getElementById({{printf "g-recaptcha-response-%s" .FormID | printf "%q"}});
+      if (!form || !hidden) return;
+      var siteKey = {{.CaptchaSiteKey | printf "%q"}};
+      // Track whether we've already fetched a token for this submit so the
+      // second (real) submit doesn't re-intercept and loop.
+      var tokenReady = false;
+      form.addEventListener('submit', function(e) {
+        if (tokenReady) return; // token's already in the hidden field
+        e.preventDefault();
+        if (typeof grecaptcha === 'undefined') {
+          // api.js didn't load (ad blocker, Google outage). Submit anyway
+          // so the server returns the friendlier "challenge failed" error
+          // instead of the user getting stuck on a non-submitting form.
+          tokenReady = true;
+          form.submit();
+          return;
+        }
+        grecaptcha.ready(function() {
+          grecaptcha.execute(siteKey, {action: {{.FormID | printf "%q"}}}).then(function(token) {
+            hidden.value = token;
+            tokenReady = true;
+            form.submit();
+          }).catch(function() {
+            // Same fallback as above — server handles the rejection.
+            tokenReady = true;
+            form.submit();
+          });
+        });
+      });
+    })();
+    </script>
+    <p class="text-[11px] text-ink-400 text-center mt-2">Protected by reCAPTCHA. <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" class="hover:text-ink-600 underline">Privacy</a> · <a href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer" class="hover:text-ink-600 underline">Terms</a></p>
+  {{end}}
+{{end}}
+{{end}}
+
 {{define "icon"}}{{if eq . "dashboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>{{else if eq . "proxy"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>{{else if eq . "redirect"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>{{else if eq . "code"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>{{else if eq . "lock"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{else if eq . "download"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{else if eq . "clipboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>{{else if eq . "camera"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>{{else if eq . "pulse"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>{{else if eq . "users"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>{{else if eq . "server"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>{{else if eq . "settings"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>{{else if eq . "book"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>{{end}}{{end}}

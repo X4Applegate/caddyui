@@ -331,32 +331,130 @@
   </div>
   {{end}}
 
-  {{/* ── Cloudflare Turnstile ── */}}
+  {{/* ── CAPTCHA (v2.5.0) ── Unified card for Cloudflare Turnstile and Google
+       reCAPTCHA v3. The provider radio hot-swaps which pair of key fields is
+       visible via the inline JS below — server-side normalizeCaptchaProvider
+       is the source of truth, this is just a UI affordance. Both providers'
+       keys stay in the DB across provider switches so admins can toggle back
+       to an already-configured alternate without re-typing credentials. */}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="flex items-center gap-2 mb-0.5">
-        <div class="text-sm font-semibold text-ink-900">Cloudflare Turnstile</div>
-        {{if .TurnstileEnabled}}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>active</span>
+        <div class="text-sm font-semibold text-ink-900">CAPTCHA protection</div>
+        {{if .CaptchaDisabledByEnv}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="CADDYUI_CAPTCHA_DISABLE is set — challenge is bypassed regardless of the provider below"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>overridden by env</span>
+        {{else if eq .CaptchaProvider "turnstile"}}
+          {{if .TurnstileEnabled}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>Turnstile active</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">Turnstile — keys missing</span>{{end}}
+        {{else if eq .CaptchaProvider "recaptcha"}}
+          {{if .RecaptchaEnabled}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>reCAPTCHA v3 active</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">reCAPTCHA v3 — keys missing</span>{{end}}
         {{else}}
           <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
         {{end}}
       </div>
-      <p class="text-xs text-ink-500">Adds a CAPTCHA challenge to the login page to block automated attacks. Get your keys at <a href="https://dash.cloudflare.com/?to=/:account/turnstile" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">dash.cloudflare.com → Turnstile</a>. Leave blank to disable.</p>
+      <p class="text-xs text-ink-500">Applied to sign-in, TOTP verification, and new-user creation. Pick a provider you already have an account with — Turnstile is free and privacy-friendly; reCAPTCHA is a good fallback if Cloudflare is having an outage.</p>
     </div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Site Key <span class="text-ink-400 font-normal text-xs">(public)</span></label>
-        <input name="turnstile_site_key" value="{{.TurnstileSiteKey}}" type="text" autocomplete="off" placeholder="0x4AAAAAAA…"
-          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+
+    {{if .CaptchaDisabledByEnv}}
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
+      <span class="font-medium">Kill switch active:</span> <code class="font-mono bg-amber-100 px-1 py-0.5 rounded">CADDYUI_CAPTCHA_DISABLE</code> is set in the container env, so no challenge is shown or verified. Remove or unset that env var and restart to re-enable the provider below.
+    </div>
+    {{end}}
+
+    <div>
+      <div class="text-sm font-medium text-ink-800 mb-2">Provider</div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
+          <input type="radio" name="captcha_provider" value="off" data-captcha-provider {{if eq .CaptchaProvider "off"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
+          <div>
+            <div class="text-sm font-medium text-ink-900">Off</div>
+            <div class="text-xs text-ink-500 mt-0.5">No challenge. Fine for private/LAN-only deployments.</div>
+          </div>
+        </label>
+        <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
+          <input type="radio" name="captcha_provider" value="turnstile" data-captcha-provider {{if eq .CaptchaProvider "turnstile"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
+          <div>
+            <div class="text-sm font-medium text-ink-900">Cloudflare Turnstile</div>
+            <div class="text-xs text-ink-500 mt-0.5">Managed widget, invisible when possible.</div>
+          </div>
+        </label>
+        <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
+          <input type="radio" name="captcha_provider" value="recaptcha" data-captcha-provider {{if eq .CaptchaProvider "recaptcha"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
+          <div>
+            <div class="text-sm font-medium text-ink-900">Google reCAPTCHA v3</div>
+            <div class="text-xs text-ink-500 mt-0.5">Score-based, invisible. Good Cloudflare fallback.</div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    {{/* Turnstile keys — visible only when provider == "turnstile".
+         The JS below toggles the hidden class on data-captcha-panel elements
+         in response to radio changes so admins don't see irrelevant fields. */}}
+    <div data-captcha-panel="turnstile" class="space-y-3 {{if ne .CaptchaProvider "turnstile"}}hidden{{end}}">
+      <p class="text-xs text-ink-500">Get your keys at <a href="https://dash.cloudflare.com/?to=/:account/turnstile" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">dash.cloudflare.com → Turnstile</a>. Use the "Managed" widget type.</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Site Key <span class="text-ink-400 font-normal text-xs">(public)</span></label>
+          <input name="turnstile_site_key" value="{{.TurnstileSiteKey}}" type="text" autocomplete="off" placeholder="0x4AAAAAAA…"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span></label>
+          <input name="turnstile_secret_key" value="{{.TurnstileSecretKey}}" type="password" autocomplete="new-password" placeholder="0x4AAAAAAA…"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
+      </div>
+    </div>
+
+    {{/* reCAPTCHA v3 keys + score threshold. Score input accepts 0.0–1.0;
+         empty/out-of-range values fall back to the server-side default
+         (captchaDefaultMinScore = 0.5). v3 only — v2 checkbox is not
+         supported to keep the UX consistent with Turnstile's managed mode. */}}
+    <div data-captcha-panel="recaptcha" class="space-y-3 {{if ne .CaptchaProvider "recaptcha"}}hidden{{end}}">
+      <p class="text-xs text-ink-500">Get your keys at <a href="https://www.google.com/recaptcha/admin" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">google.com/recaptcha/admin</a>. Pick reCAPTCHA v3 (score-based) — v2 is not supported here.</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Site Key <span class="text-ink-400 font-normal text-xs">(public)</span></label>
+          <input name="recaptcha_site_key" value="{{.RecaptchaSiteKey}}" type="text" autocomplete="off" placeholder="6Lc…"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span></label>
+          <input name="recaptcha_secret_key" value="{{.RecaptchaSecretKey}}" type="password" autocomplete="new-password" placeholder="6Lc…"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
       </div>
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span></label>
-        <input name="turnstile_secret_key" value="{{.TurnstileSecretKey}}" type="password" autocomplete="new-password" placeholder="0x4AAAAAAA…"
-          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Minimum score <span class="text-ink-400 font-normal text-xs">(0.0 bot &rarr; 1.0 human)</span></label>
+        <input name="recaptcha_min_score" value="{{.RecaptchaMinScore}}" type="number" step="0.1" min="0" max="1" placeholder="0.5"
+          class="w-full sm:w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-500 mt-1.5">Challenges below this score are rejected. Google recommends <span class="font-mono">0.5</span> as a starting point; raise it if you still see bot traffic, lower it if legit users are bouncing.</p>
       </div>
     </div>
   </div>
+
+  {{/* Show/hide the provider-specific panels in response to radio clicks.
+       Inline vanilla JS (no external deps) — keeps this self-contained so
+       we don't have to thread a settings bundle through the static pipeline. */}}
+  <script>
+  (function() {
+    var radios = document.querySelectorAll('input[data-captcha-provider]');
+    var panels = document.querySelectorAll('[data-captcha-panel]');
+    function sync() {
+      var sel = document.querySelector('input[data-captcha-provider]:checked');
+      var v = sel ? sel.value : 'off';
+      panels.forEach(function(p) {
+        if (p.getAttribute('data-captcha-panel') === v) {
+          p.classList.remove('hidden');
+        } else {
+          p.classList.add('hidden');
+        }
+      });
+    }
+    radios.forEach(function(r) { r.addEventListener('change', sync); });
+    sync();
+  })();
+  </script>
 
   <div class="flex items-center gap-3">
     <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save settings</button>

@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.0] — 2026-04-22 · Switchable CAPTCHA provider (Turnstile + reCAPTCHA v3)
+
+### Added
+- **Unified CAPTCHA setting** at `Settings → CAPTCHA protection` with three modes — **Off**, **Cloudflare Turnstile**, **Google reCAPTCHA v3**. Picking a provider shows only that provider's key fields; switching providers preserves the inactive provider's saved keys in the DB so you can toggle back without re-typing credentials. The active-provider status badge shows green "active" when both keys are filled, and a muted "keys missing" pill when the provider is selected but not yet configured.
+- **Challenge applied to three forms**: `/login` (email + password), `/login/totp` (2FA code entry), and `/users/new` (admin creating a new account). Widget renders inline on all three — no separate "Test challenge" step. Turnstile shows its managed widget; reCAPTCHA v3 is invisible and hooks the form's submit event to `grecaptcha.execute(siteKey, {action: formID})` before submitting.
+- **Env-var kill switch** `CADDYUI_CAPTCHA_DISABLE`. Set to `1`, `true`, `yes`, or `on` (case-insensitive) to bypass the challenge entirely without touching the DB — intended for "Cloudflare outage + I'm locked out of my own admin" scenarios where you can restart the container with this flag, log in, then unset it. When the env var is active, the Settings page shows an amber "overridden by env" badge on the CAPTCHA card.
+- **reCAPTCHA v3 score threshold** input (0.0 = bot, 1.0 = human). Defaults to `0.5` (Google's starting recommendation). Challenges that Google scores below the threshold are rejected. Leaving the field blank falls back to the default at load time, but whatever you type is stored verbatim so the next render of the page shows your input.
+
+### Changed
+- **`/login` now uses the unified widget partial** (`{{template "captchaWidget" ...}}`) instead of the Turnstile-specific inline block that shipped in v2.4.x. Existing Turnstile keys continue to work unchanged — the v2.5.0 upgrade path is "install, set `captcha_provider=turnstile` (if you want the previous behaviour), and the existing site/secret keys apply as before." Setting stays blank by default on fresh installs (= "off").
+
+### Implementation notes
+- `internal/server/captcha.go` is the single source of truth: `loadCaptchaConfig(db)` reads the provider + keys, applies the env kill-switch, and returns a `captchaConfig` whose `Enabled()` method gates both template rendering and `verifyCaptcha`. Handlers call `verifyCaptcha(cfg, r)` unconditionally — it's a no-op when `Enabled()` is false.
+- TOTP captcha failure does **not** consume the pending-TOTP token. A failed challenge at `/login/totp` re-renders the form with the same token instead of kicking the user back to `/login`. Rationale: captcha wrong ≠ TOTP slot burned; the 5-min auto-expire on the pending token still caps abuse.
+- reCAPTCHA v3 uses a **submit-hook** pattern in the widget partial — the first submit is intercepted, `grecaptcha.execute` fetches a token, the token goes into a hidden `g-recaptcha-response` input, then the form is re-submitted. If `grecaptcha` fails to load (ad-blocker, Google outage), the fallback path submits anyway so the server returns the friendlier "Security check failed" error instead of the user getting stuck on a non-submitting form.
+- `normalizeCaptchaProvider` coerces unknown values (tampered POST, hand-edited DB) to `"off"` rather than trusting them — keeps a bad setting from rendering a broken widget that would lock admins out of the UI.
+- Verify-endpoint HTTP client has a **10-second timeout**. If Google or Cloudflare is slow, we'd rather surface a retry than block a legit user behind a 30-second hang.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.0` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.12] — 2026-04-22 · Settings layout fix, timezone picker, branded error pages
 
 ### Added
