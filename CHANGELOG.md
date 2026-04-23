@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.6] — 2026-04-23 · Managed DNS for advanced routes + safer collision handling
+
+### Added
+- **Managed DNS on advanced (raw) routes.** The provider + zone picker that proxy hosts have had since v2.3.0 is now on the advanced-route form too, so saving a raw route whose JSON or Caddyfile source points at `example.com` auto-creates the A record in the same transaction instead of leaving you to go make it by hand in your provider's console. Mirrors the proxy-host flow end-to-end: create on save, retarget on FQDN / server-IP / zone change, delete on row delete, participates in the bulk "retarget all records" admin action, and appears in the `/api/dns-zones/check-record` collision probe. The deploying page also renders the new "DNS record created in &lt;provider&gt;" checkpoint when an advanced route carries a managed record.
+- **Advanced-route FQDN detection reads both sources.** The client-side zone auto-suffix matcher pulls the domain from either the JSON `match[].host[0]` or the Caddyfile source site-block header (whichever is filled), so the suggestion works regardless of whether you're authoring raw JSON or pasting a Caddyfile snippet.
+
+### Changed
+- **DNS record collision no longer offers an "Override (delete & recreate)" button.** When the provider zone already has an A record at the FQDN you're saving, CaddyUI now just shows an amber warning with the existing record's content and tells you to delete it manually in your provider's console before saving. Rationale: on shared zones the override path could silently wipe out an A record belonging to an unrelated service (mail host, separate box, someone else's subdomain in the same account), and there was no way to undo it from the UI. Manual-delete-first is a couple extra clicks but makes it impossible for CaddyUI to destroy a record it didn't create. Applies to both the proxy-host form and the new advanced-route form.
+
+### Implementation notes
+- New columns on `raw_routes`: `dns_provider`, `dns_zone_id`, `dns_zone_name`, `dns_record_id` — each added with `ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT ''` via the existing `columnExists()` idempotent-migration helper, so upgrades from v2.5.5 (or any earlier 2.x) apply cleanly.
+- `dnsCreateRecord(serverID, hostID, *ProxyHost)` refactored into a shared `dnsCreateRecordForFQDN(serverID, provider, zoneID, zoneName, fqdn) (recordID, zoneName)` core plus thin type-specific wrappers (`dnsCreateRecord` for proxy hosts, `dnsCreateRecordForRaw` for raw routes). Same allow-list / credentials / server-IP resolution logic for both; only the persistence target differs.
+- `dnsUpdateAllRecords` (the admin "retarget every managed record after changing server IP" action) now iterates both tables via a closure-based per-row worker — `retarget(kind, rowID, provider, zoneID, zoneName, recordID, fqdn, persist)` — so raw-route records get retargeted alongside proxy hosts in the same pass.
+- `dnsOverrideExistingRecord` and the `override_dns` form field are gone entirely. The `/api/dns-zones/check-record` endpoint still returns the collision payload; only the UI that consumed it changed. Any lingering `override_dns=1` on an inbound form is silently ignored — no 400s on old bookmarks.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.6` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.5] — 2026-04-23 · Cloudflare-proxied cert check + deploying page for advanced routes
 
 ### Added

@@ -318,6 +318,28 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+
+	// v2.5.6: same unified DNS quad on raw_routes so advanced routes can
+	// auto-create their A record the way proxy hosts do. Separate loop
+	// (rather than a shared tables list) because only these two tables
+	// participate in managed DNS — redirection_hosts don't create records.
+	for _, col := range []struct{ name, def string }{
+		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},
+		{"dns_zone_id", "TEXT NOT NULL DEFAULT ''"},
+		{"dns_zone_name", "TEXT NOT NULL DEFAULT ''"},
+		{"dns_record_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := columnExists(db, "raw_routes", col.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE raw_routes ADD COLUMN %s %s`, col.name, col.def)); err != nil {
+				return fmt.Errorf("add %s to raw_routes: %w", col.name, err)
+			}
+		}
+	}
+
 	// One-time backfill: populate the unified columns from cf_*/pb_* state
 	// for rows that were written by v2.2.x or earlier. We key on "dns_provider
 	// is blank AND a legacy column is non-blank" so this is idempotent and

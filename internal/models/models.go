@@ -649,14 +649,24 @@ type RawRoute struct {
 	CertificateID       int64 // 0 = auto (ACME) / none; >0 = use custom certificate with this ID
 	ForceSSL            bool  // cosmetic: Caddy's automatic_https handles http→https already
 	BlockCommonExploits bool  // wrap route with /.env, /wp-admin, etc. → 403 subroute
-	OwnerID             sql.NullInt64
-	OwnerEmail          string // populated via JOIN for display
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// v2.5.6: unified Managed DNS, mirroring the proxy-host DNS triple.
+	// Populated on save when the user picks a provider + zone in the form;
+	// empty means "no managed DNS, user wires A records manually." Same
+	// semantics as the proxy-host columns — see models.ProxyHost.
+	DNSProvider   string
+	DNSZoneID     string
+	DNSZoneName   string
+	DNSRecordID   string
+	OwnerID       sql.NullInt64
+	OwnerEmail    string // populated via JOIN for display
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 const rawRouteCols = `id, label, json_data, COALESCE(caddyfile_src, ''), enabled,
     COALESCE(certificate_id, 0), COALESCE(force_ssl, 0), COALESCE(block_common_exploits, 0),
+    COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
+    COALESCE(dns_zone_name,''), COALESCE(dns_record_id,''),
     created_at, updated_at, COALESCE(owner_id, 0)`
 
 func scanRawRoute(s interface {
@@ -666,7 +676,9 @@ func scanRawRoute(s interface {
 	var en, force, block int
 	var ownerID int64
 	err := s.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
-		&r.CertificateID, &force, &block, &r.CreatedAt, &r.UpdatedAt, &ownerID)
+		&r.CertificateID, &force, &block,
+		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID,
+		&r.CreatedAt, &r.UpdatedAt, &ownerID)
 	if err == nil {
 		r.Enabled = en == 1
 		r.ForceSSL = force == 1
@@ -688,6 +700,8 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]
 		rows, err = db.Query(`
         SELECT rr.id, rr.label, rr.json_data, COALESCE(rr.caddyfile_src, ''), rr.enabled,
                COALESCE(rr.certificate_id, 0), COALESCE(rr.force_ssl, 0), COALESCE(rr.block_common_exploits, 0),
+               COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
+               COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -696,6 +710,8 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]
 		rows, err = db.Query(`
         SELECT rr.id, rr.label, rr.json_data, COALESCE(rr.caddyfile_src, ''), rr.enabled,
                COALESCE(rr.certificate_id, 0), COALESCE(rr.force_ssl, 0), COALESCE(rr.block_common_exploits, 0),
+               COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
+               COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -711,7 +727,9 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]
 		var en, force, block int
 		var ownerID int64
 		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
-			&r.CertificateID, &force, &block, &r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail); err != nil {
+			&r.CertificateID, &force, &block,
+			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID,
+			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail); err != nil {
 			return nil, err
 		}
 		r.Enabled = en == 1
@@ -727,8 +745,15 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]
 
 // CreateRawRoute inserts a new raw route. ownerID 0 means global/admin-owned (NULL in DB).
 func CreateRawRoute(db *sql.DB, serverID int64, ownerID int64, r *RawRoute) (int64, error) {
-	res, err := db.Exec(`INSERT INTO raw_routes (server_id, label, json_data, caddyfile_src, enabled, certificate_id, force_ssl, block_common_exploits, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		serverID, r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled), nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits), nilIfZero(ownerID))
+	res, err := db.Exec(`INSERT INTO raw_routes (server_id, label, json_data, caddyfile_src, enabled,
+            certificate_id, force_ssl, block_common_exploits,
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id,
+            owner_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		serverID, r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
+		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
+		nilIfZero(ownerID))
 	if err != nil {
 		return 0, err
 	}
@@ -744,9 +769,60 @@ func GetRawRoute(db *sql.DB, id int64) (*RawRoute, error) {
 }
 
 func UpdateRawRoute(db *sql.DB, r *RawRoute) error {
-	_, err := db.Exec(`UPDATE raw_routes SET label=?, json_data=?, caddyfile_src=?, enabled=?, certificate_id=?, force_ssl=?, block_common_exploits=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled), nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits), r.ID)
+	_, err := db.Exec(`UPDATE raw_routes SET label=?, json_data=?, caddyfile_src=?, enabled=?,
+            certificate_id=?, force_ssl=?, block_common_exploits=?,
+            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
+		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
+		r.ID)
 	return err
+}
+
+// UpdateRawRouteDNSRecord persists the record ID + zone identifier after
+// a successful provider create/delete. Mirrors UpdateProxyHostDNSRecord
+// — kept as a minimal UPDATE so the post-create hook can write back
+// without racing the main form save. Pass empty strings for all four
+// fields to clear DNS management on a route.
+func UpdateRawRouteDNSRecord(db *sql.DB, id int64, provider, zoneID, zoneName, recordID string) error {
+	_, err := db.Exec(`UPDATE raw_routes
+        SET dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`,
+		provider, zoneID, zoneName, recordID, id)
+	return err
+}
+
+// ListRawRoutesWithDNSRecords returns a lightweight slice of all raw
+// routes with an active managed DNS record. Only the fields needed for
+// lifecycle management (IP retarget, bulk delete) are populated —
+// mirrors ListProxyHostsWithDNSRecords. Pass serverID > 0 to restrict
+// to that Caddy server; 0 means "all servers".
+func ListRawRoutesWithDNSRecords(db *sql.DB, serverID int64) ([]RawRoute, error) {
+	q := `SELECT id, label, json_data, dns_provider, dns_zone_id, dns_zone_name, dns_record_id
+        FROM raw_routes
+        WHERE dns_provider != '' AND dns_record_id != ''`
+	args := []any{}
+	if serverID > 0 {
+		q += ` AND server_id = ?`
+		args = append(args, serverID)
+	}
+	q += ` ORDER BY id ASC`
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RawRoute
+	for rows.Next() {
+		var r RawRoute
+		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func DeleteRawRoute(db *sql.DB, id int64) error {
