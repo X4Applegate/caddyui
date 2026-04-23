@@ -311,9 +311,12 @@ func (s *Server) Routes() http.Handler {
 
 		// v2.5.2: post-save deployment status — drives the "deploying"
 		// page's live checklist (DNS propagated, cert issued). Read-only,
-		// so it lives outside the write-guarded group.
+		// so it lives outside the write-guarded group. v2.5.5 extends the
+		// same checklist to advanced (raw) routes that have a host matcher.
 		r.Get("/proxy-hosts/{id}/deploying", s.proxyHostDeploying)
 		r.Get("/api/proxy-hosts/{id}/deploy-status", s.apiProxyHostDeployStatus)
+		r.Get("/raw-routes/{id}/deploying", s.rawRouteDeploying)
+		r.Get("/api/raw-routes/{id}/deploy-status", s.apiRawRouteDeployStatus)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -2797,6 +2800,13 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_create", fmt.Sprintf("raw:%d", id), rr.Label, true)
 	s.syncCaddy(s.currentServerID(r), rr.CertificateID != 0)
+	// v2.5.5: park the user on the deploying checklist when the route has
+	// a host matcher we can probe. Path-only / port-only routes have no
+	// fqdn to verify, so we skip the page and bounce to the list like before.
+	if firstRawRouteHost(rr.JSONData) != "" {
+		http.Redirect(w, r, fmt.Sprintf("/raw-routes/%d/deploying", id), http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
 
@@ -2895,6 +2905,14 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_update", fmt.Sprintf("raw:%d", id), rr.Label, true)
 	s.syncCaddy(s.currentServerID(r), forceTLS)
+	// v2.5.5: show the deploying checklist on edits too — changing the
+	// host matcher or the backing service is the same "did it come back
+	// up on HTTPS?" question the create flow asks. Routes without a host
+	// matcher skip the page as in create.
+	if firstRawRouteHost(rr.JSONData) != "" {
+		http.Redirect(w, r, fmt.Sprintf("/raw-routes/%d/deploying", id), http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
 
@@ -5045,10 +5063,12 @@ func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request
 	// Cert check: skipped when SSL is off on the host, and deferred
 	// until DNS is ready (otherwise the dial is guaranteed to fail on
 	// hostname resolution).
+	resolvedIPs, _ := resp["resolved_ips"].([]string)
+	proxied, _ := resp["proxied"].(bool)
 	if !host.SSLEnabled {
 		resp["cert_ready"] = true
 	} else if resp["dns_ready"] == true {
-		resp["cert_ready"] = s.tlsHandshakeOK(host.ServerID, fqdn)
+		resp["cert_ready"] = s.tlsHandshakeOK(host.ServerID, fqdn, proxied, resolvedIPs)
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -5088,25 +5108,42 @@ func resolveViaDoH(fqdn string) ([]string, error) {
 	return ips, nil
 }
 
-// tlsHandshakeOK performs a full TLS handshake against the proxy host's
-// Caddy server with SNI set to fqdn, and validates the cert chain against
-// the system trust store. Returns true only when the cert chain verifies —
-// which is what users care about ("can I open the site in a browser").
-// A Caddy-internal self-signed fallback cert, a staging-CA cert, or an
-// expired cert all correctly report false.
+// tlsHandshakeOK performs a full TLS handshake with SNI set to fqdn and
+// validates the returned chain against the system trust store. Returns
+// true only when the cert chain verifies — which is what users actually
+// care about ("can I open the site in a browser"). A Caddy-internal
+// self-signed fallback cert, an ACME-staging cert, or an expired cert
+// all correctly report false.
 //
-// v2.5.4: dial target is the Caddy server's admin-URL hostname rather than
-// the public fqdn. Many self-hosted setups are behind a consumer router
-// that doesn't do hairpin NAT — resolving `fqdn` to the public IP and
-// dialing it from inside the same LAN fails even though the cert is
-// issued and the site is reachable from the real internet. Dialing the
-// Caddy service by its docker-network hostname (or admin-URL host for
-// remote servers) bypasses the public round-trip entirely; the SNI we
-// send makes Caddy serve the right cert regardless of how we got there.
-func (s *Server) tlsHandshakeOK(serverID int64, fqdn string) bool {
+// Dial target depends on how the record is served, to avoid the WAN
+// hairpin NAT problem most consumer routers have (resolving fqdn to the
+// public IP and dialing it from inside the LAN fails even when the site
+// is live for real users). We pick the dial target in priority order:
+//
+//   1. **Cloudflare-proxied** (orange cloud): dial the CF edge IP we just
+//      resolved via DoH. CF edge IPs are always public + outside the LAN,
+//      so hairpin never applies; SNI = fqdn makes CF serve the right
+//      customer cert from its Universal SSL / Advanced Certs pool. This
+//      is v2.5.5 — previously we tried to dial Caddy internally, which
+//      is wrong for proxied hosts because the user's browser sees CF's
+//      cert, not Caddy's origin cert.
+//   2. **Direct**: dial the Caddy server by its admin-URL hostname
+//      (docker service name `caddy` for single-host, admin host for
+//      remote servers). Bypasses public DNS + WAN hairpin; SNI = fqdn
+//      makes Caddy serve the right cert. This is the v2.5.4 path and
+//      remains the default for non-proxied providers.
+//   3. **Fallback**: dial the public fqdn directly. Used when we can't
+//      figure out an internal dial target (e.g. admin URL is a unix
+//      socket, or the server row is unreadable).
+func (s *Server) tlsHandshakeOK(serverID int64, fqdn string, proxied bool, resolvedIPs []string) bool {
 	target := fqdn + ":443"
-	if host := s.caddyDialHost(serverID); host != "" {
-		target = host + ":443"
+	switch {
+	case proxied && len(resolvedIPs) > 0:
+		target = resolvedIPs[0] + ":443"
+	default:
+		if host := s.caddyDialHost(serverID); host != "" {
+			target = host + ":443"
+		}
 	}
 	d := &net.Dialer{Timeout: 6 * time.Second}
 	conn, err := tls.DialWithDialer(d, "tcp", target, &tls.Config{
@@ -5183,6 +5220,186 @@ func (s *Server) proxyHostDeploying(w http.ResponseWriter, r *http.Request) {
 		"ExpectedIP":   s.serverIPFor(host.ServerID),
 		"Section":      "proxy",
 	})
+}
+
+// firstRawRouteHost pulls the first hostname out of a raw-route JSON
+// blob's match.host[] array. v2.5.5 uses this to drive the post-save
+// deploying page for advanced routes — if the route has no host matcher
+// (path-only, port-only, etc.) we return "" and the caller skips the
+// deploying page entirely since there's nothing DNS- or TLS-shaped to
+// probe.
+//
+// Parsing is defensive: any shape mismatch in the JSON returns empty
+// rather than panicking, because raw routes intentionally accept arbitrary
+// Caddy JSON and we don't want a malformed blob to break the post-save
+// redirect. The save path already runs the config through Caddy's adapter
+// before we get here, so well-formed routes reach this function with the
+// canonical match[].host[] shape.
+func firstRawRouteHost(jsonData string) string {
+	if strings.TrimSpace(jsonData) == "" {
+		return ""
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(jsonData), &cfg); err != nil {
+		return ""
+	}
+	matches, _ := cfg["match"].([]any)
+	for _, m := range matches {
+		mm, _ := m.(map[string]any)
+		hosts, _ := mm["host"].([]any)
+		for _, h := range hosts {
+			if s, ok := h.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}
+
+// apiRawRouteDeployStatus mirrors apiProxyHostDeployStatus for advanced
+// routes. Raw routes don't manage their own DNS records (the user wires
+// A records manually), so the "record created in <provider>" step is
+// absent — but DNS propagation + TLS handshake still apply and are
+// exactly the signal the user wants after saving.
+func (s *Server) apiRawRouteDeployStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "bad id"})
+		return
+	}
+	rr, err := models.GetRawRoute(s.DB, id)
+	if err != nil || rr == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "not found"})
+		return
+	}
+	cu := s.currentUser(r)
+	if cu != nil && cu.Role != models.RoleAdmin {
+		if !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "forbidden"})
+			return
+		}
+	}
+	fqdn := firstRawRouteHost(rr.JSONData)
+	serverID := s.currentServerID(r)
+	expectedIP := s.serverIPFor(serverID)
+	// Raw routes are always HTTPS-capable in Caddy (automatic_https is
+	// on by default) unless the user manually carved it out — we treat
+	// SSL as always-on for the cert check. A custom cert (CertificateID > 0)
+	// skips ACME but still terminates TLS, so the probe applies either way.
+	resp := map[string]any{
+		"fqdn":         fqdn,
+		"expected_ip":  expectedIP,
+		"ssl_enabled":  true,
+		"proxied":      false,
+		"dns_ready":    false,
+		"cert_ready":   false,
+		"resolved_ips": []string{},
+	}
+	if fqdn == "" {
+		resp["error"] = "route has no host matcher"
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+	// Raw routes don't carry a DNS provider, but the Cloudflare-proxied
+	// toggle is a server-wide setting — if the user has CF proxy on and
+	// the domain happens to sit in a CF zone, their A record resolves to
+	// CF edge IPs even though the raw route doesn't know about it. Trust
+	// the resolved IP shape rather than the setting: if DoH returns a CF
+	// edge IP (known-proxied ranges), treat it as proxied.
+	var ips []string
+	if got, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
+		ips = got
+		resp["resolved_ips"] = got
+		if looksLikeCloudflareEdge(got) {
+			resp["proxied"] = true
+			resp["dns_ready"] = len(got) > 0
+		} else if expectedIP != "" {
+			for _, ip := range got {
+				if ip == expectedIP {
+					resp["dns_ready"] = true
+					break
+				}
+			}
+		} else {
+			resp["dns_ready"] = len(got) > 0
+		}
+	}
+	if resp["dns_ready"] == true {
+		proxied, _ := resp["proxied"].(bool)
+		resp["cert_ready"] = s.tlsHandshakeOK(serverID, fqdn, proxied, ips)
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// rawRouteDeploying renders the deploying-checklist page for advanced
+// routes. If the route has no host matcher we fall through to the list —
+// there's nothing meaningful to poll on a port-only / path-only route.
+func (s *Server) rawRouteDeploying(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	rr, err := models.GetRawRoute(s.DB, id)
+	if err != nil || rr == nil {
+		http.NotFound(w, r)
+		return
+	}
+	cu := s.currentUser(r)
+	if cu != nil && cu.Role != models.RoleAdmin {
+		if !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	fqdn := firstRawRouteHost(rr.JSONData)
+	if fqdn == "" {
+		http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
+		return
+	}
+	serverID := s.currentServerID(r)
+	s.render(w, r, "raw_route_deploying.html", map[string]any{
+		"User":        cu,
+		"Route":       rr,
+		"FirstDomain": fqdn,
+		"ExpectedIP":  s.serverIPFor(serverID),
+		"Section":     "raw",
+	})
+}
+
+// looksLikeCloudflareEdge is a coarse heuristic to spot CF-proxied A
+// records from their resolved IP. We use it on raw routes where the
+// explicit "proxied" setting is on proxy hosts only. The ranges below
+// are Cloudflare's published IPv4 edge set as of 2024 — keeping this
+// small + local (vs. fetching cloudflare.com/ips-v4) avoids a network
+// dependency on the deploy-status poll. False positives here just mean
+// we dial CF edge with SNI=fqdn instead of Caddy internally, which is
+// harmless when the domain really is on CF and correctly fails to
+// verify when it isn't.
+func looksLikeCloudflareEdge(ips []string) bool {
+	// Canonical CF v4 edge CIDRs (from https://www.cloudflare.com/ips-v4).
+	cfRanges := []string{
+		"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22",
+		"103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18",
+		"190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22",
+		"198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+		"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+	}
+	for _, ip := range ips {
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			continue
+		}
+		for _, cidr := range cfRanges {
+			_, n, err := net.ParseCIDR(cidr)
+			if err != nil {
+				continue
+			}
+			if n.Contains(parsed) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // semverValid returns true for tags like v1.2.3.
