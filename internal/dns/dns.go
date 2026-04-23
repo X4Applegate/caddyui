@@ -232,6 +232,26 @@ func SubdomainOf(fqdn, baseDomain string) string {
 	return fqdn
 }
 
+// IsProxyConflictingType reports whether a record of type t would collide
+// with the A/AAAA/CNAME record CaddyUI writes for a proxy host at the same
+// name. MX / TXT / SRV / CAA / NS and friends cohabit happily — email,
+// SPF/DKIM/DMARC, and cert-issuance records live at the same FQDN as the
+// web endpoint and must never be touched by the Override path.
+//
+// Used by:
+//   - /api/dns-zones/check-record  — to filter the warning banner so we
+//     only alarm the user about records that would actually conflict.
+//   - dnsOverrideExistingRecord    — to scope the delete sweep. An errant
+//     delete of an MX or TXT record would silently break mail or SPF for
+//     the user's whole domain.
+func IsProxyConflictingType(t string) bool {
+	switch strings.ToUpper(strings.TrimSpace(t)) {
+	case "A", "AAAA", "CNAME":
+		return true
+	}
+	return false
+}
+
 // FirstDomain extracts the first comma-separated domain from a ProxyHost's
 // Domains field. DNS records are only ever created for the first domain —
 // the rest are aliases handled by Caddy at the proxy level.

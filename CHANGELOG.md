@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.9] — 2026-04-22 · DNS "override" now only touches A / AAAA / CNAME — never MX / TXT / SRV / CAA
+
+### Fixed
+- **Critical: the v2.4.8 existing-record warning banner listed MX, TXT, SRV, CAA, and NS records alongside the A/CNAME it was actually about to replace — and "Override (delete & recreate)" then *deleted* every one of them.** On an apex domain with an existing MX + SPF TXT, clicking Override would silently wipe mail routing and SPF for the whole domain. Now:
+  - **Warning filter** (`apiDNSCheckRecord`) only flags A / AAAA / CNAME at the target FQDN. MX, TXT, SRV, CAA, NS etc. are ignored — they cohabit with the web endpoint by design (email, SPF/DKIM/DMARC, cert issuance) and aren't a conflict.
+  - **Override delete sweep** (`dnsOverrideExistingRecord`) has the same filter — even if a stale record list were somehow passed in, non-conflicting types are logged and skipped rather than deleted.
+  - Shared helper `dns.IsProxyConflictingType(t)` is the single decision point so the two call sites can never drift apart.
+
+### Why
+A proxy host writes an A (or AAAA / CNAME) record at the FQDN. Every other record type at the same name belongs to a separate service:
+- **MX** — mail exchange for incoming email
+- **TXT** — SPF, DKIM, DMARC, domain-verification tokens
+- **SRV** — service locations (XMPP, SIP, etc.)
+- **CAA** — certificate-authority authorization
+
+Deleting any of those during a "replace the A record" operation is always wrong — it breaks the user's email, SPF, or cert issuance without any warning. The v2.4.8 code path did exactly that for any user who clicked Override on a domain with existing MX/TXT records.
+
+### Impact
+If you upgraded to v2.4.8 and clicked "Override (delete & recreate)" on a proxy host whose domain had MX or TXT records, those records were deleted. Check your provider console and re-add them if so. Cloudflare/DigitalOcean/Hetzner keep a short audit log; GoDaddy/Porkbun/Namecheap don't, so you may need to restore from a zone-file backup or manual notes.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.9` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.8] — 2026-04-22 · Sticky Actions column + "DNS record already exists" warning on proxy-host save
 
 ### Fixed
