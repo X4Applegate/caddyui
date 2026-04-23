@@ -5048,7 +5048,7 @@ func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request
 	if !host.SSLEnabled {
 		resp["cert_ready"] = true
 	} else if resp["dns_ready"] == true {
-		resp["cert_ready"] = tlsHandshakeOK(fqdn)
+		resp["cert_ready"] = s.tlsHandshakeOK(host.ServerID, fqdn)
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -5088,14 +5088,28 @@ func resolveViaDoH(fqdn string) ([]string, error) {
 	return ips, nil
 }
 
-// tlsHandshakeOK performs a full TLS handshake against fqdn:443 with
-// the default system trust store. Returns true only when the cert
-// chain verifies — which is what users care about ("can I open the
-// site in a browser"). A Caddy-internal self-signed fallback cert,
-// a staging-CA cert, or an expired cert all correctly report false.
-func tlsHandshakeOK(fqdn string) bool {
+// tlsHandshakeOK performs a full TLS handshake against the proxy host's
+// Caddy server with SNI set to fqdn, and validates the cert chain against
+// the system trust store. Returns true only when the cert chain verifies —
+// which is what users care about ("can I open the site in a browser").
+// A Caddy-internal self-signed fallback cert, a staging-CA cert, or an
+// expired cert all correctly report false.
+//
+// v2.5.4: dial target is the Caddy server's admin-URL hostname rather than
+// the public fqdn. Many self-hosted setups are behind a consumer router
+// that doesn't do hairpin NAT — resolving `fqdn` to the public IP and
+// dialing it from inside the same LAN fails even though the cert is
+// issued and the site is reachable from the real internet. Dialing the
+// Caddy service by its docker-network hostname (or admin-URL host for
+// remote servers) bypasses the public round-trip entirely; the SNI we
+// send makes Caddy serve the right cert regardless of how we got there.
+func (s *Server) tlsHandshakeOK(serverID int64, fqdn string) bool {
+	target := fqdn + ":443"
+	if host := s.caddyDialHost(serverID); host != "" {
+		target = host + ":443"
+	}
 	d := &net.Dialer{Timeout: 6 * time.Second}
-	conn, err := tls.DialWithDialer(d, "tcp", fqdn+":443", &tls.Config{
+	conn, err := tls.DialWithDialer(d, "tcp", target, &tls.Config{
 		ServerName: fqdn,
 	})
 	if err != nil {
@@ -5103,6 +5117,39 @@ func tlsHandshakeOK(fqdn string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// caddyDialHost returns the hostname (no port) to use when dialing the
+// Caddy server for serverID. Pulled from the admin URL so single-host
+// setups resolve to "caddy" (the docker service name) and remote-server
+// setups resolve to whatever address admin is configured on. Falls back
+// to the primary client's admin URL when serverID isn't usable. Returns
+// "" when nothing sensible can be extracted — callers then dial the
+// public fqdn directly as a last resort.
+func (s *Server) caddyDialHost(serverID int64) string {
+	adminURL := ""
+	if serverID > 0 {
+		if srv, err := models.GetCaddyServer(s.DB, serverID); err == nil {
+			adminURL = srv.AdminURL
+		}
+	}
+	if adminURL == "" && s.Caddy != nil {
+		adminURL = s.Caddy.AdminURL
+	}
+	if adminURL == "" {
+		return ""
+	}
+	u, err := url.Parse(adminURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	// Unix-socket admins ("http://unix") give an empty hostname above;
+	// belt-and-braces skip them too since we can't dial :443 via a
+	// socket path.
+	if strings.EqualFold(u.Scheme, "unix") || strings.EqualFold(u.Host, "unix") {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // proxyHostDeploying renders the post-save "deploying" checklist page.
