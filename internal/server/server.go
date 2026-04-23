@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/smtp"
 	"net/url"
@@ -307,6 +308,12 @@ func (s *Server) Routes() http.Handler {
 		// provider + zone + first domain; response drives the "record
 		// already exists — Cancel / Override?" dialog.
 		r.Get("/api/dns-zones/check-record", s.apiDNSCheckRecord)
+
+		// v2.5.2: post-save deployment status — drives the "deploying"
+		// page's live checklist (DNS propagated, cert issued). Read-only,
+		// so it lives outside the write-guarded group.
+		r.Get("/proxy-hosts/{id}/deploying", s.proxyHostDeploying)
+		r.Get("/api/proxy-hosts/{id}/deploy-status", s.apiProxyHostDeployStatus)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -1462,6 +1469,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	// Unified DNS: create A record if a provider + zone was selected.
 	// dnsCreateRecord is a no-op when DNSProvider is empty, so no branch
 	// needed here — just call it unconditionally.
+	dnsCreated := false
 	if p.DNSProvider != "" && p.DNSZoneID != "" {
 		// v2.4.8: if the form's existing-record warning was resolved with
 		// "Override", wipe any records at this FQDN first so the create
@@ -1470,11 +1478,19 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 			s.dnsOverrideExistingRecord(p)
 		}
 		s.dnsCreateRecord(s.currentServerID(r), id, p)
+		dnsCreated = true
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.syncCaddy(s.currentServerID(r), p.CertificateID != 0)
 	if len(deployTo) > 0 {
 		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
+	}
+	// v2.5.2: when a managed DNS record was created, park the user on the
+	// deploying page so they can watch DNS propagate + cert issue instead
+	// of landing on an "active" row that can't actually be opened yet.
+	if dnsCreated {
+		http.Redirect(w, r, fmt.Sprintf("/proxy-hosts/%d/deploying", id), http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
 }
@@ -1596,6 +1612,14 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	s.syncCaddy(s.currentServerID(r), forceTLS)
 	if len(deployTo) > 0 {
 		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
+	}
+	// v2.5.2: if this edit created a fresh DNS record (first time enabling
+	// Managed DNS, or provider / zone / first-domain changed), show the
+	// deploying page so the user can watch DNS + cert come up. A plain
+	// edit that left DNS untouched goes back to the list as before.
+	if needCreate {
+		http.Redirect(w, r, fmt.Sprintf("/proxy-hosts/%d/deploying", p.ID), http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
 }
@@ -4918,6 +4942,199 @@ func (s *Server) apiDNSCheckRecord(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"exists":  len(filtered) > 0,
 		"records": filtered,
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v2.5.2: post-save "deploying" flow.
+// ─────────────────────────────────────────────────────────────────────
+//
+// When a proxy-host save creates or changes a managed-DNS A record, we
+// redirect to /proxy-hosts/{id}/deploying instead of bouncing straight
+// back to the list. That page polls apiProxyHostDeployStatus every few
+// seconds and draws a live checklist — DNS propagated, TLS handshake
+// succeeded — so the user actually knows when their site is enterable.
+// ─────────────────────────────────────────────────────────────────────
+
+// apiProxyHostDeployStatus returns the real-time deployment status for a
+// freshly-saved proxy host. Response:
+//
+//	{
+//	  "fqdn":         "test.example.com",
+//	  "expected_ip":  "203.0.113.10",
+//	  "resolved_ips": ["203.0.113.10"],
+//	  "ssl_enabled":  true,
+//	  "proxied":      false,
+//	  "dns_ready":    true,
+//	  "cert_ready":   false,
+//	  "error":        ""
+//	}
+//
+// For non-proxied records dns_ready is true only when a public resolver
+// returns an A record matching the server's configured public IP. For
+// Cloudflare-proxied records (orange cloud) the record points at CF's
+// edge IPs, so we relax to "any A record" — the record is live in DNS
+// and CF is handling the rest. Cert check is a plain TLS handshake via
+// tls.Dial against fqdn:443 with system-trust verification enabled, so
+// a Caddy-internal self-signed fallback correctly reports not-ready.
+func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "bad id"})
+		return
+	}
+	host, err := models.GetProxyHost(s.DB, id)
+	if err != nil || host == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "not found"})
+		return
+	}
+	// Ownership: non-admins can only poll their own hosts.
+	cu := s.currentUser(r)
+	if cu != nil && cu.Role != models.RoleAdmin {
+		if !host.OwnerID.Valid || host.OwnerID.Int64 != cu.ID {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "forbidden"})
+			return
+		}
+	}
+	fqdn := dns.FirstDomain(host.Domains)
+	expectedIP := s.serverIPFor(host.ServerID)
+	resp := map[string]any{
+		"fqdn":         fqdn,
+		"expected_ip":  expectedIP,
+		"ssl_enabled":  host.SSLEnabled,
+		"proxied":      false,
+		"dns_ready":    false,
+		"cert_ready":   false,
+		"resolved_ips": []string{},
+	}
+	if fqdn == "" {
+		resp["error"] = "host has no domain"
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+	// Proxied flag applies to Cloudflare only; other providers always
+	// resolve to the configured server IP.
+	if host.DNSProvider == dns.Cloudflare {
+		if v, _ := models.GetSetting(s.DB, settingCFProxied); v == "1" {
+			resp["proxied"] = true
+		}
+	}
+	// DNS check via Cloudflare DNS-over-HTTPS. Silent on error — the
+	// client keeps polling, and a transient DoH failure should just
+	// look like "not ready yet".
+	if ips, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
+		resp["resolved_ips"] = ips
+		if resp["proxied"] == true {
+			resp["dns_ready"] = len(ips) > 0
+		} else if expectedIP != "" {
+			for _, ip := range ips {
+				if ip == expectedIP {
+					resp["dns_ready"] = true
+					break
+				}
+			}
+		} else {
+			// No expected IP configured — fall back to "any A record".
+			// Otherwise we'd always report not-ready.
+			resp["dns_ready"] = len(ips) > 0
+		}
+	}
+	// Cert check: skipped when SSL is off on the host, and deferred
+	// until DNS is ready (otherwise the dial is guaranteed to fail on
+	// hostname resolution).
+	if !host.SSLEnabled {
+		resp["cert_ready"] = true
+	} else if resp["dns_ready"] == true {
+		resp["cert_ready"] = tlsHandshakeOK(fqdn)
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// resolveViaDoH queries Cloudflare DNS-over-HTTPS for A records for fqdn.
+// Returns the list of IPs, or an empty slice if the record doesn't exist
+// yet. 6-second timeout so a slow upstream doesn't stall the poll.
+func resolveViaDoH(fqdn string) ([]string, error) {
+	req, err := http.NewRequest("GET",
+		"https://cloudflare-dns.com/dns-query?name="+url.QueryEscape(fqdn)+"&type=A",
+		nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/dns-json")
+	client := &http.Client{Timeout: 6 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var data struct {
+		Answer []struct {
+			Type int    `json:"type"`
+			Data string `json:"data"`
+		} `json:"Answer"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	ips := make([]string, 0, len(data.Answer))
+	for _, a := range data.Answer {
+		if a.Type == 1 { // A record
+			ips = append(ips, strings.TrimSpace(a.Data))
+		}
+	}
+	return ips, nil
+}
+
+// tlsHandshakeOK performs a full TLS handshake against fqdn:443 with
+// the default system trust store. Returns true only when the cert
+// chain verifies — which is what users care about ("can I open the
+// site in a browser"). A Caddy-internal self-signed fallback cert,
+// a staging-CA cert, or an expired cert all correctly report false.
+func tlsHandshakeOK(fqdn string) bool {
+	d := &net.Dialer{Timeout: 6 * time.Second}
+	conn, err := tls.DialWithDialer(d, "tcp", fqdn+":443", &tls.Config{
+		ServerName: fqdn,
+	})
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// proxyHostDeploying renders the post-save "deploying" checklist page.
+// Shown after a create/update that created or changed a managed-DNS
+// record. The page JS polls /api/proxy-hosts/{id}/deploy-status every
+// few seconds and auto-redirects to /proxy-hosts once both DNS and
+// cert checks pass — or after the hard 120s timeout.
+func (s *Server) proxyHostDeploying(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	host, err := models.GetProxyHost(s.DB, id)
+	if err != nil || host == nil {
+		http.NotFound(w, r)
+		return
+	}
+	cu := s.currentUser(r)
+	if cu != nil && cu.Role != models.RoleAdmin {
+		if !host.OwnerID.Valid || host.OwnerID.Int64 != cu.ID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	providerName := host.DNSProvider
+	if d, ok := dns.Lookup(host.DNSProvider); ok {
+		providerName = d.DisplayName
+	}
+	s.render(w, r, "proxy_host_deploying.html", map[string]any{
+		"User":         cu,
+		"Host":         host,
+		"FirstDomain":  dns.FirstDomain(host.Domains),
+		"ProviderName": providerName,
+		"ExpectedIP":   s.serverIPFor(host.ServerID),
+		"Section":      "proxy",
 	})
 }
 

@@ -1,0 +1,228 @@
+{{define "title"}}Deploying {{.FirstDomain}} · CaddyUI{{end}}
+{{define "content"}}
+<div class="max-w-2xl mx-auto">
+  <div class="mb-6">
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Deploying <span class="font-mono text-brand-600">{{.FirstDomain}}</span></h1>
+    <p class="text-sm text-ink-500 mt-1.5">DNS usually propagates in 15–60 seconds. HTTPS certificates can take another 30–90 seconds on first request. Feel free to skip ahead at any time.</p>
+  </div>
+
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
+    <ol id="deploy-steps" class="space-y-4">
+      <li id="step-saved" class="flex items-start gap-3" data-state="ready">
+        <span class="step-icon flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-green-100 text-green-700">✓</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-ink-800">Proxy host saved</div>
+          <div class="text-xs text-ink-500 mt-0.5">Forwarding {{.FirstDomain}} → <span class="font-mono">{{.Host.ForwardScheme}}://{{.Host.ForwardHost}}:{{.Host.ForwardPort}}</span></div>
+        </div>
+      </li>
+
+      {{if .Host.DNSProvider}}
+      <li id="step-dns-created" class="flex items-start gap-3" data-state="ready">
+        <span class="step-icon flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-green-100 text-green-700">✓</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-ink-800">DNS record created in {{.ProviderName}}</div>
+          <div class="text-xs text-ink-500 mt-0.5">A record added to zone <span class="font-mono">{{.Host.DNSZoneName}}</span>{{if .Host.DNSRecordID}} · record ID <span class="font-mono">{{.Host.DNSRecordID}}</span>{{end}}</div>
+        </div>
+      </li>
+      {{end}}
+
+      <li id="step-dns" class="flex items-start gap-3" data-state="loading">
+        <span class="step-icon flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-ink-100 text-ink-500">
+          <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" opacity="0.25"/>
+            <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-ink-800">DNS propagating…</div>
+          <div id="step-dns-detail" class="text-xs text-ink-500 mt-0.5">Querying public resolver (Cloudflare 1.1.1.1)</div>
+        </div>
+      </li>
+
+      {{if .Host.SSLEnabled}}
+      <li id="step-cert" class="flex items-start gap-3" data-state="pending">
+        <span class="step-icon flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-ink-100 text-ink-400">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+          </svg>
+        </span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-ink-800">HTTPS certificate</div>
+          <div id="step-cert-detail" class="text-xs text-ink-500 mt-0.5">Waiting for DNS before testing TLS handshake on port 443</div>
+        </div>
+      </li>
+      {{end}}
+    </ol>
+
+    <div id="deploy-status-banner" class="hidden mt-5 rounded-lg px-3 py-2 text-xs flex items-start gap-2"></div>
+
+    <div class="mt-5 pt-4 border-t border-ink-100 flex items-center justify-between gap-3">
+      <div id="deploy-elapsed" class="text-xs text-ink-400">Elapsed: <span id="deploy-elapsed-s">0</span>s</div>
+      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 text-sm text-ink-600 hover:text-ink-900 transition">
+        Skip waiting
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+  </div>
+
+  <p class="text-xs text-ink-400 mt-4 text-center">
+    Still deploying after you leave? The record is already saved in your DNS provider and Caddy config — you can safely close this tab.
+  </p>
+</div>
+
+<style>
+  /* Per-step visual states. Keyed on the data-state attribute so the JS
+     just has to flip state + optionally swap the icon innerHTML. */
+  #deploy-steps li[data-state="ready"]   .step-icon { background: rgb(220 252 231); color: rgb(21 128 61); }
+  #deploy-steps li[data-state="loading"] .step-icon { background: rgb(241 245 249); color: rgb(100 116 139); }
+  #deploy-steps li[data-state="pending"] .step-icon { background: rgb(241 245 249); color: rgb(148 163 184); }
+  #deploy-steps li[data-state="fail"]    .step-icon { background: rgb(254 243 199); color: rgb(180 83 9); }
+  .dark #deploy-steps li[data-state="ready"]   .step-icon { background: rgb(22 101 52);  color: rgb(187 247 208); }
+  .dark #deploy-steps li[data-state="loading"] .step-icon { background: rgb(51 65 85);   color: rgb(203 213 225); }
+  .dark #deploy-steps li[data-state="pending"] .step-icon { background: rgb(30 41 59);   color: rgb(148 163 184); }
+  .dark #deploy-steps li[data-state="fail"]    .step-icon { background: rgb(120 53 15);  color: rgb(253 230 138); }
+</style>
+
+<script>
+(function() {
+  var hostID      = {{.Host.ID}};
+  var sslEnabled  = {{.Host.SSLEnabled}};
+  var firstDomain = {{.FirstDomain | printf "%q"}};
+  var expectedIP  = {{.ExpectedIP | printf "%q"}};
+
+  var POLL_INTERVAL_MS = 3000;
+  var TIMEOUT_MS       = 120000; // v2.5.2: hard 2-minute budget before we give up.
+  var startedAt        = Date.now();
+  var pollTimer        = null;
+
+  var dnsStep       = document.getElementById('step-dns');
+  var dnsDetail     = document.getElementById('step-dns-detail');
+  var certStep      = document.getElementById('step-cert');
+  var certDetail    = document.getElementById('step-cert-detail');
+  var banner        = document.getElementById('deploy-status-banner');
+  var elapsedEl     = document.getElementById('deploy-elapsed-s');
+
+  var spinnerSVG =
+    '<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" opacity="0.25"/>' +
+      '<path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>' +
+    '</svg>';
+  var idleSVG =
+    '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="9"/>' +
+    '</svg>';
+
+  function setState(el, state) {
+    if (!el) return;
+    el.setAttribute('data-state', state);
+    var icon = el.querySelector('.step-icon');
+    if (!icon) return;
+    // Only rewrite innerHTML when we actually have a different marker
+    // for this state — spinner in loading, idle ring in pending, etc.
+    if (state === 'ready')       icon.innerHTML = '&#10003;';      // heavy check
+    else if (state === 'fail')   icon.innerHTML = '!';
+    else if (state === 'loading') icon.innerHTML = spinnerSVG;
+    else if (state === 'pending') icon.innerHTML = idleSVG;
+  }
+
+  function showBanner(tone, text) {
+    if (!banner) return;
+    var toneClasses = {
+      ok:    'bg-green-50 border border-green-200 text-green-800',
+      warn:  'bg-amber-50 border border-amber-200 text-amber-800',
+      info:  'bg-brand-50 border border-brand-200 text-brand-700'
+    };
+    banner.className = 'mt-5 rounded-lg px-3 py-2 text-xs flex items-start gap-2 ' + (toneClasses[tone] || toneClasses.info);
+    banner.textContent = text;
+    banner.classList.remove('hidden');
+  }
+
+  function tickElapsed() {
+    if (elapsedEl) elapsedEl.textContent = Math.round((Date.now() - startedAt) / 1000);
+  }
+
+  function poll() {
+    tickElapsed();
+    var elapsed = Date.now() - startedAt;
+
+    fetch('/api/proxy-hosts/' + hostID + '/deploy-status', { credentials: 'same-origin' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data || data.error) {
+          // Transient — just keep polling until the timeout hits.
+          if (elapsed < TIMEOUT_MS) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+          else redirectSlow();
+          return;
+        }
+
+        // DNS step ---------------------------------------------------
+        var ips = data.resolved_ips || [];
+        if (data.dns_ready) {
+          setState(dnsStep, 'ready');
+          if (dnsDetail) {
+            if (data.proxied) {
+              dnsDetail.textContent = 'Resolved via Cloudflare edge: ' + (ips.join(', ') || '(proxied)');
+            } else {
+              dnsDetail.textContent = 'Resolved to ' + (ips.join(', ') || expectedIP);
+            }
+          }
+        } else {
+          setState(dnsStep, 'loading');
+          if (dnsDetail) {
+            if (ips.length > 0) {
+              var want = data.proxied ? 'any A record via Cloudflare' : expectedIP;
+              dnsDetail.textContent = 'Got ' + ips.join(', ') + ' — waiting for ' + want;
+            } else {
+              dnsDetail.textContent = 'No A record yet via 1.1.1.1 — retrying (' + Math.round(elapsed/1000) + 's elapsed)';
+            }
+          }
+        }
+
+        // Cert step --------------------------------------------------
+        if (sslEnabled && certStep) {
+          if (data.cert_ready) {
+            setState(certStep, 'ready');
+            if (certDetail) certDetail.textContent = 'TLS handshake verified — the site is live on HTTPS';
+          } else if (data.dns_ready) {
+            setState(certStep, 'loading');
+            if (certDetail) certDetail.textContent = 'Caddy is obtaining the certificate via ACME — first request triggers issuance';
+          } else {
+            setState(certStep, 'pending');
+          }
+        }
+
+        // Done? ------------------------------------------------------
+        var allReady = data.dns_ready && (data.cert_ready || !sslEnabled);
+        if (allReady) {
+          showBanner('ok', 'Ready — redirecting to proxy hosts…');
+          setTimeout(function() { window.location.href = '/proxy-hosts'; }, 1500);
+          return;
+        }
+
+        if (elapsed > TIMEOUT_MS) {
+          redirectSlow();
+          return;
+        }
+
+        pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+      })
+      .catch(function() {
+        if (elapsed < TIMEOUT_MS) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+        else redirectSlow();
+      });
+  }
+
+  function redirectSlow() {
+    // 2 min passed and we're still not green. Don't block the user —
+    // redirect back with an amber banner so they know it's still coming.
+    showBanner('warn', 'Still deploying after 2 minutes — this is usually just slow propagation. Opening the host list; try the site in a minute or two.');
+    setTimeout(function() { window.location.href = '/proxy-hosts?deploy_slow=' + encodeURIComponent(firstDomain); }, 3000);
+  }
+
+  // Keep the "elapsed" counter updating every second even when the
+  // poll itself is on a slower cadence — otherwise the UI feels frozen.
+  setInterval(tickElapsed, 1000);
+  poll();
+})();
+</script>
+{{end}}

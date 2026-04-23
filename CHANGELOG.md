@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.2] — 2026-04-22 · "Deploying…" page after save
+
+### Added
+- **Post-save "deploying" page** at `/proxy-hosts/{id}/deploying`. When you save a proxy host that created or changed a managed-DNS record, CaddyUI now parks you on a live checklist instead of dumping you back to the host list while DNS is still propagating. The checklist shows:
+  1. ✅ Proxy host saved
+  2. ✅ DNS record created in &lt;provider&gt;
+  3. ⏳ **DNS propagating** — polls Cloudflare 1.1.1.1 via DNS-over-HTTPS every 3 seconds, verifies the A record resolves to your configured server public IP (or that *any* A record exists, for Cloudflare-proxied records)
+  4. ⏳ **HTTPS certificate** — once DNS is live, does a real TLS handshake to `<fqdn>:443` with system-trust verification; goes green only when the public cert chain verifies. Skipped entirely when SSL is off on the host.
+- **"Skip waiting"** button returns you to the host list immediately — the DNS record is already saved in your provider and Caddy's config, so closing the tab doesn't interrupt the deployment. You just lose the live progress view.
+- **Hard 120-second timeout** before we give up and redirect back anyway, with an amber "still deploying — try again in a minute" toast. Propagation pathologies (slow recursive resolvers, CF edge lag) shouldn't trap you on the page forever.
+
+### Changed
+- **Create / edit of proxy hosts with Managed DNS now redirects to the deploying page** instead of straight to `/proxy-hosts`. Plain edits that don't touch DNS (renaming the upstream, toggling Basic Auth, etc.) still return to the list like before — the deploying page only shows when a record was actually created or changed.
+
+### Implementation notes
+- **DNS check** uses `https://cloudflare-dns.com/dns-query?type=A` (DoH) so we bypass the server's own recursive resolver and get what the public internet actually sees. 6-second HTTP timeout per poll so a slow upstream doesn't stall the UI.
+- **Cert check** is a plain `tls.DialWithDialer(fqdn:443, &tls.Config{ServerName: fqdn})` with Go's default verification chain. No `InsecureSkipVerify`. A Caddy-internal self-signed fallback, an ACME-staging cert, or an expired cert all fail verification and correctly report not-ready.
+- **Cloudflare-proxied records** (orange cloud) resolve to CF edge IPs rather than your origin, so for CF-proxied mode we relax the DNS check to "any A record present" and rely on the TLS handshake to test end-to-end reachability through CF.
+- New API: `GET /api/proxy-hosts/{id}/deploy-status` returns `{fqdn, expected_ip, resolved_ips, ssl_enabled, proxied, dns_ready, cert_ready}`. Read-only and ownership-checked — non-admins can only poll their own hosts.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.2` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.1] — 2026-04-22 · Smarter Managed-DNS zone picker
 
 ### Fixed
