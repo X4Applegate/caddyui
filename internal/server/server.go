@@ -4593,7 +4593,16 @@ func (s *Server) dnsOverrideExistingRecord(p *models.ProxyHost) {
 		log.Printf("DNS %s: lookup existing %s: %v", p.DNSProvider, fqdn, err)
 		return
 	}
+	// Only delete the record types that would actually collide with the
+	// A/AAAA/CNAME about to be written. Never touch MX / TXT / SRV / CAA
+	// at the same name — those belong to email, SPF/DKIM/DMARC, and cert
+	// issuance, and deleting them here would silently break the user's
+	// unrelated services. See dns.IsProxyConflictingType.
 	for _, rec := range existing {
+		if !dns.IsProxyConflictingType(rec.Type) {
+			log.Printf("DNS %s: keeping %s %s=%s on %s (not a proxy-conflicting type)", p.DNSProvider, rec.Type, rec.Name, rec.Content, fqdn)
+			continue
+		}
 		if err := client.DeleteRecord(zone, rec.ID); err != nil {
 			log.Printf("DNS %s: override delete %s (%s): %v", p.DNSProvider, rec.ID, fqdn, err)
 			continue
@@ -4803,10 +4812,21 @@ func (s *Server) apiDNSCheckRecord(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	// Scope the warning to record types that actually conflict with the
+	// A/AAAA/CNAME we're about to write. MX / TXT / SRV / CAA routinely
+	// cohabit with the web endpoint (email, SPF, cert issuance) and
+	// alarming on them would scare users into clicking Override — which
+	// used to wipe their mail records. See IsProxyConflictingType.
+	filtered := records[:0]
+	for _, rec := range records {
+		if dns.IsProxyConflictingType(rec.Type) {
+			filtered = append(filtered, rec)
+		}
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":      true,
-		"exists":  len(records) > 0,
-		"records": records,
+		"exists":  len(filtered) > 0,
+		"records": filtered,
 	})
 }
 
