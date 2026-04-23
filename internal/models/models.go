@@ -269,7 +269,7 @@ func CountUsers(db *sql.DB) (int, error) {
 // alias proxy_hosts AS ph in the FROM clause. The unified dns_* columns
 // sit at the end; cf_*/pb_* are not read — their data was copied into
 // dns_* by the v2.3.0 migration in internal/db.
-const proxyHostBaseCols = `ph.id, ph.domains, ph.forward_scheme, ph.forward_host, ph.forward_port,
+const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, ph.forward_host, ph.forward_port,
     ph.websocket_support, ph.block_common_exploits, ph.ssl_enabled, ph.ssl_forced,
     ph.http2_support, COALESCE(ph.advanced_config, ''), ph.enabled,
     COALESCE(ph.certificate_id, 0), ph.created_at, ph.updated_at,
@@ -287,7 +287,7 @@ func scanProxyHost(s interface {
 	var ws, bce, ssl, sslf, h2, en, bae int
 	var ownerID int64
 	dst := []any{
-		&p.ID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
+		&p.ID, &p.ServerID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
 		&p.CreatedAt, &p.UpdatedAt,
 		&bae, &p.BasicAuthUsers,
