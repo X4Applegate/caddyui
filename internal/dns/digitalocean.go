@@ -162,3 +162,38 @@ func (d *digitalOceanProvider) CreateRecord(zone Zone, fqdn, content, rtype stri
 func (d *digitalOceanProvider) DeleteRecord(zone Zone, recordID string) error {
 	return d.do("DELETE", "/domains/"+url.PathEscape(zone.ID)+"/records/"+recordID, nil, nil)
 }
+
+// FindRecord returns every record on the domain whose short name matches
+// the subdomain derived from fqdn. DigitalOcean's records endpoint supports
+// a ?name= filter but it matches against the short name as stored — we
+// filter client-side to stay consistent with the other adapters and avoid
+// surprises around apex ("@").
+func (d *digitalOceanProvider) FindRecord(zone Zone, fqdn string) ([]Record, error) {
+	var resp struct {
+		Records []struct {
+			ID   int64  `json:"id"`
+			Type string `json:"type"`
+			Name string `json:"name"`
+			Data string `json:"data"`
+			TTL  int    `json:"ttl"`
+		} `json:"domain_records"`
+	}
+	if err := d.do("GET", "/domains/"+url.PathEscape(zone.ID)+"/records?per_page=200", nil, &resp); err != nil {
+		return nil, err
+	}
+	want := SubdomainOf(fqdn, zone.Name)
+	out := []Record{}
+	for _, r := range resp.Records {
+		if !strings.EqualFold(r.Name, want) {
+			continue
+		}
+		out = append(out, Record{
+			ID:      fmt.Sprintf("%d", r.ID),
+			Name:    fqdn,
+			Type:    r.Type,
+			Content: r.Data,
+			TTL:     r.TTL,
+		})
+	}
+	return out, nil
+}

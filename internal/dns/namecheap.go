@@ -358,3 +358,38 @@ func (n *namecheapProvider) DeleteRecord(zone Zone, recordID string) error {
 	}
 	return n.setHosts(sld, tld, out)
 }
+
+// FindRecord returns every record on (sld, tld) whose short name matches
+// the subdomain derived from fqdn. Namecheap's getHosts has no server-side
+// filter, so we fetch the whole set and compare client-side — same cost as
+// CreateRecord/DeleteRecord, which already do a full fetch every call.
+func (n *namecheapProvider) FindRecord(zone Zone, fqdn string) ([]Record, error) {
+	sld, tld, ok := splitDomain(zone.Name)
+	if !ok {
+		return nil, fmt.Errorf("namecheap: invalid domain %q", zone.Name)
+	}
+	hosts, err := n.fetchHosts(sld, tld)
+	if err != nil {
+		return nil, err
+	}
+	want := SubdomainOf(fqdn, zone.Name)
+	// SubdomainOf returns "@" for apex, but Namecheap's getHosts reports the
+	// apex row as Name="@" too, so the comparison works unchanged.
+	out := []Record{}
+	for _, h := range hosts {
+		if !strings.EqualFold(h.Name, want) {
+			continue
+		}
+		ttl, _ := strconv.Atoi(h.TTL)
+		out = append(out, Record{
+			// Same synthetic ID scheme CreateRecord emits — DeleteRecord can
+			// consume it straight back for the "override" path.
+			ID:      h.Type + "|" + h.Name + "|" + h.Address,
+			Name:    fqdn,
+			Type:    h.Type,
+			Content: h.Address,
+			TTL:     ttl,
+		})
+	}
+	return out, nil
+}

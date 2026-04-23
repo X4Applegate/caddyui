@@ -14,8 +14,8 @@
   </a>
 </div>
 
-<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
-  <table class="hidden md:table w-full text-sm">
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-x-auto">
+  <table class="hidden md:table w-full text-sm min-w-[1000px]">
     <thead class="bg-ink-50/50 text-left">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         <th class="px-5 py-3 font-medium">Name</th>
@@ -24,7 +24,7 @@
         <th class="px-5 py-3 font-medium">Type</th>
         <th class="px-5 py-3 font-medium">Tags</th>
         <th class="px-5 py-3 font-medium">Last Contact</th>
-        <th class="px-5 py-3 font-medium text-right">Actions</th>
+        <th class="px-5 py-3 font-medium text-right sticky right-0 bg-ink-50 shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)] z-10">Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -61,7 +61,7 @@
         <td class="px-5 py-3 text-xs text-ink-500">
           {{if .LastContactAt.Valid}}{{.LastContactAt.Time.Format "Jan 2, 2006 3:04 PM"}}{{else}}<span class="text-ink-400">never</span>{{end}}
         </td>
-        <td class="px-5 py-3 text-right whitespace-nowrap">
+        <td class="px-5 py-3 text-right whitespace-nowrap sticky right-0 bg-white shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)]">
           <form method="post" action="/servers/{{.ID}}/select" class="inline mr-3">
             <button class="text-brand-600 hover:text-brand-700 text-sm font-medium transition">Select</button>
           </form>

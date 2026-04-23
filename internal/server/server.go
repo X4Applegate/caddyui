@@ -254,6 +254,12 @@ func (s *Server) Routes() http.Handler {
 		// endpoints with a single handler that routes on ?provider=.
 		r.Get("/api/dns-zones", s.apiDNSZones)
 
+		// v2.4.8: warn when a proxy host would collide with a pre-existing
+		// DNS record. Proxy-host form JS calls this after the user picks
+		// provider + zone + first domain; response drives the "record
+		// already exists — Cancel / Override?" dialog.
+		r.Get("/api/dns-zones/check-record", s.apiDNSCheckRecord)
+
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWrite)
@@ -1390,6 +1396,12 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	// dnsCreateRecord is a no-op when DNSProvider is empty, so no branch
 	// needed here — just call it unconditionally.
 	if p.DNSProvider != "" && p.DNSZoneID != "" {
+		// v2.4.8: if the form's existing-record warning was resolved with
+		// "Override", wipe any records at this FQDN first so the create
+		// lands on a clean zone regardless of provider semantics.
+		if r.FormValue("override_dns") == "1" {
+			s.dnsOverrideExistingRecord(p)
+		}
 		s.dnsCreateRecord(s.currentServerID(r), id, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
@@ -1505,6 +1517,11 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if needCreate {
+		// v2.4.8: honour the "Override" choice from the form's existing-
+		// record warning — same code path as createProxyHost above.
+		if r.FormValue("override_dns") == "1" {
+			s.dnsOverrideExistingRecord(p)
+		}
 		s.dnsCreateRecord(s.currentServerID(r), p.ID, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
@@ -4528,6 +4545,63 @@ func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
 	}
 }
 
+// dnsOverrideExistingRecord deletes every provider-side record whose name
+// matches the proxy host's FQDN. Called from create / update handlers when
+// the user clicked "Override (delete & recreate)" on the v2.4.8 existing-
+// record warning banner — it guarantees the subsequent dnsCreateRecord
+// starts from a clean slate regardless of provider-specific append/replace
+// semantics.
+//
+// Best-effort: lookup errors and per-record delete errors are logged but
+// don't abort. If override fails, the subsequent CreateRecord will surface
+// the real outcome (e.g. Porkbun "record already exists"), so we don't
+// need to block here.
+//
+// Provider notes:
+//   - Cloudflare / DigitalOcean / Hetzner: append-on-create, so override
+//     is meaningful — without it, duplicates accumulate.
+//   - GoDaddy: PATCH appends, so override is required to avoid duplicates.
+//   - Porkbun: errors on duplicate, so override is what makes the save
+//     succeed when a record already exists.
+//   - Namecheap: setHosts is whole-domain replace, so CreateRecord already
+//     writes a single record — override is redundant but harmless (one
+//     extra fetchHosts/setHosts round-trip).
+func (s *Server) dnsOverrideExistingRecord(p *models.ProxyHost) {
+	if p == nil || p.DNSProvider == "" || p.DNSZoneID == "" {
+		return
+	}
+	client := s.dnsClient(p.DNSProvider)
+	if client == nil {
+		return
+	}
+	fqdn := dns.FirstDomain(p.Domains)
+	if fqdn == "" {
+		return
+	}
+	zone := dns.Zone{ID: p.DNSZoneID, Name: p.DNSZoneName}
+	if zone.Name == "" {
+		zone.Name = p.DNSZoneID
+	}
+	// Honour the allow-list — override is still a write and should respect
+	// the same zone safety rails as every other write path.
+	if !s.zoneAllowed(p.DNSProvider, zone.Name) {
+		log.Printf("DNS %s: zone %q not in allow-list — skipping override for %s", p.DNSProvider, zone.Name, fqdn)
+		return
+	}
+	existing, err := client.FindRecord(zone, fqdn)
+	if err != nil {
+		log.Printf("DNS %s: lookup existing %s: %v", p.DNSProvider, fqdn, err)
+		return
+	}
+	for _, rec := range existing {
+		if err := client.DeleteRecord(zone, rec.ID); err != nil {
+			log.Printf("DNS %s: override delete %s (%s): %v", p.DNSProvider, rec.ID, fqdn, err)
+			continue
+		}
+		log.Printf("DNS %s: overrode %s %s=%s on %s", p.DNSProvider, rec.Type, rec.Name, rec.Content, fqdn)
+	}
+}
+
 // dnsDeleteRecord removes a previously-created record. Best-effort: logs
 // and returns on error (the row is being deleted anyway; a leftover record
 // is a minor annoyance, not a correctness issue).
@@ -4677,6 +4751,64 @@ func (s *Server) apiDNSZones(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(zones)
 }
 
+// apiDNSCheckRecord looks up existing records for an (provider, zone, fqdn)
+// triple so the proxy-host form can warn when saving would collide with
+// something already in DNS. Called by the form JS after the user has picked
+// provider + zone and typed a first domain.
+//
+// Query string: provider=<id>&zone=<zoneID>&zone_name=<zoneName>&fqdn=<host>
+//
+// Response shape (always 200 when inputs are valid — errors go in the body):
+//
+//	{"ok":true, "exists":true, "records":[{id,type,name,content,ttl},...]}
+//	{"ok":true, "exists":false}
+//	{"ok":false, "error":"..."}
+//
+// The `exists` flag is the only thing the UI needs to branch on; the full
+// record list is included so the warning dialog can show the user what
+// they're about to clobber. 200-with-body-error (rather than 4xx/5xx) keeps
+// the form JS simple — one JSON parse, branch on `ok`.
+func (s *Server) apiDNSCheckRecord(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	q := r.URL.Query()
+	provider := strings.ToLower(strings.TrimSpace(q.Get("provider")))
+	zoneID := strings.TrimSpace(q.Get("zone"))
+	zoneName := strings.TrimSpace(q.Get("zone_name"))
+	fqdn := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(q.Get("fqdn"))), ".")
+	if provider == "" || zoneID == "" || fqdn == "" {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "missing provider/zone/fqdn"})
+		return
+	}
+	// Zone name is optional on the wire — most providers use ID==Name so
+	// we can recover it. Cloudflare and Hetzner have opaque IDs, so when
+	// the client omits zone_name we fall back to zoneID (which will fail
+	// SubdomainOf but still works for Cloudflare's server-side filter).
+	if zoneName == "" {
+		zoneName = zoneID
+	}
+	client := s.dnsClient(provider)
+	if client == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "credentials for provider \"" + provider + "\" not configured"})
+		return
+	}
+	// Allow-list guard: don't leak record listings for zones the user has
+	// excluded from management. Symmetrical with apiDNSZones' filter.
+	if !s.zoneAllowed(provider, zoneName) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "zone not in allow-list"})
+		return
+	}
+	zone := dns.Zone{ID: zoneID, Name: zoneName}
+	records, err := client.FindRecord(zone, fqdn)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"exists":  len(records) > 0,
+		"records": records,
+	})
+}
 
 // semverValid returns true for tags like v1.2.3.
 func semverValid(v string) bool {

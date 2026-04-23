@@ -93,6 +93,18 @@ type Provider interface {
 	// DeleteRecord removes a record by ID. Called on proxy-host delete
 	// and when the user disables DNS management on an existing host.
 	DeleteRecord(zone Zone, recordID string) error
+
+	// FindRecord returns every record in zone whose name matches fqdn. Used
+	// by the proxy-host form to warn when a host is about to shadow an
+	// existing DNS entry — the UI can then offer Cancel / Override instead
+	// of silently appending (or, on providers with REPLACE semantics,
+	// clobbering) what's already there.
+	//
+	// A zone with no matches is a legitimate result — implementations return
+	// an empty slice and nil error. The returned records carry provider-native
+	// IDs so callers can hand them straight back to DeleteRecord when the
+	// user picks "override".
+	FindRecord(zone Zone, fqdn string) ([]Record, error)
 }
 
 // Factory builds a Provider from a credentials map. Each provider declares
