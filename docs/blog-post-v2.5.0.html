@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CaddyUI v2.5.0 — Switchable CAPTCHA, Timezone Picker, Branded Error Pages</title>
+<meta name="description" content="CaddyUI v2.5.0 ships a switchable CAPTCHA provider (Cloudflare Turnstile + Google reCAPTCHA v3), a timezone picker for the UI, and branded Caddy error pages. Self-hosted, Docker-ready, multi-arch.">
+<meta property="og:title" content="CaddyUI v2.5.0 — Switchable CAPTCHA, Timezone Picker, Branded Error Pages">
+<meta property="og:description" content="Switchable CAPTCHA (Turnstile + reCAPTCHA v3), an env kill-switch for outage recovery, a timezone picker, and branded 404/502/503/504 pages with correlation IDs.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-04-22">
+<style>
+  :root {
+    --brand-50: #eff6ff;
+    --brand-100: #dbeafe;
+    --brand-500: #3b82f6;
+    --brand-600: #2563eb;
+    --brand-700: #1d4ed8;
+    --ink-50:  #f8fafc;
+    --ink-100: #f1f5f9;
+    --ink-200: #e2e8f0;
+    --ink-300: #cbd5e1;
+    --ink-400: #94a3b8;
+    --ink-500: #64748b;
+    --ink-600: #475569;
+    --ink-700: #334155;
+    --ink-800: #1e293b;
+    --ink-900: #0f172a;
+    --bg: #ffffff;
+    --fg: var(--ink-800);
+    --muted: var(--ink-500);
+    --card-bg: #ffffff;
+    --card-border: var(--ink-200);
+    --code-bg: var(--ink-100);
+    --code-fg: var(--ink-800);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220;
+      --fg: #e2e8f0;
+      --muted: #94a3b8;
+      --card-bg: #111a2e;
+      --card-border: #1e293b;
+      --code-bg: #0f172a;
+      --code-fg: #e2e8f0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 48px 20px 96px;
+  }
+  header.hero {
+    margin-bottom: 40px;
+  }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--brand-600);
+    background: var(--brand-50);
+    padding: 6px 12px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .eyebrow { background: rgba(59, 130, 246, 0.15); }
+  }
+  h1 {
+    font-size: clamp(28px, 4.5vw, 40px);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    margin: 0 0 16px;
+    font-weight: 700;
+  }
+  .lead {
+    font-size: 19px;
+    color: var(--muted);
+    margin: 0 0 24px;
+    line-height: 1.55;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .meta time::before { content: "📅 "; }
+  .meta .tag::before { content: "🏷️ "; }
+  h2 {
+    font-size: 26px;
+    letter-spacing: -0.01em;
+    margin: 56px 0 12px;
+    font-weight: 700;
+  }
+  h3 {
+    font-size: 19px;
+    margin: 28px 0 10px;
+    font-weight: 600;
+  }
+  p { margin: 0 0 18px; }
+  ul { padding-left: 22px; margin: 0 0 18px; }
+  li { margin-bottom: 8px; }
+  a {
+    color: var(--brand-600);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(37, 99, 235, 0.3);
+    transition: border-color 0.15s;
+  }
+  a:hover { border-bottom-color: var(--brand-600); }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 16px 18px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 18px 0 22px;
+    border: 1px solid var(--card-border);
+  }
+  pre code { background: transparent; padding: 0; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+    margin: 24px 0 8px;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .card .icon {
+    font-size: 24px;
+    line-height: 1;
+    margin-bottom: 10px;
+  }
+  .card h3 {
+    font-size: 16px;
+    margin: 0 0 6px;
+  }
+  .card p {
+    font-size: 14px;
+    color: var(--muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+  blockquote {
+    border-left: 3px solid var(--brand-500);
+    padding: 4px 0 4px 18px;
+    margin: 20px 0;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .callout {
+    background: var(--brand-50);
+    border: 1px solid var(--brand-100);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 22px 0;
+    font-size: 15px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .callout {
+      background: rgba(59, 130, 246, 0.08);
+      border-color: rgba(59, 130, 246, 0.2);
+    }
+  }
+  .callout strong { color: var(--brand-700); }
+  @media (prefers-color-scheme: dark) {
+    .callout strong { color: #93bbfc; }
+  }
+  figure {
+    margin: 24px 0;
+  }
+  figure img {
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    border: 1px solid var(--card-border);
+    display: block;
+  }
+  figcaption {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 8px;
+    text-align: center;
+  }
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 28px 0;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 15px;
+    border: 1px solid transparent;
+    text-decoration: none;
+    border-bottom: none;
+    transition: transform 0.1s, box-shadow 0.15s;
+  }
+  .btn.primary {
+    background: var(--brand-600);
+    color: #fff;
+  }
+  .btn.primary:hover { background: var(--brand-700); }
+  .btn.secondary {
+    background: var(--card-bg);
+    color: var(--fg);
+    border-color: var(--card-border);
+  }
+  .btn.secondary:hover { background: var(--ink-100); }
+  @media (prefers-color-scheme: dark) {
+    .btn.secondary:hover { background: rgba(255,255,255,0.05); }
+  }
+  footer.signoff {
+    margin-top: 56px;
+    padding-top: 24px;
+    border-top: 1px solid var(--card-border);
+    color: var(--muted);
+    font-size: 14px;
+  }
+  footer.signoff p { margin-bottom: 8px; }
+  hr.divider {
+    border: 0;
+    border-top: 1px solid var(--card-border);
+    margin: 40px 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<article>
+
+<header class="hero">
+  <span class="eyebrow">🎉 Release</span>
+  <h1>CaddyUI v2.5.0 — Switchable CAPTCHA, Timezone Picker, Branded Error Pages</h1>
+  <p class="lead">Two releases shipped in a day: v2.4.12 quality-of-life fixes and v2.5.0's switchable CAPTCHA provider. Here's what landed and why.</p>
+  <div class="meta">
+    <time datetime="2026-04-22">April 22, 2026</time>
+    <span class="tag">v2.5.0</span>
+    <span>☕ ~6 min read</span>
+  </div>
+</header>
+
+<h2>What is CaddyUI, briefly</h2>
+<p>
+  <a href="https://github.com/X4Applegate/caddyui">CaddyUI</a> is a self-hosted web dashboard for
+  <a href="https://caddyserver.com/">Caddy</a>. It stores your proxy hosts, redirects, certs, and advanced routes
+  in SQLite and pushes JSON config to Caddy's admin API on every save. If you've used Nginx Proxy Manager, the
+  surface area is similar — but it speaks Caddy natively instead of translating to nginx.
+</p>
+
+<figure>
+  <img src="screenshots/dashboard.png" alt="CaddyUI dashboard showing proxy hosts, health status, and quick links">
+  <figcaption>CaddyUI dashboard — proxy hosts, health status, and quick links.</figcaption>
+</figure>
+
+<hr class="divider">
+
+<h2>🚀 What's new in v2.5.0</h2>
+
+<h3>Switchable CAPTCHA protection</h3>
+<p>
+  A single Settings card now lets you pick one of three modes:
+</p>
+<div class="cards">
+  <div class="card">
+    <div class="icon">🚫</div>
+    <h3>Off</h3>
+    <p>Default on fresh installs. Fine for LAN-only deployments.</p>
+  </div>
+  <div class="card">
+    <div class="icon">☁️</div>
+    <h3>Cloudflare Turnstile</h3>
+    <p>Managed, free, privacy-friendly. Invisible when possible.</p>
+  </div>
+  <div class="card">
+    <div class="icon">🔍</div>
+    <h3>Google reCAPTCHA v3</h3>
+    <p>Score-based and invisible. Configurable threshold (0.0 bot → 1.0 human).</p>
+  </div>
+</div>
+
+<p>
+  The challenge applies to three forms: <code>/login</code>, <code>/login/totp</code>, and <code>/users/new</code>
+  (admin creating a new account). Existing Turnstile keys from v2.4.x upgrade in place with zero migration —
+  just flip the provider to Turnstile and everything Just Works. Inactive-provider keys stay in the DB across
+  switches, so you can toggle between Turnstile and reCAPTCHA without re-typing credentials.
+</p>
+
+<div class="callout">
+  <strong>Why two providers?</strong> Someone in the community had a brief Cloudflare outage that made Turnstile
+  unreachable and got stuck on their own login page. v2.5.0 ships a reCAPTCHA v3 fallback <em>plus</em> an env-var
+  kill switch specifically for that "I'm locked out of my own admin" scenario:
+</div>
+
+<pre><code>environment:
+  CADDYUI_CAPTCHA_DISABLE: "1"</code></pre>
+
+<p>
+  Set that, restart the container, and the widget stops rendering and the server stops verifying. Pull it back
+  out once you've logged in. The Settings page shows an amber "overridden by env" badge whenever the kill
+  switch is active, so you don't forget to turn it off.
+</p>
+
+<h3>Small implementation details worth mentioning</h3>
+<ul>
+  <li><strong>TOTP captcha failure doesn't burn the pending-TOTP token.</strong> Wrong captcha ≠ burned 2FA slot — the 5-minute auto-expire still caps abuse.</li>
+  <li><strong>reCAPTCHA v3 uses a form-submit hook.</strong> First submit fetches a token via <code>grecaptcha.execute</code>, populates a hidden input, then re-submits. If <code>api.js</code> fails to load (ad-blocker, outage), the fallback path submits anyway so the server returns a clean "Security check failed" instead of a stuck form.</li>
+  <li><strong>Verify-endpoint HTTP client has a 10-second timeout.</strong> A slow Google/Cloudflare siteverify can't wedge <code>/login</code> for 30+ seconds.</li>
+  <li><strong>Unknown provider values coerce to "off".</strong> A tampered POST or hand-edited DB can't render a broken widget that would lock admins out.</li>
+</ul>
+
+<figure>
+  <img src="screenshots/settings.png" alt="CaddyUI settings page with CAPTCHA provider card">
+  <figcaption>Settings → CAPTCHA protection — provider radio with per-provider key fields.</figcaption>
+</figure>
+
+<hr class="divider">
+
+<h2>🎁 Also bundled in v2.4.12 (shipped earlier the same day)</h2>
+
+<h3>🕒 Timezone picker</h3>
+<p>
+  <strong>Settings → Timezone</strong> now has an IANA zone dropdown
+  (<code>America/New_York</code>, <code>Europe/London</code>, <code>Asia/Tokyo</code>, …) with an "Other…"
+  free-text fallback. Every DB-stored timestamp in the UI flows through it: cert expiry, activity log, snapshots,
+  "last contact", "last sync". Resolution priority is:
+</p>
+<ul>
+  <li>DB value (what you picked in Settings)</li>
+  <li><code>TZ</code> environment variable (Go's <code>time.Local</code>, populated at startup)</li>
+  <li>UTC</li>
+</ul>
+<p>
+  There's also a new <code>TZ: ${TZ:-UTC}</code> env entry on both services in <code>docker-compose.yml</code> —
+  pair it with the same zone on your Caddy container so the access-log timestamps line up.
+</p>
+
+<h3>🎨 Branded error pages</h3>
+<p>
+  CaddyUI now injects a set of routes into <code>apps.http.servers.srv0.errors.routes</code> so every
+  404/502/503/504 from Caddy itself (not from an upstream that returns its own error body) renders a
+  dark-mode-aware HTML page with:
+</p>
+<ul>
+  <li>The status code and a short human-readable explanation of what probably went wrong</li>
+  <li><code>{http.error.id}</code> — Caddy's 9-char correlation ID (the same one that ends up in the access log, so when a user screenshots a 502 you can grep the log)</li>
+  <li>Current HTTP-Date timestamp</li>
+</ul>
+
+<div class="callout">
+  <strong>Gotcha worth writing down:</strong> the <code>{err.status_code}</code> / <code>{err.id}</code>
+  shortcuts you see in the Caddyfile docs <em>only work through the Caddyfile adapter</em>. If you're pushing raw
+  JSON to <code>/load</code> (which CaddyUI does), you have to use the full <code>{http.error.status_code}</code>
+  / <code>{http.error.id}</code> paths. Also, <code>{time.now.iso8601}</code> doesn't exist — use
+  <code>{time.now.http}</code> instead.
+</div>
+
+<hr class="divider">
+
+<h2>📦 Upgrade</h2>
+
+<pre><code>docker pull applegater/caddyui:v2.5.0
+# or
+docker pull applegater/caddyui:latest</code></pre>
+
+<p>
+  Multi-arch <code>linux/amd64</code> + <code>linux/arm64</code> (yes, your Raspberry Pi is fine), SBOM +
+  provenance attestations, scratch base, non-root UID 10001.
+</p>
+<p>
+  No schema migration required. CAPTCHA settings default to <strong>off</strong> on fresh installs, and
+  existing Turnstile keys carry over exactly as they were.
+</p>
+
+<div class="cta">
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.5.0" class="btn primary">
+    📦 View v2.5.0 release
+  </a>
+  <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
+    🐳 Docker Hub
+  </a>
+  <a href="https://github.com/X4Applegate/caddyui" class="btn secondary">
+    ⭐ GitHub repo
+  </a>
+</div>
+
+<hr class="divider">
+
+<h2>💬 Feedback welcome</h2>
+<p>
+  I'm calling v2.5.0 a natural stopping point for now — but if you run into bugs, or there's a feature you'd
+  love to see, or something you think could work better, please let me know. The project moves when real users
+  ask for things.
+</p>
+<ul>
+  <li>🐛 <a href="https://github.com/X4Applegate/caddyui/issues">Open an issue on GitHub</a></li>
+  <li>💡 Feature ideas — same place, any detail helps</li>
+  <li>🔐 Security-specific concerns — see <a href="https://github.com/X4Applegate/caddyui/blob/main/SECURITY.md">SECURITY.md</a></li>
+</ul>
+
+<blockquote>
+  Especially interested in feedback on the error-page design — it's the first time I've written HTML that Caddy
+  itself serves, and I'd rather get the conventions right early.
+</blockquote>
+
+<footer class="signoff">
+  <p>Thanks to everyone who's been following along, reporting bugs, and suggesting features. It keeps me motivated to keep shipping. 🙏</p>
+  <p>— Richard · <a href="https://github.com/X4Applegate">@X4Applegate</a></p>
+</footer>
+
+</article>
+
+</div>
+</body>
+</html>
