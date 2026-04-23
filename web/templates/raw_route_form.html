@@ -55,6 +55,83 @@
     </p>
   </div>
 
+  {{/* ── v2.5.6: Managed DNS (parity with proxy hosts) ─────────────────
+       Same unified picker the proxy-host form uses, driving the same
+       /api/dns-zones endpoint. The first domain for auto-suffix matching
+       and existing-record checks comes from the route's JSON (match.host[])
+       rather than a domains CSV — see the firstDomain() helper in the
+       per-form JS block below. */}}
+  {{if .AnyDNSEnabled}}
+  {{$provider := .Row.DNSProvider}}
+  <div class="pt-4 border-t border-ink-100">
+    <div class="flex items-center gap-1.5 mb-3">
+      <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-brand-500" aria-hidden="true">
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/>
+      </svg>
+      <span class="text-xs uppercase tracking-wider text-ink-500 font-medium">Managed DNS</span>
+    </div>
+    <p class="text-xs text-ink-400 mb-3">CaddyUI can automatically create an A record for the first hostname in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>, pointing at this server's public IP. The record is deleted when the route is removed. Pick the provider that owns the domain, then select the zone.</p>
+    {{if .CurrentServerIP}}
+    <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
+    {{else}}
+    <p class="text-xs text-amber-700 mb-3">No public IP configured for this Caddy server yet — set it under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a> before enabling managed DNS.</p>
+    {{end}}
+
+    <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+      <div class="sm:col-span-4">
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Provider</label>
+        <select id="dns-provider-select" name="dns_provider"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="" {{if eq $provider ""}}selected{{end}}>None</option>
+          {{range .DNSProviders}}
+          <option value="{{.ID}}" {{if eq $provider .ID}}selected{{end}}>{{.DisplayName}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div id="dns-zone-wrap" class="sm:col-span-8 {{if eq $provider ""}}hidden{{end}}">
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Zone / Domain</label>
+        <select id="dns-zone-select" name="dns_zone_id"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="">{{if eq $provider ""}}Select a provider first{{else}}Loading zones…{{end}}</option>
+        </select>
+        <input type="hidden" id="dns-zone-name" name="dns_zone_name" value="{{.Row.DNSZoneName}}" />
+        <p id="dns-zone-hint" class="text-xs text-ink-400 mt-1 hidden"></p>
+        <p id="dns-zone-mismatch" class="text-xs text-amber-700 mt-1.5 hidden flex items-start gap-1.5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span id="dns-zone-mismatch-msg" class="flex-1"></span>
+        </p>
+      </div>
+    </div>
+
+    {{if .Row.DNSRecordID}}
+    <p class="text-xs text-green-600 mt-3">✓ DNS record active &mdash; record ID: <span class="font-mono">{{.Row.DNSRecordID}}</span></p>
+    {{end}}
+
+    {{/* v2.5.6: existing-record warning. The "Override" path was removed —
+         CaddyUI never deletes records it doesn't own. If a record exists at
+         this FQDN the user fixes it manually in the provider console. */}}
+    <div id="dns-record-warn" class="hidden mt-3 rounded-lg border px-3 py-2 text-xs">
+      <div class="flex items-start gap-2">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0 mt-0.5" id="dns-record-warn-icon" aria-hidden="true">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <div class="flex-1 min-w-0">
+          <div id="dns-record-warn-msg" class="font-medium"></div>
+          <div id="dns-record-warn-detail" class="mt-1 font-mono text-[11px] opacity-80 break-all"></div>
+          <div id="dns-record-warn-help" class="mt-2 opacity-90">Delete the existing record in your provider's console, then save again — CaddyUI won't overwrite records it didn't create.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {{end}}
+
   <div class="pt-2">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">Options</div>
     <div class="grid grid-cols-2 gap-3">
@@ -89,4 +166,305 @@
   "terminal": true
 }</pre>
 </details>
+
+<script>
+(function() {
+  // v2.5.6: Managed DNS picker for advanced routes — same behaviour as the
+  // proxy-host form picker, but the "primary domain" comes from the route's
+  // JSON (or Caddyfile source) instead of a domains CSV. The server-side
+  // firstRawRouteHost() in server.go is the source of truth; this function
+  // mirrors it client-side so zone auto-selection + existing-record checks
+  // have a domain to work with before the user hits Save.
+  var providerSel = document.getElementById('dns-provider-select');
+  var zoneWrap    = document.getElementById('dns-zone-wrap');
+  var zoneSel     = document.getElementById('dns-zone-select');
+  var zoneNameIn  = document.getElementById('dns-zone-name');
+  var zoneHint    = document.getElementById('dns-zone-hint');
+  var mismatchBox = document.getElementById('dns-zone-mismatch');
+  var mismatchMsg = document.getElementById('dns-zone-mismatch-msg');
+  if (!providerSel || !zoneSel) return;
+
+  var jsonIn = document.querySelector('textarea[name="json_data"]');
+  var cfIn   = document.querySelector('textarea[name="caddyfile_src"]');
+
+  var cache = {};
+  var currentZoneID = {{.Row.DNSZoneID | printf "%q"}};
+  var userPickedZone = !!currentZoneID;
+
+  var hints = {
+    'porkbun':   'Domain must have API Access toggled ON in the Porkbun control panel.',
+    'namecheap': 'Namecheap must have your server IP whitelisted against this API key.',
+    'godaddy':   'GoDaddy API access requires 10+ domains on your account or a Discount Domain Club membership.'
+  };
+
+  function normDom(s) {
+    return (s || '').toLowerCase().replace(/\.$/, '').replace(/^\*\./, '');
+  }
+
+  function bestZoneMatch(fqdn, zones) {
+    if (!fqdn || !zones || !zones.length) return null;
+    var f = normDom(fqdn);
+    if (!f) return null;
+    var best = null, bestLen = -1;
+    for (var i = 0; i < zones.length; i++) {
+      var zname = normDom(zones[i].name);
+      if (!zname) continue;
+      if (f === zname || f.endsWith('.' + zname)) {
+        if (zname.length > bestLen) {
+          best = zones[i];
+          bestLen = zname.length;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Pull the first hostname out of the form. Preference order matches
+  // parseRawRouteForm on the server:
+  //   1. caddyfile_src's first site-block header (user edits this when set)
+  //   2. json_data's match[].host[0]
+  // Both are parsed defensively — any shape mismatch returns "" and the
+  // picker treats the form as "no domain known yet."
+  function firstDomain() {
+    if (cfIn && cfIn.value && cfIn.value.trim()) {
+      // Scan non-blank / non-comment lines until we hit one ending in "{".
+      // The token before " {" is the site header; the first comma-separated
+      // entry is what we consider the primary domain.
+      var lines = cfIn.value.split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line || line.charAt(0) === '#') continue;
+        var bi = line.indexOf('{');
+        if (bi < 0) continue;
+        var header = line.slice(0, bi).trim();
+        if (!header) continue;
+        var first = header.split(',')[0].trim();
+        // Strip scheme prefix "https://" if present.
+        first = first.replace(/^https?:\/\//i, '');
+        // Skip obvious non-hostname site-block heads (":443", "http", etc.)
+        if (!first || first.charAt(0) === ':' || first === 'http' || first === 'https') continue;
+        return first.toLowerCase();
+      }
+    }
+    if (!jsonIn) return '';
+    var raw = jsonIn.value;
+    if (!raw || !raw.trim()) return '';
+    try {
+      var cfg = JSON.parse(raw);
+      var matches = (cfg && cfg.match) || [];
+      for (var i2 = 0; i2 < matches.length; i2++) {
+        var hosts = matches[i2] && matches[i2].host;
+        if (hosts && hosts.length) {
+          var h = (hosts[0] || '').toString().trim().toLowerCase();
+          if (h) return h;
+        }
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  function syncZoneName() {
+    if (!zoneSel || !zoneNameIn) return;
+    var opt = zoneSel.options[zoneSel.selectedIndex];
+    zoneNameIn.value = opt ? (opt.getAttribute('data-name') || opt.textContent || '') : '';
+  }
+
+  function updateMismatchWarn() {
+    if (!mismatchBox) return;
+    var fqdn = firstDomain();
+    if (!fqdn || !providerSel.value || !zoneSel.value) {
+      mismatchBox.classList.add('hidden');
+      return;
+    }
+    var opt = zoneSel.options[zoneSel.selectedIndex];
+    var zname = opt ? normDom(opt.getAttribute('data-name') || opt.textContent) : '';
+    var f = normDom(fqdn);
+    var matches = zname && (f === zname || f.endsWith('.' + zname));
+    if (matches) {
+      mismatchBox.classList.add('hidden');
+    } else {
+      mismatchBox.classList.remove('hidden');
+      if (mismatchMsg) {
+        mismatchMsg.textContent = '“' + fqdn + '” isn\'t a subdomain of “' +
+          (zname || 'the selected zone') +
+          '”. Double-check the hostname in the route, or pick a zone that matches — saving will create the DNS record in the wrong place otherwise.';
+      }
+    }
+  }
+
+  function renderZones(providerID, zones, selectedID) {
+    if (!zones || zones.length === 0) {
+      zoneSel.innerHTML = '<option value="">No zones available</option>';
+      syncZoneName();
+      updateMismatchWarn();
+      return;
+    }
+    var effectiveSelected = selectedID;
+    if (!effectiveSelected && !userPickedZone) {
+      var best = bestZoneMatch(firstDomain(), zones);
+      if (best) effectiveSelected = best.id;
+    }
+    var html = zones.map(function(z) {
+      var sel = (z.id === effectiveSelected) ? ' selected' : '';
+      var label = z.name;
+      if (z.id && z.id !== z.name) label += ' (' + z.id + ')';
+      return '<option value="' + z.id + '" data-name="' + z.name + '"' + sel + '>' + label + '</option>';
+    }).join('');
+    zoneSel.innerHTML = html;
+    syncZoneName();
+    updateMismatchWarn();
+  }
+
+  function loadZones(providerID) {
+    if (!providerID) return;
+    if (cache[providerID]) {
+      renderZones(providerID, cache[providerID], currentZoneID);
+      return;
+    }
+    zoneSel.innerHTML = '<option value="">Loading zones…</option>';
+    fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data && data.error) {
+          zoneSel.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+          syncZoneName();
+          return;
+        }
+        cache[providerID] = data || [];
+        renderZones(providerID, cache[providerID], currentZoneID);
+      })
+      .catch(function(e) {
+        zoneSel.innerHTML = '<option value="">Failed to load zones: ' + e.message + '</option>';
+        syncZoneName();
+      });
+  }
+
+  function applyProvider(v) {
+    if (zoneWrap) zoneWrap.classList.toggle('hidden', !v);
+    if (zoneHint) {
+      var h = hints[v];
+      if (h) { zoneHint.textContent = h; zoneHint.classList.remove('hidden'); }
+      else   { zoneHint.textContent = ''; zoneHint.classList.add('hidden'); }
+    }
+    if (v) loadZones(v);
+    else {
+      zoneSel.innerHTML = '<option value="">Select a provider first</option>';
+      syncZoneName();
+    }
+  }
+
+  // Existing-record warning — same /api/dns-zones/check-record the proxy-host
+  // picker uses, but we no longer surface an Override button. If a record
+  // exists, the user clears it manually in the provider console.
+  var warnBox    = document.getElementById('dns-record-warn');
+  var warnMsg    = document.getElementById('dns-record-warn-msg');
+  var warnDetail = document.getElementById('dns-record-warn-detail');
+
+  function hideWarn() {
+    if (!warnBox) return;
+    warnBox.classList.add('hidden');
+    warnBox.className = 'hidden mt-3 rounded-lg border px-3 py-2 text-xs';
+  }
+
+  function showWarn(fqdn, records) {
+    if (!warnBox) return;
+    warnBox.className = 'mt-3 rounded-lg border px-3 py-2 text-xs bg-amber-50 border-amber-200 text-amber-800';
+    warnMsg.textContent = records.length === 1
+      ? 'A DNS record for ' + fqdn + ' already exists.'
+      : 'DNS records for ' + fqdn + ' already exist (' + records.length + ').';
+    warnDetail.textContent = records.map(function(r) {
+      return r.type + ' → ' + (r.content || '');
+    }).join(', ');
+  }
+
+  var lastCheck = { key: '', records: null };
+  var checkTimer = null;
+
+  function triple() {
+    return (providerSel.value || '') + '|' +
+           (zoneSel.value || '') + '|' +
+           firstDomain();
+  }
+
+  function checkExistingRecord() {
+    var provider = providerSel.value;
+    var zoneID   = zoneSel.value;
+    var zoneName = zoneNameIn ? zoneNameIn.value : '';
+    var fqdn     = firstDomain();
+    var key      = triple();
+    if (!provider || !zoneID || !fqdn) {
+      lastCheck = { key: '', records: null };
+      hideWarn();
+      return;
+    }
+    if (key === lastCheck.key) {
+      if (lastCheck.records && lastCheck.records.length > 0) {
+        showWarn(fqdn, lastCheck.records);
+      }
+      return;
+    }
+    fetch('/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
+          '&zone=' + encodeURIComponent(zoneID) +
+          '&zone_name=' + encodeURIComponent(zoneName) +
+          '&fqdn=' + encodeURIComponent(fqdn))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data || !data.ok) {
+          lastCheck = { key: key, records: null };
+          hideWarn();
+          return;
+        }
+        lastCheck = { key: key, records: data.records || [] };
+        if (data.exists && lastCheck.records.length > 0) {
+          showWarn(fqdn, lastCheck.records);
+        } else {
+          hideWarn();
+        }
+      })
+      .catch(function() {
+        lastCheck = { key: key, records: null };
+        hideWarn();
+      });
+  }
+
+  function scheduleCheck() {
+    clearTimeout(checkTimer);
+    checkTimer = setTimeout(checkExistingRecord, 400);
+  }
+
+  function onDomainInput() {
+    if (!userPickedZone) {
+      var zones = cache[providerSel.value];
+      if (zones && zones.length) {
+        var best = bestZoneMatch(firstDomain(), zones);
+        if (best && zoneSel.value !== best.id) {
+          zoneSel.value = best.id;
+          syncZoneName();
+        }
+      }
+    }
+    updateMismatchWarn();
+    scheduleCheck();
+  }
+
+  if (jsonIn) jsonIn.addEventListener('input', onDomainInput);
+  if (cfIn)   cfIn.addEventListener('input', onDomainInput);
+
+  providerSel.addEventListener('change', function() {
+    currentZoneID = '';
+    userPickedZone = false;
+    applyProvider(this.value);
+    scheduleCheck();
+  });
+  zoneSel.addEventListener('change', function() {
+    userPickedZone = true;
+    syncZoneName();
+    updateMismatchWarn();
+    scheduleCheck();
+  });
+
+  applyProvider(providerSel.value);
+  scheduleCheck();
+})();
+</script>
 {{end}}

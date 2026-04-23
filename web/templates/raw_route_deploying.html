@@ -16,6 +16,16 @@
         </div>
       </li>
 
+      {{if .Route.DNSProvider}}
+      <li id="step-dns-created" class="flex items-start gap-3" data-state="ready">
+        <span class="step-icon flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-green-100 text-green-700">&#10003;</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-ink-800">DNS record created in {{.ProviderName}}</div>
+          <div class="text-xs text-ink-500 mt-0.5">A record added to zone <span class="font-mono">{{.Route.DNSZoneName}}</span>{{if .Route.DNSRecordID}} &middot; record ID <span class="font-mono">{{.Route.DNSRecordID}}</span>{{end}}</div>
+        </div>
+      </li>
+      {{end}}
+
       <li id="step-dns" class="flex items-start gap-3" data-state="loading">
         <span class="step-icon flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-ink-100 text-ink-500">
           <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">

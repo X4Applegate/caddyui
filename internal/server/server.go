@@ -1472,14 +1472,14 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	// Unified DNS: create A record if a provider + zone was selected.
 	// dnsCreateRecord is a no-op when DNSProvider is empty, so no branch
 	// needed here — just call it unconditionally.
+	//
+	// v2.5.6: the override-existing-record path was removed. When the
+	// form's pre-flight check-record sees a collision, the user now has
+	// to clear it by hand in the provider console — CaddyUI never
+	// deletes records it doesn't own. Safer on shared zones, and avoids
+	// any chance of wiping an unrelated service's A record here.
 	dnsCreated := false
 	if p.DNSProvider != "" && p.DNSZoneID != "" {
-		// v2.4.8: if the form's existing-record warning was resolved with
-		// "Override", wipe any records at this FQDN first so the create
-		// lands on a clean zone regardless of provider semantics.
-		if r.FormValue("override_dns") == "1" {
-			s.dnsOverrideExistingRecord(p)
-		}
 		s.dnsCreateRecord(s.currentServerID(r), id, p)
 		dnsCreated = true
 	}
@@ -1603,11 +1603,9 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if needCreate {
-		// v2.4.8: honour the "Override" choice from the form's existing-
-		// record warning — same code path as createProxyHost above.
-		if r.FormValue("override_dns") == "1" {
-			s.dnsOverrideExistingRecord(p)
-		}
+		// v2.5.6: the override path is gone — same rationale as
+		// createProxyHost above. If a record exists at this FQDN the
+		// create call fails and the user clears it manually.
 		s.dnsCreateRecord(s.currentServerID(r), p.ID, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
@@ -2631,12 +2629,12 @@ func (s *Server) listRawRoutes(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newRawRoute(w http.ResponseWriter, r *http.Request) {
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	s.render(w, r, "raw_route_form.html", map[string]any{
+	s.render(w, r, "raw_route_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Row":          &models.RawRoute{Enabled: true},
 		"Certificates": certs,
 		"Section":      "raw",
-	})
+	}))
 }
 
 func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
@@ -2665,6 +2663,27 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 		return nil, "Invalid JSON: " + err.Error()
 	}
 	certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
+	// v2.5.6: Managed DNS picker — mirrors parseProxyHostForm. Unknown
+	// providers collapse to "none" so a stale dropdown value never writes
+	// a bogus row.
+	provider := strings.ToLower(strings.TrimSpace(r.FormValue("dns_provider")))
+	zoneID := ""
+	zoneName := ""
+	if provider != "" {
+		if _, ok := dns.Lookup(provider); !ok {
+			provider = ""
+		} else {
+			zoneID = strings.TrimSpace(r.FormValue("dns_zone_id"))
+			zoneName = strings.TrimSpace(r.FormValue("dns_zone_name"))
+			if zoneID == "" {
+				provider = ""
+				zoneName = ""
+			}
+			if zoneName == "" {
+				zoneName = zoneID
+			}
+		}
+	}
 	return &models.RawRoute{
 		Label:               label,
 		JSONData:            body,
@@ -2673,6 +2692,9 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 		CertificateID:       certID,
 		ForceSSL:            r.FormValue("ssl_forced") == "on",
 		BlockCommonExploits: r.FormValue("block_common_exploits") == "on",
+		DNSProvider:         provider,
+		DNSZoneID:           zoneID,
+		DNSZoneName:         zoneName,
 	}, ""
 }
 
@@ -2798,6 +2820,12 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// v2.5.6: Managed DNS parity with proxy hosts — auto-create the A
+	// record when the user picked a provider + zone. No-op otherwise.
+	// Skipped for routes without a host matcher (no FQDN to target).
+	if rr.DNSProvider != "" && rr.DNSZoneID != "" && firstRawRouteHost(rr.JSONData) != "" {
+		s.dnsCreateRecordForRaw(s.currentServerID(r), id, rr)
+	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_create", fmt.Sprintf("raw:%d", id), rr.Label, true)
 	s.syncCaddy(s.currentServerID(r), rr.CertificateID != 0)
 	// v2.5.5: park the user on the deploying checklist when the route has
@@ -2818,6 +2846,14 @@ func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request,
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
 	if rr == nil {
 		certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
+		// Reconstruct DNS fields too so the picker state survives an error
+		// reload — same shape parseRawRouteForm would have produced.
+		provider := strings.ToLower(strings.TrimSpace(r.FormValue("dns_provider")))
+		zoneID := strings.TrimSpace(r.FormValue("dns_zone_id"))
+		zoneName := strings.TrimSpace(r.FormValue("dns_zone_name"))
+		if zoneName == "" {
+			zoneName = zoneID
+		}
 		rr = &models.RawRoute{
 			Label:               r.FormValue("label"),
 			JSONData:            r.FormValue("json_data"),
@@ -2826,19 +2862,22 @@ func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request,
 			CertificateID:       certID,
 			ForceSSL:            r.FormValue("ssl_forced") == "on",
 			BlockCommonExploits: r.FormValue("block_common_exploits") == "on",
+			DNSProvider:         provider,
+			DNSZoneID:           zoneID,
+			DNSZoneName:         zoneName,
 		}
 	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if id != 0 {
 		rr.ID = id
 	}
-	s.render(w, r, "raw_route_form.html", map[string]any{
+	s.render(w, r, "raw_route_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Row":          rr,
 		"Certificates": certs,
 		"Error":        errMsg,
 		"Section":      "raw",
-	})
+	}))
 }
 
 func (s *Server) editRawRoute(w http.ResponseWriter, r *http.Request) {
@@ -2857,12 +2896,12 @@ func (s *Server) editRawRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
-	s.render(w, r, "raw_route_form.html", map[string]any{
+	s.render(w, r, "raw_route_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Row":          rr,
 		"Certificates": certs,
 		"Section":      "raw",
-	})
+	}))
 }
 
 func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
@@ -2889,12 +2928,42 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	// — otherwise clear it so we never show a stale Caddyfile that no longer
 	// matches the committed JSON.
 	forceTLS := false
-	if existing, _ := models.GetRawRoute(s.DB, id); existing != nil {
-		if rr.CaddyfileSrc == "" && existing.CaddyfileSrc != "" && jsonEqual(existing.JSONData, rr.JSONData) {
-			rr.CaddyfileSrc = existing.CaddyfileSrc
+	old, _ := models.GetRawRoute(s.DB, id)
+	if old != nil {
+		if rr.CaddyfileSrc == "" && old.CaddyfileSrc != "" && jsonEqual(old.JSONData, rr.JSONData) {
+			rr.CaddyfileSrc = old.CaddyfileSrc
 		}
-		forceTLS = existing.CertificateID != rr.CertificateID
+		forceTLS = old.CertificateID != rr.CertificateID
 	}
+
+	// v2.5.6: Managed DNS lifecycle. Same rules as proxy-host update —
+	// replace the record when the provider, zone, or primary hostname
+	// changes. The primary hostname for raw routes is the first entry
+	// of match[].host[]; parsing the two blobs once here keeps the
+	// logic readable.
+	oldFQDN := ""
+	if old != nil {
+		oldFQDN = firstRawRouteHost(old.JSONData)
+	}
+	newFQDN := firstRawRouteHost(rr.JSONData)
+	fqdnChanged := oldFQDN != newFQDN
+
+	providerChanged := old != nil && old.DNSProvider != rr.DNSProvider
+	zoneChanged := old != nil && old.DNSZoneID != rr.DNSZoneID
+	needDelete := old != nil && old.DNSRecordID != "" &&
+		(rr.DNSProvider == "" || providerChanged || zoneChanged || fqdnChanged)
+	if needDelete {
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+		rr.DNSRecordID = ""
+	} else if old != nil {
+		// Preserve existing record ID when nothing routing-relevant
+		// changed. The form doesn't resubmit record IDs, so without this
+		// the DB save would clear it.
+		rr.DNSRecordID = old.DNSRecordID
+	}
+	needCreate := rr.DNSProvider != "" && rr.DNSZoneID != "" && newFQDN != "" &&
+		(rr.DNSRecordID == "" || providerChanged || zoneChanged || fqdnChanged)
+
 	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
@@ -2903,13 +2972,16 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if needCreate {
+		s.dnsCreateRecordForRaw(s.currentServerID(r), rr.ID, rr)
+	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_update", fmt.Sprintf("raw:%d", id), rr.Label, true)
 	s.syncCaddy(s.currentServerID(r), forceTLS)
 	// v2.5.5: show the deploying checklist on edits too — changing the
 	// host matcher or the backing service is the same "did it come back
 	// up on HTTPS?" question the create flow asks. Routes without a host
 	// matcher skip the page as in create.
-	if firstRawRouteHost(rr.JSONData) != "" {
+	if newFQDN != "" {
 		http.Redirect(w, r, fmt.Sprintf("/raw-routes/%d/deploying", id), http.StatusSeeOther)
 		return
 	}
@@ -2940,6 +3012,11 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+	}
+	// v2.5.6: remove the managed DNS record before deleting the row so we
+	// don't orphan it at the provider. No-op when the route has none.
+	if old != nil && old.DNSRecordID != "" {
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 	}
 	if err := models.DeleteRawRoute(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -4627,120 +4704,82 @@ func fetchLatestDockerTag(namespace, image string) (string, error) {
 // All mutations happen through dnsCreateRecord / dnsDeleteRecord /
 // dnsUpdateAllRecords — no provider-specific branch lives above this line.
 
-// dnsCreateRecord creates an A record for the first domain of the proxy
-// host. p.DNSProvider / p.DNSZoneID / p.DNSZoneName must be set before
-// calling. On success the record ID is persisted to the proxy_hosts row
-// via models.UpdateProxyHostDNSRecord. Logs errors; does not return them —
-// DNS failures are non-fatal to the caller's main path (host save,
-// IP retarget).
+// dnsCreateRecordForFQDN creates an A record at fqdn pointing at the
+// per-server public IP and returns (recordID, resolvedZoneName). Returns
+// ("","") on any precondition failure or provider error; all failures are
+// logged but not returned — DNS is non-fatal to the caller's main save
+// path. Shared by the proxy-host and raw-route create paths; the caller
+// persists the returned record ID via its own Update*DNSRecord helper.
 //
-// serverID is the Caddy server the host lives on — v2.4.0 reads the
+// serverID is the Caddy server the caller lives on — v2.4.0 reads the
 // per-server public_ip first and falls back to the global setting so
 // multi-server setups get the right A-record content instead of always
 // pointing at server #1's IP.
-func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
-	client := s.dnsClient(p.DNSProvider)
+func (s *Server) dnsCreateRecordForFQDN(serverID int64, provider, zoneID, zoneName, fqdn string) (string, string) {
+	if provider == "" || zoneID == "" || fqdn == "" {
+		return "", ""
+	}
+	client := s.dnsClient(provider)
 	if client == nil {
-		return
+		return "", ""
 	}
 	ip := s.serverIPFor(serverID)
 	if ip == "" {
-		log.Printf("DNS: server IP not configured for server %d — skipping record creation for host %d", serverID, hostID)
-		return
+		log.Printf("DNS: server IP not configured for server %d — skipping record creation for %s", serverID, fqdn)
+		return "", ""
 	}
-	fqdn := dns.FirstDomain(p.Domains)
-	if fqdn == "" || p.DNSZoneID == "" {
-		return
-	}
-	zone := dns.Zone{ID: p.DNSZoneID, Name: p.DNSZoneName}
+	zone := dns.Zone{ID: zoneID, Name: zoneName}
 	if zone.Name == "" {
 		// Older rows (pre-migration) may not have zone_name populated —
 		// it's optional metadata for most providers. Fall back to the
 		// zone ID which doubles as the domain for PB/DO/GD/NC.
-		zone.Name = p.DNSZoneID
+		zone.Name = zoneID
 	}
 	// v2.4.7: honour the per-provider zone allow-list as a last-line guard.
 	// The dropdown is already filtered, but the zone name on the row could
 	// have come from an older config / direct DB edit / a user who
 	// tightened the allow-list after the host was created. Refusing here
 	// makes the allow-list a hard safety rail, not just a UI filter.
-	if !s.zoneAllowed(p.DNSProvider, zone.Name) {
-		log.Printf("DNS %s: zone %q not in allow-list — skipping record creation for %s", p.DNSProvider, zone.Name, fqdn)
-		return
+	if !s.zoneAllowed(provider, zone.Name) {
+		log.Printf("DNS %s: zone %q not in allow-list — skipping record creation for %s", provider, zone.Name, fqdn)
+		return "", ""
 	}
 	rec, err := client.CreateRecord(zone, fqdn, ip, "A", 0)
 	if err != nil {
-		log.Printf("DNS %s: create record for %s: %v", p.DNSProvider, fqdn, err)
+		log.Printf("DNS %s: create record for %s: %v", provider, fqdn, err)
+		return "", ""
+	}
+	return rec.ID, zone.Name
+}
+
+// dnsCreateRecord creates an A record for the first domain of the proxy
+// host. p.DNSProvider / p.DNSZoneID must be set before calling.
+// Persists the record ID to the proxy_hosts row via
+// models.UpdateProxyHostDNSRecord. No-op when DNS fields are unset.
+func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
+	recID, zname := s.dnsCreateRecordForFQDN(serverID, p.DNSProvider, p.DNSZoneID, p.DNSZoneName, dns.FirstDomain(p.Domains))
+	if recID == "" {
 		return
 	}
-	if err := models.UpdateProxyHostDNSRecord(s.DB, hostID, p.DNSProvider, zone.ID, zone.Name, rec.ID); err != nil {
+	if err := models.UpdateProxyHostDNSRecord(s.DB, hostID, p.DNSProvider, p.DNSZoneID, zname, recID); err != nil {
 		log.Printf("DNS %s: store record ID for host %d: %v", p.DNSProvider, hostID, err)
 	}
 }
 
-// dnsOverrideExistingRecord deletes every provider-side record whose name
-// matches the proxy host's FQDN. Called from create / update handlers when
-// the user clicked "Override (delete & recreate)" on the v2.4.8 existing-
-// record warning banner — it guarantees the subsequent dnsCreateRecord
-// starts from a clean slate regardless of provider-specific append/replace
-// semantics.
-//
-// Best-effort: lookup errors and per-record delete errors are logged but
-// don't abort. If override fails, the subsequent CreateRecord will surface
-// the real outcome (e.g. Porkbun "record already exists"), so we don't
-// need to block here.
-//
-// Provider notes:
-//   - Cloudflare / DigitalOcean / Hetzner: append-on-create, so override
-//     is meaningful — without it, duplicates accumulate.
-//   - GoDaddy: PATCH appends, so override is required to avoid duplicates.
-//   - Porkbun: errors on duplicate, so override is what makes the save
-//     succeed when a record already exists.
-//   - Namecheap: setHosts is whole-domain replace, so CreateRecord already
-//     writes a single record — override is redundant but harmless (one
-//     extra fetchHosts/setHosts round-trip).
-func (s *Server) dnsOverrideExistingRecord(p *models.ProxyHost) {
-	if p == nil || p.DNSProvider == "" || p.DNSZoneID == "" {
+// dnsCreateRecordForRaw is the raw-route twin of dnsCreateRecord.
+// v2.5.6: raw routes don't carry a Domains CSV, so the FQDN is pulled
+// from the JSON blob's match.host[] via firstRawRouteHost. The record
+// ID is persisted to the raw_routes row on success via
+// models.UpdateRawRouteDNSRecord. No-op when DNS fields are unset or
+// the JSON has no host matcher.
+func (s *Server) dnsCreateRecordForRaw(serverID, routeID int64, rr *models.RawRoute) {
+	fqdn := firstRawRouteHost(rr.JSONData)
+	recID, zname := s.dnsCreateRecordForFQDN(serverID, rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, fqdn)
+	if recID == "" {
 		return
 	}
-	client := s.dnsClient(p.DNSProvider)
-	if client == nil {
-		return
-	}
-	fqdn := dns.FirstDomain(p.Domains)
-	if fqdn == "" {
-		return
-	}
-	zone := dns.Zone{ID: p.DNSZoneID, Name: p.DNSZoneName}
-	if zone.Name == "" {
-		zone.Name = p.DNSZoneID
-	}
-	// Honour the allow-list — override is still a write and should respect
-	// the same zone safety rails as every other write path.
-	if !s.zoneAllowed(p.DNSProvider, zone.Name) {
-		log.Printf("DNS %s: zone %q not in allow-list — skipping override for %s", p.DNSProvider, zone.Name, fqdn)
-		return
-	}
-	existing, err := client.FindRecord(zone, fqdn)
-	if err != nil {
-		log.Printf("DNS %s: lookup existing %s: %v", p.DNSProvider, fqdn, err)
-		return
-	}
-	// Only delete the record types that would actually collide with the
-	// A/AAAA/CNAME about to be written. Never touch MX / TXT / SRV / CAA
-	// at the same name — those belong to email, SPF/DKIM/DMARC, and cert
-	// issuance, and deleting them here would silently break the user's
-	// unrelated services. See dns.IsProxyConflictingType.
-	for _, rec := range existing {
-		if !dns.IsProxyConflictingType(rec.Type) {
-			log.Printf("DNS %s: keeping %s %s=%s on %s (not a proxy-conflicting type)", p.DNSProvider, rec.Type, rec.Name, rec.Content, fqdn)
-			continue
-		}
-		if err := client.DeleteRecord(zone, rec.ID); err != nil {
-			log.Printf("DNS %s: override delete %s (%s): %v", p.DNSProvider, rec.ID, fqdn, err)
-			continue
-		}
-		log.Printf("DNS %s: overrode %s %s=%s on %s", p.DNSProvider, rec.Type, rec.Name, rec.Content, fqdn)
+	if err := models.UpdateRawRouteDNSRecord(s.DB, routeID, rr.DNSProvider, rr.DNSZoneID, zname, recID); err != nil {
+		log.Printf("DNS %s: store record ID for raw route %d: %v", rr.DNSProvider, routeID, err)
 	}
 }
 
@@ -4774,7 +4813,7 @@ func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordID string) 
 }
 
 // dnsUpdateAllRecords retargets managed DNS records at newIP. Pass
-// serverID > 0 to scope the retarget to proxy hosts that live on that
+// serverID > 0 to scope the retarget to content rows that live on that
 // Caddy server (v2.4.0 per-server public-IP flow); 0 retargets every
 // managed record regardless of server (used by the legacy global-IP
 // fallback path so pre-v2.4.0 databases still work).
@@ -4782,13 +4821,18 @@ func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordID string) 
 // We cache provider clients by ID so we build each at most once per call.
 // Records for providers with missing credentials are skipped rather than
 // cleared, so partial credential removal doesn't destroy working records.
+//
+// v2.5.6: also retargets raw-route records alongside proxy-host records.
 func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 	hosts, err := models.ListProxyHostsWithDNSRecords(s.DB, serverID)
 	if err != nil {
 		log.Printf("DNS: list managed hosts for IP update: %v", err)
-		return
 	}
-	if len(hosts) == 0 {
+	rawRoutes, err := models.ListRawRoutesWithDNSRecords(s.DB, serverID)
+	if err != nil {
+		log.Printf("DNS: list managed raw routes for IP update: %v", err)
+	}
+	if len(hosts) == 0 && len(rawRoutes) == 0 {
 		return
 	}
 	clients := map[string]dns.Provider{}
@@ -4800,28 +4844,32 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 		clients[id] = c
 		return c
 	}
-	log.Printf("DNS: retargeting %d record(s) to %s", len(hosts), newIP)
-	for _, h := range hosts {
-		client := getClient(h.DNSProvider)
+	log.Printf("DNS: retargeting %d proxy-host record(s) + %d raw-route record(s) to %s", len(hosts), len(rawRoutes), newIP)
+
+	// retarget is the shared delete-then-create worker. kind is a tag for
+	// the log line ("proxy"/"raw"); persist is the row-specific updater
+	// that writes the fresh record ID (or clears on failure). fqdn is
+	// pulled differently per row type, so the caller hands it in.
+	retarget := func(kind string, rowID int64, provider, zoneID, zoneName, recordID, fqdn string, persist func(zoneID, zoneName, recordID string)) {
+		client := getClient(provider)
 		if client == nil {
-			log.Printf("DNS %s: credentials missing — skipping host %d retarget", h.DNSProvider, h.ID)
-			continue
+			log.Printf("DNS %s: credentials missing — skipping %s %d retarget", provider, kind, rowID)
+			return
 		}
-		fqdn := dns.FirstDomain(h.Domains)
 		if fqdn == "" {
-			continue
+			return
 		}
-		zone := dns.Zone{ID: h.DNSZoneID, Name: h.DNSZoneName}
+		zone := dns.Zone{ID: zoneID, Name: zoneName}
 		if zone.Name == "" {
-			zone.Name = h.DNSZoneID
+			zone.Name = zoneID
 		}
-		// v2.4.7: guard IP retargets against the allow-list too. If a host's
-		// zone was valid when it was created but the user has since
-		// tightened the list, the retarget job leaves that host's record
-		// alone — same policy as dnsCreateRecord / dnsDeleteRecord.
-		if !s.zoneAllowed(h.DNSProvider, zone.Name) {
-			log.Printf("DNS %s: zone %q not in allow-list — skipping retarget for %s", h.DNSProvider, zone.Name, fqdn)
-			continue
+		// v2.4.7: guard IP retargets against the allow-list too. If a zone
+		// was valid when the record was created but the user has since
+		// tightened the list, the retarget job leaves that record alone —
+		// same policy as dnsCreateRecord / dnsDeleteRecord.
+		if !s.zoneAllowed(provider, zone.Name) {
+			log.Printf("DNS %s: zone %q not in allow-list — skipping retarget for %s", provider, zone.Name, fqdn)
+			return
 		}
 		// Delete-then-create semantic. Every provider implementation is
 		// idempotent on delete (silently succeeds if the record is gone),
@@ -4829,17 +4877,42 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 		// whole provider set, even if a tiny window exists where the
 		// record is absent. Users are already dealing with a live IP
 		// change when this runs; a few seconds of DNS flutter is noise.
-		if err := client.DeleteRecord(zone, h.DNSRecordID); err != nil {
-			log.Printf("DNS %s: delete old record %s (%s): %v", h.DNSProvider, h.DNSRecordID, fqdn, err)
+		if err := client.DeleteRecord(zone, recordID); err != nil {
+			log.Printf("DNS %s: delete old record %s (%s): %v", provider, recordID, fqdn, err)
 		}
 		rec, err := client.CreateRecord(zone, fqdn, newIP, "A", 0)
 		if err != nil {
-			log.Printf("DNS %s: create new record for %s: %v", h.DNSProvider, fqdn, err)
-			_ = models.UpdateProxyHostDNSRecord(s.DB, h.ID, "", "", "", "")
-			continue
+			log.Printf("DNS %s: create new record for %s: %v", provider, fqdn, err)
+			persist("", "", "")
+			return
 		}
-		_ = models.UpdateProxyHostDNSRecord(s.DB, h.ID, h.DNSProvider, zone.ID, zone.Name, rec.ID)
-		log.Printf("DNS %s: updated %s → %s (record %s)", h.DNSProvider, fqdn, newIP, rec.ID)
+		persist(zone.ID, zone.Name, rec.ID)
+		log.Printf("DNS %s: updated %s → %s (record %s)", provider, fqdn, newIP, rec.ID)
+	}
+
+	for _, h := range hosts {
+		h := h
+		retarget("proxy", h.ID, h.DNSProvider, h.DNSZoneID, h.DNSZoneName, h.DNSRecordID,
+			dns.FirstDomain(h.Domains),
+			func(zoneID, zoneName, recordID string) {
+				provider := h.DNSProvider
+				if recordID == "" {
+					provider = ""
+				}
+				_ = models.UpdateProxyHostDNSRecord(s.DB, h.ID, provider, zoneID, zoneName, recordID)
+			})
+	}
+	for _, rr := range rawRoutes {
+		rr := rr
+		retarget("raw", rr.ID, rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, rr.DNSRecordID,
+			firstRawRouteHost(rr.JSONData),
+			func(zoneID, zoneName, recordID string) {
+				provider := rr.DNSProvider
+				if recordID == "" {
+					provider = ""
+				}
+				_ = models.UpdateRawRouteDNSRecord(s.DB, rr.ID, provider, zoneID, zoneName, recordID)
+			})
 	}
 }
 
@@ -5356,13 +5429,20 @@ func (s *Server) rawRouteDeploying(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 		return
 	}
+	// v2.5.6: if Managed DNS is active on this route, render the "DNS
+	// record created in <provider>" step by passing the display name.
+	providerName := rr.DNSProvider
+	if d, ok := dns.Lookup(rr.DNSProvider); ok {
+		providerName = d.DisplayName
+	}
 	serverID := s.currentServerID(r)
 	s.render(w, r, "raw_route_deploying.html", map[string]any{
-		"User":        cu,
-		"Route":       rr,
-		"FirstDomain": fqdn,
-		"ExpectedIP":  s.serverIPFor(serverID),
-		"Section":     "raw",
+		"User":         cu,
+		"Route":        rr,
+		"FirstDomain":  fqdn,
+		"ProviderName": providerName,
+		"ExpectedIP":   s.serverIPFor(serverID),
+		"Section":      "raw",
 	})
 }
 
