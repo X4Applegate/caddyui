@@ -326,6 +326,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/settings", s.postSettings)
 			r.Post("/settings/test-webhook", s.postTestWebhook)
 			r.Post("/settings/test-email", s.postTestEmail)
+			r.Post("/settings/dns-provider/{id}/clear", s.postClearDNSProvider)
 		})
 	})
 
@@ -4723,6 +4724,19 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	success := r.URL.Query().Get("saved") == "1"
+	// "cleared=<provider-id>" is set by postClearDNSProvider's redirect.
+	// Resolve it back to the pretty display name so the banner can say
+	// "Cloudflare credentials cleared" instead of "cloudflare credentials
+	// cleared". Unknown IDs are ignored silently.
+	var clearedName string
+	if cid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("cleared"))); cid != "" {
+		for _, pv := range providers {
+			if pv.ID == cid {
+				clearedName = pv.DisplayName
+				break
+			}
+		}
+	}
 	s.render(w, r, "settings.html", map[string]any{
 		"User":               s.currentUser(r),
 		"WebhookURL":         webhookURL,
@@ -4745,10 +4759,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// CF-centric keys. The template itself now uses DNSProviders +
 		// ServerIP; these stay so custom layouts built against v2.2.x
 		// don't crash during the upgrade cycle.
-		"CFServerIP": serverIP,
-		"CFProxied":  cfProxiedStr == "1",
-		"Success":    success,
-		"Section":    "settings",
+		"CFServerIP":  serverIP,
+		"CFProxied":   cfProxiedStr == "1",
+		"Success":     success,
+		"ClearedName": clearedName,
+		"Section":     "settings",
 	})
 }
 
@@ -4891,6 +4906,42 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
+}
+
+// postClearDNSProvider wipes every stored credential for a single DNS
+// provider (and its provider-specific flags, e.g. Cloudflare's cf_proxied
+// toggle). The provider ID comes from the URL path. Storing an empty string
+// via SetSetting is how we "delete" — GetSetting returns "" for both
+// "never written" and "written as empty", and every dns.Build call treats
+// empty strings as "provider not configured".
+//
+// Admin-gated at the router level; also logs an audit entry so a
+// credential wipe is traceable the same way a save is.
+func (s *Server) postClearDNSProvider(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "id")))
+	keys, ok := dnsProviderCredKeys[id]
+	if !ok {
+		http.Error(w, "unknown DNS provider", http.StatusBadRequest)
+		return
+	}
+
+	for _, k := range keys {
+		if err := models.SetSetting(s.DB, k, ""); err != nil {
+			http.Error(w, "failed to clear credentials: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	// Cloudflare also stores a per-provider flag (orange-cloud proxied) that
+	// should be reset alongside the API token — otherwise re-entering a
+	// token later would silently inherit the previous proxied state.
+	if id == dns.Cloudflare {
+		_ = models.SetSetting(s.DB, settingCFProxied, "")
+	}
+
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r),
+		"dns_provider_clear", "dns:"+id, "", true)
+
+	http.Redirect(w, r, "/settings?cleared="+url.QueryEscape(id), http.StatusSeeOther)
 }
 
 func (s *Server) postTestWebhook(w http.ResponseWriter, r *http.Request) {

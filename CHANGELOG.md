@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.6] — 2026-04-22 · "Clear credentials" button per DNS provider in Settings
+
+### Added
+- **Per-provider "Clear credentials" button** inside each DNS provider card on `/settings` (Cloudflare, Porkbun, Namecheap, GoDaddy, DigitalOcean, Hetzner). One click (after a `confirm()` dialog) wipes every stored key/token for that provider from the `settings` table. For Cloudflare, the `cf_proxied` orange-cloud toggle is reset alongside the API token. Only shown when a provider is actually configured — no button on empty slots.
+- **Amber confirmation banner** on redirect back (`?cleared=<id>`): *"Cloudflare credentials cleared. The provider is now disabled until you enter new credentials below."*
+- **Audit log entry** (`dns_provider_clear`, target `dns:<id>`) so credential wipes show up in the activity log the same way saves do.
+
+### Why
+Before this, the only way to remove a saved token was to edit the SQLite settings table directly. Rotating credentials out, moving a domain to a different provider, or just cleaning up after a test account had no UI path.
+
+### Implementation notes
+- New route `POST /settings/dns-provider/{id}/clear` — admin-gated at the router (same middleware stack as the rest of `/settings`).
+- Handler iterates `dnsProviderCredKeys[id]` and writes each key as an empty string via `models.SetSetting`. `dnsClient` already treats any empty credential as "provider not configured", so downstream behaviour is identical to a fresh install for that provider.
+- Existing DNS records on the provider side are **not** touched — this only removes CaddyUI's local copy of the API keys. A follow-up sync will simply skip DNS updates until new credentials are entered.
+- Template uses HTML5 `form="clear-dns-<id>"` to associate each button with an external empty form rather than nesting forms, so clicking "Clear credentials" does not accidentally submit the main Settings form.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.6` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.5] — 2026-04-22 · App dot: amber "unknown" for split-horizon DNS (no more false red)
 
 ### Fixed

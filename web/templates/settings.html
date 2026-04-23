@@ -8,6 +8,9 @@
 {{if .Success}}
 <div class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">Settings saved successfully.</div>
 {{end}}
+{{if .ClearedName}}
+<div class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.ClearedName}} credentials cleared. The provider is now disabled until you enter new credentials below.</div>
+{{end}}
 {{if .Error}}
 <div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.Error}}</div>
 {{end}}
@@ -206,6 +209,20 @@
       <strong>Before each domain works:</strong> on the Porkbun control panel go to <em>Domain Management → Details → API Access</em> and toggle it ON. Without this, the API will reject operations even with valid keys.
     </div>
     {{end}}
+
+    {{/* Clear-credentials button. Only shown when at least one field is
+         saved — no point offering to wipe an empty slot. Uses form="..." to
+         associate with an external form so clicking does NOT submit the
+         main settings form. */}}
+    {{if .Configured}}
+    <div class="pt-3 border-t border-ink-100 flex items-center justify-between gap-3">
+      <p class="text-xs text-ink-500">Remove the saved {{.DisplayName}} credentials from CaddyUI. Existing DNS records stay in place.</p>
+      <button type="submit" form="clear-dns-{{.ID}}"
+              class="shrink-0 inline-flex items-center text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 px-2.5 py-1.5 rounded-md border border-red-200 hover:border-red-300 transition">
+        Clear credentials
+      </button>
+    </div>
+    {{end}}
   </div>
   {{end}}
 
@@ -240,6 +257,15 @@
     <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save settings</button>
   </div>
 </form>
+
+{{/* One empty form per configured DNS provider, lives OUTSIDE the main
+     settings form. The "Clear credentials" buttons inside each provider
+     card use HTML5 form="clear-dns-<id>" to post to these instead of the
+     big settings form. onsubmit confirm() gates the destructive POST. */}}
+{{range .DNSProviders}}{{if .Configured}}
+<form id="clear-dns-{{.ID}}" method="post" action="/settings/dns-provider/{{.ID}}/clear" class="hidden"
+      onsubmit="return confirm('Clear all {{.DisplayName}} API credentials? Existing DNS records on {{.DisplayName}} stay in place — this only removes the keys stored in CaddyUI.')"></form>
+{{end}}{{end}}
 
 {{/* ── Test buttons ── */}}
 <div class="max-w-2xl mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
