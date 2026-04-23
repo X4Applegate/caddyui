@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.10] — 2026-04-22 · Proxy-hosts rows are now clickable to edit (Edit button removed)
+
+### Changed
+- **The explicit "Edit" button has been removed from the `/proxy-hosts` table** (and its mobile card equivalent, and the advanced-routes rows on the same page). Clicking anywhere on a row now navigates to that host's edit page. The blue domain pills still open the external URL in a new tab, the enabled/disabled toggle still toggles, and the red Delete button still deletes — each owns its own click and stops the row-nav handler from firing.
+- **Cmd/Ctrl-click and middle-click on a row open edit in a new tab** (same convention as any other navigational element).
+- Rows get `cursor-pointer` so the affordance is obvious, plus a `title="Click row to edit"` tooltip for discoverability.
+
+### Why
+The sticky Actions column was carrying an Edit button and a Delete button side-by-side, taking up horizontal space for an action that could be driven by clicking the row itself. Removing Edit shrinks the pinned column to just Delete, and the row becomes the primary edit target — which is the pattern most admin tables already follow.
+
+### Implementation notes
+- `data-edit-href` attribute on each `<tr>` and mobile `<div>` carries the edit URL.
+- A single `click` / `auxclick` handler skips clicks that land inside `a, button, form, input, select, textarea, label` — so every existing inline control (domain pill, toggle form, Delete form) keeps its behaviour unchanged.
+- Middle-click is caught on `auxclick` because browsers don't fire `click` for button 1.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.10` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.9] — 2026-04-22 · DNS "override" now only touches A / AAAA / CNAME — never MX / TXT / SRV / CAA
 
 ### Fixed
