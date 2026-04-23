@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.7] — 2026-04-23 · Explicit Edit button next to Delete on list pages
+
+### Changed
+- **Edit button restored next to Delete** on proxy hosts, advanced (raw) routes, and redirection hosts — both the desktop table's Actions column and the mobile card footer. v2.4 had removed it in favour of a small pencil icon next to each domain pill, on the theory that the pencil served the same role with less visual noise. In practice multiple users kept looking for an explicit "Edit" action pair'd with "Delete" and weren't noticing the pencil, so the labelled button is back alongside the pencil (both navigate to the same `/edit` URL — the pencil lets you edit a specific domain variant from a multi-domain host, while the Edit button is the obvious big-target affordance). Affects `proxy_hosts.html`, `raw_routes.html`, and `redirection_hosts.html`.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.7` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.6] — 2026-04-23 · Managed DNS for advanced routes + safer collision handling
 
 ### Added
