@@ -11,7 +11,7 @@
     </div>
     <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6">
       {{if .Error}}<div class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg mb-4">{{.Error}}</div>{{end}}
-      <form method="post" action="/login/totp">
+      <form id="totp-form" method="post" action="/login/totp">
         <input type="hidden" name="token" value="{{.Token}}">
         <div class="mb-4">
           <label class="block text-xs font-medium text-ink-700 mb-1">Authenticator code</label>
@@ -19,7 +19,8 @@
             class="w-full border border-ink-200 rounded-lg px-3 py-2.5 text-sm text-center tracking-widest text-lg font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 outline-none transition"
             placeholder="000000">
         </div>
-        <button class="w-full bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium py-2.5 rounded-lg transition">Verify</button>
+        {{template "captchaWidget" (dict "CaptchaEnabled" .CaptchaEnabled "CaptchaProvider" .CaptchaProvider "CaptchaSiteKey" .CaptchaSiteKey "FormID" "totp-form")}}
+        <button class="w-full bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium py-2.5 rounded-lg transition mt-3">Verify</button>
       </form>
     </div>
     <p class="text-center text-xs text-ink-400 mt-4"><a href="/login" class="hover:text-ink-700 transition">Back to login</a></p>

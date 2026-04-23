@@ -714,41 +714,34 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	siteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
-	s.render(w, r, "login.html", map[string]any{"TurnstileSiteKey": siteKey})
+	s.render(w, r, "login.html", captchaTemplateData(loadCaptchaConfig(s.DB)))
 }
 
 func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 
-	siteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
-	secretKey, _ := models.GetSetting(s.DB, settingTurnstileSecretKey)
-
-	// Verify Turnstile challenge when configured.
-	if secretKey != "" {
-		token := r.FormValue("cf-turnstile-response")
-		remoteIP := r.RemoteAddr
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			remoteIP = strings.SplitN(fwd, ",", 2)[0]
+	// v2.5.0: unified captcha (Turnstile OR reCAPTCHA v3, driven by the
+	// captcha_provider setting). verifyCaptcha no-ops when disabled, so
+	// handlers can call it unconditionally.
+	captchaCfg := loadCaptchaConfig(s.DB)
+	tplData := captchaTemplateData(captchaCfg)
+	renderLoginErr := func(msg string) {
+		data := map[string]any{"Error": msg}
+		for k, v := range tplData {
+			data[k] = v
 		}
-		ok, err := verifyTurnstile(secretKey, token, strings.TrimSpace(remoteIP))
-		if err != nil || !ok {
-			s.render(w, r, "login.html", map[string]any{
-				"Error":            "Security check failed. Please try again.",
-				"TurnstileSiteKey": siteKey,
-			})
-			return
-		}
+		s.render(w, r, "login.html", data)
+	}
+	if ok, err := verifyCaptcha(captchaCfg, r); err != nil || !ok {
+		renderLoginErr("Security check failed. Please try again.")
+		return
 	}
 
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw := r.FormValue("password")
 	u, err := models.GetUserByEmail(s.DB, email)
 	if err != nil || !auth.CheckPassword(u.PasswordHash, pw) {
-		s.render(w, r, "login.html", map[string]any{
-			"Error":            "Invalid email or password",
-			"TurnstileSiteKey": siteKey,
-		})
+		renderLoginErr("Invalid email or password")
 		return
 	}
 	if u.TOTPEnabled && u.TOTPSecret != "" {
@@ -791,7 +784,9 @@ func (s *Server) getTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, "totp_verify.html", map[string]any{"Token": tok})
+	data := captchaTemplateData(loadCaptchaConfig(s.DB))
+	data["Token"] = tok
+	s.render(w, r, "totp_verify.html", data)
 }
 
 // postTOTPVerify validates the TOTP code and creates a session.
@@ -800,11 +795,35 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	tok := r.FormValue("token")
 	code := strings.TrimSpace(r.FormValue("code"))
 
+	// v2.5.0: captcha also gates the TOTP step. Rationale: /login and
+	// /login/totp are separate endpoints, so a bot that cracks a password
+	// without captcha here could still pound TOTP codes (1M combos) if
+	// TOTP had no challenge. Cheap to add, meaningfully raises the floor.
+	captchaCfg := loadCaptchaConfig(s.DB)
+	tplData := captchaTemplateData(captchaCfg)
+	renderTOTPErr := func(msg string) {
+		data := map[string]any{"Token": tok, "Error": msg}
+		for k, v := range tplData {
+			data[k] = v
+		}
+		s.render(w, r, "totp_verify.html", data)
+	}
+
 	val, ok := s.pendingTOTP.Load(tok)
 	if !ok {
-		s.render(w, r, "totp_verify.html", map[string]any{"Token": tok, "Error": "Session expired. Please log in again."})
+		renderTOTPErr("Session expired. Please log in again.")
 		return
 	}
+
+	if ok2, err := verifyCaptcha(captchaCfg, r); err != nil || !ok2 {
+		// Don't delete the pendingTOTP token on captcha fail — let the
+		// user retry with a fresh challenge. Captcha being wrong is an
+		// "I am a bot probably" signal, not an "I burned my TOTP slot"
+		// one. The 5-min auto-expire still caps abuse.
+		renderTOTPErr("Security check failed. Please try again.")
+		return
+	}
+
 	s.pendingTOTP.Delete(tok)
 
 	userID := val.(int64)
@@ -818,7 +837,7 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	if !valid {
 		// Put token back so user can retry.
 		s.pendingTOTP.Store(tok, userID)
-		s.render(w, r, "totp_verify.html", map[string]any{"Token": tok, "Error": "Invalid code. Try again."})
+		renderTOTPErr("Invalid code. Try again.")
 		return
 	}
 
@@ -3602,11 +3621,11 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) newUser(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, "user_form.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Target":  &models.User{Role: models.RoleView},
-		"Section": "users",
-	})
+	data := captchaTemplateData(loadCaptchaConfig(s.DB))
+	data["User"] = s.currentUser(r)
+	data["Target"] = &models.User{Role: models.RoleView}
+	data["Section"] = "users"
+	s.render(w, r, "user_form.html", data)
 }
 
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
@@ -3617,13 +3636,29 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	pw2 := r.FormValue("password_confirm")
 	role := r.FormValue("role")
 	target := &models.User{Email: email, Name: name, Role: role}
+
+	// v2.5.0: captcha also gates user creation. This endpoint is admin-only
+	// (wrapped in requireWrite), but /users/new forms are sometimes the
+	// first thing an attacker hits after stealing an admin session cookie
+	// — adding the challenge here raises the bar on scripted account
+	// creation if credentials leak.
+	captchaCfg := loadCaptchaConfig(s.DB)
+	tplData := captchaTemplateData(captchaCfg)
 	renderErr := func(msg string) {
-		s.render(w, r, "user_form.html", map[string]any{
+		data := map[string]any{
 			"User":    s.currentUser(r),
 			"Target":  target,
 			"Section": "users",
 			"Error":   msg,
-		})
+		}
+		for k, v := range tplData {
+			data[k] = v
+		}
+		s.render(w, r, "user_form.html", data)
+	}
+	if ok, err := verifyCaptcha(captchaCfg, r); err != nil || !ok {
+		renderErr("Security check failed. Please try again.")
+		return
 	}
 	if email == "" || pw == "" {
 		renderErr("Email and password are required")
@@ -4981,6 +5016,17 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
 	turnstileSecretKey, _ := models.GetSetting(s.DB, settingTurnstileSecretKey)
 
+	// v2.5.0: captcha provider selector + reCAPTCHA keys alongside the
+	// existing Turnstile keys. The UI renders a radio (Off / Turnstile /
+	// reCAPTCHA); only the active provider's key fields are interactable.
+	captchaProvider := normalizeCaptchaProvider(mustGetSetting(s.DB, settingCaptchaProvider))
+	recaptchaSiteKey := mustGetSetting(s.DB, settingRecaptchaSiteKey)
+	recaptchaSecretKey := mustGetSetting(s.DB, settingRecaptchaSecretKey)
+	recaptchaMinScoreRaw := mustGetSetting(s.DB, settingRecaptchaMinScore)
+	if strings.TrimSpace(recaptchaMinScoreRaw) == "" {
+		recaptchaMinScoreRaw = fmt.Sprintf("%.1f", captchaDefaultMinScore)
+	}
+
 	// Timezone — admin-picked IANA zone for rendering timestamps. Empty =
 	// fall back to TZ env var then UTC. See timezone.go for the priority
 	// order and the dropdown options (commonTimezones).
@@ -5096,6 +5142,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"TurnstileSiteKey":   turnstileSiteKey,
 		"TurnstileSecretKey": turnstileSecretKey,
 		"TurnstileEnabled":   turnstileSiteKey != "" && turnstileSecretKey != "",
+		// v2.5.0: captcha provider + reCAPTCHA keys
+		"CaptchaProvider":        captchaProvider,
+		"CaptchaDisabledByEnv":   captchaDisabledByEnv(),
+		"RecaptchaSiteKey":       recaptchaSiteKey,
+		"RecaptchaSecretKey":     recaptchaSecretKey,
+		"RecaptchaMinScore":      recaptchaMinScoreRaw,
+		"RecaptchaEnabled":       recaptchaSiteKey != "" && recaptchaSecretKey != "",
 		// Timezone: Timezone is the saved DB value (may be ""). TimezoneActive
 		// is what the server is *actually* rendering in right now — useful as
 		// a "(currently: UTC)" hint when the DB value is empty.
@@ -5147,6 +5200,25 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey := strings.TrimSpace(r.FormValue("turnstile_site_key"))
 	turnstileSecretKey := strings.TrimSpace(r.FormValue("turnstile_secret_key"))
 
+	// v2.5.0: captcha provider + reCAPTCHA keys. The provider radio
+	// submits "off" / "turnstile" / "recaptcha"; normalizeCaptchaProvider
+	// coerces anything else to "off" so a tampered POST can't set an
+	// unknown mode that would 500 loadCaptchaConfig.
+	captchaProvider := normalizeCaptchaProvider(r.FormValue("captcha_provider"))
+	recaptchaSiteKey := strings.TrimSpace(r.FormValue("recaptcha_site_key"))
+	recaptchaSecretKey := strings.TrimSpace(r.FormValue("recaptcha_secret_key"))
+	// reCAPTCHA v3 threshold. Accept any 0.0–1.0 float; out-of-range or
+	// unparseable values fall back to the default at load time. We still
+	// store what the admin typed (after trim) so the next render of the
+	// settings page shows their input, not the silent coercion.
+	recaptchaMinScore := strings.TrimSpace(r.FormValue("recaptcha_min_score"))
+	if recaptchaMinScore != "" {
+		if _, err := strconv.ParseFloat(recaptchaMinScore, 64); err != nil {
+			http.Error(w, "invalid recaptcha_min_score: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Timezone — the dropdown submits an IANA zone name (or empty string
 	// for "use TZ env / UTC"). The "Other…" option in the UI falls back to
 	// a free-text input that submits the same field. Validate via
@@ -5188,6 +5260,10 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingSMTPSkipVerify:     smtpSkipVerify,
 		settingTurnstileSiteKey:   turnstileSiteKey,
 		settingTurnstileSecretKey: turnstileSecretKey,
+		settingCaptchaProvider:    captchaProvider,
+		settingRecaptchaSiteKey:   recaptchaSiteKey,
+		settingRecaptchaSecretKey: recaptchaSecretKey,
+		settingRecaptchaMinScore:  recaptchaMinScore,
 		settingTimezone:           timezone,
 		settingServerIP:           newServerIP,
 		settingCFProxied:          cfProxied,
