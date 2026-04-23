@@ -15,6 +15,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ### Changed
 - **`/login` now uses the unified widget partial** (`{{template "captchaWidget" ...}}`) instead of the Turnstile-specific inline block that shipped in v2.4.x. Existing Turnstile keys continue to work unchanged — the v2.5.0 upgrade path is "install, set `captcha_provider=turnstile` (if you want the previous behaviour), and the existing site/secret keys apply as before." Setting stays blank by default on fresh installs (= "off").
+- **Proxy-hosts table no longer draws horizontal divider lines** between rows or under the header. The `divide-y`/`border-b` lines were designed for light mode but read as bright white stripes across the table in dark mode, which made the list feel noisier than it needed to be. Row distinction still comes from the hover state and the purple tint on advanced-route rows.
 
 ### Implementation notes
 - `internal/server/captcha.go` is the single source of truth: `loadCaptchaConfig(db)` reads the provider + keys, applies the env kill-switch, and returns a `captchaConfig` whose `Enabled()` method gates both template rendering and `verifyCaptcha`. Handlers call `verifyCaptcha(cfg, r)` unconditionally — it's a no-op when `Enabled()` is false.

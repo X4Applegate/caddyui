@@ -122,7 +122,7 @@
      sticky cell can't inherit the <tr>'s bg when other cells scroll under. */}}
 <div class="hidden lg:block bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-x-auto">
   <table class="w-full text-sm min-w-[900px]" id="proxy-table">
-    <thead class="bg-ink-100 text-left border-b border-ink-200">
+    <thead class="bg-ink-100 text-left">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         <th class="px-5 py-3 font-medium">Source</th>
         <th class="px-5 py-3 font-medium">Destination</th>
@@ -132,7 +132,7 @@
         <th class="px-5 py-3 font-medium text-center sticky right-0 bg-ink-100 shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)] z-10">Actions</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-ink-200">
+    <tbody>
       {{range .Hosts}}
       <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}">
         <td class="px-5 py-3">
