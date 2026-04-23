@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.1] — 2026-04-22 · Smarter Managed-DNS zone picker
+
+### Fixed
+- **Proxy-host Managed DNS now auto-picks the correct zone** based on the domain you're adding. Previously, creating a proxy host for `test.example.io` with a Cloudflare account that also contained an unrelated zone (e.g. `something-else.com`) would select whichever zone the Cloudflare API returned first — often the wrong one. The picker now does a **longest-suffix match** against the first domain in the host, so `test.richardapplegate.io` resolves to the `richardapplegate.io` zone even when `applegatecloud.com` is in the same account. Auto-matching only runs on fresh hosts and before the user has manually touched the zone dropdown — any deliberate choice you make is kept.
+
+### Added
+- **"Domain doesn't match the selected zone" warning** under the Zone / Domain dropdown. Shows up when the first domain on the host isn't a subdomain of the currently picked zone — catches typos (`test.richardapplegate.ip`) and wrong-zone edits that previously would have silently created a record in the wrong place. Independent of the existing "record already exists" banner, which still fires for genuine collisions on save.
+
+### Implementation notes
+- Client-side only — no backend changes. The new logic lives in `web/templates/proxy_host_form.html`'s zone-picker IIFE: a `bestZoneMatch(fqdn, zones)` helper normalises both sides (lower-case, strips trailing dot, strips `*.` wildcard prefix) and picks the longest-matching zone name. `updateMismatchWarn()` re-runs on every provider / zone / domain change so the warning lights up the moment you type a typo.
+- A `userPickedZone` flag flips to `true` the moment the user manually interacts with the zone `<select>` — after that, typing in the domain field no longer silently reshuffles their choice. Editing an existing proxy host starts in the user-picked state (the saved zone is treated as intentional), so v2.5.1 **never silently re-selects a zone on an existing host** — it just warns if the saved zone doesn't match the domain, letting you fix it deliberately.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.1` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.0] — 2026-04-22 · Switchable CAPTCHA provider (Turnstile + reCAPTCHA v3)
 
 ### Added

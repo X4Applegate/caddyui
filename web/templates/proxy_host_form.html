@@ -168,6 +168,20 @@
              (for record CRUD and the proxy-host list). */}}
         <input type="hidden" id="dns-zone-name" name="dns_zone_name" value="{{.Host.DNSZoneName}}" />
         <p id="dns-zone-hint" class="text-xs text-ink-400 mt-1 hidden"></p>
+        {{/* v2.5.1: "this domain doesn't match the selected zone" warning.
+             Populated by the zone-picker JS when the first domain isn't a
+             suffix of the chosen zone (e.g. user typed test.example.com but
+             picked example.org as the zone). Independent of the existing
+             record warning below — that one catches collisions, this one
+             catches typos / wrong-zone-picks. */}}
+        <p id="dns-zone-mismatch" class="text-xs text-amber-700 mt-1.5 hidden flex items-start gap-1.5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span id="dns-zone-mismatch-msg" class="flex-1"></span>
+        </p>
       </div>
     </div>
 
@@ -262,11 +276,19 @@
     var zoneSel     = document.getElementById('dns-zone-select');
     var zoneNameIn  = document.getElementById('dns-zone-name');
     var zoneHint    = document.getElementById('dns-zone-hint');
+    var mismatchBox = document.getElementById('dns-zone-mismatch');
+    var mismatchMsg = document.getElementById('dns-zone-mismatch-msg');
     if (!providerSel || !zoneSel) return;
 
     // Per-provider cache so switching back and forth doesn't re-fetch.
     var cache = {};
     var currentZoneID = {{.Host.DNSZoneID | printf "%q"}};
+    // v2.5.1: track whether the user has explicitly picked a zone. Starts
+    // true when editing an existing host (they already picked one previously
+    // or accepted the default on create) and false on a brand-new host, so
+    // auto-suffix-matching only kicks in when we're certain the user hasn't
+    // made an intentional choice.
+    var userPickedZone = !!currentZoneID;
 
     // Namecheap-specific hint: domain must be in Namecheap and the public
     // IP set in Settings must be whitelisted against the API key.
@@ -282,14 +304,80 @@
       zoneNameIn.value = opt ? (opt.getAttribute('data-name') || opt.textContent || '') : '';
     }
 
+    // v2.5.1: normalise for suffix comparison — lower-case, strip trailing
+    // dot, strip wildcard prefix so "*.example.com" suffix-matches
+    // "example.com" the same way "www.example.com" does.
+    function normDom(s) {
+      return (s || '').toLowerCase().replace(/\.$/, '').replace(/^\*\./, '');
+    }
+
+    // Longest-suffix zone match for an FQDN. Returns the best Zone object
+    // or null. "test.richardapplegate.io" against zones
+    // ["applegatecloud.com","richardapplegate.io"] → richardapplegate.io.
+    // Ties broken by first-seen (stable with API order).
+    function bestZoneMatch(fqdn, zones) {
+      if (!fqdn || !zones || !zones.length) return null;
+      var f = normDom(fqdn);
+      if (!f) return null;
+      var best = null, bestLen = -1;
+      for (var i = 0; i < zones.length; i++) {
+        var zname = normDom(zones[i].name);
+        if (!zname) continue;
+        if (f === zname || f.endsWith('.' + zname)) {
+          if (zname.length > bestLen) {
+            best = zones[i];
+            bestLen = zname.length;
+          }
+        }
+      }
+      return best;
+    }
+
+    // Show/hide the "this domain doesn't belong to the selected zone"
+    // warning. Called after every zone/provider/domain change. Silent when
+    // any of the three pieces is missing — no zone picked yet ≠ mismatch.
+    function updateMismatchWarn() {
+      if (!mismatchBox) return;
+      var fqdn = firstDomain();
+      if (!fqdn || !providerSel.value || !zoneSel.value) {
+        mismatchBox.classList.add('hidden');
+        return;
+      }
+      var opt = zoneSel.options[zoneSel.selectedIndex];
+      var zname = opt ? normDom(opt.getAttribute('data-name') || opt.textContent) : '';
+      var f = normDom(fqdn);
+      var matches = zname && (f === zname || f.endsWith('.' + zname));
+      if (matches) {
+        mismatchBox.classList.add('hidden');
+      } else {
+        mismatchBox.classList.remove('hidden');
+        if (mismatchMsg) {
+          mismatchMsg.textContent = '“' + fqdn + '” isn\'t a subdomain of “' +
+            (zname || 'the selected zone') +
+            '”. Double-check the domain, or pick a zone that matches — saving will create the DNS record in the wrong place otherwise.';
+        }
+      }
+    }
+
     function renderZones(providerID, zones, selectedID) {
       if (!zones || zones.length === 0) {
         zoneSel.innerHTML = '<option value="">No zones available</option>';
         syncZoneName();
+        updateMismatchWarn();
         return;
       }
+      // v2.5.1: if nothing is pre-selected and the user hasn't manually
+      // picked a zone, auto-select the longest-suffix match against the
+      // first entered domain. This is the fix for "I typed
+      // test.richardapplegate.io but the form auto-picked applegatecloud.com"
+      // — the browser's default-to-first-option behaviour was the bug.
+      var effectiveSelected = selectedID;
+      if (!effectiveSelected && !userPickedZone) {
+        var best = bestZoneMatch(firstDomain(), zones);
+        if (best) effectiveSelected = best.id;
+      }
       var html = zones.map(function(z) {
-        var sel = (z.id === selectedID) ? ' selected' : '';
+        var sel = (z.id === effectiveSelected) ? ' selected' : '';
         var label = z.name;
         // For CF/Hetzner the opaque ID is useful debug info.
         if (z.id && z.id !== z.name) label += ' (' + z.id + ')';
@@ -297,6 +385,7 @@
       }).join('');
       zoneSel.innerHTML = html;
       syncZoneName();
+      updateMismatchWarn();
     }
 
     function loadZones(providerID) {
@@ -469,19 +558,45 @@
       });
     }
     if (domainsIn) {
-      domainsIn.addEventListener('input', scheduleCheck);
+      domainsIn.addEventListener('input', function() {
+        // v2.5.1: re-evaluate the best-match zone (unless the user has
+        // already locked one in) every time the domain field changes.
+        // Also re-checks the mismatch warning so a typo like
+        // "test.richardapplegate.ip" flags the moment the user types it.
+        if (!userPickedZone) {
+          var zones = cache[providerSel.value];
+          if (zones && zones.length) {
+            var best = bestZoneMatch(firstDomain(), zones);
+            if (best && zoneSel.value !== best.id) {
+              zoneSel.value = best.id;
+              syncZoneName();
+            }
+          }
+        }
+        updateMismatchWarn();
+        scheduleCheck();
+      });
     }
 
     providerSel.addEventListener('change', function() {
       // Once the user changes provider, invalidate the preselected zone ID
-      // so we don't force a stale value into the new provider's list.
+      // so we don't force a stale value into the new provider's list. Also
+      // clear the user-picked flag: the previous provider's zone choice
+      // carries no authority over the new provider's list.
       currentZoneID = '';
+      userPickedZone = false;
       applyProvider(this.value);
       // Provider change = new triple; reset the check.
       scheduleCheck();
     });
     zoneSel.addEventListener('change', function() {
+      // v2.5.1: a genuine user-initiated change locks in their choice so
+      // subsequent domain edits don't silently reshuffle it. (Programmatic
+      // zoneSel.value = ... assignments elsewhere don't fire 'change', so
+      // this flag only flips when the human actually picks something.)
+      userPickedZone = true;
       syncZoneName();
+      updateMismatchWarn();
       scheduleCheck();
     });
 
