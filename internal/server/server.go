@@ -67,6 +67,11 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	if err != nil {
 		return nil, err
 	}
+	// Resolve the active timezone once at startup so the very first render
+	// uses the admin's picked zone (DB) rather than whatever time.Local
+	// happens to be. Priority: DB value → TZ env var → UTC. See timezone.go.
+	loc := loadActiveLocation(db)
+	log.Printf("timezone: rendering timestamps in %s", loc)
 	return &Server{
 		DB:             db,
 		Caddy:          caddyClient,
@@ -144,6 +149,49 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 			}
 			return ""
 		},
+		// Timezone-aware time formatters. Every visible timestamp pulled from
+		// the DB should flow through one of these so the admin's picked zone
+		// (Settings → Timezone) actually takes effect. activeLocation()
+		// resolves DB → TZ env → UTC; see timezone.go.
+		//
+		// Templates pass a time.Time and get back a formatted string:
+		//   {{ fmtDate .CreatedAt }}      → "2026-04-22"
+		//   {{ fmtDateTime .CreatedAt }}  → "2026-04-22 14:30"
+		//   {{ fmtTime .CreatedAt }}      → "14:30:45"
+		//   {{ tzName }}                  → "America/New_York"
+		//
+		// Zero-value times render as an empty string so we don't surface
+		// "0001-01-01" when a nullable DB column is NULL.
+		"fmtDate": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.In(activeLocation()).Format("2006-01-02")
+		},
+		"fmtDateTime": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.In(activeLocation()).Format("2006-01-02 15:04")
+		},
+		"fmtTime": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.In(activeLocation()).Format("15:04:05")
+		},
+		// fmtIn is the escape-hatch: pass any Go time layout string and it
+		// renders in the active zone. Used by templates that need a specific
+		// visible format (e.g. "Jan 2, 2006 3:04 PM") that fmtDate/fmtDateTime
+		// don't cover. Keeps the existing look of the page while switching
+		// the underlying zone.
+		"fmtIn": func(t time.Time, layout string) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.In(activeLocation()).Format(layout)
+		},
+		"tzName": func() string { return activeLocation().String() },
 		// httpCodeDesc returns a plain-English one-liner explaining what a
 		// redirect status code means in practice. Used in tooltips.
 		"httpCodeDesc": func(code int) string {
@@ -2674,6 +2722,10 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws))
+	// Mirror syncCaddy: preview-validation must match the config we'd push
+	// for real, otherwise a raw_route edit could validate clean here but
+	// fail with errors.routes rejection at sync time.
+	applyErrorPages(proposed)
 	if err := caddyCl.Validate(proposed); err != nil {
 		return "Caddy rejected the proposed config: " + err.Error()
 	}
@@ -2925,6 +2977,10 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	applyListen(proposed)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, skipList)
+	// v2.4.12: branded 404/502/503/504 pages with error ID + timestamp so
+	// users hitting a restart window see something nicer than Caddy's
+	// plaintext fallback and ops can correlate to access logs via {err.id}.
+	applyErrorPages(proposed)
 
 	// Validate before touching anything. Caddy runs full provisioning.
 	if err := s.Caddy.Validate(proposed); err != nil {
@@ -4925,6 +4981,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey, _ := models.GetSetting(s.DB, settingTurnstileSiteKey)
 	turnstileSecretKey, _ := models.GetSetting(s.DB, settingTurnstileSecretKey)
 
+	// Timezone — admin-picked IANA zone for rendering timestamps. Empty =
+	// fall back to TZ env var then UTC. See timezone.go for the priority
+	// order and the dropdown options (commonTimezones).
+	timezoneSaved, _ := models.GetSetting(s.DB, settingTimezone)
+
 	serverIP := s.serverIP()
 	cfProxiedStr, _ := models.GetSetting(s.DB, settingCFProxied)
 
@@ -5035,6 +5096,12 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"TurnstileSiteKey":   turnstileSiteKey,
 		"TurnstileSecretKey": turnstileSecretKey,
 		"TurnstileEnabled":   turnstileSiteKey != "" && turnstileSecretKey != "",
+		// Timezone: Timezone is the saved DB value (may be ""). TimezoneActive
+		// is what the server is *actually* rendering in right now — useful as
+		// a "(currently: UTC)" hint when the DB value is empty.
+		"Timezone":       timezoneSaved,
+		"TimezoneActive": activeLocation().String(),
+		"TimezoneOptions": commonTimezones,
 		"ServerIP":           serverIP,
 		"Servers":            caddyServers,
 		"DNSProviders":       providers,
@@ -5080,6 +5147,19 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	turnstileSiteKey := strings.TrimSpace(r.FormValue("turnstile_site_key"))
 	turnstileSecretKey := strings.TrimSpace(r.FormValue("turnstile_secret_key"))
 
+	// Timezone — the dropdown submits an IANA zone name (or empty string
+	// for "use TZ env / UTC"). The "Other…" option in the UI falls back to
+	// a free-text input that submits the same field. Validate via
+	// time.LoadLocation; if bad, bail with 400 so we don't silently save
+	// garbage the next boot can't decode.
+	timezone := strings.TrimSpace(r.FormValue("timezone"))
+	if timezone != "" {
+		if _, err := time.LoadLocation(timezone); err != nil {
+			http.Error(w, "invalid timezone: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Shared server IP — the public IP every DNS provider writes as its
 	// record content. Form field name stays as "cf_server_ip" for
 	// backwards compatibility with bookmarked form submissions; the
@@ -5108,6 +5188,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingSMTPSkipVerify:     smtpSkipVerify,
 		settingTurnstileSiteKey:   turnstileSiteKey,
 		settingTurnstileSecretKey: turnstileSecretKey,
+		settingTimezone:           timezone,
 		settingServerIP:           newServerIP,
 		settingCFProxied:          cfProxied,
 	}
@@ -5150,6 +5231,13 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Hot-apply the timezone: updates the atomic pointer every template
+	// fmtDate call reads from, so the redirect back to /settings below
+	// already renders in the new zone without waiting for a restart. Error
+	// is ignored — we already validated above, so LoadLocation can't fail
+	// here barring a race with tzdata being unloaded (won't happen in a
+	// container with /usr/share/zoneinfo baked in).
+	_ = setActiveLocation(timezone)
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", "notify+smtp", smtpHost, true)
 
 	// v2.4.0: per-server public IP update. The settings form submits one

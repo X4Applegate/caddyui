@@ -50,7 +50,7 @@
             </span>
           {{end}}
         </td>
-        <td class="px-5 py-3 font-mono text-xs text-ink-500">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td class="px-5 py-3 font-mono text-xs text-ink-500">{{fmtIn .CreatedAt "2006-01-02"}}</td>
         <td class="px-5 py-3 text-right whitespace-nowrap sticky right-0 bg-white shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)]">
           {{if ne .ID $.User.ID}}
           <form method="post" action="/users/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete user {{.Email}}?')">

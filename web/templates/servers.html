@@ -59,7 +59,7 @@
           {{else}}<span class="text-ink-400 text-xs italic">No tags</span>{{end}}
         </td>
         <td class="px-5 py-3 text-xs text-ink-500">
-          {{if .LastContactAt.Valid}}{{.LastContactAt.Time.Format "Jan 2, 2006 3:04 PM"}}{{else}}<span class="text-ink-400">never</span>{{end}}
+          {{if .LastContactAt.Valid}}{{fmtIn .LastContactAt.Time "Jan 2, 2006 3:04 PM"}}{{else}}<span class="text-ink-400">never</span>{{end}}
         </td>
         <td class="px-5 py-3 text-right whitespace-nowrap sticky right-0 bg-white shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)]">
           <form method="post" action="/servers/{{.ID}}/select" class="inline mr-3">
@@ -109,7 +109,7 @@
         {{if eq .Type "managed"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">Managed</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">External</span>{{end}}
         {{range .TagList}}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">{{.}}</span>{{end}}
       </div>
-      <div class="text-xs text-ink-500">Last contact: {{if .LastContactAt.Valid}}{{.LastContactAt.Time.Format "Jan 2, 2006 3:04 PM"}}{{else}}<span class="text-ink-400">never</span>{{end}}</div>
+      <div class="text-xs text-ink-500">Last contact: {{if .LastContactAt.Valid}}{{fmtIn .LastContactAt.Time "Jan 2, 2006 3:04 PM"}}{{else}}<span class="text-ink-400">never</span>{{end}}</div>
       <div class="flex items-center gap-4 pt-2 border-t border-ink-100 text-sm">
         <form method="post" action="/servers/{{.ID}}/select" class="inline">
           <button class="text-brand-600 hover:text-brand-700 font-medium transition">Select</button>

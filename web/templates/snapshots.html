@@ -83,7 +83,7 @@
     <tbody>
       {{range .Snapshots}}
       <tr class="border-t border-ink-100 align-top hover:bg-ink-50/60 transition">
-        <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-600">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+        <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-600">{{fmtIn .CreatedAt "2006-01-02 15:04:05"}}</td>
         <td class="px-5 py-3">
           {{if eq .Source "manual"}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">manual</span>
@@ -128,7 +128,7 @@
     <div class="p-4 space-y-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <div class="text-xs text-ink-600 whitespace-nowrap">{{.CreatedAt.Format "2006-01-02 15:04"}}</div>
+          <div class="text-xs text-ink-600 whitespace-nowrap">{{fmtIn .CreatedAt "2006-01-02 15:04"}}</div>
           {{if .Note}}<div class="text-sm text-ink-800 mt-0.5 break-words">{{.Note}}</div>{{end}}
         </div>
         {{if eq .Source "manual"}}

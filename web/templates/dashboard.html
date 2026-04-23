@@ -94,13 +94,13 @@
       <div>
         <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Last contact</div>
         {{if .CurrentServer.LastContactAt.Valid}}
-        <span class="font-medium text-ink-700">{{.CurrentServer.LastContactAt.Time.Format "Jan 2, 3:04 PM"}}</span>
+        <span class="font-medium text-ink-700">{{fmtIn .CurrentServer.LastContactAt.Time "Jan 2, 3:04 PM"}}</span>
         {{else}}<span class="text-ink-400 italic">never</span>{{end}}
       </div>
       <div>
         <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Last sync</div>
         {{if .LastSync}}
-        <span class="font-medium text-ink-700">{{.LastSync.Format "Jan 2, 3:04 PM"}}</span>
+        <span class="font-medium text-ink-700">{{fmtIn .LastSync "Jan 2, 3:04 PM"}}</span>
         {{else}}<span class="text-ink-400 italic">never</span>{{end}}
       </div>
       {{if eq .User.Role "admin"}}
