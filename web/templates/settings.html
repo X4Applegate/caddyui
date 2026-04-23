@@ -94,6 +94,24 @@
         <p class="text-xs text-ink-500 mt-1.5">Comma-separate multiple recipients.</p>
       </div>
     </div>
+
+    {{/* Save + Test buttons live at the bottom of the SMTP card so they're
+         where the user's hands already are — no scrolling to the bottom of
+         the page and back. The Save button submits the main settings form
+         (same endpoint as the global "Save settings" button); Test Email
+         is type="button" with onclick so it fires an independent fetch
+         against /settings/test-email without submitting the form. */}}
+    <div class="pt-3 border-t border-ink-100 flex flex-wrap items-center gap-3">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+      {{if .SMTPConfigured}}
+      <button id="test-email-btn" type="button" onclick="testEmail()" class="inline-flex items-center bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">
+        Send test email
+      </button>
+      <span id="test-email-result" class="text-sm"></span>
+      {{else}}
+      <span class="text-xs text-ink-400 italic">Save SMTP settings to enable the test button</span>
+      {{end}}
+    </div>
   </div>
 
   {{/* ── Notifications / Webhook ── */}}
@@ -115,6 +133,74 @@
       <input name="webhook_url" value="{{.WebhookURL}}" type="url" placeholder="https://hooks.example.com/notify"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       <p class="text-xs text-ink-500 mt-1.5">Optional. CaddyUI will POST JSON payloads here in addition to email. Upstream checks run every 5 minutes; cert checks run every 24 hours.</p>
+    </div>
+
+    {{/* Save + Test webhook buttons — same pattern as the SMTP card. */}}
+    <div class="pt-3 border-t border-ink-100 flex flex-wrap items-center gap-3">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+      {{if .WebhookURL}}
+      <button id="test-webhook-btn" type="button" onclick="testWebhook()" class="inline-flex items-center bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">
+        Send test webhook
+      </button>
+      <span id="test-result" class="text-sm"></span>
+      {{else}}
+      <span class="text-xs text-ink-400 italic">Save a Webhook URL to enable the test button</span>
+      {{end}}
+    </div>
+  </div>
+
+  {{/* ── Timezone (v2.4.12) ── */}}
+  {{/* Admin-picked IANA zone that every DB-stored timestamp renders through
+       (cert expiry, activity log, snapshots, "last updated" markers). Priority
+       is DB > TZ env var > UTC — so you can leave this on Auto to inherit
+       the container's TZ, or override it per-install without touching
+       docker-compose.yml.
+
+       UX: a dropdown of common zones + an "Other…" option that reveals a
+       free-text input for anything else tzdata knows about. The small muted
+       line beneath shows what the server is *currently* rendering in, which
+       matters when the DB value is empty and the TZ env fallback kicks in. */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">Timezone</div>
+      <p class="text-xs text-ink-500">Render timestamps (cert expiry, activity log, snapshots) in this zone. Leave blank to inherit the container's <code class="font-mono text-ink-700">TZ</code> environment variable.</p>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Timezone</label>
+        {{/* Detect "custom" mode: the saved value isn't empty and isn't in
+             the common list, so we need the text input revealed by default. */}}
+        {{$tz := .Timezone}}
+        {{$isCommon := false}}
+        {{if eq $tz ""}}{{$isCommon = true}}{{end}}
+        {{range .TimezoneOptions}}{{if eq $tz .}}{{$isCommon = true}}{{end}}{{end}}
+        <select id="timezone-select" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition"
+          onchange="onTimezoneSelectChange()">
+          <option value="" {{if eq $tz ""}}selected{{end}}>Auto (use TZ env var)</option>
+          {{range .TimezoneOptions}}
+          <option value="{{.}}" {{if eq $tz .}}selected{{end}}>{{.}}</option>
+          {{end}}
+          <option value="__other__" {{if not $isCommon}}selected{{end}}>Other…</option>
+        </select>
+        {{/* The name="timezone" field the form actually submits. Starts
+             populated with the saved value; the JS below keeps it in sync
+             with the dropdown and the custom text input. */}}
+        <input type="hidden" id="timezone-hidden" name="timezone" value="{{$tz}}" />
+        <div id="timezone-custom-wrap" class="mt-2 {{if $isCommon}}hidden{{end}}">
+          <input id="timezone-custom" type="text" value="{{if not $isCommon}}{{$tz}}{{end}}" placeholder="e.g. America/Indiana/Indianapolis"
+            oninput="onTimezoneCustomInput()"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+          <p class="text-xs text-ink-500 mt-1">Any IANA zone name (see <a href="https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">tz database</a>).</p>
+        </div>
+      </div>
+      <div class="flex items-end">
+        <p class="text-xs text-ink-500">Currently rendering in <code class="font-mono text-ink-700">{{.TimezoneActive}}</code>.</p>
+      </div>
+    </div>
+
+    <div class="pt-3 border-t border-ink-100 flex flex-wrap items-center gap-3">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
     </div>
   </div>
 
@@ -286,34 +372,10 @@
       onsubmit="return confirm('Clear all {{.DisplayName}} API credentials? Existing DNS records on {{.DisplayName}} stay in place — this only removes the keys stored in CaddyUI.')"></form>
 {{end}}{{end}}
 
-{{/* ── Test buttons ── */}}
-<div class="max-w-2xl mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-  {{if .SMTPConfigured}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
-    <div class="text-sm font-semibold text-ink-800 mb-1">Test Email</div>
-    <p class="text-xs text-ink-400 mb-4">Send a test message to <span class="font-mono">{{.SMTPTo}}</span> to verify SMTP works.</p>
-    <div class="flex items-center gap-3">
-      <button id="test-email-btn" onclick="testEmail()" class="inline-flex items-center bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">
-        Send test email
-      </button>
-      <span id="test-email-result" class="text-sm"></span>
-    </div>
-  </div>
-  {{end}}
-
-  {{if .WebhookURL}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
-    <div class="text-sm font-semibold text-ink-800 mb-1">Test Webhook</div>
-    <p class="text-xs text-ink-400 mb-4">POST a test payload to the configured webhook URL.</p>
-    <div class="flex items-center gap-3">
-      <button id="test-webhook-btn" onclick="testWebhook()" class="inline-flex items-center bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">
-        Send test webhook
-      </button>
-      <span id="test-result" class="text-sm"></span>
-    </div>
-  </div>
-  {{end}}
-</div>
+{{/* The Test Email and Test Webhook buttons used to live in their own
+     cards here, but v2.4.12 moved them up into the SMTP and Webhook cards
+     above (next to each section's Save button) so you can edit → save →
+     test without scrolling to the bottom of the page. */}}
 
 {{/* ── Notifier status ── */}}
 <div class="max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-6">
@@ -411,5 +473,31 @@ function testWebhook() {
     })
     .catch(function() {});
 })();
+
+// Timezone dropdown glue (v2.4.12). The <select> isn't named="timezone"
+// itself because we need the "Other…" option to swap in a free-text input
+// for arbitrary IANA zones. Instead, a hidden input carries the actual
+// submitted value and these two handlers keep it in sync.
+function onTimezoneSelectChange() {
+  var sel = document.getElementById('timezone-select');
+  var wrap = document.getElementById('timezone-custom-wrap');
+  var custom = document.getElementById('timezone-custom');
+  var hidden = document.getElementById('timezone-hidden');
+  if (sel.value === '__other__') {
+    wrap.classList.remove('hidden');
+    hidden.value = custom.value || '';
+    custom.focus();
+  } else {
+    wrap.classList.add('hidden');
+    hidden.value = sel.value;
+  }
+}
+function onTimezoneCustomInput() {
+  // Only relevant when "Other…" is selected — the form submission should
+  // use whatever the user typed verbatim. time.LoadLocation on the server
+  // validates it, so typos get rejected at save time.
+  document.getElementById('timezone-hidden').value =
+    document.getElementById('timezone-custom').value.trim();
+}
 </script>
 {{end}}

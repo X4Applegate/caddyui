@@ -12,13 +12,18 @@ services:
       - caddy_config:/config
     environment:
       CADDY_ADMIN: 0.0.0.0:2019
+      # Timezone for Caddy access logs and cert-renewal timestamps. Any
+      # IANA zone name works (America/New_York, Europe/London, Asia/Tokyo,
+      # UTC, …). Defaults to UTC when unset. CaddyUI honors the same
+      # TZ var — pair them so log timestamps line up across both containers.
+      TZ: ${TZ:-UTC}
     command: caddy run --config /config/caddy/autosave.json --resume --adapter json
     networks:
       - caddyui
 
   caddyui:
     # Local build. Pass CADDYUI_VERSION to stamp the version string the UI
-    # shows — e.g. `CADDYUI_VERSION=v2.4.11 docker compose up -d --build`.
+    # shows — e.g. `CADDYUI_VERSION=v2.4.12 docker compose up -d --build`.
     # Defaults to "dev" when unset, which is why a fresh `docker compose up`
     # shows version "dev". For the published release image instead, swap
     # this block for `image: applegater/caddyui:latest` and drop `build:`.
@@ -47,6 +52,12 @@ services:
       # rehydrates routes from the CaddyUI DB. Safe: SyncCaddy bails out when
       # the DB is empty, so first-boot won't wipe an existing Caddyfile.
       CADDYUI_SYNC_ON_START: "1"
+      # Timezone for log timestamps and server-side date rendering in the
+      # UI. Any IANA zone name works (America/New_York, Europe/London,
+      # Asia/Tokyo, UTC, …). Defaults to UTC when unset. You can also
+      # override per-user from Settings → Timezone; the DB value wins
+      # over this env var when both are set.
+      TZ: ${TZ:-UTC}
     networks:
       - caddyui
 

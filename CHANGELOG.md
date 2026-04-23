@@ -5,6 +5,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.4.12] — 2026-04-22 · Settings layout fix, timezone picker, branded error pages
+
+### Added
+- **Timezone setting** at `Settings → Timezone`. Pick an IANA zone from the common-zones dropdown or type any zone `time.LoadLocation` knows about via the "Other…" option. Every DB-stored timestamp rendered in the UI — cert expiry, activity log, snapshots, "last contact", "last sync" — flows through the active zone. Resolution priority is:
+  1. DB value (what you picked in Settings)
+  2. `TZ` environment variable (Go's `time.Local`, populated by the stdlib at startup)
+  3. UTC
+- **`TZ: ${TZ:-UTC}` environment variable** added to both `caddy` and `caddyui` services in `docker-compose.yml`, with inline comments explaining that the DB setting wins when both are set. Default is UTC when `TZ` is unset.
+- **Branded 404 / 502 / 503 / 504 error pages** served by Caddy for every request that would otherwise return a plain-text error. Each page shows the status code, a short human-readable explanation of what probably went wrong, an **error ID** (`{http.error.id}` — 9-char correlation ID Caddy already logs per request), and the current HTTP-Date timestamp. Self-hosted dark-mode-aware layout, single HTML blob injected at `apps.http.servers.srv0.errors.routes` so it covers every proxy host. No customisation UI in this release — one hardcoded design for everyone.
+
+### Changed
+- **SMTP card now carries its own Save + Send-test-email buttons inline** at the bottom of the card. Same for the Webhook card (Save + Send-test-webhook). Previously you had to scroll down to a separate "Test buttons" section at the bottom of the page to trigger a test — which was far enough from the inputs that it felt disconnected from the values you'd just typed. The old out-of-form "Test buttons" card has been removed; its replacement lives in-card right where you just saved. All three existing submit buttons on the page (SMTP, Webhook, and the new Timezone card) submit the same form, so "Save settings" still writes every field at once.
+
+### Template funcs (for custom layouts)
+- `{{ fmtDate t }}` → `2006-01-02` in the active zone
+- `{{ fmtDateTime t }}` → `2006-01-02 15:04` in the active zone
+- `{{ fmtTime t }}` → `15:04:05` in the active zone
+- `{{ fmtIn t "layout" }}` → arbitrary Go time layout in the active zone (used internally to keep existing visible formats unchanged)
+- `{{ tzName }}` → the active zone's name (e.g. `America/New_York`)
+
+### Implementation notes
+- Timezone uses `atomic.Pointer[time.Location]` for lock-free reads on the hot path (every template render calls it). `postSettings` validates via `time.LoadLocation` before save, then hot-applies via `setActiveLocation` so the immediate redirect already renders in the new zone without a restart.
+- Error pages use the full `{http.error.*}` placeholder path — the `{err.*}` shortcuts only work through the Caddyfile adapter; raw JSON needs the full path. E2E-validated against `caddy:2-alpine` with a reverse_proxy to a dead upstream: 502 returns the branded page with real `{http.error.id}` and `{time.now.http}` substitutions.
+- `applyErrorPages` runs in both `syncCaddy` and `previewRawRouteValidate` so preview validation can't diverge from the real config push.
+
+### Docker
+- Published as `applegater/caddyui:v2.4.12` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.4.11] — 2026-04-22 · Visible pencil-icon next to every identifier (dashboard pattern, now everywhere)
 
 ### Changed

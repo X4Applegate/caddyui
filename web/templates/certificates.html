@@ -93,11 +93,11 @@
             {{if lt .DaysLeft 0}}
               <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Expired</span>
             {{else if lt .DaysLeft 15}}
-              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700" title="{{.ExpiresAt.Format "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700" title="{{fmtIn .ExpiresAt "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
             {{else if lt .DaysLeft 60}}
-              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="{{.ExpiresAt.Format "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="{{fmtIn .ExpiresAt "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
             {{else}}
-              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700" title="{{.ExpiresAt.Format "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700" title="{{fmtIn .ExpiresAt "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
             {{end}}
           {{else}}
             <span class="text-ink-400 text-xs italic">—</span>

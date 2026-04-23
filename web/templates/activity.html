@@ -29,7 +29,7 @@
       {{range .Entries}}
       <tr class="border-t border-ink-100 align-top hover:bg-ink-50/60 transition {{if not .Success}}bg-red-50/40{{end}}"
           data-search="{{.Actor}} {{.Action}} {{.Target}} {{.Detail}}">
-        <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-500">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+        <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-500">{{fmtIn .CreatedAt "2006-01-02 15:04:05"}}</td>
         <td class="px-5 py-3 whitespace-nowrap text-xs text-ink-600">{{.Actor}}</td>
         <td class="px-5 py-3 font-mono text-xs whitespace-nowrap text-ink-800">{{.Action}}</td>
         <td class="px-5 py-3 font-mono text-xs text-ink-500 whitespace-nowrap">{{.Target}}</td>
