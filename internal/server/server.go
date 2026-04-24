@@ -4857,42 +4857,98 @@ func (s *Server) dnsCreateRecordForFQDN(serverID int64, provider, zoneID, zoneNa
 	return rec.ID, zone.Name
 }
 
-// dnsCreateRecord creates an A record for the first domain of the proxy
-// host. p.DNSProvider / p.DNSZoneID must be set before calling.
-// Persists the record ID to the proxy_hosts row via
-// models.UpdateProxyHostDNSRecord. No-op when DNS fields are unset.
+// splitDNSRecordIDs splits the comma-separated DNSRecordID column value into
+// individual provider record IDs. v2.5.9 introduced the comma-separated
+// encoding so routes with multiple hostnames (e.g. `example.com, *.example.com`)
+// can track one provider record per hostname. Empty / single-ID values still
+// parse cleanly — a pre-v2.5.9 row with "abc123" returns []string{"abc123"}.
+func splitDNSRecordIDs(csv string) []string {
+	if csv == "" {
+		return nil
+	}
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// dnsCreateRecord creates an A record for every domain on the proxy host.
+// p.DNSProvider / p.DNSZoneID must be set before calling. The set of
+// provider-returned record IDs is persisted to the proxy_hosts row as a
+// comma-separated string via models.UpdateProxyHostDNSRecord.
+// v2.5.9: previously only the first domain got a record — multi-domain hosts
+// (aliases + primary, or wildcard + apex) now get one record per hostname so
+// clients resolving any alias actually reach the origin.
 func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
-	recID, zname := s.dnsCreateRecordForFQDN(serverID, p.DNSProvider, p.DNSZoneID, p.DNSZoneName, dns.FirstDomain(p.Domains))
-	if recID == "" {
+	domains := p.DomainList()
+	if len(domains) == 0 {
 		return
 	}
-	if err := models.UpdateProxyHostDNSRecord(s.DB, hostID, p.DNSProvider, p.DNSZoneID, zname, recID); err != nil {
-		log.Printf("DNS %s: store record ID for host %d: %v", p.DNSProvider, hostID, err)
+	var ids []string
+	var zname string
+	for _, fqdn := range domains {
+		recID, zn := s.dnsCreateRecordForFQDN(serverID, p.DNSProvider, p.DNSZoneID, p.DNSZoneName, fqdn)
+		if recID == "" {
+			continue
+		}
+		ids = append(ids, recID)
+		if zname == "" {
+			zname = zn
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if err := models.UpdateProxyHostDNSRecord(s.DB, hostID, p.DNSProvider, p.DNSZoneID, zname, strings.Join(ids, ",")); err != nil {
+		log.Printf("DNS %s: store record IDs for host %d: %v", p.DNSProvider, hostID, err)
 	}
 }
 
 // dnsCreateRecordForRaw is the raw-route twin of dnsCreateRecord.
-// v2.5.6: raw routes don't carry a Domains CSV, so the FQDN is pulled
-// from the JSON blob's match.host[] via firstRawRouteHost. The record
-// ID is persisted to the raw_routes row on success via
-// models.UpdateRawRouteDNSRecord. No-op when DNS fields are unset or
-// the JSON has no host matcher.
+// v2.5.6: raw routes don't carry a Domains CSV, so hostnames are pulled
+// from the JSON blob's match.host[] via rawRouteHosts.
+// v2.5.9: creates a record for EVERY hostname in match[].host[] rather than
+// only the first — so an advanced route covering `example.com, *.example.com`
+// gets both A records provisioned. Record IDs are persisted to the raw_routes
+// row as a comma-separated string via models.UpdateRawRouteDNSRecord. No-op
+// when DNS fields are unset or the JSON has no host matcher.
 func (s *Server) dnsCreateRecordForRaw(serverID, routeID int64, rr *models.RawRoute) {
-	fqdn := firstRawRouteHost(rr.JSONData)
-	recID, zname := s.dnsCreateRecordForFQDN(serverID, rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, fqdn)
-	if recID == "" {
+	hosts := rawRouteHosts(*rr)
+	if len(hosts) == 0 {
 		return
 	}
-	if err := models.UpdateRawRouteDNSRecord(s.DB, routeID, rr.DNSProvider, rr.DNSZoneID, zname, recID); err != nil {
-		log.Printf("DNS %s: store record ID for raw route %d: %v", rr.DNSProvider, routeID, err)
+	var ids []string
+	var zname string
+	for _, fqdn := range hosts {
+		recID, zn := s.dnsCreateRecordForFQDN(serverID, rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, fqdn)
+		if recID == "" {
+			continue
+		}
+		ids = append(ids, recID)
+		if zname == "" {
+			zname = zn
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if err := models.UpdateRawRouteDNSRecord(s.DB, routeID, rr.DNSProvider, rr.DNSZoneID, zname, strings.Join(ids, ",")); err != nil {
+		log.Printf("DNS %s: store record IDs for raw route %d: %v", rr.DNSProvider, routeID, err)
 	}
 }
 
-// dnsDeleteRecord removes a previously-created record. Best-effort: logs
-// and returns on error (the row is being deleted anyway; a leftover record
-// is a minor annoyance, not a correctness issue).
-func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordID string) {
-	if providerID == "" || recordID == "" {
+// dnsDeleteRecord removes previously-created records for the given row.
+// v2.5.9: recordIDs may be a single ID ("abc123") or a comma-separated list
+// ("abc123,def456") — loops internally so callers can keep passing the raw
+// DNSRecordID column value regardless of how many records are behind it.
+// Best-effort: errors are logged, not returned (the row is being deleted
+// anyway; a leftover record is a minor annoyance, not a correctness issue).
+func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordIDs string) {
+	if providerID == "" || recordIDs == "" {
 		return
 	}
 	client := s.dnsClient(providerID)
@@ -4909,11 +4965,13 @@ func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordID string) 
 	// prevent, even when the touch is a cleanup. Leaves the record in
 	// place; the user can remove it by hand via the provider's console.
 	if !s.zoneAllowed(providerID, zone.Name) {
-		log.Printf("DNS %s: zone %q not in allow-list — leaving record %s in place", providerID, zone.Name, recordID)
+		log.Printf("DNS %s: zone %q not in allow-list — leaving records %s in place", providerID, zone.Name, recordIDs)
 		return
 	}
-	if err := client.DeleteRecord(zone, recordID); err != nil {
-		log.Printf("DNS %s: delete record %s: %v", providerID, recordID, err)
+	for _, recordID := range splitDNSRecordIDs(recordIDs) {
+		if err := client.DeleteRecord(zone, recordID); err != nil {
+			log.Printf("DNS %s: delete record %s: %v", providerID, recordID, err)
+		}
 	}
 }
 
@@ -4953,15 +5011,21 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 
 	// retarget is the shared delete-then-create worker. kind is a tag for
 	// the log line ("proxy"/"raw"); persist is the row-specific updater
-	// that writes the fresh record ID (or clears on failure). fqdn is
-	// pulled differently per row type, so the caller hands it in.
-	retarget := func(kind string, rowID int64, provider, zoneID, zoneName, recordID, fqdn string, persist func(zoneID, zoneName, recordID string)) {
+	// that writes the fresh record ID(s) (or clears on failure). fqdns are
+	// pulled differently per row type (Domains CSV vs match[].host[]), so
+	// the caller hands them in.
+	// v2.5.9: accepts multiple fqdns + multiple old record IDs to match
+	// the multi-hostname create path. Deletes every old record, creates
+	// one new record per current hostname, persists the joined ID list.
+	// Rows created pre-v2.5.9 (one ID, multiple hostnames) self-heal on
+	// the first retarget — the missing-alias records get created fresh.
+	retarget := func(kind string, rowID int64, provider, zoneID, zoneName, recordIDs string, fqdns []string, persist func(zoneID, zoneName, recordID string)) {
 		client := getClient(provider)
 		if client == nil {
 			log.Printf("DNS %s: credentials missing — skipping %s %d retarget", provider, kind, rowID)
 			return
 		}
-		if fqdn == "" {
+		if len(fqdns) == 0 {
 			return
 		}
 		zone := dns.Zone{ID: zoneID, Name: zoneName}
@@ -4973,7 +5037,7 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 		// tightened the list, the retarget job leaves that record alone —
 		// same policy as dnsCreateRecord / dnsDeleteRecord.
 		if !s.zoneAllowed(provider, zone.Name) {
-			log.Printf("DNS %s: zone %q not in allow-list — skipping retarget for %s", provider, zone.Name, fqdn)
+			log.Printf("DNS %s: zone %q not in allow-list — skipping retarget for %v", provider, zone.Name, fqdns)
 			return
 		}
 		// Delete-then-create semantic. Every provider implementation is
@@ -4982,23 +5046,32 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 		// whole provider set, even if a tiny window exists where the
 		// record is absent. Users are already dealing with a live IP
 		// change when this runs; a few seconds of DNS flutter is noise.
-		if err := client.DeleteRecord(zone, recordID); err != nil {
-			log.Printf("DNS %s: delete old record %s (%s): %v", provider, recordID, fqdn, err)
+		for _, recordID := range splitDNSRecordIDs(recordIDs) {
+			if err := client.DeleteRecord(zone, recordID); err != nil {
+				log.Printf("DNS %s: delete old record %s: %v", provider, recordID, err)
+			}
 		}
-		rec, err := client.CreateRecord(zone, fqdn, newIP, "A", 0)
-		if err != nil {
-			log.Printf("DNS %s: create new record for %s: %v", provider, fqdn, err)
+		var newIDs []string
+		for _, fqdn := range fqdns {
+			rec, err := client.CreateRecord(zone, fqdn, newIP, "A", 0)
+			if err != nil {
+				log.Printf("DNS %s: create new record for %s: %v", provider, fqdn, err)
+				continue
+			}
+			newIDs = append(newIDs, rec.ID)
+			log.Printf("DNS %s: updated %s → %s (record %s)", provider, fqdn, newIP, rec.ID)
+		}
+		if len(newIDs) == 0 {
 			persist("", "", "")
 			return
 		}
-		persist(zone.ID, zone.Name, rec.ID)
-		log.Printf("DNS %s: updated %s → %s (record %s)", provider, fqdn, newIP, rec.ID)
+		persist(zone.ID, zone.Name, strings.Join(newIDs, ","))
 	}
 
 	for _, h := range hosts {
 		h := h
 		retarget("proxy", h.ID, h.DNSProvider, h.DNSZoneID, h.DNSZoneName, h.DNSRecordID,
-			dns.FirstDomain(h.Domains),
+			h.DomainList(),
 			func(zoneID, zoneName, recordID string) {
 				provider := h.DNSProvider
 				if recordID == "" {
@@ -5010,7 +5083,7 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 	for _, rr := range rawRoutes {
 		rr := rr
 		retarget("raw", rr.ID, rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, rr.DNSRecordID,
-			firstRawRouteHost(rr.JSONData),
+			rawRouteHosts(rr),
 			func(zoneID, zoneName, recordID string) {
 				provider := rr.DNSProvider
 				if recordID == "" {
