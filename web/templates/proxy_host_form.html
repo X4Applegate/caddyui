@@ -48,16 +48,113 @@
     </div>
   </div>
 
-  <div>
-    <label class="block text-sm font-medium text-ink-800 mb-1.5">TLS Certificate</label>
-    <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <option value="0" {{if eq .Host.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
-      {{range .Certificates}}
-      <option value="{{.ID}}" {{if eq $.Host.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
-      {{end}}
-    </select>
-    <p class="text-xs text-ink-500 mt-1.5">Select a custom certificate or let Caddy manage it automatically. <a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a></p>
-  </div>
+  {{/* ── Managed DNS (unified picker across all enabled providers) ──
+       v2.7.1 moved this block from its previous position (buried under Basic
+       Auth) up next to Options — managing DNS is tied directly to the
+       Domain names field at the top, so users shouldn't have to scroll past
+       five unrelated sections to find it. Auto-opens on edit when a
+       provider is already picked; on new hosts it stays collapsed so the
+       form still reads compactly. */}}
+  {{if .AnyDNSEnabled}}
+  {{$provider := .Host.DNSProvider}}
+  <details class="pt-4 border-t border-ink-100"{{if $provider}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Managed DNS
+    </summary>
+    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for the first domain in this host, pointing at this server's public IP. The record is deleted when the host is removed. Pick the provider that owns the domain, then select the zone.</p>
+    {{if .CurrentServerIP}}
+    <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
+    {{else}}
+    <p class="text-xs text-amber-700 mb-3">No public IP configured for this Caddy server yet — set it under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a> before enabling managed DNS.</p>
+    {{end}}
+
+    <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+      <div class="sm:col-span-4">
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Provider</label>
+        <select id="dns-provider-select" name="dns_provider"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="" {{if eq $provider ""}}selected{{end}}>None</option>
+          {{range .DNSProviders}}
+          <option value="{{.ID}}" {{if eq $provider .ID}}selected{{end}}>{{.DisplayName}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div id="dns-zone-wrap" class="sm:col-span-8 {{if eq $provider ""}}hidden{{end}}">
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Zone / Domain</label>
+        <select id="dns-zone-select" name="dns_zone_id"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="">{{if eq $provider ""}}Select a provider first{{else}}Loading zones…{{end}}</option>
+        </select>
+        {{/* Hidden companion field: the zone's base domain name. The picker
+             JS keeps this in sync with the selected option so the server
+             has both the opaque ID (for CF/Hetzner) and the display name
+             (for record CRUD and the proxy-host list). */}}
+        <input type="hidden" id="dns-zone-name" name="dns_zone_name" value="{{.Host.DNSZoneName}}" />
+        <p id="dns-zone-hint" class="text-xs text-ink-400 mt-1 hidden"></p>
+        {{/* v2.5.1: "this domain doesn't match the selected zone" warning.
+             Populated by the zone-picker JS when the first domain isn't a
+             suffix of the chosen zone (e.g. user typed test.example.com but
+             picked example.org as the zone). Independent of the existing
+             record warning below — that one catches collisions, this one
+             catches typos / wrong-zone-picks. */}}
+        <p id="dns-zone-mismatch" class="text-xs text-amber-700 mt-1.5 hidden flex items-start gap-1.5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span id="dns-zone-mismatch-msg" class="flex-1"></span>
+        </p>
+      </div>
+    </div>
+
+    {{if .Host.DNSRecordID}}
+    <p class="text-xs text-green-600 mt-3">✓ DNS record active &mdash; record ID: <span class="font-mono">{{.Host.DNSRecordID}}</span></p>
+    {{end}}
+
+    {{/* v2.5.6: "DNS record already exists" warning. Earlier releases
+         exposed an "Override (delete & recreate)" button here that wiped
+         the existing record and wrote a fresh one. That was removed on
+         purpose: if a zone is shared across unrelated services, clicking
+         Override could silently destroy someone else's A record. CaddyUI
+         now only writes to records it created — if one already exists,
+         the user clears it manually in the provider console. */}}
+    <div id="dns-record-warn" class="hidden mt-3 rounded-lg border px-3 py-2 text-xs">
+      <div class="flex items-start gap-2">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0 mt-0.5" id="dns-record-warn-icon" aria-hidden="true">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <div class="flex-1 min-w-0">
+          <div id="dns-record-warn-msg" class="font-medium"></div>
+          <div id="dns-record-warn-detail" class="mt-1 font-mono text-[11px] opacity-80 break-all"></div>
+          <div id="dns-record-warn-help" class="mt-2 opacity-90">Delete the existing record in your provider's console, then save again — CaddyUI won't overwrite records it didn't create.</div>
+        </div>
+      </div>
+    </div>
+  </details>
+  {{end}}
+
+  {{/* TLS Certificate — collapsed by default (most hosts use the default
+       "Auto" cert, so exposing the dropdown up-front is just clutter). Auto-
+       opens on edit only when the host has a non-default certificate picked,
+       matching the behaviour of Advanced config / IP Allowlist / Managed DNS
+       above. */}}
+  <details class="pt-4 border-t border-ink-100"{{if gt .Host.CertificateID 0}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      TLS Certificate <span class="font-normal normal-case">(optional, defaults to auto Let's Encrypt)</span>
+    </summary>
+    <div class="mt-3">
+      <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="0" {{if eq .Host.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
+        {{range .Certificates}}
+        <option value="{{.ID}}" {{if eq $.Host.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
+        {{end}}
+      </select>
+      <p class="text-xs text-ink-500 mt-1.5">Select a custom certificate or let Caddy manage it automatically. <a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a></p>
+    </div>
+  </details>
 
   {{/* Optional / power-user sections below — collapsed by default so the
        core form stays compact. Each <details> auto-opens on edit when the
@@ -143,91 +240,6 @@
       </button>
     </div>
   </div>
-
-  {{/* ── Managed DNS (unified picker across all enabled providers) ──
-       Auto-opens on edit when a provider is already picked, so users editing
-       a host with DNS configured see the section expanded. On new hosts it's
-       closed by default to keep the form compact. */}}
-  {{if .AnyDNSEnabled}}
-  {{$provider := .Host.DNSProvider}}
-  <details class="pt-4 border-t border-ink-100"{{if $provider}} open{{end}}>
-    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-      Managed DNS
-    </summary>
-    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for the first domain in this host, pointing at this server's public IP. The record is deleted when the host is removed. Pick the provider that owns the domain, then select the zone.</p>
-    {{if .CurrentServerIP}}
-    <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
-    {{else}}
-    <p class="text-xs text-amber-700 mb-3">No public IP configured for this Caddy server yet — set it under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a> before enabling managed DNS.</p>
-    {{end}}
-
-    <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
-      <div class="sm:col-span-4">
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Provider</label>
-        <select id="dns-provider-select" name="dns_provider"
-          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-          <option value="" {{if eq $provider ""}}selected{{end}}>None</option>
-          {{range .DNSProviders}}
-          <option value="{{.ID}}" {{if eq $provider .ID}}selected{{end}}>{{.DisplayName}}</option>
-          {{end}}
-        </select>
-      </div>
-      <div id="dns-zone-wrap" class="sm:col-span-8 {{if eq $provider ""}}hidden{{end}}">
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Zone / Domain</label>
-        <select id="dns-zone-select" name="dns_zone_id"
-          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-          <option value="">{{if eq $provider ""}}Select a provider first{{else}}Loading zones…{{end}}</option>
-        </select>
-        {{/* Hidden companion field: the zone's base domain name. The picker
-             JS keeps this in sync with the selected option so the server
-             has both the opaque ID (for CF/Hetzner) and the display name
-             (for record CRUD and the proxy-host list). */}}
-        <input type="hidden" id="dns-zone-name" name="dns_zone_name" value="{{.Host.DNSZoneName}}" />
-        <p id="dns-zone-hint" class="text-xs text-ink-400 mt-1 hidden"></p>
-        {{/* v2.5.1: "this domain doesn't match the selected zone" warning.
-             Populated by the zone-picker JS when the first domain isn't a
-             suffix of the chosen zone (e.g. user typed test.example.com but
-             picked example.org as the zone). Independent of the existing
-             record warning below — that one catches collisions, this one
-             catches typos / wrong-zone-picks. */}}
-        <p id="dns-zone-mismatch" class="text-xs text-amber-700 mt-1.5 hidden flex items-start gap-1.5">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-            <line x1="12" y1="9" x2="12" y2="13"/>
-            <line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-          <span id="dns-zone-mismatch-msg" class="flex-1"></span>
-        </p>
-      </div>
-    </div>
-
-    {{if .Host.DNSRecordID}}
-    <p class="text-xs text-green-600 mt-3">✓ DNS record active &mdash; record ID: <span class="font-mono">{{.Host.DNSRecordID}}</span></p>
-    {{end}}
-
-    {{/* v2.5.6: "DNS record already exists" warning. Earlier releases
-         exposed an "Override (delete & recreate)" button here that wiped
-         the existing record and wrote a fresh one. That was removed on
-         purpose: if a zone is shared across unrelated services, clicking
-         Override could silently destroy someone else's A record. CaddyUI
-         now only writes to records it created — if one already exists,
-         the user clears it manually in the provider console. */}}
-    <div id="dns-record-warn" class="hidden mt-3 rounded-lg border px-3 py-2 text-xs">
-      <div class="flex items-start gap-2">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0 mt-0.5" id="dns-record-warn-icon" aria-hidden="true">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-          <line x1="12" y1="9" x2="12" y2="13"/>
-          <line x1="12" y1="17" x2="12.01" y2="17"/>
-        </svg>
-        <div class="flex-1 min-w-0">
-          <div id="dns-record-warn-msg" class="font-medium"></div>
-          <div id="dns-record-warn-detail" class="mt-1 font-mono text-[11px] opacity-80 break-all"></div>
-          <div id="dns-record-warn-help" class="mt-2 opacity-90">Delete the existing record in your provider's console, then save again — CaddyUI won't overwrite records it didn't create.</div>
-        </div>
-      </div>
-    </div>
-  </details>
-  {{end}}
 
   {{if .OtherServers}}
   <div class="pt-4 border-t border-ink-100">

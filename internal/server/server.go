@@ -6107,9 +6107,19 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	smtpFrom := strings.TrimSpace(r.FormValue("smtp_from"))
 	smtpTo := strings.TrimSpace(r.FormValue("smtp_to"))
 	smtpSecurity := strings.TrimSpace(r.FormValue("smtp_security"))
+	// Same hidden+checkbox pattern as analytics_enabled below — scan the
+	// full PostForm slice for "1" because FormValue always returns the
+	// hidden input's "0" when both are submitted. See note on
+	// analytics_enabled for the full story. This toggle had the bug from
+	// day one; v2.7.1 fixes it here too so anyone who actually needs to
+	// disable TLS cert verification (self-signed SMTP host) can finally
+	// persist the setting.
 	smtpSkipVerify := "0"
-	if r.FormValue("smtp_skip_verify") == "1" {
-		smtpSkipVerify = "1"
+	for _, v := range r.PostForm["smtp_skip_verify"] {
+		if v == "1" {
+			smtpSkipVerify = "1"
+			break
+		}
 	}
 	if smtpPort == "" {
 		smtpPort = "587"
@@ -6156,9 +6166,21 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// v2.7.0: analytics toggle + ingest target + exclude-IPs. The target
 	// may be blank — loadAnalyticsConfig substitutes the default at read
 	// time, so we store the admin's literal input (possibly "").
+	//
+	// The hidden+checkbox pattern in the template submits
+	// "analytics_enabled=0&analytics_enabled=1" when checked (hidden wins
+	// submission order per HTML5 tree-order, checkbox is appended after).
+	// r.FormValue returns the FIRST value, which is always the hidden "0",
+	// so we have to scan the full r.PostForm slice to find the checkbox's
+	// "1" when present. Matches the browser's "checked box overrides its
+	// hidden sibling" intent. v2.7.1 fix — v2.7.0 used FormValue and the
+	// toggle silently always stayed off.
 	analyticsEnabled := "0"
-	if r.FormValue("analytics_enabled") == "1" {
-		analyticsEnabled = "1"
+	for _, v := range r.PostForm["analytics_enabled"] {
+		if v == "1" {
+			analyticsEnabled = "1"
+			break
+		}
 	}
 	analyticsTarget := strings.TrimSpace(r.FormValue("analytics_ingest_target"))
 	analyticsExclude := r.FormValue("analytics_exclude_ips") // preserve whitespace for textarea re-render
@@ -6171,9 +6193,15 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	if newServerIP == "" {
 		newServerIP = strings.TrimSpace(r.FormValue("cf_server_ip"))
 	}
+	// Same FormValue/hidden-checkbox bug fix as the other two toggles above.
+	// v2.7.1 — previously admins could tick the Cloudflare orange-cloud box
+	// and hit Save, and the setting would silently remain off.
 	cfProxied := "0"
-	if r.FormValue("cf_proxied") == "1" {
-		cfProxied = "1"
+	for _, v := range r.PostForm["cf_proxied"] {
+		if v == "1" {
+			cfProxied = "1"
+			break
+		}
 	}
 	// Snapshot the current server IP before overwriting — used below to
 	// detect whether we need to retarget every managed DNS record.

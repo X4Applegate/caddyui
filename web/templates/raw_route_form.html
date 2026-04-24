@@ -41,19 +41,27 @@
     <p class="text-xs text-ink-500 mt-1.5">Must be valid JSON. Tip: start from an imported entry or the example below.</p>
   </div>
 
-  <div>
-    <label class="block text-sm font-medium text-ink-800 mb-1.5">TLS Certificate</label>
-    <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <option value="0" {{if eq .Row.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
-      {{range .Certificates}}
-      <option value="{{.ID}}" {{if eq $.Row.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
-      {{end}}
-    </select>
-    <p class="text-xs text-ink-500 mt-1.5">
-      Pick a custom cert to bind to the hostnames in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>,
-      or leave Auto to let Caddy manage it. <a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a>
-    </p>
-  </div>
+  {{/* v2.7.1: TLS Certificate collapsed to match proxy-host and
+       redirection forms — most raw routes don't bind a custom cert, so the
+       picker stays out of the way until needed. Auto-opens on edit when a
+       non-default cert is already picked. */}}
+  <details class="pt-4 border-t border-ink-100"{{if gt .Row.CertificateID 0}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      TLS Certificate <span class="font-normal normal-case">(optional, defaults to auto Let's Encrypt)</span>
+    </summary>
+    <div class="mt-3">
+      <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="0" {{if eq .Row.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
+        {{range .Certificates}}
+        <option value="{{.ID}}" {{if eq $.Row.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
+        {{end}}
+      </select>
+      <p class="text-xs text-ink-500 mt-1.5">
+        Pick a custom cert to bind to the hostnames in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>,
+        or leave Auto to let Caddy manage it. <a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a>
+      </p>
+    </div>
+  </details>
 
   {{/* ── v2.5.6: Managed DNS (parity with proxy hosts) ─────────────────
        Same unified picker the proxy-host form uses, driving the same

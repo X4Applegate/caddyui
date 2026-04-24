@@ -67,16 +67,24 @@
     </div>
   </div>
 
-  <div>
-    <label class="block text-sm font-medium text-ink-800 mb-1.5">TLS Certificate</label>
-    <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <option value="0" {{if eq .Host.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
-      {{range .Certificates}}
-      <option value="{{.ID}}" {{if eq $.Host.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
-      {{end}}
-    </select>
-    <p class="text-xs text-ink-500 mt-1.5"><a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a></p>
-  </div>
+  {{/* v2.7.1: TLS Certificate collapsed to match proxy-host form — most
+       redirects use the default auto cert, so hiding the picker until a
+       non-default has been picked keeps the form compact. Auto-opens on
+       edit when a custom cert is already bound. */}}
+  <details class="pt-4 border-t border-ink-100"{{if gt .Host.CertificateID 0}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      TLS Certificate <span class="font-normal normal-case">(optional, defaults to auto Let's Encrypt)</span>
+    </summary>
+    <div class="mt-3">
+      <select name="certificate_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="0" {{if eq .Host.CertificateID 0}}selected{{end}}>Auto (Let's Encrypt / ZeroSSL)</option>
+        {{range .Certificates}}
+        <option value="{{.ID}}" {{if eq $.Host.CertificateID .ID}}selected{{end}}>{{.Name}} — {{.Domains}}</option>
+        {{end}}
+      </select>
+      <p class="text-xs text-ink-500 mt-1.5"><a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a></p>
+    </div>
+  </details>
 
   {{if .OtherServers}}
   <div class="pt-4 border-t border-ink-100">

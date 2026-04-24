@@ -1,20 +1,38 @@
 {{define "title"}}Analytics · CaddyUI{{end}}
 {{define "content"}}
-<div class="flex items-start justify-between mb-6 gap-6">
+<div class="flex items-start justify-between mb-6 gap-6 flex-wrap">
   <div>
     <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Analytics</h1>
     <p class="text-sm text-ink-500 mt-1 max-w-2xl">
       Privacy-light visitor stats built from Caddy's access logs.
-      {{if .IsAdmin}}You're seeing every host this fleet routes.
+      {{if .IsAdmin}}{{if eq .SelectedServerID 0}}You're seeing every host this fleet routes.{{else}}You're seeing hosts routed by the selected server.{{end}}
       {{else}}You're seeing the hosts you own.{{end}}
     </p>
   </div>
-  {{if .IsAdmin}}
-  <a href="/settings#analytics" class="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-700 border border-brand-200 hover:border-brand-300 px-3 py-1.5 rounded-lg transition">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="3"/></svg>
-    Settings
-  </a>
-  {{end}}
+  <div class="flex items-center gap-2 flex-wrap">
+    {{/* Server switcher — only renders when there's more than one Caddy
+         server registered. Drives the ?server=<id> filter on /analytics.
+         Deliberately separate from the global server selector in the top
+         nav: changing this picker doesn't rewrite the admin's working
+         server context, it just narrows what this one page shows. */}}
+    {{if gt (len .AllServers) 1}}
+    <label class="text-xs text-ink-500 font-medium">Server</label>
+    <select
+      class="text-sm border border-ink-200 rounded-lg px-2 py-1.5 bg-white hover:border-ink-300 focus:border-brand-400 focus:ring-1 focus:ring-brand-100 transition"
+      onchange="const v=this.value; window.location = v==='0' ? '/analytics' : '/analytics?server='+v;">
+      <option value="0" {{if eq .SelectedServerID 0}}selected{{end}}>All servers</option>
+      {{range .AllServers}}
+      <option value="{{.ID}}" {{if eq $.SelectedServerID .ID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+    {{end}}
+    {{if .IsAdmin}}
+    <a href="/settings#analytics" class="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-700 border border-brand-200 hover:border-brand-300 px-3 py-1.5 rounded-lg transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="3"/></svg>
+      Settings
+    </a>
+    {{end}}
+  </div>
 </div>
 
 {{if .IsAdmin}}{{if not .AnalyticsEnabled}}
