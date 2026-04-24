@@ -20,6 +20,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +44,12 @@ type Server struct {
 	Static        fs.FS
 	CaddyfilePath string
 	Version       string
+	// DBPath is the filesystem path to the SQLite DB. Stored so the backup
+	// handler can write its VACUUM INTO temp file next to the real DB (same
+	// volume, guaranteed writable by our UID) — `os.TempDir()` → /tmp doesn't
+	// exist in the scratch final image, and creating it at runtime as a
+	// non-root UID isn't allowed. v2.7.5.
+	DBPath string
 	pendingTOTP   sync.Map // token → userID (int64), auto-deleted after 5 min
 
 	// version-check cache (Docker Hub, 1h TTL)
@@ -80,7 +87,7 @@ func (s *Server) SetAnalyticsIngest(ing *analytics.Ingest) {
 	s.analyticsIngest = ing
 }
 
-func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, caddyfilePath string, version string) (*Server, error) {
+func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, caddyfilePath string, version string, dbPath string) (*Server, error) {
 	tpl, err := parseTemplates(templates)
 	if err != nil {
 		return nil, err
@@ -97,6 +104,7 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 		Static:         static,
 		CaddyfilePath:  caddyfilePath,
 		Version:        version,
+		DBPath:         dbPath,
 		healthFailures: map[int64]int{},
 		appHealth:      map[int64]appHealthEntry{},
 	}, nil
@@ -6312,7 +6320,21 @@ func semverParts(v string) [3]int {
 }
 
 func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
-	tmpPath := fmt.Sprintf("%s/caddyui-backup-%s.db", os.TempDir(), time.Now().Format("20060102-150405"))
+	// Write the VACUUM INTO temp file next to the live DB rather than /tmp.
+	// Rationale: the scratch-based final image has no /tmp directory and the
+	// process runs as a non-root UID, so `os.TempDir()` returns "/tmp" but
+	// SQLite's sqlite3_open_v2 gets CANTOPEN (errcode 14). The directory
+	// containing the DB is guaranteed to exist (we just opened the DB from
+	// there) and is writable by our UID (we write WAL + SHM there every
+	// transaction). Falls back to os.TempDir() only if DBPath wasn't plumbed
+	// through — every call site in main.go does plumb it, so the fallback is
+	// defence-in-depth against a future constructor regression. v2.7.5.
+	ts := time.Now().Format("20060102-150405")
+	backupDir := os.TempDir()
+	if s.DBPath != "" {
+		backupDir = filepath.Dir(s.DBPath)
+	}
+	tmpPath := filepath.Join(backupDir, fmt.Sprintf("caddyui-backup-%s.db", ts))
 	defer os.Remove(tmpPath)
 
 	if _, err := s.DB.Exec("VACUUM INTO ?", tmpPath); err != nil {
@@ -6327,7 +6349,7 @@ func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="caddyui-backup-`+time.Now().Format("20060102-150405")+`.db"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="caddyui-backup-`+ts+`.db"`)
 	io.Copy(w, f)
 }
 

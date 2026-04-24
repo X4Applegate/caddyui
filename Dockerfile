@@ -18,6 +18,13 @@ RUN go mod tidy && \
 # initialises correctly when Docker creates it on first run.
 RUN mkdir -p /out/data && chown 10001:10001 /out/data
 
+# Pre-create /tmp so stdlib / third-party code that calls os.TempDir() has
+# a writable directory at runtime. The backup handler is defensive (writes
+# next to the DB instead, v2.7.5) but leaving /tmp missing would silently
+# break anything else that reaches for it (mime/multipart uploads, etc.).
+# 1777 is the standard sticky world-writable mode so any UID can use it.
+RUN mkdir -p /out/tmp && chmod 1777 /out/tmp
+
 # ── Final stage: scratch ──────────────────────────────────────────────────
 # scratch has no shell, no package manager, and no OS packages, so there
 # are zero OS-level CVEs in the final image.
@@ -38,6 +45,9 @@ COPY --from=build /out/caddyui /app/caddyui
 
 # Pre-created data directory (owned by caddyui uid 10001)
 COPY --from=build --chown=10001:10001 /out/data /data
+
+# World-writable /tmp (1777). v2.7.5.
+COPY --from=build /out/tmp /tmp
 
 USER 10001
 
