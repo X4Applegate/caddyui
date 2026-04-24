@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.10] — 2026-04-23 · Edit-path Managed DNS now reacts to alias-only Domains changes
+
+### Fixed
+- **Adding or removing an alias on an existing proxy host or advanced route now actually provisions / removes the matching A record.** v2.5.9 fixed the *create* path and the server-IP *retarget* path to iterate every hostname, but the user-initiated *update* paths at `updateProxyHost` and `updateRawRoute` still detected "did the hostname change?" by comparing only `dns.FirstDomain(old.Domains)` vs `dns.FirstDomain(p.Domains)` (proxy) and `firstRawRouteHost(old.JSONData)` vs `firstRawRouteHost(rr.JSONData)` (raw). If the user kept the primary and just tacked on `try.example.com` as an alias, `domainChanged` / `fqdnChanged` was false, so `needCreate` was false, and no record was ever created for the new alias — the browser then got NXDOMAIN (which Chrome surfaces as `DNS_PROBE_FINISHED_BAD_SECURE_CONFIG` when Secure DNS / DoH is on, because the upstream resolver's DNSSEC-signed "no such name" reply can't be validated against the parent zone's wildcard expectation). The comparison is now `!slices.Equal(old.DomainList(), p.DomainList())` for proxy hosts and `!slices.Equal(rawRouteHosts(*old), rawRouteHosts(*rr))` for raw routes — any addition, removal, rename, or reorder triggers the delete-all-then-create-all cycle that `dnsCreateRecord` / `dnsCreateRecordForRaw` have done since v2.5.9. Matches the same behaviour the server-IP retargeter already took in `dnsUpdateAllRecords`, so all three mutation paths (create, edit, retarget) now agree on "every hostname in the list gets an A record."
+
+### Implementation notes
+- Adds `"slices"` to the `internal/server/server.go` import set (stdlib, no `go.mod` change). `slices.Equal` does element-wise comparison on the trimmed + de-empty-filtered output of `DomainList()` / `rawRouteHosts()`, so whitespace-only differences between saves don't trigger spurious retargets — only genuine set or order changes do.
+- Order-sensitive comparison means a pure reorder of an otherwise-identical Domains list counts as a change and causes a retarget. Rare enough in practice (users don't usually rearrange aliases for fun) and the flutter is the same couple of seconds the IP retargeter already accepts, so not worth the extra code to sort-and-compare.
+- Updates the stale docstring on `dns.FirstDomain` — the v2.3.0-era "DNS records are only ever created for the first domain — the rest are aliases handled by Caddy at the proxy level" was already wrong after v2.5.9; the comment now points readers at `ProxyHost.DomainList()` for DNS lifecycle and reserves `FirstDomain` for UI/probe use.
+- No schema change, no migration. Existing rows keep whatever single-ID or comma-ID string they have in `dns_record_id`; the next save on a row with a stale alias list self-heals to the full multi-record state.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.10` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.9] — 2026-04-23 · Managed DNS creates a record per hostname, not just the first
 
 ### Fixed
