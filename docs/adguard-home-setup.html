@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AdGuard Home behind CaddyUI — step-by-step guide</title>
+<meta name="description" content="Nine-step runbook for running AdGuard Home behind CaddyUI + Caddy with a single wildcard cert covering DoH, DoT, and DoQ, and per-device ClientID filtering.">
+<meta property="og:title" content="AdGuard Home behind CaddyUI — step-by-step guide">
+<meta property="og:description" content="Encrypted DNS for every device on your network, behind Caddy's wildcard cert, with per-device filtering via ClientID. Reproducible in ~15 minutes.">
+<meta property="og:type" content="article">
+<style>
+  :root {
+    --brand-50: #eff6ff;
+    --brand-100: #dbeafe;
+    --brand-500: #3b82f6;
+    --brand-600: #2563eb;
+    --brand-700: #1d4ed8;
+    --ink-50:  #f8fafc;
+    --ink-100: #f1f5f9;
+    --ink-200: #e2e8f0;
+    --ink-300: #cbd5e1;
+    --ink-400: #94a3b8;
+    --ink-500: #64748b;
+    --ink-600: #475569;
+    --ink-700: #334155;
+    --ink-800: #1e293b;
+    --ink-900: #0f172a;
+    --bg: #ffffff;
+    --fg: var(--ink-800);
+    --muted: var(--ink-500);
+    --card-bg: #ffffff;
+    --card-border: var(--ink-200);
+    --code-bg: var(--ink-100);
+    --code-fg: var(--ink-800);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220;
+      --fg: #e2e8f0;
+      --muted: #94a3b8;
+      --card-bg: #111a2e;
+      --card-border: #1e293b;
+      --code-bg: #0f172a;
+      --code-fg: #e2e8f0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 48px 20px 96px;
+  }
+  .backlink {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 24px;
+    text-decoration: none;
+    border-bottom: none;
+  }
+  .backlink:hover { color: var(--brand-600); }
+  header.hero { margin-bottom: 40px; }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--brand-600);
+    background: var(--brand-50);
+    padding: 6px 12px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .eyebrow { background: rgba(59, 130, 246, 0.15); }
+  }
+  h1 {
+    font-size: clamp(28px, 4.5vw, 40px);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    margin: 0 0 16px;
+    font-weight: 700;
+  }
+  .lead {
+    font-size: 19px;
+    color: var(--muted);
+    margin: 0 0 24px;
+    line-height: 1.55;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .meta .tag::before { content: "🏷️ "; }
+  h2 {
+    font-size: 26px;
+    letter-spacing: -0.01em;
+    margin: 56px 0 12px;
+    font-weight: 700;
+    scroll-margin-top: 24px;
+  }
+  h3 {
+    font-size: 19px;
+    margin: 28px 0 10px;
+    font-weight: 600;
+  }
+  p { margin: 0 0 18px; }
+  ul, ol { padding-left: 22px; margin: 0 0 18px; }
+  li { margin-bottom: 8px; }
+  a {
+    color: var(--brand-600);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(37, 99, 235, 0.3);
+    transition: border-color 0.15s;
+  }
+  a:hover { border-bottom-color: var(--brand-600); }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 16px 18px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 18px 0 22px;
+    border: 1px solid var(--card-border);
+  }
+  pre code { background: transparent; padding: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0 22px;
+    font-size: 15px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  blockquote {
+    border-left: 3px solid var(--brand-500);
+    padding: 4px 0 4px 18px;
+    margin: 20px 0;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .callout {
+    background: var(--brand-50);
+    border: 1px solid var(--brand-100);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 22px 0;
+    font-size: 15px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .callout {
+      background: rgba(59, 130, 246, 0.08);
+      border-color: rgba(59, 130, 246, 0.2);
+    }
+  }
+  .callout strong { color: var(--brand-700); }
+  @media (prefers-color-scheme: dark) {
+    .callout strong { color: #93bbfc; }
+  }
+  .callout.warn {
+    background: #fff7ed;
+    border-color: #fed7aa;
+  }
+  @media (prefers-color-scheme: dark) {
+    .callout.warn {
+      background: rgba(249, 115, 22, 0.08);
+      border-color: rgba(249, 115, 22, 0.25);
+    }
+  }
+  .callout.warn strong { color: #c2410c; }
+  @media (prefers-color-scheme: dark) {
+    .callout.warn strong { color: #fdba74; }
+  }
+  footer.signoff {
+    margin-top: 56px;
+    padding-top: 24px;
+    border-top: 1px solid var(--card-border);
+    color: var(--muted);
+    font-size: 14px;
+  }
+  footer.signoff p { margin-bottom: 8px; }
+  hr.divider {
+    border: 0;
+    border-top: 1px solid var(--card-border);
+    margin: 40px 0;
+  }
+  .toc {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin: 28px 0 40px;
+    font-size: 15px;
+  }
+  .toc h4 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .toc ol {
+    margin: 0;
+    padding-left: 20px;
+    line-height: 1.9;
+  }
+  .toc a { border-bottom: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<a class="backlink" href="index.html">← Back to the CaddyUI v2.5.10 release post</a>
+
+<article>
+
+<header class="hero">
+  <span class="eyebrow">📘 Setup guide</span>
+  <h1>AdGuard Home behind CaddyUI — step-by-step</h1>
+  <p class="lead">Encrypted DNS (DoH / DoT / DoQ) for every device on your network, per-device filtering via ClientID, one wildcard cert covering everything. End to end in roughly 15 minutes the second time you do it.</p>
+  <div class="meta">
+    <span class="tag">AdGuard Home · Caddy · Cloudflare</span>
+    <span>☕ ~15 min setup</span>
+  </div>
+</header>
+
+<p>
+  This is the exact recipe from the <a href="index.html">v2.5.10 blog post</a>, written as a copy-paste runbook. Substitute <code>dns.richardapplegate.io</code> for your own <code>dns.yourdomain.com</code> everywhere.
+</p>
+
+<div class="toc">
+  <h4>Contents</h4>
+  <ol>
+    <li><a href="#prereqs">Prerequisites</a></li>
+    <li><a href="#step-1">Add the DNS records at Cloudflare</a></li>
+    <li><a href="#step-2">Paste the Caddy site block into CaddyUI</a></li>
+    <li><a href="#step-3">Free port 53 on the host</a></li>
+    <li><a href="#step-4">Deploy the AdGuard Home Portainer stack</a></li>
+    <li><a href="#step-5">First-run wizard</a></li>
+    <li><a href="#step-6">Drop in the TLS block</a></li>
+    <li><a href="#step-7">Test each endpoint</a></li>
+    <li><a href="#step-8">Point a device at it with a ClientID</a></li>
+    <li><a href="#step-9">Cert renewal care</a></li>
+    <li><a href="#troubleshoot">Troubleshooting</a></li>
+    <li><a href="#named-volume">Named-volume footnote</a></li>
+  </ol>
+</div>
+
+<h2>What you'll end up with</h2>
+
+<table>
+  <thead><tr><th>Endpoint</th><th>Port</th><th>Handled by</th></tr></thead>
+  <tbody>
+    <tr><td>DoH — <code>https://phone.dns.yourdomain.com/dns-query</code></td><td>443/tcp</td><td>Caddy → AdGuard</td></tr>
+    <tr><td>DoT — <code>phone.dns.yourdomain.com:853</code></td><td>853/tcp</td><td>AdGuard (direct)</td></tr>
+    <tr><td>DoQ — <code>phone.dns.yourdomain.com:784</code></td><td>784/udp</td><td>AdGuard (direct)</td></tr>
+    <tr><td>Plain DNS (LAN)</td><td>53/udp+tcp</td><td>AdGuard</td></tr>
+    <tr><td>Admin UI — <code>https://dns.yourdomain.com/</code></td><td>443/tcp</td><td>Caddy → AdGuard</td></tr>
+  </tbody>
+</table>
+
+<p>One wildcard cert (<code>*.dns.yourdomain.com</code> + <code>dns.yourdomain.com</code>) covers all of them.</p>
+
+<hr class="divider">
+
+<h2 id="prereqs">Prerequisites</h2>
+
+<ul>
+  <li>CaddyUI stack already running, with Caddy exposing 80 + 443 to the internet.</li>
+  <li>A domain at Cloudflare (other providers work; the Caddyfile snippet below uses the <code>cloudflare</code> DNS-01 plugin).</li>
+  <li>Cloudflare API token with <strong>Zone · DNS · Edit</strong> scoped to the zone. The CaddyUI Settings page validates it for you.</li>
+  <li>Portainer installed — if you run <code>docker compose</code> directly instead, the stack YAML below still works, just <code>docker compose up -d</code> it from its own directory.</li>
+  <li>A host path where AdGuard's state can live. I use <code>/mnt/1TB/adguard/{work,conf}</code> — use anything persistent.</li>
+  <li>The Caddy data volume on the host filesystem (bind mount or a named volume you can read-only share). I use <code>/mnt/1TB/caddy/caddy_data</code>. If you're on the default named volume, see the <a href="#named-volume">Named-volume footnote</a> at the bottom.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="step-1">Step 1 — Add the DNS records at Cloudflare</h2>
+
+<p>Two A records, both pointing at your server's public IP:</p>
+
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Content</th></tr></thead>
+  <tbody>
+    <tr><td><code>dns</code></td><td>A</td><td><code>&lt;your server IP&gt;</code></td></tr>
+    <tr><td><code>*.dns</code></td><td>A</td><td><code>&lt;your server IP&gt;</code></td></tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  <strong>Keep the orange cloud OFF.</strong> DoT/DoQ run on ports 853/784 — Cloudflare's proxy only passes 443, so proxying would break those protocols.
+</div>
+
+<p>You can add these by hand in the Cloudflare dashboard, or let CaddyUI do it when you save the proxy host in Step 2 (Managed DNS → Cloudflare → pick the zone).</p>
+
+<hr class="divider">
+
+<h2 id="step-2">Step 2 — Paste the Caddy site block into CaddyUI</h2>
+
+<p>Open CaddyUI → <strong>Caddyfile Import</strong> → paste:</p>
+
+<pre><code>*.dns.richardapplegate.io, dns.richardapplegate.io {
+  tls {
+    dns cloudflare {env.CF_API_TOKEN}
+  }
+
+  reverse_proxy http://adguardhome:8080
+}</code></pre>
+
+<p>Click Import. CaddyUI will:</p>
+
+<ol>
+  <li>Create one proxy-host row with both domains.</li>
+  <li>If Cloudflare is configured in Settings, create the A records for you.</li>
+  <li>Push the route to Caddy.</li>
+  <li>Caddy starts the DNS-01 challenge in the background.</li>
+</ol>
+
+<p>Watch the <strong>Deploying</strong> page — within 30–60 seconds you'll see <code>cert_ok: true</code>. That means Let's Encrypt issued the wildcard and Caddy stored it.</p>
+
+<div class="callout">
+  <strong>Why <code>adguardhome:8080</code>?</strong> AdGuard Home's admin UI <em>and</em> its DoH endpoint both live on port 8080 inside the container when <code>allow_unencrypted_doh: true</code> is set (see Step 6). One <code>reverse_proxy</code> handles everything — admin UI, <code>/dns-query</code>, per-device paths.
+</div>
+
+<div class="callout warn">
+  <strong>Gotcha.</strong> A wildcard matches one label — <code>*.dns.yourdomain.com</code> covers <code>phone.dns.yourdomain.com</code> but NOT bare <code>dns.yourdomain.com</code>. The apex SAN in the site block (<code>dns.richardapplegate.io</code> after the comma) is what makes the single cert cover both.
+</div>
+
+<hr class="divider">
+
+<h2 id="step-3">Step 3 — Free port 53 on the host</h2>
+
+<p>Most Linux distros ship with <code>systemd-resolved</code> listening on <code>127.0.0.53:53</code>, which occupies the DNS port AdGuard needs. If you skip this step, the stack in Step 4 will fail with <code>bind: address already in use</code>. Check first:</p>
+
+<pre><code>sudo ss -tulpn | grep ':53 '</code></pre>
+
+<p>If you see a line with <code>systemd-resolve</code> or <code>systemd-resolved</code>, it's in the way. Fix it:</p>
+
+<h3>1. Disable the stub listener and point the OS at AdGuard</h3>
+
+<p>Edit <code>/etc/systemd/resolved.conf</code> (use <code>sudo nano</code> or your editor of choice) and set these keys — uncomment if they already exist:</p>
+
+<pre><code>[Resolve]
+DNS=127.0.0.1
+DNSStubListener=no</code></pre>
+
+<p><code>DNS=127.0.0.1</code> tells the OS itself to resolve via AdGuard once AdGuard is running; <code>DNSStubListener=no</code> stops systemd-resolved from binding port 53.</p>
+
+<h3>2. Replace the <code>/etc/resolv.conf</code> symlink</h3>
+
+<p>By default <code>/etc/resolv.conf</code> points at systemd-resolved's stub. With the stub off, that symlink is dead. Repoint it at the real resolver:</p>
+
+<pre><code>sudo rm /etc/resolv.conf
+sudo ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf</code></pre>
+
+<h3>3. Restart the service</h3>
+
+<pre><code>sudo systemctl restart systemd-resolved</code></pre>
+
+<h3>4. Verify port 53 is free</h3>
+
+<pre><code>sudo ss -tulpn | grep ':53 '</code></pre>
+
+<p>Output should be empty now. If anything else shows up (<code>dnsmasq</code>, <code>named</code>, <code>bind9</code>, <code>pihole</code>, …), stop and disable that service before continuing:</p>
+
+<pre><code># Replace &lt;service&gt; with whatever the grep showed
+sudo systemctl stop &lt;service&gt;
+sudo systemctl disable &lt;service&gt;</code></pre>
+
+<div class="callout warn">
+  <strong>Don't skip the symlink step.</strong> If you turn off the stub listener without repointing <code>/etc/resolv.conf</code>, the host loses DNS entirely until AdGuard starts in Step 4 — <code>apt</code>, <code>curl</code>, <code>docker pull</code>, everything. If that happens, temporarily set <code>/etc/resolv.conf</code> to a single line <code>nameserver 1.1.1.1</code> to dig yourself out.
+</div>
+
+<p>Other hosts:</p>
+
+<ul>
+  <li><strong>Raspberry Pi OS</strong> — <code>dnsmasq</code> sometimes runs by default. Check with the <code>ss</code> command above; disable the same way.</li>
+  <li><strong>Synology NAS</strong> — port 53 is occupied by the DNS Server package if it's installed. Uninstall DSM's DNS Server (Control Panel → Package Center).</li>
+  <li><strong>Pi-hole</strong> — either migrate to AdGuard (remove Pi-hole first) or run both on different IPs; you can't share port 53.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="step-4">Step 4 — Deploy the AdGuard Home Portainer stack</h2>
+
+<p><strong>Portainer → Stacks → Add stack →</strong> paste this YAML:</p>
+
+<pre><code>services:
+  adguardhome:
+    image: adguard/adguardhome:v0.107.56
+    container_name: adguardhome
+    restart: unless-stopped
+    ports:
+      # Plain DNS — must be reachable on the host for LAN clients
+      - "53:53/tcp"
+      - "53:53/udp"
+      # DoT + DoQ — direct to AdGuard, NOT proxied through Caddy
+      - "853:853/tcp"
+      - "784:784/udp"
+    environment:
+      TZ: America/Los_Angeles
+    volumes:
+      - /mnt/1TB/adguard/work:/opt/adguardhome/work
+      - /mnt/1TB/adguard/conf:/opt/adguardhome/conf
+      # Read-only mount of Caddy's data dir so AdGuard can read the
+      # wildcard cert Caddy already issued for us. Path under /caddy-certs
+      # is identical to the layout inside Caddy's container.
+      - /mnt/1TB/caddy/caddy_data:/caddy-certs:ro
+    networks:
+      - caddy-and-ui_caddy_net
+
+networks:
+  caddy-and-ui_caddy_net:
+    external: true</code></pre>
+
+<p>Adjust:</p>
+
+<ul>
+  <li><code>TZ</code> to your timezone (must match what Caddy uses, otherwise log timestamps drift).</li>
+  <li><code>image</code> tag — pin a version. <code>:latest</code> will eventually eat a breaking change overnight.</li>
+  <li>Host paths on the left side of each <code>volumes</code> entry.</li>
+  <li>Network name — Portainer names networks <code>&lt;stack-name&gt;_&lt;network-name&gt;</code>. Check <strong>Networks</strong> in Portainer; mine is <code>caddy-and-ui_caddy_net</code> because my CaddyUI stack is named <code>caddy-and-ui</code> with network <code>caddy_net</code> in the compose file.</li>
+</ul>
+
+<p>Click <strong>Deploy the stack</strong>. AdGuard boots. The first time you hit <code>http://&lt;server&gt;:8080</code> you get AdGuard's setup wizard.</p>
+
+<hr class="divider">
+
+<h2 id="step-5">Step 5 — First-run wizard</h2>
+
+<p>Open <code>http://&lt;your-server-IP&gt;:3000</code> (AdGuard's wizard port, only for first boot) — or if the Caddy route is already live, <code>https://dns.yourdomain.com/</code> also works.</p>
+
+<p>Click through:</p>
+
+<ol>
+  <li><strong>Admin interface</strong> — accept port 8080 (not 80, which is Caddy's).</li>
+  <li><strong>DNS server</strong> — accept 53 on all interfaces.</li>
+  <li><strong>Username + password</strong> — set a strong one. This is the web-admin login, unrelated to DNS auth.</li>
+  <li><strong>Finish.</strong></li>
+</ol>
+
+<p>After the wizard, AdGuard is running with plain DNS only. Encrypted DNS needs the TLS block from Step 6.</p>
+
+<hr class="divider">
+
+<h2 id="step-6">Step 6 — Drop in the TLS block</h2>
+
+<p>SSH to the host and edit <code>/mnt/1TB/adguard/conf/AdGuardHome.yaml</code>. Find the existing <code>tls:</code> block (the wizard wrote a disabled stub) and replace it with:</p>
+
+<pre><code>tls:
+  enabled: true
+  server_name: dns.richardapplegate.io
+  force_https: false
+  port_https: 443
+  port_dns_over_tls: 853
+  port_dns_over_quic: 853
+  port_dnscrypt: 0
+  dnscrypt_config_file: ""
+  allow_unencrypted_doh: true
+  certificate_chain: ""
+  private_key: ""
+  certificate_path: /caddy-certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/wildcard_.dns.richardapplegate.io/wildcard_.dns.richardapplegate.io.crt
+  private_key_path:  /caddy-certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/wildcard_.dns.richardapplegate.io/wildcard_.dns.richardapplegate.io.key
+  strict_sni_check: false</code></pre>
+
+<p>What matters:</p>
+
+<ul>
+  <li><strong><code>allow_unencrypted_doh: true</code></strong> — AdGuard serves DoH as plain HTTP on 8080 (or whatever admin port). Caddy wraps the TLS. Without this, Caddy hits AdGuard on HTTP and AdGuard returns 502. This is safe because the only thing talking to AdGuard on <code>:8080</code> is Caddy on the same Docker network.</li>
+  <li><strong><code>port_https: 443</code></strong> — unused for DoH (Caddy proxies it) but AdGuard complains if it's 0. Leave it.</li>
+  <li><strong><code>strict_sni_check: false</code></strong> — without this, AdGuard rejects any SNI that doesn't exactly equal <code>server_name</code>. DoT clients sending <code>phone.dns.yourdomain.com</code> would fail the handshake.</li>
+  <li><strong><code>certificate_path</code> / <code>private_key_path</code></strong> — the file layout is Caddy-native. The <code>wildcard_.dns.richardapplegate.io</code> folder name is exactly how Caddy stores it: <code>wildcard_</code> prefix, then the zone with a leading dot. Substitute your own domain.</li>
+  <li><strong><code>port_dns_over_quic: 853</code></strong> — that value is a quirk in AdGuard's default config; the DoQ port is actually separate. Either leave it as 853 and AdGuard silently reuses the DoT listener for DoQ, or change it to 784 to match the Portainer port mapping. Both work; 784 is cleaner.</li>
+</ul>
+
+<p>Save and restart AdGuard:</p>
+
+<pre><code>docker restart adguardhome</code></pre>
+
+<p>Check <code>docker logs adguardhome</code> for lines like:</p>
+
+<pre><code>[info] TLS: loading certificate from /caddy-certs/...
+[info] DNS-over-TLS listener started on :853
+[info] DNS-over-QUIC listener started on :784</code></pre>
+
+<p>If you see <code>permission denied</code> on the cert, the host path owning the bind-mount isn't world-readable — <code>chmod -R a+rX /mnt/1TB/caddy/caddy_data</code> fixes it (the ro mount means AdGuard can't write, so this is safe).</p>
+
+<hr class="divider">
+
+<h2 id="step-7">Step 7 — Test each endpoint</h2>
+
+<p>From any machine with a DNS tool:</p>
+
+<pre><code># Plain DNS (LAN only)
+dig @&lt;server-ip&gt; example.com
+
+# DoT
+kdig -d @dns.yourdomain.com +tls-ca example.com
+
+# DoH
+curl -H 'accept: application/dns-message' \
+     'https://dns.yourdomain.com/dns-query?name=example.com&amp;type=A'</code></pre>
+
+<p>All three should return an answer. The DoT/DoQ handshake validates against the wildcard cert Caddy issued — if the handshake fails, the cert path in <code>AdGuardHome.yaml</code> is wrong.</p>
+
+<p>If the <code>curl</code> for DoH returns 502, <code>allow_unencrypted_doh</code> isn't set or AdGuard didn't reload after you edited the YAML.</p>
+
+<hr class="divider">
+
+<h2 id="step-8">Step 8 — Point a device at it with a ClientID</h2>
+
+<p>This is the whole point: per-device filtering. Each device gets a name (ClientID), and you can apply different blocklists to each.</p>
+
+<p>AdGuard extracts the ClientID three different ways:</p>
+
+<table>
+  <thead><tr><th>Protocol</th><th>URL / server</th></tr></thead>
+  <tbody>
+    <tr><td>DoT / DoQ</td><td><code>phone.dns.yourdomain.com</code> (port 853 for DoT, 784 for DoQ)</td></tr>
+    <tr><td>DoH (path form)</td><td><code>https://dns.yourdomain.com/dns-query/phone</code></td></tr>
+    <tr><td>DoH (hostname form)</td><td><code>https://phone.dns.yourdomain.com/dns-query</code></td></tr>
+  </tbody>
+</table>
+
+<p>The SNI/hostname forms are cleanest — ClientID lives in the hostname, which Android's and iOS's native private-DNS fields accept. The path-suffix form is a fallback for DoH clients that lock the URL.</p>
+
+<h3>Android (any recent version)</h3>
+
+<p>Settings → Network → Private DNS → <em>Private DNS provider hostname</em> → <code>phone.dns.yourdomain.com</code></p>
+
+<p>That's DoT on port 853. Done.</p>
+
+<h3>iOS / iPadOS</h3>
+
+<p>Install a DoH config profile. Easiest path: AdGuard's admin UI → <strong>Setup Guide → DNS profile → Download .mobileconfig</strong>, then hand-edit the domain to <code>phone.dns.yourdomain.com</code> before installing.</p>
+
+<h3>Windows 11</h3>
+
+<p>Settings → Network → DNS → <em>Encrypted DNS only</em>, set the server to <code>&lt;your-server-ip&gt;</code> and add <code>dns.yourdomain.com</code> as the DoH template. Windows uses path-form DoH, so include the per-device suffix if you want per-device ClientIDs: <code>https://dns.yourdomain.com/dns-query/laptop</code>.</p>
+
+<h3>Router (AdGuard Home upstream)</h3>
+
+<p>Point your router at plain DNS <code>&lt;server-ip&gt;:53</code>. AdGuard tags LAN clients by IP, so ClientID = whatever you set in <strong>AdGuard → Settings → Clients → Add</strong>.</p>
+
+<p>Once a device is talking, you should see it by name under <strong>AdGuard → Clients → Runtime clients</strong> within a few minutes of DNS activity.</p>
+
+<hr class="divider">
+
+<h2 id="step-9">Step 9 — Cert renewal care</h2>
+
+<p>Caddy renews the wildcard cert automatically every ~60 days. AdGuard reads the cert files <strong>once at startup</strong> — it does not auto-reload.</p>
+
+<p>Add a monthly host-side cron so AdGuard picks up new certs within a month of issuance (well before the 30-day expiry buffer):</p>
+
+<pre><code>0 4 1 * * docker restart adguardhome</code></pre>
+
+<p>The restart is sub-second; DoT/DoQ clients reconnect on their next query.</p>
+
+<hr class="divider">
+
+<h2 id="troubleshoot">Troubleshooting</h2>
+
+<p><strong>Chrome says <code>DNS_PROBE_FINISHED_BAD_SECURE_CONFIG</code> on an alias</strong> — this was the bug v2.5.10 fixed. On CaddyUI ≥ v2.5.10, adding an alias to an existing proxy host correctly provisions a DNS record. If you're stuck on an older version, save the proxy host once more; the edit-path re-runs DNS provisioning.</p>
+
+<p><strong>Caddy logs say <code>no matching certificate</code></strong> — the wildcard covers one label only. <code>a.b.dns.yourdomain.com</code> does NOT match <code>*.dns.yourdomain.com</code>. Either keep every ClientID at one label deep (<code>phone.dns...</code> not <code>phone.lan.dns...</code>), or issue a second wildcard at <code>*.lan.dns...</code>.</p>
+
+<p><strong>DoH works but DoT returns handshake failure</strong> — SNI mismatch. Check <code>strict_sni_check: false</code> in <code>AdGuardHome.yaml</code>. Also check that the cert really covers the leftmost label: <code>openssl s_client -connect phone.dns.yourdomain.com:853 -servername phone.dns.yourdomain.com</code> should show the certificate's SANs include <code>*.dns.yourdomain.com</code>.</p>
+
+<p><strong>AdGuard shows the source IP instead of the ClientID</strong> — the SNI / hostname isn't reaching AdGuard. For DoH, the URL was probably hit without a per-device suffix AND without a per-device hostname. For DoT, <code>strict_sni_check: true</code> is blocking the per-device SNI. Recheck Step 6.</p>
+
+<p><strong>502 Bad Gateway on DoH</strong> — <code>allow_unencrypted_doh: false</code>. Caddy talks HTTP to AdGuard's admin port; AdGuard expects HTTPS and refuses. Set it to true and restart.</p>
+
+<p><strong>Portainer stack won't come up: network not found</strong> — your CaddyUI stack's network is named something other than <code>caddy-and-ui_caddy_net</code>. Run <code>docker network ls</code> on the host; find the network name matching your Caddy container, and paste it into the AdGuard stack's <code>networks.external.name</code>.</p>
+
+<hr class="divider">
+
+<h2 id="named-volume">Named-volume footnote</h2>
+
+<p>The Portainer stack above assumes Caddy's data directory is a host bind mount (<code>/mnt/1TB/caddy/caddy_data</code>). If your CaddyUI install uses Docker named volumes (the default from the stock <code>docker-compose.yml</code>), the volume name is something like <code>caddy-and-ui_caddy_data</code>. Swap the volume line in the AdGuard stack for:</p>
+
+<pre><code>volumes:
+  - caddy-and-ui_caddy_data:/caddy-certs:ro
+  - /mnt/1TB/adguard/work:/opt/adguardhome/work
+  - /mnt/1TB/adguard/conf:/opt/adguardhome/conf
+
+volumes:
+  caddy-and-ui_caddy_data:
+    external: true</code></pre>
+
+<p>Sharing a named volume across stacks works the same way as sharing a network — one stack owns it, others declare it external.</p>
+
+<footer class="signoff">
+  <p>That's the whole loop. First-boot to a device-filtering DoH/DoT/DoQ resolver behind a single wildcard cert took me about an hour; the second time, following these steps, would be closer to 15 minutes.</p>
+  <p><a href="index.html">← Back to the CaddyUI v2.5.10 release post</a> · <a href="https://github.com/X4Applegate/caddyui">CaddyUI on GitHub</a></p>
+</footer>
+
+</article>
+
+</div>
+</body>
+</html>
