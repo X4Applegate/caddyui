@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.11] — 2026-04-24 · XSS sinks in zone-picker error paths hardened
+
+### Security
+- **CodeQL flagged two "Exception text reinterpreted as HTML" findings; both fixed, plus two sibling sinks it hadn't seen yet.** `web/templates/proxy_host_form.html` (line 403) and `web/templates/raw_route_form.html` (line 337) each caught a `.catch(e) { zoneSel.innerHTML = '…' + e.message + '…' }` pattern in the DNS zone-picker dropdown. If a malicious `/api/dns-zones` response, a provider-side error string, or a MITM on the provider's HTTPS connection ever produced an error message containing raw HTML, string-concatenating it into `innerHTML` would let that HTML execute in an authenticated admin's browser. Real-world reachable? Only through a compromised DNS provider API or a MITM on the HTTPS connection to it — both unlikely in normal deployments — but the sink is an XSS sink regardless. The `data.error` branch two lines up had the same shape and got the same fix even though CodeQL hadn't flagged it yet, and likewise for the "Select a provider first" placeholder which built an `<option>` via concatenation out of habit.
+
+### Implementation notes
+- Swapped `zoneSel.innerHTML = '<option value="">' + text + '</option>'` for `zoneSel.replaceChildren(new Option(text, ''))`. `new Option(text, value)` sets the displayed text as a real DOM text node (textContent), never as HTML, so user-supplied strings can't break out of the tag. Same fix applied to all four call sites per form file — loading placeholder, server-error branch, fetch-catch, and no-provider placeholder — so the pattern is uniform across both templates.
+- `replaceChildren()` is baseline-supported in every browser since 2020, same era as the `fetch` / Promise / arrow-function set CaddyUI already relies on; no polyfill needed.
+- No behaviour change for users. The dropdown still shows "Loading zones…" / "Error: X" / "Failed to load zones: Y" / "Select a provider first" in the same visual form. The only difference is the text can no longer be interpreted as markup.
+- CodeQL alerts #7 and #8 should auto-close on the next scan after this commit lands on `main`.
+
+### Documentation
+- Added `docs/adguard-home-setup.md` — a 9-step runbook for the AdGuard Home + Caddy encrypted-DNS recipe from the v2.5.10 blog post. Covers Cloudflare DNS records, Caddy wildcard cert via paste-import, freeing port 53 from `systemd-resolved` (the single biggest gotcha on fresh Linux hosts), Portainer stack deploy with the actual working YAML, first-run wizard, the AdGuardHome.yaml TLS block with a cert-share mount, endpoint tests for DoH/DoT/DoQ, per-protocol ClientID setup, and a monthly cron to pick up renewed certs. Reproducible end-to-end by anyone with a Cloudflare-managed domain and Portainer.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.11` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001).
+
+---
+
 ## [2.5.10] — 2026-04-23 · Edit-path Managed DNS now reacts to alias-only Domains changes
 
 ### Fixed

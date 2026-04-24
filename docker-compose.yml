@@ -31,7 +31,7 @@ services:
 
   caddyui:
     # Local build. Pass CADDYUI_VERSION to stamp the version string the UI
-    # shows — e.g. `CADDYUI_VERSION=v2.5.10 docker compose up -d --build`.
+    # shows — e.g. `CADDYUI_VERSION=v2.5.11 docker compose up -d --build`.
     # Defaults to "dev" when unset, which is why a fresh `docker compose up`
     # shows version "dev". For the published release image instead, swap
     # this block for `image: applegater/caddyui:latest` and drop `build:`.

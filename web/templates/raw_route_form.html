@@ -321,12 +321,14 @@
       renderZones(providerID, cache[providerID], currentZoneID);
       return;
     }
-    zoneSel.innerHTML = '<option value="">Loading zones…</option>';
+    zoneSel.replaceChildren(new Option('Loading zones…', ''));
     fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID))
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data && data.error) {
-          zoneSel.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+          // textContent via new Option() — never innerHTML with server-
+          // supplied error text, or we build an XSS sink here.
+          zoneSel.replaceChildren(new Option('Error: ' + String(data.error), ''));
           syncZoneName();
           return;
         }
@@ -334,7 +336,7 @@
         renderZones(providerID, cache[providerID], currentZoneID);
       })
       .catch(function(e) {
-        zoneSel.innerHTML = '<option value="">Failed to load zones: ' + e.message + '</option>';
+        zoneSel.replaceChildren(new Option('Failed to load zones: ' + String(e && e.message ? e.message : e), ''));
         syncZoneName();
       });
   }
@@ -348,7 +350,7 @@
     }
     if (v) loadZones(v);
     else {
-      zoneSel.innerHTML = '<option value="">Select a provider first</option>';
+      zoneSel.replaceChildren(new Option('Select a provider first', ''));
       syncZoneName();
     }
   }
