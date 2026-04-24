@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.7.5 — Groups, analytics, ownership &amp; a stable two-week window</title>
-<meta name="description" content="A tour of everything shipped in CaddyUI since v2.5.0 — Groups, visitor analytics, per-user ownership, admin reassignment, the Deploying page, the multi-provider Managed DNS expansion, and today's backup fix. Cadence moves to twice a month.">
-<meta property="og:title" content="CaddyUI v2.7.5 — Groups, analytics, ownership &amp; a stable two-week window">
-<meta property="og:description" content="Groups let you share visibility across teammates. Per-user ownership on every resource. Admins can reassign. Visitor analytics. Deploying page. And today's backup fix. Then a two-week quiet window as we move to twice-a-month releases.">
+<title>CaddyUI v2.7.6 — Groups, analytics, ownership &amp; a stable two-week window</title>
+<meta name="description" content="A tour of everything shipped in CaddyUI since v2.5.0 — Groups, visitor analytics, per-user ownership, admin reassignment, the Deploying page, the multi-provider Managed DNS expansion, plus today's multi-server analytics fix. Cadence moves to twice a month.">
+<meta property="og:title" content="CaddyUI v2.7.6 — Groups, analytics, ownership &amp; a stable two-week window">
+<meta property="og:description" content="Groups let you share visibility across teammates. Per-user ownership on every resource. Admins can reassign. Visitor analytics. Deploying page. Plus today's multi-server analytics fix and the backup fix. Then a two-week quiet window as we move to twice-a-month releases.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-04-24">
 <style>
@@ -275,11 +275,11 @@
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.7.5 — Groups, analytics, ownership &amp; a stable two-week window</h1>
-  <p class="lead">Twenty releases have landed since v2.5.0. Here's the tour — what's actually new and what you can do with it — and why the next two weeks are going to be quiet on purpose.</p>
+  <h1>CaddyUI v2.7.6 — Groups, analytics, ownership &amp; a stable two-week window</h1>
+  <p class="lead">Twenty-one releases have landed since v2.5.0. Here's the tour — what's actually new and what you can do with it — and why the next two weeks are going to be quiet on purpose.</p>
   <div class="meta">
     <time datetime="2026-04-24">April 24, 2026</time>
-    <span class="tag">v2.7.5</span>
+    <span class="tag">v2.7.6</span>
     <span>☕ ~10 min read</span>
   </div>
 </header>
@@ -301,7 +301,7 @@
     <li><a href="#ux">UX polish</a></li>
     <li><a href="#mobile">Dark mode, mobile &amp; keyboard-friendly</a></li>
     <li><a href="#reliability">Reliability &amp; bug fixes</a></li>
-    <li><a href="#v275">Today's release specifically (v2.7.5)</a></li>
+    <li><a href="#v276">Today's releases — v2.7.5 &amp; v2.7.6 fixes</a></li>
     <li><a href="#upgrade">Upgrade &amp; roadmap</a></li>
     <li><a href="#quiet">Why the quiet window</a></li>
   </ul>
@@ -588,17 +588,37 @@
 
 <hr class="divider">
 
-<h2 id="v275">🐛 Today's release specifically — v2.7.5</h2>
+<h2 id="v276">🐛 Today's fixes — v2.7.5 &amp; v2.7.6</h2>
 
 <p>
-  One bug fix, reported live: <code>/backup</code> was returning <code>SQLITE_CANTOPEN</code> on every v2.7.x install.
+  Two live-reported bugs, both fixed today.
 </p>
+
+<h3>v2.7.6 — <code>/analytics</code> server filter showed "no data" on multi-server installs</h3>
+
+<p>
+  Reported live: picking a secondary Caddy in the <code>/analytics</code> server filter rendered every card as zero even on a server that was absolutely serving real traffic.
+</p>
+
+<p>
+  Root cause: the Settings → Analytics toggle used to call <code>EnableAccessLogs</code> on exactly one Caddy — the primary (<code>CADDY_ADMIN_URL</code>). Every secondary server registered via <code>/servers</code> kept its default "no access logs" state and never shipped a single event to the ingest listener. So when the analytics page filtered to a secondary, the <code>access_events</code> table had zero matching rows and every aggregate came back empty.
+</p>
+
+<p>
+  <strong>Fix:</strong> <code>applyAnalyticsToggle</code> now iterates every managed server in <code>caddy_servers</code>, builds a per-server client via <code>newCaddyClient(adminURL, user, pass)</code>, and applies enable/disable to each. External-type servers (read-only observations of Caddy instances CaddyUI isn't authoritative over) are skipped. Per-server errors are collected into a single aggregated error so one unreachable Caddy doesn't short-circuit the others.
+</p>
+
+<div class="callout amber">
+  <strong>To recover:</strong> after upgrading, go to <strong>Settings → Analytics → Save</strong> once (no changes needed — just click Save). That single save runs the new loop and installs the <code>caddyui_access</code> logger on every secondary you've added. Events should start flowing within a minute of real traffic hitting them.
+</div>
+
+<h3>v2.7.5 — <code>/backup</code> returned <code>SQLITE_CANTOPEN</code></h3>
 
 <pre><code>backup failed: unable to open database file:
 unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)</code></pre>
 
 <p>
-  Error 14 is <code>SQLITE_CANTOPEN</code>. Root cause: the v2.7.x scratch-based final image has no <code>/tmp</code> directory, and our non-root UID can't <code>mkdir</code> one at the filesystem root. This has been silently broken since v2.7.0 — nobody hit it until today because the backup button wasn't commonly used.
+  Error 14 is <code>SQLITE_CANTOPEN</code>. Root cause: the v2.7.x scratch-based final image has no <code>/tmp</code> directory, and our non-root UID can't <code>mkdir</code> one at the filesystem root. Silently broken since v2.7.0 — nobody hit it until someone actually tried the backup button.
 </p>
 
 <p>
@@ -607,7 +627,7 @@ unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)</code></pre
 
 <ul>
   <li><strong>Handler-level:</strong> <code>/backup</code> now writes the temp file next to the live DB (<code>filepath.Dir(s.DBPath)</code>) instead of <code>/tmp</code>. Same filesystem as the source DB, same UID ownership as the existing <code>caddyui.db</code> / <code>.db-wal</code> / <code>.db-shm</code>. Zero chance of <code>CANTOPEN</code> on a directory that was already open two lines earlier.</li>
-  <li><strong>Image-level:</strong> Dockerfile now pre-creates <code>/tmp</code> with <code>1777</code> (sticky world-writable) in the scratch final image. The backup handler doesn't need this anymore, but mime/multipart file uploads or any third-party library that calls <code>os.TempDir()</code> internally would otherwise silently break the same way. Catches the <em>next</em> instance of this bug before anyone has to file it.</li>
+  <li><strong>Image-level:</strong> Dockerfile now pre-creates <code>/tmp</code> with <code>1777</code> (sticky world-writable) in the scratch final image. The backup handler doesn't need this anymore, but <code>mime/multipart</code> file uploads or any third-party library that calls <code>os.TempDir()</code> internally would otherwise silently break the same way. Catches the <em>next</em> instance of this bug before anyone has to file it.</li>
 </ul>
 
 <p>
@@ -628,13 +648,13 @@ unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)</code></pre
   Multi-arch on Docker Hub (<code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001):
 </p>
 
-<pre><code>docker pull applegater/caddyui:v2.7.5
+<pre><code>docker pull applegater/caddyui:v2.7.6
 # or
 docker pull applegater/caddyui:latest</code></pre>
 
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.5" class="btn primary">
-    📦 View v2.7.5 release
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.6" class="btn primary">
+    📦 View v2.7.6 release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub
@@ -665,7 +685,7 @@ docker pull applegater/caddyui:latest</code></pre>
 <h2 id="quiet">⏸️ Why the next two weeks are quiet</h2>
 
 <p>
-  Twenty releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between.
+  Twenty-one releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between. (v2.7.6 is one of those "emergency fixes only" patches — it shipped within the quiet-window promise because it was a real bug, not a feature.)
 </p>
 
 <p>

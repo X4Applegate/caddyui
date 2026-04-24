@@ -101,8 +101,18 @@ func parseExcludeIPs(raw string) []string {
 //     depending on the toggle state. Enable+already-enabled re-pushes the
 //     target so a changed target takes effect on save.
 //
-// Errors are logged and returned — the caller decides whether to surface
-// them in the UI (a banner) or redirect silently.
+// v2.7.6: applies the toggle to *every* registered Caddy server, not just
+// the primary. Before this, only s.Caddy (the CADDY_ADMIN_URL primary) got
+// reconfigured — secondary servers added via /servers kept their default
+// "no access logs" state, so events from those servers never reached the
+// ingest. An admin picking a secondary in the /analytics server filter saw
+// "no data" even when the server was live and serving real traffic.
+// External-type servers are skipped (read-only from CaddyUI's point of view
+// — we can't push config changes to them).
+//
+// Errors from individual servers are collected into a single aggregated
+// error rather than short-circuiting on the first failure — one unreachable
+// Caddy shouldn't stop us configuring the other three.
 func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 	// Push exclude list to the ingest regardless of enable state — even
 	// when disabled, keeping the filter in sync means a later re-enable
@@ -111,17 +121,52 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 		s.analyticsIngest.SetExcludeIPs(cfg.ExcludeIPs)
 	}
 
-	if cfg.Enabled {
-		if err := s.Caddy.EnableAccessLogs(cfg.Target); err != nil {
-			return fmt.Errorf("enable access logs: %w", err)
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		return fmt.Errorf("list caddy servers: %w", err)
+	}
+
+	// Fallback: on a fresh install that hasn't seeded any server rows yet
+	// (the SeedBootstrapServer step in main.go hasn't run, or the DB lost
+	// its servers row), fall back to the pre-2.7.6 behaviour and toggle
+	// via s.Caddy directly so the first-boot analytics enable still works.
+	if len(servers) == 0 {
+		if cfg.Enabled {
+			if err := s.Caddy.EnableAccessLogs(cfg.Target); err != nil {
+				return fmt.Errorf("enable access logs: %w", err)
+			}
+			return nil
+		}
+		if err := s.Caddy.DisableAccessLogs(); err != nil {
+			return fmt.Errorf("disable access logs: %w", err)
 		}
 		return nil
 	}
-	// Disabled: remove the Caddy-side wiring. Missing paths are treated
-	// as success by the caddy client, so a clean DB → fresh toggle-off
-	// doesn't error out.
-	if err := s.Caddy.DisableAccessLogs(); err != nil {
-		return fmt.Errorf("disable access logs: %w", err)
+
+	var errMsgs []string
+	for _, sr := range servers {
+		// External servers are read-only — we can't reconfigure them via
+		// the admin API, so skip silently. The typical case is a Caddy
+		// managed by a different tool that CaddyUI is observing but not
+		// authoritative over.
+		if sr.Type == models.CaddyServerTypeExternal {
+			continue
+		}
+		cli := newCaddyClient(sr.AdminURL, sr.AdminUsername, sr.AdminPassword)
+		if cfg.Enabled {
+			if err := cli.EnableAccessLogs(cfg.Target); err != nil {
+				errMsgs = append(errMsgs, fmt.Sprintf("server %q (%s): enable: %v", sr.Name, sr.AdminURL, err))
+				continue
+			}
+		} else {
+			if err := cli.DisableAccessLogs(); err != nil {
+				errMsgs = append(errMsgs, fmt.Sprintf("server %q (%s): disable: %v", sr.Name, sr.AdminURL, err))
+				continue
+			}
+		}
+	}
+	if len(errMsgs) > 0 {
+		return fmt.Errorf("analytics toggle: %s", strings.Join(errMsgs, "; "))
 	}
 	return nil
 }
