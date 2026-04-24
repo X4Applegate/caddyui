@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.7.6] — 2026-04-24 · Fix /analytics server filter on multi-server installs
+
+### Fixed
+- **Picking a secondary Caddy server in the `/analytics` server filter showed "no data"** even on live, traffic-serving servers. Root cause: `applyAnalyticsToggle` (the function that wires Caddy's access-log forwarding when the admin flips the Analytics toggle in Settings) only called `EnableAccessLogs` / `DisableAccessLogs` on `s.Caddy` — the single primary client built from `CADDY_ADMIN_URL` — and ignored every other row in the `caddy_servers` table. Secondary Caddy instances registered through `/servers` never had the `caddyui_access` logger installed, so they never shipped access-log entries to the ingest listener; the `access_events` table had zero rows for any hostname routed by a secondary. When the `/analytics` filter narrowed the dashboard to a secondary server, `scopedHostsForAnalytics` correctly returned that server's hostnames, but the subsequent `AccessTotalsSince(host=...)` queries found no matching events and every card rendered zeros. The symptom only manifested on multi-server installs — single-server admins never noticed because their primary was (accidentally) the only server the toggle ever touched.
+- **`applyAnalyticsToggle` now iterates every managed Caddy in the DB**, building a per-server `caddy.Client` via `newCaddyClient(adminURL, user, pass)` and applying the enable/disable action to each. External-type servers (rows with `type = 'external'` — CaddyUI-observed-but-not-authoritative) are skipped because their admin API isn't writable. Per-server errors are collected and returned as a single aggregated error at the end of the loop, so one unreachable Caddy doesn't short-circuit the wiring on the other three.
+- **Fallback path preserved for fresh installs.** When `ListCaddyServers` returns an empty slice (DB just initialised, `SeedBootstrapServer` hasn't populated the primary row yet, or the servers table was manually cleared), the function falls back to the pre-2.7.6 single-`s.Caddy` call so first-boot analytics enable still works out of the box.
+
+### Docker
+- Published as `applegater/caddyui:v2.7.6` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+
+### Upgrade note
+- After upgrading, **save your Analytics settings once** (Settings → Analytics → Save) even if nothing changed. That single save re-runs the toggle through the new multi-server loop and installs the `caddyui_access` logger on every secondary Caddy you've added through `/servers`. You should see events from every server in the ingest-health card within a minute of traffic hitting them.
+
+---
+
 ## [2.7.5] — 2026-04-24 · Fix /backup download on scratch-based image
 
 ### Fixed
