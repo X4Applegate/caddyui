@@ -469,6 +469,18 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/users/{id}", s.updateUser)
 			r.Post("/users/{id}/delete", s.deleteUser)
 
+			// v2.7.4: group CRUD. Admin puts user-role accounts into a shared
+			// group; members then see each other's rows (proxy/redirect/raw/
+			// certs) read-only in List* queries. Edit/delete still goes
+			// through the per-row ownership gate inside each handler, so
+			// "view teammates' work" doesn't imply "mutate teammates' work".
+			r.Get("/groups", s.listGroups)
+			r.Get("/groups/new", s.newGroup)
+			r.Post("/groups", s.createGroup)
+			r.Get("/groups/{id}/edit", s.editGroup)
+			r.Post("/groups/{id}", s.updateGroup)
+			r.Post("/groups/{id}/delete", s.deleteGroup)
+
 			r.Get("/servers", s.listServersPage)
 			r.Get("/servers/new", s.newServerPage)
 			r.Post("/servers", s.createServer)
@@ -1045,12 +1057,14 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if cu != nil {
 		viewerID = cu.ID
 	}
-	hosts, _ := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin)
-	redirs, _ := models.ListRedirectionHosts(s.DB, sid, viewerID, isAdmin)
-	raws, _ := models.ListRawRoutes(s.DB, sid, viewerID, isAdmin)
+	peers := s.groupPeerIDs(r)
+	hosts, _ := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin, peers)
+	redirs, _ := models.ListRedirectionHosts(s.DB, sid, viewerID, isAdmin, peers)
+	raws, _ := models.ListRawRoutes(s.DB, sid, viewerID, isAdmin, peers)
 	// v2.7.2: cert card count matches what the /certificates page will show —
 	// admin sees every cert, user-role sees their uploads + globals.
-	certs, _ := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin)
+	// v2.7.4: ...plus any teammate uploads from groups they share.
+	certs, _ := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin, peers)
 
 	// Most-recent sync timestamp from activity log (best-effort).
 	var lastSync *time.Time
@@ -1100,6 +1114,12 @@ type advancedRouteRow struct {
 	Hosts   string // comma-joined hosts from match[].host[]
 	Summary string // e.g. "3 upstreams · 3 redirects"
 	Enabled bool
+	// v2.7.4: ownership flags for template-side gating. CanEdit hides
+	// Edit/Delete on rows the viewer is only seeing via group peer-ship;
+	// OwnerEmail + IsTeamRow render the "Team: <email>" chip.
+	OwnerEmail string
+	CanEdit    bool
+	IsTeamRow  bool
 }
 
 func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
@@ -1109,12 +1129,13 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 	if cu != nil {
 		viewerID = cu.ID
 	}
-	hosts, err := models.ListProxyHosts(s.DB, s.currentServerID(r), viewerID, isAdmin)
+	peers := s.groupPeerIDs(r)
+	hosts, err := models.ListProxyHosts(s.DB, s.currentServerID(r), viewerID, isAdmin, peers)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	raws, _ := models.ListRawRoutes(s.DB, s.currentServerID(r), viewerID, isAdmin)
+	raws, _ := models.ListRawRoutes(s.DB, s.currentServerID(r), viewerID, isAdmin, peers)
 	var advancedRows []advancedRouteRow
 	for _, rr := range raws {
 		var decoded any
@@ -1147,9 +1168,12 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		if summary == "" {
 			summary = "custom handlers"
 		}
+		canEdit := isAdmin || (rr.OwnerID.Valid && viewerID != 0 && rr.OwnerID.Int64 == viewerID)
+		isTeam := !isAdmin && rr.OwnerID.Valid && viewerID != 0 && rr.OwnerID.Int64 != viewerID
 		advancedRows = append(advancedRows, advancedRouteRow{
 			ID: rr.ID, Label: rr.Label, Hosts: strings.Join(hosts, ", "),
 			Summary: summary, Enabled: rr.Enabled,
+			OwnerEmail: rr.OwnerEmail, CanEdit: canEdit, IsTeamRow: isTeam,
 		})
 	}
 	s.render(w, r, "proxy_hosts.html", map[string]any{
@@ -1157,6 +1181,11 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		"Hosts":        hosts,
 		"AdvancedRows": advancedRows,
 		"Section":      "proxy",
+		// v2.7.4: thread viewer ID so templates can hide Edit/Delete on rows
+		// the user is only seeing via group peer-ship, and render a
+		// "Team: <email>" chip instead. Security still enforced in the
+		// update/delete handlers — this is UX clarity, not a gate.
+		"ViewerID": viewerID,
 	})
 }
 
@@ -1822,15 +1851,16 @@ func (s *Server) listRedirectionHosts(w http.ResponseWriter, r *http.Request) {
 	if cu != nil {
 		viewerID = cu.ID
 	}
-	hosts, err := models.ListRedirectionHosts(s.DB, s.currentServerID(r), viewerID, isAdmin)
+	hosts, err := models.ListRedirectionHosts(s.DB, s.currentServerID(r), viewerID, isAdmin, s.groupPeerIDs(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.render(w, r, "redirection_hosts.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Hosts":   hosts,
-		"Section": "redirect",
+		"User":     s.currentUser(r),
+		"Hosts":    hosts,
+		"Section":  "redirect",
+		"ViewerID": viewerID,
 	})
 }
 
@@ -2034,21 +2064,21 @@ func (s *Server) postImport(w http.ResponseWriter, r *http.Request) {
 	// proxies/redirects would fail at sync when two entries claim the same host.
 	// Use admin view (isAdmin=true) to see all existing entries for deduplication.
 	taken := map[string]struct{}{}
-	if existing, err := models.ListProxyHosts(s.DB, s.currentServerID(r), 0, true); err == nil {
+	if existing, err := models.ListProxyHosts(s.DB, s.currentServerID(r), 0, true, nil); err == nil {
 		for _, h := range existing {
 			for _, d := range h.DomainList() {
 				taken[strings.ToLower(d)] = struct{}{}
 			}
 		}
 	}
-	if existing, err := models.ListRedirectionHosts(s.DB, s.currentServerID(r), 0, true); err == nil {
+	if existing, err := models.ListRedirectionHosts(s.DB, s.currentServerID(r), 0, true, nil); err == nil {
 		for _, h := range existing {
 			for _, d := range h.DomainList() {
 				taken[strings.ToLower(d)] = struct{}{}
 			}
 		}
 	}
-	if existing, err := models.ListRawRoutes(s.DB, s.currentServerID(r), 0, true); err == nil {
+	if existing, err := models.ListRawRoutes(s.DB, s.currentServerID(r), 0, true, nil); err == nil {
 		for _, rr := range existing {
 			for _, d := range rawRouteHosts(rr) {
 				taken[strings.ToLower(d)] = struct{}{}
@@ -2699,6 +2729,25 @@ func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
 // specific customer). Returns an empty slice for non-admin viewers so we
 // don't waste a DB round-trip and so a template leak can't surface email
 // addresses to non-admins. v2.7.3.
+// groupPeerIDs returns the other user IDs that share at least one group with
+// the viewer. Used to expand a non-admin viewer's visibility scope in every
+// List* call: viewer sees their own rows + globals + any row owned by a peer.
+// Admins skip this path entirely — their List* branch is unfiltered — so we
+// return nil immediately for admin/view and for signed-out requests. DB
+// errors are swallowed to nil so a transient groups-table hiccup degrades to
+// "no group visibility" rather than breaking the whole list page.
+func (s *Server) groupPeerIDs(r *http.Request) []int64 {
+	cu := s.currentUser(r)
+	if cu == nil || cu.Role != models.RoleUser {
+		return nil
+	}
+	ids, err := models.GroupPeerIDs(s.DB, cu.ID)
+	if err != nil {
+		return nil
+	}
+	return ids
+}
+
 // adminUserList returns the user-role accounts an admin can assign resources
 // to. Only admins see anything — nil for non-admin viewers so their templates
 // can't accidentally leak the user roster via the Owner <select>. View-role
@@ -2740,7 +2789,7 @@ func (s *Server) certListForRequest(r *http.Request) ([]models.Certificate, erro
 	if cu != nil {
 		viewerID = cu.ID
 	}
-	return models.ListCertificatesForUser(s.DB, s.currentServerID(r), viewerID, isAdmin)
+	return models.ListCertificatesForUser(s.DB, s.currentServerID(r), viewerID, isAdmin, s.groupPeerIDs(r))
 }
 
 func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
@@ -2754,7 +2803,8 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	// v2.7.2: non-admin sees only their own uploads + global (admin-owned)
 	// certs. Admin view still gets every row plus the owner email via JOIN
 	// for the Owner column in certificates.html.
-	certs, err := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin)
+	// v2.7.4: ...plus any certs owned by a teammate (shared group member).
+	certs, err := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin, s.groupPeerIDs(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2783,8 +2833,8 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 
 	// Collect domains auto-managed by Caddy (ssl_enabled, no custom cert).
 	// Use admin view to see all hosts regardless of owner.
-	hosts, _ := models.ListProxyHosts(s.DB, sid, 0, true)
-	redirs, _ := models.ListRedirectionHosts(s.DB, sid, 0, true)
+	hosts, _ := models.ListProxyHosts(s.DB, sid, 0, true, nil)
+	redirs, _ := models.ListRedirectionHosts(s.DB, sid, 0, true, nil)
 	seen := map[string]bool{}
 	var autoDomains []string
 	for _, h := range hosts {
@@ -3072,15 +3122,16 @@ func (s *Server) listRawRoutes(w http.ResponseWriter, r *http.Request) {
 	if cu != nil {
 		viewerID = cu.ID
 	}
-	rows, err := models.ListRawRoutes(s.DB, s.currentServerID(r), viewerID, isAdmin)
+	rows, err := models.ListRawRoutes(s.DB, s.currentServerID(r), viewerID, isAdmin, s.groupPeerIDs(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.render(w, r, "raw_routes.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Rows":    rows,
-		"Section": "raw",
+		"User":     s.currentUser(r),
+		"Rows":     rows,
+		"Section":  "raw",
+		"ViewerID": viewerID,
 	})
 }
 
@@ -3208,15 +3259,15 @@ func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (stri
 // would reject the resulting config — so callers can refuse to save instead of
 // committing a change that breaks the live config on next sync.
 func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) string {
-	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true)
+	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true, nil)
 	if err != nil {
 		return ""
 	}
-	redirs, err := models.ListRedirectionHosts(s.DB, serverID, 0, true)
+	redirs, err := models.ListRedirectionHosts(s.DB, serverID, 0, true, nil)
 	if err != nil {
 		return ""
 	}
-	raws, err := models.ListRawRoutes(s.DB, serverID, 0, true)
+	raws, err := models.ListRawRoutes(s.DB, serverID, 0, true, nil)
 	if err != nil {
 		return ""
 	}
@@ -3557,15 +3608,15 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	defer func() { s.Caddy = origClient }()
 
 	// Use admin view for sync — all routes must be pushed to Caddy regardless of owner.
-	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true)
+	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true, nil)
 	if err != nil {
 		return err
 	}
-	redirs, err := models.ListRedirectionHosts(s.DB, serverID, 0, true)
+	redirs, err := models.ListRedirectionHosts(s.DB, serverID, 0, true, nil)
 	if err != nil {
 		return err
 	}
-	raws, err := models.ListRawRoutes(s.DB, serverID, 0, true)
+	raws, err := models.ListRawRoutes(s.DB, serverID, 0, true, nil)
 	if err != nil {
 		return err
 	}
@@ -4385,6 +4436,167 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/users", http.StatusSeeOther)
 }
 
+// --- v2.7.4: Groups ---
+//
+// Admin-only CRUD. A group is just a bag of user-role members; ListGroup-
+// scoped List* queries OR members' IDs into the owner filter so teammates
+// see each other's rows. No write permission: edit/delete stays per-row
+// ownership-gated inside each Update*/Delete* handler.
+
+func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := models.ListGroups(s.DB)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.render(w, r, "groups.html", map[string]any{
+		"User":    s.currentUser(r),
+		"Groups":  groups,
+		"Section": "groups",
+	})
+}
+
+func (s *Server) newGroup(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "group_form.html", map[string]any{
+		"User":    s.currentUser(r),
+		"Group":   &models.Group{},
+		"Users":   s.adminUserList(r),
+		"Members": map[int64]bool{},
+		"Section": "groups",
+	})
+}
+
+func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	name := strings.TrimSpace(r.FormValue("name"))
+	desc := strings.TrimSpace(r.FormValue("description"))
+	renderErr := func(msg string) {
+		members := map[int64]bool{}
+		for _, v := range r.Form["member_ids"] {
+			if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+				members[id] = true
+			}
+		}
+		s.render(w, r, "group_form.html", map[string]any{
+			"User":    s.currentUser(r),
+			"Group":   &models.Group{Name: name, Description: desc},
+			"Users":   s.adminUserList(r),
+			"Members": members,
+			"Section": "groups",
+			"Error":   msg,
+		})
+	}
+	if name == "" {
+		renderErr("Name is required")
+		return
+	}
+	id, err := models.CreateGroup(s.DB, name, desc)
+	if err != nil {
+		renderErr(err.Error())
+		return
+	}
+	// Member rows (user-role only — the form only offers those).
+	var memberIDs []int64
+	for _, v := range r.Form["member_ids"] {
+		if uid, err := strconv.ParseInt(v, 10, 64); err == nil {
+			memberIDs = append(memberIDs, uid)
+		}
+	}
+	if err := models.SetGroupMembers(s.DB, id, memberIDs); err != nil {
+		renderErr(err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "group_create", name, "", true)
+	http.Redirect(w, r, "/groups", http.StatusSeeOther)
+}
+
+func (s *Server) editGroup(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	g, err := models.GetGroup(s.DB, id)
+	if err != nil || g == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	members, _ := models.ListGroupMembers(s.DB, id)
+	memberSet := map[int64]bool{}
+	for _, m := range members {
+		memberSet[m.ID] = true
+	}
+	s.render(w, r, "group_form.html", map[string]any{
+		"User":    s.currentUser(r),
+		"Group":   g,
+		"Users":   s.adminUserList(r),
+		"Members": memberSet,
+		"Section": "groups",
+	})
+}
+
+func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	g, err := models.GetGroup(s.DB, id)
+	if err != nil || g == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	_ = r.ParseForm()
+	name := strings.TrimSpace(r.FormValue("name"))
+	desc := strings.TrimSpace(r.FormValue("description"))
+	renderErr := func(msg string) {
+		members := map[int64]bool{}
+		for _, v := range r.Form["member_ids"] {
+			if uid, err := strconv.ParseInt(v, 10, 64); err == nil {
+				members[uid] = true
+			}
+		}
+		g.Name = name
+		g.Description = desc
+		s.render(w, r, "group_form.html", map[string]any{
+			"User":    s.currentUser(r),
+			"Group":   g,
+			"Users":   s.adminUserList(r),
+			"Members": members,
+			"Section": "groups",
+			"Error":   msg,
+		})
+	}
+	if name == "" {
+		renderErr("Name is required")
+		return
+	}
+	if err := models.UpdateGroup(s.DB, id, name, desc); err != nil {
+		renderErr(err.Error())
+		return
+	}
+	var memberIDs []int64
+	for _, v := range r.Form["member_ids"] {
+		if uid, err := strconv.ParseInt(v, 10, 64); err == nil {
+			memberIDs = append(memberIDs, uid)
+		}
+	}
+	if err := models.SetGroupMembers(s.DB, id, memberIDs); err != nil {
+		renderErr(err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "group_update", name, "", true)
+	http.Redirect(w, r, "/groups", http.StatusSeeOther)
+}
+
+func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	g, err := models.GetGroup(s.DB, id)
+	if err != nil || g == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// ON DELETE CASCADE on user_groups cleans up membership rows for us.
+	if err := models.DeleteGroup(s.DB, id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "group_delete", g.Name, "", true)
+	http.Redirect(w, r, "/groups", http.StatusSeeOther)
+}
+
 // --- Feature B: Upstream health checks ---
 
 type upstreamHealthResult struct {
@@ -4417,7 +4629,7 @@ func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
 		viewerID = cu.ID
 	}
 	sid := s.currentServerID(r)
-	hosts, err := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin)
+	hosts, err := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin, s.groupPeerIDs(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -153,6 +153,28 @@ CREATE TABLE IF NOT EXISTS access_daily (
     unique_visitors INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, host)
 );
+
+-- v2.7.4: groups let admin bundle user-role accounts into a team. Every user
+-- in a group sees every other member's proxy hosts / redirects / raw routes /
+-- certificates in their own list (read-only — edit/delete stays owner-scoped
+-- at the handler level). One user may belong to many groups; one group may
+-- have many members. user_groups is the many-to-many join. ON DELETE CASCADE
+-- on both sides so removing a user or a group cleans up its memberships.
+CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS user_groups (
+    user_id  INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, group_id),
+    FOREIGN KEY (user_id)  REFERENCES users(id)  ON DELETE CASCADE,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_user_groups_group ON user_groups(group_id);
 `
 
 func Open(path string) (*sql.DB, error) {

@@ -1,0 +1,56 @@
+{{define "title"}}{{if .Group.ID}}Edit{{else}}New{{end}} Group · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <a href="/groups" class="text-xs text-ink-500 hover:text-ink-900 transition inline-flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+    Back to groups
+  </a>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Group.ID}}Edit Group{{else}}New Group{{end}}</h1>
+  <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+    Members of the same group can view each other's proxy hosts, redirects,
+    raw routes, and certificates. Edit/delete stays owner-scoped — this is a
+    read-share, not a write-share.
+  </p>
+</div>
+
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm max-w-2xl">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Group.ID}}/groups/{{.Group.ID}}{{else}}/groups{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-2xl">
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
+    <input name="name" value="{{.Group.Name}}" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Description <span class="text-ink-400 font-normal">(optional)</span></label>
+    <input name="description" value="{{.Group.Description}}" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" placeholder="e.g. Acme Corp — customer team" />
+  </div>
+
+  <div class="pt-4 border-t border-ink-100">
+    <div class="text-sm font-medium text-ink-800 mb-2">Members</div>
+    <p class="text-xs text-ink-500 mb-3">Only user-role accounts can be group members. Admins see everything already; view-only accounts see everything read-only already.</p>
+    {{if .Users}}
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {{range .Users}}
+      <label class="flex items-center gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
+        <input type="checkbox" name="member_ids" value="{{.ID}}" {{if index $.Members .ID}}checked{{end}} class="rounded text-brand-600 focus:ring-brand-500" />
+        <div class="min-w-0">
+          <div class="text-sm font-medium text-ink-900 truncate">{{.Email}}</div>
+          {{if .Name}}<div class="text-xs text-ink-500 truncate">{{.Name}}</div>{{end}}
+        </div>
+      </label>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="text-xs text-ink-500 italic">No user-role accounts yet. <a href="/users/new" class="text-brand-600 hover:text-brand-700">Create one</a> to add members.</div>
+    {{end}}
+  </div>
+
+  <div class="flex items-center gap-3 pt-4 border-t border-ink-100">
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Group.ID}}Save changes{{else}}Create group{{end}}</button>
+    <a href="/groups" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
+  </div>
+</form>
+{{end}}

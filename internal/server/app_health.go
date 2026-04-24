@@ -80,7 +80,7 @@ func (s *Server) pollAllApps(ctx context.Context) {
 	// system-level background job, not user-facing.
 	var allHosts []models.ProxyHost
 	for _, cs := range caddyServers {
-		hosts, err := models.ListProxyHosts(s.DB, cs.ID, 0, true)
+		hosts, err := models.ListProxyHosts(s.DB, cs.ID, 0, true, nil)
 		if err != nil {
 			log.Printf("app-health poller: list hosts (server %d): %v", cs.ID, err)
 			continue

@@ -34,14 +34,26 @@
     </thead>
     <tbody class="divide-y divide-ink-200">
       {{range .Rows}}
+      {{$canEdit := or (eq $.User.Role "admin") (and .OwnerID.Valid (eq .OwnerID.Int64 $.ViewerID))}}
+      {{$isTeam := and (ne $.User.Role "admin") .OwnerID.Valid (ne .OwnerID.Int64 $.ViewerID)}}
       <tr class="bg-white align-top hover:bg-brand-50/30 transition">
         <td class="px-5 py-3">
           <span class="inline-flex items-center gap-1">
             <span class="font-mono text-xs text-ink-800">{{.Label}}</span>
+            {{if $canEdit}}
             <a href="/raw-routes/{{.ID}}/edit" title="Edit advanced route" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-brand-600 hover:bg-ink-100 transition" aria-label="Edit {{.Label}}">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </a>
+            {{end}}
           </span>
+          {{if $isTeam}}
+          <div class="mt-1">
+            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700" title="Shared via group">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-2.5 h-2.5 shrink-0"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg>
+              Team: {{.OwnerEmail}}
+            </span>
+          </div>
+          {{end}}
         </td>
         <td class="px-5 py-3">
           {{if .CaddyfileSrc}}
@@ -77,6 +89,7 @@
         </td>
         <td class="px-5 py-3 sticky right-0 bg-white shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)]">
           <div class="flex items-center justify-center gap-2">
+            {{if $canEdit}}
             <a href="/raw-routes/{{.ID}}/edit" class="inline-flex items-center gap-1 px-3 py-1 rounded-md border border-purple-200 text-xs font-medium text-purple-600 hover:bg-purple-50 hover:border-purple-300 transition">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               Edit
@@ -87,6 +100,9 @@
                 Delete
               </button>
             </form>
+            {{else}}
+            <span class="text-ink-300 text-xs italic">—</span>
+            {{end}}
           </div>
         </td>
       </tr>
@@ -111,7 +127,9 @@
 
   <div class="lg:hidden divide-y divide-ink-100">
     {{range .Rows}}
-    <div class="p-4 space-y-3 cursor-pointer hover:bg-brand-50/30 transition" data-edit-href="/raw-routes/{{.ID}}/edit">
+    {{$canEdit := or (eq $.User.Role "admin") (and .OwnerID.Valid (eq .OwnerID.Int64 $.ViewerID))}}
+    {{$isTeam := and (ne $.User.Role "admin") .OwnerID.Valid (ne .OwnerID.Int64 $.ViewerID)}}
+    <div class="p-4 space-y-3{{if $canEdit}} cursor-pointer hover:bg-brand-50/30 transition{{end}}"{{if $canEdit}} data-edit-href="/raw-routes/{{.ID}}/edit"{{end}}>
       <div class="flex items-start justify-between gap-3">
         <div class="font-mono text-xs text-ink-800 break-all min-w-0">{{.Label}}</div>
         {{if .Enabled}}
@@ -122,6 +140,7 @@
       </div>
       <div class="text-xs {{if .CertificateID}}text-ink-500{{else}}text-ink-400{{end}}">{{if .CertificateID}}custom cert #{{.CertificateID}}{{else}}auto TLS{{end}}</div>
       {{if eq $.User.Role "admin"}}<div class="text-xs text-ink-500">Owner: {{if .OwnerEmail}}{{.OwnerEmail}}{{else}}<span class="text-ink-400">global</span>{{end}}</div>{{end}}
+      {{if $isTeam}}<div><span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="Shared via group"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg>Team: {{.OwnerEmail}}</span></div>{{end}}
       {{if .CaddyfileSrc}}
       <pre class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto">{{.CaddyfileSrc}}</pre>
       <details>
@@ -134,12 +153,14 @@
         <pre class="mt-2 bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-80">{{prettyJSON .JSONData}}</pre>
       </details>
       {{end}}
+      {{if $canEdit}}
       <div class="flex items-center justify-end gap-3 pt-2 border-t border-ink-100 text-sm">
         <a href="/raw-routes/{{.ID}}/edit" class="font-medium text-purple-600 hover:text-purple-700 transition">Edit</a>
         <form method="post" action="/raw-routes/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete this advanced route? It will stop being sent to Caddy on next sync.')">
           <button class="font-medium text-red-600 hover:text-red-700 transition">Delete</button>
         </form>
       </div>
+      {{end}}
     </div>
     {{else}}
     <div class="px-5 py-16 text-center">
