@@ -195,9 +195,14 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 	// owned rows come back.
 	viewerID := int64(0)
 	queryAsAdmin := true
+	var peers []int64
 	if !isAdmin {
 		viewerID = u.ID
 		queryAsAdmin = false
+		// v2.7.4: analytics visibility follows list visibility — if a user can
+		// see a teammate's proxy host on the hosts page, they should also see
+		// its traffic in the analytics picker.
+		peers, _ = models.GroupPeerIDs(s.DB, u.ID)
 	}
 
 	var hosts []string
@@ -211,7 +216,7 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 		hosts = append(hosts, d)
 	}
 	for _, sr := range servers {
-		proxies, err := models.ListProxyHosts(s.DB, sr.ID, viewerID, queryAsAdmin)
+		proxies, err := models.ListProxyHosts(s.DB, sr.ID, viewerID, queryAsAdmin, peers)
 		if err != nil {
 			return nil, err
 		}
@@ -220,7 +225,7 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 				add(d)
 			}
 		}
-		raws, err := models.ListRawRoutes(s.DB, sr.ID, viewerID, queryAsAdmin)
+		raws, err := models.ListRawRoutes(s.DB, sr.ID, viewerID, queryAsAdmin, peers)
 		if err != nil {
 			return nil, err
 		}

@@ -202,6 +202,183 @@ func ListUsers(db *sql.DB) ([]User, error) {
 	return out, rows.Err()
 }
 
+// v2.7.4: Group + user_groups data access layer.
+//
+// A Group bundles `user`-role accounts into a team. Every user in a group
+// sees every other member's proxy hosts / redirects / raw routes / certs in
+// their list views (read-only — edit/delete stays owner-scoped at the handler
+// level). Admin creates, names, and populates groups; users themselves have
+// no say in membership.
+//
+// `MemberCount` is populated via COUNT subquery on list queries so the /groups
+// index page doesn't need N+1 fetches to show "3 members".
+
+type Group struct {
+	ID          int64
+	Name        string
+	Description string
+	MemberCount int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func ListGroups(db *sql.DB) ([]Group, error) {
+	rows, err := db.Query(`
+        SELECT g.id, g.name, COALESCE(g.description,''), g.created_at, g.updated_at,
+               COALESCE((SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id), 0)
+        FROM groups g ORDER BY g.name ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.MemberCount); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+func GetGroup(db *sql.DB, id int64) (*Group, error) {
+	var g Group
+	err := db.QueryRow(`
+        SELECT g.id, g.name, COALESCE(g.description,''), g.created_at, g.updated_at,
+               COALESCE((SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id), 0)
+        FROM groups g WHERE g.id = ?`, id).
+		Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.MemberCount)
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
+func CreateGroup(db *sql.DB, name, description string) (int64, error) {
+	res, err := db.Exec(`INSERT INTO groups (name, description) VALUES (?, ?)`,
+		strings.TrimSpace(name), strings.TrimSpace(description))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func UpdateGroup(db *sql.DB, id int64, name, description string) error {
+	_, err := db.Exec(`UPDATE groups SET name=?, description=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		strings.TrimSpace(name), strings.TrimSpace(description), id)
+	return err
+}
+
+func DeleteGroup(db *sql.DB, id int64) error {
+	// ON DELETE CASCADE on user_groups.group_id drops memberships automatically.
+	// Resources owned by members are unaffected — ownership lives on the
+	// resource row itself, not on the group.
+	_, err := db.Exec(`DELETE FROM groups WHERE id=?`, id)
+	return err
+}
+
+// ListGroupMembers returns the User rows currently in the group, ordered by
+// email for a stable display order in the admin UI.
+func ListGroupMembers(db *sql.DB, groupID int64) ([]User, error) {
+	rows, err := db.Query(`
+        SELECT `+userCols+`
+        FROM users u
+        INNER JOIN user_groups ug ON ug.user_id = u.id
+        WHERE ug.group_id = ? ORDER BY u.email ASC`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
+// SetGroupMembers atomically replaces the full member set of a group with
+// the given user IDs. Idempotent: re-submitting the same list is a no-op
+// from the caller's perspective (DELETE + bulk INSERT inside one transaction).
+// Admin uses this on the group-edit form: a checkbox array of user IDs gets
+// marshalled straight into userIDs and this wipes-and-rebuilds membership.
+func SetGroupMembers(db *sql.DB, groupID int64, userIDs []int64) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM user_groups WHERE group_id = ?`, groupID); err != nil {
+		return err
+	}
+	if len(userIDs) > 0 {
+		stmt, err := tx.Prepare(`INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, uid := range userIDs {
+			if _, err := stmt.Exec(uid, groupID); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// GroupPeerIDs returns every OTHER user ID that shares at least one group
+// with the viewer. Callers use this to expand a user's visibility scope in
+// list queries: the viewer sees rows owned by self + globals + any ID in
+// this set. Does NOT include the viewer themselves (they're already covered
+// by the owner_id = viewerID clause) and de-dupes users who are in multiple
+// shared groups. Admin and view-role accounts aren't filtered out here;
+// callers that want user-role-only can layer that filter, but in practice
+// the resources we care about (proxy/redirect/raw/cert) are only ever owned
+// by user-role accounts anyway.
+func GroupPeerIDs(db *sql.DB, viewerID int64) ([]int64, error) {
+	rows, err := db.Query(`
+        SELECT DISTINCT ug2.user_id
+        FROM user_groups ug1
+        INNER JOIN user_groups ug2 ON ug2.group_id = ug1.group_id
+        WHERE ug1.user_id = ? AND ug2.user_id != ?`, viewerID, viewerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// inClause builds a placeholder string of the form "?,?,?,..." for a SQL
+// `IN (...)` clause along with the matching []any slice for db.Query args.
+// Returns ("NULL", nil) on empty input so callers can always splice the
+// returned fragment directly — `owner_id IN (NULL)` is always false, which
+// is the correct behavior when a viewer has no group peers (no additional
+// rows should be visible beyond their own + globals).
+func inClause(ids []int64) (string, []any) {
+	if len(ids) == 0 {
+		return "NULL", nil
+	}
+	parts := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		parts[i] = "?"
+		args[i] = id
+	}
+	return strings.Join(parts, ","), args
+}
+
 func normalizeRole(role string) string {
 	switch role {
 	case RoleView:
@@ -316,8 +493,12 @@ func scanProxyHost(s interface {
 
 // ListProxyHosts returns proxy hosts for the given server.
 // If isAdmin is true, all hosts are returned and owner email is populated via JOIN.
-// If isAdmin is false, only hosts owned by viewerID are returned.
-func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]ProxyHost, error) {
+// If isAdmin is false, only hosts owned by viewerID OR by anyone whose user ID
+// is in peerIDs (group teammates, per v2.7.4) are returned. peerIDs may be
+// nil/empty — in that case only the viewer's own hosts come back. The JOIN on
+// users still populates OwnerEmail in the non-admin path so the template can
+// show a "Team: alice@example.com" chip on teammates' rows.
+func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, peerIDs []int64) ([]ProxyHost, error) {
 	var rows *sql.Rows
 	var err error
 	if isAdmin {
@@ -327,11 +508,15 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([
         LEFT JOIN users u ON u.id = ph.owner_id
         WHERE ph.server_id = ? ORDER BY ph.id DESC`, serverID)
 	} else {
+		inStr, inArgs := inClause(peerIDs)
+		args := append([]any{serverID, viewerID}, inArgs...)
 		rows, err = db.Query(`
         SELECT `+proxyHostBaseCols+`, COALESCE(u.email, '')
         FROM proxy_hosts ph
         LEFT JOIN users u ON u.id = ph.owner_id
-        WHERE ph.server_id = ? AND ph.owner_id = ? ORDER BY ph.id DESC`, serverID, viewerID)
+        WHERE ph.server_id = ?
+          AND (ph.owner_id = ? OR ph.owner_id IN (`+inStr+`))
+        ORDER BY ph.id DESC`, args...)
 	}
 	if err != nil {
 		return nil, err
@@ -532,8 +717,9 @@ func DeleteProxyHost(db *sql.DB, id int64) error {
 
 // ListRedirectionHosts returns redirection hosts for the given server.
 // If isAdmin is true, all hosts are returned with owner email via JOIN.
-// If isAdmin is false, only hosts owned by viewerID are returned.
-func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]RedirectionHost, error) {
+// If isAdmin is false, viewer sees rows they own plus rows owned by any
+// peerID (group teammates, v2.7.4). peerIDs may be nil for "only my own".
+func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, peerIDs []int64) ([]RedirectionHost, error) {
 	var rows *sql.Rows
 	var err error
 	if isAdmin {
@@ -546,6 +732,8 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ? ORDER BY rh.id DESC`, serverID)
 	} else {
+		inStr, inArgs := inClause(peerIDs)
+		args := append([]any{serverID, viewerID}, inArgs...)
 		rows, err = db.Query(`
         SELECT rh.id, rh.domains, rh.forward_scheme, rh.forward_domain, rh.forward_http_code,
                rh.preserve_path, rh.ssl_enabled, rh.ssl_forced, rh.enabled,
@@ -553,7 +741,9 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.owner_id, 0), COALESCE(u.email, '')
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
-        WHERE rh.server_id = ? AND rh.owner_id = ? ORDER BY rh.id DESC`, serverID, viewerID)
+        WHERE rh.server_id = ?
+          AND (rh.owner_id = ? OR rh.owner_id IN (`+inStr+`))
+        ORDER BY rh.id DESC`, args...)
 	}
 	if err != nil {
 		return nil, err
@@ -712,8 +902,9 @@ func scanRawRoute(s interface {
 
 // ListRawRoutes returns raw routes for the given server.
 // If isAdmin is true, all routes are returned with owner email via JOIN.
-// If isAdmin is false, only routes owned by viewerID are returned.
-func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]RawRoute, error) {
+// If isAdmin is false, viewer sees rows they own plus any peerID-owned rows
+// (group teammates, v2.7.4). peerIDs may be nil for "only my own".
+func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, peerIDs []int64) ([]RawRoute, error) {
 	var rows *sql.Rows
 	var err error
 	if isAdmin {
@@ -727,6 +918,8 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]
         LEFT JOIN users u ON u.id = rr.owner_id
         WHERE rr.server_id = ? ORDER BY rr.id ASC`, serverID)
 	} else {
+		inStr, inArgs := inClause(peerIDs)
+		args := append([]any{serverID, viewerID}, inArgs...)
 		rows, err = db.Query(`
         SELECT rr.id, rr.label, rr.json_data, COALESCE(rr.caddyfile_src, ''), rr.enabled,
                COALESCE(rr.certificate_id, 0), COALESCE(rr.force_ssl, 0), COALESCE(rr.block_common_exploits, 0),
@@ -735,7 +928,9 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
-        WHERE rr.server_id = ? AND rr.owner_id = ? ORDER BY rr.id ASC`, serverID, viewerID)
+        WHERE rr.server_id = ?
+          AND (rr.owner_id = ? OR rr.owner_id IN (`+inStr+`))
+        ORDER BY rr.id ASC`, args...)
 	}
 	if err != nil {
 		return nil, err
@@ -876,11 +1071,11 @@ func SetSetting(db *sql.DB, key, value string) error {
 
 func ProxyHostDomainsConflict(db *sql.DB, serverID int64, domains []string, excludeID int64) (string, error) {
 	// Use admin view (isAdmin=true) so conflict checking is global across all owners.
-	hosts, err := ListProxyHosts(db, serverID, 0, true)
+	hosts, err := ListProxyHosts(db, serverID, 0, true, nil)
 	if err != nil {
 		return "", err
 	}
-	redirs, err := ListRedirectionHosts(db, serverID, 0, true)
+	redirs, err := ListRedirectionHosts(db, serverID, 0, true, nil)
 	if err != nil {
 		return "", err
 	}
@@ -984,7 +1179,7 @@ func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 //
 // OwnerEmail is populated only on the admin path; the non-admin path can't
 // surface other users' emails and the column isn't shown to them anyway.
-func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]Certificate, error) {
+func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, peerIDs []int64) ([]Certificate, error) {
 	var rows *sql.Rows
 	var err error
 	if isAdmin {
@@ -995,12 +1190,21 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
             LEFT JOIN users u ON u.id = c.owner_id
             WHERE c.server_id = ? ORDER BY c.id DESC`, serverID)
 	} else {
+		// v2.7.4: JOIN in the non-admin path too so teammates' cert rows render
+		// with an Owner email. Pre-v2.7.4 we returned '' here as a privacy
+		// measure (a user-role account should never see another user's email
+		// unless they're both admins), but under groups the whole point is
+		// that teammates see each other's resources, owner label included.
+		inStr, inArgs := inClause(peerIDs)
+		args := append([]any{serverID, viewerID}, inArgs...)
 		rows, err = db.Query(`
-            SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path,
-                   owner_id, created_at, updated_at, ''
-            FROM certificates
-            WHERE server_id = ? AND (owner_id IS NULL OR owner_id = ?)
-            ORDER BY id DESC`, serverID, viewerID)
+            SELECT c.id, c.name, c.domains, c.source, c.cert_pem, c.key_pem, c.cert_path, c.key_path,
+                   c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
+            FROM certificates c
+            LEFT JOIN users u ON u.id = c.owner_id
+            WHERE c.server_id = ?
+              AND (c.owner_id IS NULL OR c.owner_id = ? OR c.owner_id IN (`+inStr+`))
+            ORDER BY c.id DESC`, args...)
 	}
 	if err != nil {
 		return nil, err
