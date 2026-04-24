@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.9] — 2026-04-23 · Managed DNS creates a record per hostname, not just the first
+
+### Fixed
+- **Multi-hostname proxy hosts and advanced routes now get a DNS record for every hostname.** Previously, `dnsCreateRecord` used `dns.FirstDomain(p.Domains)` and `dnsCreateRecordForRaw` used `firstRawRouteHost(rr.JSONData)`, so a row declaring `example.com, *.example.com` (or any alias list) would only ever get an A record for `example.com` — the wildcard / aliases got silently skipped, leaving clients that resolved them with no DNS pointing at the origin. The create paths now iterate every hostname in `ProxyHost.DomainList()` / `rawRouteHosts()`, call `dnsCreateRecordForFQDN` per host, and persist the resulting record IDs as a comma-separated string in the existing `dns_record_id` column. Cloudflare (and every other provider in the registry) accepts `*.foo` as a valid record name, so wildcards provision natively with no provider-specific branching.
+
+### Implementation notes
+- **Schema-free change.** The `dns_record_id` column stays `TEXT NOT NULL DEFAULT ''`. A single-ID row (`"abc123"`) and a multi-ID row (`"abc123,def456"`) both parse through the same `splitDNSRecordIDs()` helper, so there is zero DB migration — upgrades from any v2.x apply with just the binary swap.
+- **`dnsDeleteRecord` now splits + loops internally.** All 6 call sites (proxy-host create/update/delete, raw-route create/update/delete) keep passing the raw `DNSRecordID` column value; the helper handles single-ID and comma-separated equally. Allow-list check stays at the top — refusing zone-level deletion still blocks every record in that zone, symmetric with the create path.
+- **Retarget self-heals pre-v2.5.9 rows.** `dnsUpdateAllRecords` now takes `fqdns []string` instead of a single FQDN, deletes every old record, and creates one fresh record per current hostname. An existing multi-domain row whose DB only has the first hostname's record ID will, on first retarget, end up with records for ALL its hostnames — the missing-alias records get provisioned automatically. No manual backfill needed.
+- **Existing rows not touched until edited or retargeted.** This is a fix, not a migration. A row that's never edited after the upgrade keeps its single-record state. The first time a user hits Save on that row (triggering the `needDelete` → recreate path) or retargets the server IP, it heals to full multi-record coverage.
+- **Templates left as-is for now.** `proxy_host_form.html`, `proxy_host_deploying.html`, `raw_route_form.html`, `raw_route_deploying.html` all render `{{.DNSRecordID}}` directly — for multi-ID rows this shows a comma-separated list like `abc123,def456`. Cosmetic only; functionality is unchanged. A future minor can render pill chips per record.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.9` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.8] — 2026-04-23 · Caddyfile paste-import now captures per-site TLS automation policies
 
 ### Fixed
