@@ -1,0 +1,191 @@
+{{define "title"}}{{.Host}} · Analytics · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex items-center gap-2 text-xs text-ink-500 mb-2">
+  <a href="/analytics" class="hover:text-ink-700 inline-flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+    All hosts
+  </a>
+</div>
+
+<div class="flex items-start justify-between mb-6 gap-6 flex-wrap">
+  <div class="min-w-0">
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900 truncate">{{.Host}}</h1>
+    <p class="text-sm text-ink-500 mt-1">
+      {{.WindowLabel}} · {{.Totals.Visitors}} visitors · {{.Totals.Views}} views
+    </p>
+  </div>
+  {{/* Window selector — keeps the query-string approach honest; server only
+       accepts 1d/7d/30d, anything else falls back to 7d. */}}
+  <div class="inline-flex rounded-lg border border-ink-200 bg-white p-0.5 text-xs shadow-card">
+    {{$cur := .WindowLabel}}
+    <a href="/analytics/{{.Host}}?window=1d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 24 hours"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">24 hours</a>
+    <a href="/analytics/{{.Host}}?window=7d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 7 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">7 days</a>
+    <a href="/analytics/{{.Host}}?window=30d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 30 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">30 days</a>
+  </div>
+</div>
+
+{{/* ── Summary cards ── */}}
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Visitors</div>
+    <div class="mt-1 text-2xl font-semibold text-ink-900">{{.Totals.Visitors}}</div>
+    <div class="text-xs text-ink-400 mt-0.5">unique IPs</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Views</div>
+    <div class="mt-1 text-2xl font-semibold text-ink-900">{{.Totals.Views}}</div>
+    <div class="text-xs text-ink-400 mt-0.5">total requests</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Success rate</div>
+    {{$tot := addInt .Status.S2xx (addInt .Status.S3xx (addInt .Status.S4xx (addInt .Status.S5xx .Status.SOther)))}}
+    {{$ok := addInt .Status.S2xx .Status.S3xx}}
+    <div class="mt-1 text-2xl font-semibold text-ink-900">
+      {{if gt $tot 0}}{{mulDivInt $ok 100 $tot}}%{{else}}—{{end}}
+    </div>
+    <div class="text-xs text-ink-400 mt-0.5">2xx + 3xx of total</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Status mix</div>
+    <div class="mt-1 flex items-center gap-2 text-xs">
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>{{.Status.S2xx}}</span>
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-sky-500"></span>{{.Status.S3xx}}</span>
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-500"></span>{{.Status.S4xx}}</span>
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span>{{.Status.S5xx}}</span>
+    </div>
+    <div class="mt-1 text-[10px] text-ink-400">2xx · 3xx · 4xx · 5xx</div>
+  </div>
+</div>
+
+{{/* ── Traffic chart ── */}}
+<div class="bg-white border border-ink-200 rounded-xl p-4 mb-6 shadow-card">
+  <div class="flex items-baseline justify-between mb-3">
+    <div>
+      <div class="text-sm font-medium text-ink-800">Requests over time</div>
+      <div class="text-xs text-ink-400">
+        {{if eq .BucketSeconds 3600}}1-hour buckets{{else if eq .BucketSeconds 86400}}1-day buckets{{else}}{{.BucketSeconds}}s buckets{{end}}
+      </div>
+    </div>
+  </div>
+  {{if .Buckets}}
+  <svg viewBox="0 0 {{len .Buckets}} 40" preserveAspectRatio="none" class="w-full h-32 text-brand-500">
+    {{$max := 0}}
+    {{range .Buckets}}{{if gt .Views $max}}{{$max = .Views}}{{end}}{{end}}
+    {{if eq $max 0}}{{$max = 1}}{{end}}
+    {{range $i, $b := .Buckets}}
+      {{$h := 0}}{{if gt $b.Views 0}}{{$h = mulDivInt $b.Views 38 $max}}{{end}}
+      <rect x="{{$i}}" y="{{subInt 40 $h}}" width="0.85" height="{{$h}}" fill="currentColor" opacity="0.8"/>
+    {{end}}
+  </svg>
+  {{else}}
+  <div class="py-8 text-center text-sm text-ink-400">No events in this window.</div>
+  {{end}}
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+  {{/* ── Top paths ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+      <div class="text-sm font-medium text-ink-800">Top paths</div>
+      <div class="text-xs text-ink-400">{{len .Paths}} shown</div>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-ink-50/50 text-left">
+        <tr class="text-xs uppercase tracking-wider text-ink-500">
+          <th class="px-5 py-2.5 font-medium w-14">Method</th>
+          <th class="px-5 py-2.5 font-medium">Path</th>
+          <th class="px-5 py-2.5 font-medium text-right">Views</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{$topViews := 0}}
+        {{range .Paths}}{{if gt .Views $topViews}}{{$topViews = .Views}}{{end}}{{end}}
+        {{if eq $topViews 0}}{{$topViews = 1}}{{end}}
+        {{range .Paths}}
+        <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+          <td class="px-5 py-2 text-xs font-mono text-ink-500 uppercase">{{.Method}}</td>
+          <td class="px-5 py-2 text-ink-700 font-mono text-xs truncate max-w-[260px]" title="{{.Path}}">{{if .Path}}{{.Path}}{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+          <td class="px-5 py-2 text-right">
+            <div class="inline-flex items-center gap-2">
+              <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+                <div class="h-full bg-brand-400" style="width: {{mulDivInt .Views 100 $topViews}}%"></div>
+              </div>
+              <span class="text-ink-700 font-mono tabular-nums">{{.Views}}</span>
+            </div>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="3" class="px-5 py-10 text-center text-sm text-ink-400">No path data in this window.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  {{/* ── Top visitors ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+      <div class="text-sm font-medium text-ink-800">Top visitors</div>
+      <div class="text-xs text-ink-400">by request count</div>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-ink-50/50 text-left">
+        <tr class="text-xs uppercase tracking-wider text-ink-500">
+          <th class="px-5 py-2.5 font-medium">Client IP</th>
+          <th class="px-5 py-2.5 font-medium text-right">Views</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{$topClient := 0}}
+        {{range .Clients}}{{if gt .Views $topClient}}{{$topClient = .Views}}{{end}}{{end}}
+        {{if eq $topClient 0}}{{$topClient = 1}}{{end}}
+        {{range .Clients}}
+        <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+          <td class="px-5 py-2 text-ink-700 font-mono text-xs">{{if .ClientIP}}{{.ClientIP}}{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+          <td class="px-5 py-2 text-right">
+            <div class="inline-flex items-center gap-2">
+              <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+                <div class="h-full bg-indigo-400" style="width: {{mulDivInt .Views 100 $topClient}}%"></div>
+              </div>
+              <span class="text-ink-700 font-mono tabular-nums">{{.Views}}</span>
+            </div>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="2" class="px-5 py-10 text-center text-sm text-ink-400">No visitors in this window.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{{/* ── Status breakdown (detailed bar) ── */}}
+<div class="bg-white border border-ink-200 rounded-xl p-5 shadow-card mb-6">
+  <div class="flex items-baseline justify-between mb-3">
+    <div class="text-sm font-medium text-ink-800">HTTP status breakdown</div>
+    <div class="text-xs text-ink-400">{{.WindowLabel}}</div>
+  </div>
+  {{$tot := addInt .Status.S2xx (addInt .Status.S3xx (addInt .Status.S4xx (addInt .Status.S5xx .Status.SOther)))}}
+  {{if gt $tot 0}}
+  <div class="flex h-3 w-full rounded-full overflow-hidden bg-ink-100">
+    {{if gt .Status.S2xx 0}}<div class="bg-emerald-500" style="width: {{mulDivInt .Status.S2xx 100 $tot}}%" title="2xx: {{.Status.S2xx}}"></div>{{end}}
+    {{if gt .Status.S3xx 0}}<div class="bg-sky-500" style="width: {{mulDivInt .Status.S3xx 100 $tot}}%" title="3xx: {{.Status.S3xx}}"></div>{{end}}
+    {{if gt .Status.S4xx 0}}<div class="bg-amber-500" style="width: {{mulDivInt .Status.S4xx 100 $tot}}%" title="4xx: {{.Status.S4xx}}"></div>{{end}}
+    {{if gt .Status.S5xx 0}}<div class="bg-red-500" style="width: {{mulDivInt .Status.S5xx 100 $tot}}%" title="5xx: {{.Status.S5xx}}"></div>{{end}}
+    {{if gt .Status.SOther 0}}<div class="bg-ink-400" style="width: {{mulDivInt .Status.SOther 100 $tot}}%" title="other: {{.Status.SOther}}"></div>{{end}}
+  </div>
+  <div class="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-emerald-500"></span><span class="text-ink-600">2xx</span><span class="text-ink-900 font-mono ml-auto">{{.Status.S2xx}}</span></div>
+    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-sky-500"></span><span class="text-ink-600">3xx</span><span class="text-ink-900 font-mono ml-auto">{{.Status.S3xx}}</span></div>
+    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-amber-500"></span><span class="text-ink-600">4xx</span><span class="text-ink-900 font-mono ml-auto">{{.Status.S4xx}}</span></div>
+    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-red-500"></span><span class="text-ink-600">5xx</span><span class="text-ink-900 font-mono ml-auto">{{.Status.S5xx}}</span></div>
+    <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-ink-400"></span><span class="text-ink-600">other</span><span class="text-ink-900 font-mono ml-auto">{{.Status.SOther}}</span></div>
+  </div>
+  {{else}}
+  <div class="py-6 text-center text-sm text-ink-400">No responses in this window.</div>
+  {{end}}
+</div>
+{{end}}

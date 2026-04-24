@@ -124,6 +124,7 @@ if ('serviceWorker' in navigator) {
         {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
 
         <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">System</div>
+        {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" "Analytics" "Icon" "chart")}}
         {{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}
         {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" "Activity" "Icon" "pulse")}}
         {{template "navItem" (dict "Section" $sec "Active" "docs" "Href" "/docs" "Label" "Docs / Tutorial" "Icon" "book")}}
@@ -134,37 +135,39 @@ if ('serviceWorker' in navigator) {
         {{end}}
       </nav>
 
-      <div class="border-t border-ink-200 px-4 py-3 text-xs">
+      {{/* Sidebar footer: version stamp + update-dot on the top line, then
+           copyright / GitHub / License on a second line. Profile cluster
+           (email, role, 2FA, sign out, dark toggle) lives in the top bar
+           since v2.6.2 — the sidebar footer is pure project-meta now. */}}
+      <div class="border-t border-ink-200 px-4 py-3 space-y-1.5">
         {{if .AppVersion}}
-        <div class="flex items-center gap-1.5 mb-2">
+        <div class="text-xs flex items-center gap-1.5">
           <span class="text-[10px] font-mono text-ink-400">CaddyUI {{.AppVersion}}</span>
           <span id="update-badge" class="hidden inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 cursor-pointer" title="Click to dismiss"></span>
         </div>
         {{end}}
-        <div class="flex items-center gap-2.5">
-          <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-ink-100 text-ink-600 font-medium">
-            {{if .User.Email}}{{slice .User.Email 0 1}}{{else}}?{{end}}
-          </span>
-          <div class="flex-1 min-w-0">
-            <div class="truncate text-ink-800 font-medium">{{.User.Email}}</div>
-            <div class="flex items-center gap-2 mt-0.5">
-              <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded {{if eq .User.Role "admin"}}bg-purple-100 text-purple-700{{else}}bg-ink-100 text-ink-600{{end}}">{{.User.Role}}</span>
-              <a href="/totp/setup" class="text-[10px] text-ink-400 hover:text-brand-600 transition">2FA</a>
-              <form method="post" action="/logout">
-                <button class="text-ink-400 hover:text-red-500 transition">Sign out</button>
-              </form>
-              <button type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="ml-auto text-ink-400 hover:text-ink-700 transition">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-              </button>
-            </div>
-          </div>
+        <div class="text-[10px] text-ink-400 flex items-center gap-1.5 flex-wrap">
+          <span>&copy; 2026</span>
+          <span class="text-ink-300">·</span>
+          <a href="https://github.com/X4Applegate/caddyui" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 hover:text-ink-600 transition" title="GitHub repository">
+            <svg viewBox="0 0 24 24" fill="currentColor" class="w-3 h-3"><path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.21 3.44 9.62 8.21 11.18.6.11.82-.26.82-.57v-2c-3.34.72-4.04-1.41-4.04-1.41-.55-1.37-1.34-1.74-1.34-1.74-1.09-.74.08-.72.08-.72 1.21.08 1.84 1.22 1.84 1.22 1.07 1.8 2.81 1.28 3.5.98.11-.76.42-1.28.76-1.57-2.67-.3-5.47-1.31-5.47-5.83 0-1.29.47-2.34 1.23-3.17-.12-.3-.54-1.51.12-3.14 0 0 1.01-.32 3.3 1.21.96-.26 1.98-.39 3-.4 1.02.01 2.05.14 3 .4 2.29-1.53 3.3-1.21 3.3-1.21.66 1.63.24 2.84.12 3.14.77.83 1.23 1.88 1.23 3.17 0 4.53-2.81 5.53-5.49 5.82.43.37.82 1.1.82 2.21v3.28c0 .32.22.69.82.57C20.57 21.91 24 17.5 24 12.29 24 5.78 18.63.5 12 .5z"/></svg>
+            GitHub
+          </a>
+          <span class="text-ink-300">·</span>
+          <a href="https://github.com/X4Applegate/caddyui/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" class="hover:text-ink-600 transition" title="CaddyUI Source Available License 1.0">License</a>
         </div>
       </div>
     </aside>
 
     <div class="flex-1 min-w-0 flex flex-col lg:overflow-y-auto">
-      {{if .CurrentServer}}
+      {{/* Top bar always renders when a user is signed in. When a
+           CurrentServer exists we show the server status/name/URL on the
+           left; otherwise just the profile cluster on the right, so the
+           Sign out button is reachable even in the "no servers registered"
+           edge case (e.g. an admin who just deleted the last server). */}}
+      {{if .User}}
       <div class="sticky top-0 z-10 border-b border-ink-100 bg-white/95 backdrop-blur-sm px-4 sm:px-6 md:px-8 py-2 flex items-center gap-3 min-w-0">
+        {{if .CurrentServer}}
         {{if eq .CurrentServer.Status "online"}}
         <span class="w-2 h-2 rounded-full bg-brand-500 shrink-0"></span>
         {{else if eq .CurrentServer.Status "offline"}}
@@ -175,9 +178,34 @@ if ('serviceWorker' in navigator) {
         <span class="text-sm font-semibold text-ink-800 shrink-0">{{.CurrentServer.Name}}</span>
         <span class="text-ink-200 shrink-0">|</span>
         <span class="text-xs font-mono text-ink-400 truncate hidden sm:block">{{.CurrentServer.AdminURL}}</span>
-        {{if and .Servers (gt (len .Servers) 1)}}
-        <a href="/servers" class="ml-auto text-xs text-ink-400 hover:text-brand-600 transition shrink-0 whitespace-nowrap">Switch server</a>
         {{end}}
+
+        {{/* Profile cluster — relocated from the sidebar footer in v2.6.2.
+             Flattened to a single horizontal row so it reads cleanly in
+             the narrow top bar. On very small viewports the email/role
+             are hidden so the 2FA + Sign out + theme-toggle buttons stay
+             reachable; users can still confirm their identity via the
+             avatar initial. The old "Switch server" top-right link was
+             removed: the sidebar server picker (shown only when >1 server
+             is registered) already covers that flow, and the link was
+             dead weight for single-server deployments. */}}
+        <div class="ml-auto flex items-center gap-2 shrink-0 text-xs">
+          <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-ink-100 text-ink-600 font-medium text-[11px] shrink-0" title="{{.User.Email}}">
+            {{if .User.Email}}{{slice .User.Email 0 1}}{{else}}?{{end}}
+          </span>
+          <span class="hidden md:inline text-ink-700 font-medium truncate max-w-[180px]">{{.User.Email}}</span>
+          <span class="hidden sm:inline text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
+            {{if eq .User.Role "admin"}}bg-purple-100 text-purple-700
+            {{else if eq .User.Role "user"}}bg-blue-50 text-blue-700
+            {{else}}bg-ink-100 text-ink-600{{end}}">{{.User.Role}}</span>
+          <a href="/totp/setup" class="text-[11px] text-ink-400 hover:text-brand-600 transition">2FA</a>
+          <form method="post" action="/logout" class="inline-flex">
+            <button class="text-[11px] text-ink-400 hover:text-red-500 transition">Sign out</button>
+          </form>
+          <button type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="text-ink-400 hover:text-ink-700 transition shrink-0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
+        </div>
       </div>
       {{end}}
       <main class="flex-1">
@@ -283,35 +311,151 @@ if ('serviceWorker' in navigator) {
   {{else if eq .CaptchaProvider "recaptcha"}}
     <script src="https://www.google.com/recaptcha/api.js?render={{.CaptchaSiteKey}}"></script>
     <input type="hidden" name="g-recaptcha-response" id="g-recaptcha-response-{{.FormID}}" />
+    {{/* Visible status line — defaults to subtle "Loading..." then updates
+         when a token is cached or when we detect that api.js was blocked
+         (ad blocker, corporate DNS, cold cache race). Without this, a
+         broken captcha looked identical to a working one until submit. */}}
+    <p id="captcha-status-{{.FormID}}" class="text-[11px] text-ink-400 text-center mt-1 hidden"></p>
     <script>
     (function() {
-      var form = document.getElementById({{.FormID | printf "%q"}});
-      var hidden = document.getElementById({{printf "g-recaptcha-response-%s" .FormID | printf "%q"}});
+      {{/* Go html/template is context-aware: inside <script>, a bare
+           {{.Value}} already emits a JS string literal (with its own
+           correctly-escaped quotes). Before v2.6.2 these lines piped
+           the values through `printf "%q"` as well — which added a
+           *second* layer of quoting, so the running JS ended up with
+           string values like  "login-form"  (literally including the
+           quote marks). reCAPTCHA then rejected every request because
+           the site key we sent to Google was not actually the site key
+           — it was the site key wrapped in extra quotes. Fix: trust
+           html/template's JS-context escaping and drop the %q step.
+
+           v2.6.2 also moves token acquisition OUT of the submit click
+           path. Earlier we only called grecaptcha.execute() from inside
+           the submit handler, which meant if a user clicked submit
+           before api.js finished loading (common on slow networks or
+           incognito windows with a cold script cache), the fallback
+           branch submitted an empty token and the server rejected it
+           with "Security check failed". Now we pre-fetch a token as
+           soon as grecaptcha is ready, refresh it every 90s (v3 tokens
+           live 120s), and let the form submit natively with the hidden
+           field already populated. The submit-time handler stays only
+           as a last-resort safety net for the tiny window where a
+           submit races the very first token fetch. */}}
+      var form = document.getElementById({{.FormID}});
+      var hidden = document.getElementById({{printf "g-recaptcha-response-%s" .FormID}});
+      var status = document.getElementById({{printf "captcha-status-%s" .FormID}});
       if (!form || !hidden) return;
-      var siteKey = {{.CaptchaSiteKey | printf "%q"}};
-      // Track whether we've already fetched a token for this submit so the
-      // second (real) submit doesn't re-intercept and loop.
-      var tokenReady = false;
+      var siteKey = {{.CaptchaSiteKey}};
+      // reCAPTCHA v3 rules: action names may contain only letters, digits,
+      // and slashes — NO hyphens, underscores, or spaces. Pre-v2.6.2 we
+      // passed the form ID raw, so "login-form" and "totp-form" both got
+      // silently rejected by grecaptcha.execute() because of the hyphen,
+      // which surfaced as a client-side catch() ("Google rejected the
+      // request") that looked identical to a bad site key. See
+      // https://developers.google.com/recaptcha/docs/v3#actions — we strip
+      // everything non-alphanumeric and fall back to "submit" if the
+      // result is empty.
+      var action = {{.FormID}};
+      action = action.replace(/[^a-zA-Z0-9\/]/g, '') || 'submit';
+      var apiLoaded = false;
+      var lastError = '';
+
+      function showStatus(msg, isError) {
+        if (!status) return;
+        status.textContent = msg;
+        status.classList.remove('hidden');
+        if (isError) {
+          status.className = 'text-[11px] text-red-600 text-center mt-1';
+        } else {
+          status.className = 'text-[11px] text-ink-400 text-center mt-1';
+        }
+      }
+      function hideStatus() {
+        if (!status) return;
+        status.classList.add('hidden');
+      }
+
+      function describeErr(err) {
+        if (err == null) return 'unknown';
+        if (typeof err === 'string') return err;
+        if (err.message) return err.message;
+        try { return JSON.stringify(err); } catch (e) { return String(err); }
+      }
+
+      function refreshToken() {
+        if (typeof grecaptcha === 'undefined' || !grecaptcha.execute) return;
+        try {
+          grecaptcha.execute(siteKey, {action: action}).then(function(token) {
+            if (token) {
+              hidden.value = token;
+              hideStatus();
+            }
+          }).catch(function(err) {
+            lastError = describeErr(err);
+            // Surface the very first refresh failure so the user sees why
+            // login is broken without having to click submit first.
+            if (!hidden.value) {
+              showStatus("reCAPTCHA setup problem: " + lastError + ". Check the site key + domain list in the reCAPTCHA admin console, or open the browser console for Google's detailed error.", true);
+            }
+          });
+        } catch (err) {
+          lastError = describeErr(err);
+        }
+      }
+
+      // Poll for grecaptcha.ready because api.js loads async and the
+      // global is not available until the script has executed. Emit a
+      // visible warning if api.js never loads — that's the single most
+      // common reason logins fail silently (ad blocker / DNS / offline).
+      function whenReady(cb) {
+        if (typeof grecaptcha !== 'undefined' && typeof grecaptcha.ready === 'function') {
+          apiLoaded = true;
+          grecaptcha.ready(cb);
+        } else {
+          setTimeout(function() { whenReady(cb); }, 100);
+        }
+      }
+      whenReady(function() {
+        refreshToken();
+        setInterval(refreshToken, 90000);
+      });
+      // If api.js hasn't loaded after 6 seconds, surface a visible warning
+      // so the user knows WHY submit isn't working instead of guessing.
+      setTimeout(function() {
+        if (!apiLoaded) {
+          showStatus("Security check couldn't load. Disable ad blockers for this site and reload.", true);
+        }
+      }, 6000);
+
+      // Submit guard. Three paths:
+      //   1. Pre-fetched token present → let native submit proceed.
+      //   2. grecaptcha available but no token yet → fetch one and submit.
+      //   3. grecaptcha never loaded → BLOCK submit + show status msg.
+      // Path 3 used to silently submit with an empty token, which made
+      // the server reject with a generic "Security check failed" — the
+      // user couldn't tell whether it was a Google outage or a bad key.
+      var submitting = false;
       form.addEventListener('submit', function(e) {
-        if (tokenReady) return; // token's already in the hidden field
-        e.preventDefault();
-        if (typeof grecaptcha === 'undefined') {
-          // api.js didn't load (ad blocker, Google outage). Submit anyway
-          // so the server returns the friendlier "challenge failed" error
-          // instead of the user getting stuck on a non-submitting form.
-          tokenReady = true;
-          form.submit();
+        if (submitting) return;
+        if (hidden.value) { hideStatus(); return; }
+        if (typeof grecaptcha === 'undefined' || typeof grecaptcha.execute !== 'function') {
+          e.preventDefault();
+          showStatus("Security check hasn't loaded yet. Check your ad blocker / network, then try again. " + (lastError ? "(" + lastError + ")" : ""), true);
           return;
         }
+        e.preventDefault();
+        showStatus("Verifying…", false);
         grecaptcha.ready(function() {
-          grecaptcha.execute(siteKey, {action: {{.FormID | printf "%q"}}}).then(function(token) {
+          grecaptcha.execute(siteKey, {action: action}).then(function(token) {
+            if (!token) {
+              showStatus("Security check returned no token. Reload the page.", true);
+              return;
+            }
             hidden.value = token;
-            tokenReady = true;
+            submitting = true;
             form.submit();
-          }).catch(function() {
-            // Same fallback as above — server handles the rejection.
-            tokenReady = true;
-            form.submit();
+          }).catch(function(err) {
+            showStatus("reCAPTCHA rejected request: " + describeErr(err) + ". Verify site key + allowed domains in reCAPTCHA admin, or see browser console for details.", true);
           });
         });
       });
@@ -322,4 +466,4 @@ if ('serviceWorker' in navigator) {
 {{end}}
 {{end}}
 
-{{define "icon"}}{{if eq . "dashboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>{{else if eq . "proxy"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>{{else if eq . "redirect"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>{{else if eq . "code"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>{{else if eq . "lock"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{else if eq . "download"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{else if eq . "clipboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>{{else if eq . "camera"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>{{else if eq . "pulse"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>{{else if eq . "users"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>{{else if eq . "server"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>{{else if eq . "settings"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>{{else if eq . "book"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>{{end}}{{end}}
+{{define "icon"}}{{if eq . "dashboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>{{else if eq . "proxy"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>{{else if eq . "redirect"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>{{else if eq . "code"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>{{else if eq . "lock"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{else if eq . "download"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{else if eq . "clipboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>{{else if eq . "camera"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>{{else if eq . "pulse"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>{{else if eq . "users"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>{{else if eq . "server"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>{{else if eq . "settings"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>{{else if eq . "book"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>{{else if eq . "chart"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>{{end}}{{end}}

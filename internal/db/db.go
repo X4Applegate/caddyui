@@ -117,6 +117,42 @@ CREATE TABLE IF NOT EXISTS caddy_servers (
     last_contact_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- v2.7.0: raw visitor-analytics events. One row per request handled by any
+-- Caddy server shipping its JSON access log to the ingest TCP listener.
+-- Retention defaults to 30 days (pruned by a background goroutine); the
+-- access_daily rollup below keeps long-term counts without the per-request
+-- detail or any IP-level data. Indexes below cover the three query shapes
+-- the /analytics page hits: overall-in-window, per-host-in-window, and
+-- "live now" (last N minutes, any host).
+CREATE TABLE IF NOT EXISTS access_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    host TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    method TEXT NOT NULL DEFAULT '',
+    status INTEGER NOT NULL DEFAULT 0,
+    client_ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    bytes_out INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_access_events_ts      ON access_events(ts);
+CREATE INDEX IF NOT EXISTS idx_access_events_host_ts ON access_events(host, ts);
+
+-- v2.7.0: long-term rollup keyed by (day, host). Populated by a nightly
+-- aggregator once per UTC midnight so the /analytics page can show 30/90/365-day
+-- trends without keeping per-request rows around. unique_visitors is best-effort:
+-- distinct client_ip count on the day's events, which is close enough for a
+-- dashboard without the overhead of HyperLogLog or similar. No IPs are stored
+-- here, so retention is safe indefinitely.
+CREATE TABLE IF NOT EXISTS access_daily (
+    day TEXT NOT NULL,
+    host TEXT NOT NULL DEFAULT '',
+    views INTEGER NOT NULL DEFAULT 0,
+    unique_visitors INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, host)
+);
 `
 
 func Open(path string) (*sql.DB, error) {

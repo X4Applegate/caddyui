@@ -1,4 +1,13 @@
 /* CaddyUI base styles — tokens are in layout.html's tailwind.config */
+html {
+  /* Smooth-scroll for in-page anchor jumps (settings TOC, docs TOC, etc.).
+     Users who prefer reduced motion fall back to instant jumps via the
+     @media rule below. */
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -92,6 +101,70 @@ html.dark .version-pill {
   border: 1px solid rgba(96, 165, 250, 0.45) !important;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(96, 165, 250, 0.15) !important;
 }
+
+/* ── Status badges (v2.6.0) ────────────────────────────────────────
+   Extracted from ~40+ duplicated inline-flex/rounded-full pill combos
+   across the templates. The `.badge` base class carries the shape and
+   typography; variants below set bg/text. Use `.badge__dot` on an
+   inner <span> for the coloured indicator dot.
+
+   Example:
+     <button class="badge badge--enabled">
+       <span class="badge__dot"></span>enabled
+     </button>
+
+   For now the enable/disable toggle buttons in proxy-hosts and
+   redirection-hosts use these classes. Future cleanup can migrate
+   the CAPTCHA / DNS-provider / cert-expiry pills progressively —
+   they already use the same visual language, just spelled out
+   inline. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.badge__dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+/* Enabled / active (brand-blue, matches bg-brand-50 / text-brand-700) */
+.badge--enabled { background-color: rgb(239 246 255); color: rgb(29 78 216); }
+.badge--enabled .badge__dot { background-color: rgb(59 130 246); }
+button.badge--enabled:hover,
+a.badge--enabled:hover { background-color: rgb(219 234 254); }
+
+/* Disabled / inactive (ink-slate) */
+.badge--disabled { background-color: rgb(241 245 249); color: rgb(100 116 139); }
+.badge--disabled .badge__dot { background-color: rgb(148 163 184); }
+button.badge--disabled:hover,
+a.badge--disabled:hover { background-color: rgb(226 232 240); }
+
+/* Warning (amber — for "keys missing", "waiting for IP", cert expiry, etc.) */
+.badge--warn { background-color: rgb(255 251 235); color: rgb(180 83 9); }
+.badge--warn .badge__dot { background-color: rgb(245 158 11); }
+
+/* Dark-mode overrides for the badge palette. */
+html.dark .badge--enabled { background-color: rgba(59,130,246,0.2) !important; color: #93c5fd !important; }
+html.dark .badge--enabled .badge__dot { background-color: #60a5fa !important; }
+html.dark button.badge--enabled:hover,
+html.dark a.badge--enabled:hover { background-color: rgba(59,130,246,0.3) !important; }
+
+html.dark .badge--disabled { background-color: #263347 !important; color: #94a3b8 !important; }
+html.dark .badge--disabled .badge__dot { background-color: #64748b !important; }
+html.dark button.badge--disabled:hover,
+html.dark a.badge--disabled:hover { background-color: #334155 !important; }
+
+html.dark .badge--warn { background-color: rgba(180,120,0,0.25) !important; color: #fcd34d !important; }
+html.dark .badge--warn .badge__dot { background-color: #fbbf24 !important; }
 
 /* ── Dark mode overrides ── */
 html.dark { color-scheme: dark; }
@@ -189,3 +262,81 @@ html.dark code { background-color: #263347 !important; color: #e2e8f0 !important
 html.dark .bg-ink-900 { background-color: #020617 !important; }
 html.dark .text-ink-100 { color: #f1f5f9 !important; }
 html.dark .text-ink-300 { color: #475569 !important; }
+
+/* ────────────────────────────────────────────────────────────────
+   v2.6.0 dark-mode coverage gap-fill.
+
+   Audit of web/templates/ surfaced color classes that had no
+   html.dark equivalent above. The rules below fill those gaps
+   without touching existing overrides so the diff stays focused.
+
+   Solid-saturated fills (bg-brand-500, bg-green-500, bg-red-500,
+   status-dot shades, etc.) are intentionally NOT overridden —
+   they read fine on a dark backdrop with their built-in text
+   contrast. If any start looking muddy in practice, add a rule
+   here rather than touching the section above.
+   ──────────────────────────────────────────────────────────────── */
+
+/* Amber — warning tints & muted text */
+html.dark .bg-amber-100 { background-color: rgba(245,158,11,0.22) !important; }
+html.dark .hover\:bg-amber-50:hover { background-color: rgba(180,120,0,0.22) !important; }
+html.dark .text-amber-600 { color: #fbbf24 !important; }
+html.dark .text-amber-700 { color: #fcd34d !important; }
+html.dark .text-amber-900 { color: #fef3c7 !important; }
+html.dark .group:hover .group-hover\:text-amber-600,
+html.dark .group:hover .group-hover\:text-amber-700 { color: #fcd34d !important; }
+
+/* Blue — info text & hover tints (the bg-blue-50/border/700 trio is handled above) */
+html.dark .hover\:bg-blue-50:hover { background-color: rgba(59,130,246,0.15) !important; }
+html.dark .text-blue-600 { color: #60a5fa !important; }
+html.dark .text-blue-600\/80 { color: rgba(96,165,250,0.8) !important; }
+html.dark .group:hover .group-hover\:text-blue-600,
+html.dark .group:hover .group-hover\:text-blue-700 { color: #93c5fd !important; }
+
+/* Brand — focus rings, hover-50, has-checked plain variant, group-hover, border-100 */
+html.dark .border-brand-100 { border-color: rgba(59,130,246,0.22) !important; }
+html.dark .text-brand-500 { color: #60a5fa !important; }
+html.dark .hover\:bg-brand-50:hover { background-color: rgba(59,130,246,0.15) !important; }
+html.dark .focus\:border-brand-500:focus { border-color: #3b82f6 !important; }
+html.dark .focus\:ring-brand-100:focus { --tw-ring-color: rgba(59,130,246,0.25) !important; }
+html.dark .focus\:ring-brand-500:focus { --tw-ring-color: rgba(59,130,246,0.5) !important; }
+html.dark .focus\:ring-brand-500\/20:focus { --tw-ring-color: rgba(59,130,246,0.3) !important; }
+html.dark .has-\[\:checked\]\:bg-brand-50:has(:checked) { background-color: rgba(59,130,246,0.15) !important; }
+html.dark .has-\[\:checked\]\:text-brand-700:has(:checked) { color: #60a5fa !important; }
+html.dark .group:hover .group-hover\:text-brand-600,
+html.dark .group:hover .group-hover\:text-brand-700 { color: #93c5fd !important; }
+
+/* Green — full family (success states, health badges) */
+html.dark .bg-green-50 { background-color: rgba(34,197,94,0.1) !important; }
+html.dark .bg-green-100 { background-color: rgba(34,197,94,0.2) !important; }
+html.dark .border-green-200 { border-color: rgba(34,197,94,0.3) !important; }
+html.dark .text-green-600 { color: #4ade80 !important; }
+html.dark .text-green-700 { color: #86efac !important; }
+html.dark .text-green-800 { color: #bbf7d0 !important; }
+html.dark .hover\:bg-green-50:hover { background-color: rgba(34,197,94,0.15) !important; }
+html.dark .group:hover .group-hover\:text-green-600,
+html.dark .group:hover .group-hover\:text-green-700 { color: #86efac !important; }
+
+/* Orange — distinct accent (e.g. DNS-Orange warnings) */
+html.dark .bg-orange-50 { background-color: rgba(249,115,22,0.1) !important; }
+html.dark .text-orange-600 { color: #fb923c !important; }
+html.dark .text-orange-700 { color: #fdba74 !important; }
+
+/* Purple — hover states, text-600, group-hover */
+html.dark .text-purple-600 { color: #c4b5fd !important; }
+html.dark .hover\:bg-purple-50:hover { background-color: rgba(139,92,246,0.15) !important; }
+html.dark .hover\:bg-purple-100:hover { background-color: rgba(139,92,246,0.25) !important; }
+html.dark .hover\:border-purple-300:hover { border-color: rgba(139,92,246,0.5) !important; }
+html.dark .hover\:border-purple-400:hover { border-color: rgba(139,92,246,0.65) !important; }
+html.dark .hover\:text-purple-600:hover { color: #d8b4fe !important; }
+html.dark .hover\:text-purple-700:hover { color: #d8b4fe !important; }
+html.dark .group:hover .group-hover\:text-purple-600,
+html.dark .group:hover .group-hover\:text-purple-700 { color: #c4b5fd !important; }
+
+/* Red — text-900, hover variants */
+html.dark .bg-red-100 { background-color: rgba(239,68,68,0.2) !important; }
+html.dark .text-red-900 { color: #fecaca !important; }
+html.dark .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.15) !important; }
+html.dark .hover\:bg-red-100:hover { background-color: rgba(239,68,68,0.25) !important; }
+html.dark .hover\:border-red-300:hover { border-color: rgba(239,68,68,0.5) !important; }
+html.dark .hover\:text-red-500:hover { color: #f87171 !important; }

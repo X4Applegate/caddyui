@@ -19,7 +19,15 @@
 </div>
 {{end}}
 
-{{/* ── System stats ── */}}
+{{/* ── System stats ──
+     Admin-only. These cards surface host-level numbers (uptime, load avg,
+     RAM usage, active request count, upstream-health totals) that reflect
+     the health of the infrastructure rather than anything a regular user
+     or viewer owns. Non-admin roles see the proxy-host summary tiles below
+     instead, which are scoped to their own resources. The fetch at the
+     bottom of the page is gated on the same condition so non-admins don't
+     fire a 403 on /api/system-stats. */}}
+{{if eq .User.Role "admin"}}
 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6"
      id="sys-stats"
      data-sid="{{if .CurrentServer}}{{.CurrentServer.ID}}{{else}}1{{end}}">
@@ -53,6 +61,7 @@
     <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-ups">—</div>
   </div>
 </div>
+{{end}}
 
 {{if .CurrentServer}}
 <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-6">
@@ -223,6 +232,9 @@
 </div>
 
 <script>
+{{if eq .User.Role "admin"}}
+// System-stats poller. Gated on role server-side — the #sys-stats element
+// only exists for admins, so for user/viewer this whole block is a no-op.
 (function() {
   var sid = document.getElementById('sys-stats').dataset.sid || '1';
   fetch('/api/system-stats?sid=' + sid)
@@ -247,6 +259,7 @@
     })
     .catch(function(){});
 })();
+{{end}}
 
 // Per-host upstream health dots (parity with /proxy-hosts). Refreshes once
 // on load; the poller on the server keeps the cache warm so a reload shows

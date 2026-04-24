@@ -28,9 +28,9 @@
       </div>
       <form method="post" action="/redirection-hosts/{{.ID}}/toggle" class="shrink-0">
         {{if .Enabled}}
-          <button class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700 hover:bg-brand-100 transition"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>on</button>
+          <button class="badge badge--enabled"><span class="badge__dot"></span>on</button>
         {{else}}
-          <button class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 hover:bg-ink-200 transition"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</button>
+          <button class="badge badge--disabled"><span class="badge__dot"></span>off</button>
         {{end}}
       </form>
     </div>
@@ -111,9 +111,9 @@
         <td class="px-5 py-3">
           <form method="post" action="/redirection-hosts/{{.ID}}/toggle" class="inline">
             {{if .Enabled}}
-              <button title="Click to disable" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700 hover:bg-brand-100 transition cursor-pointer"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</button>
+              <button title="Click to disable" class="badge badge--enabled cursor-pointer"><span class="badge__dot"></span>enabled</button>
             {{else}}
-              <button title="Click to enable" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 hover:bg-ink-200 transition cursor-pointer"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>disabled</button>
+              <button title="Click to enable" class="badge badge--disabled cursor-pointer"><span class="badge__dot"></span>disabled</button>
             {{end}}
           </form>
         </td>

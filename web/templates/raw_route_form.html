@@ -60,18 +60,16 @@
        /api/dns-zones endpoint. The first domain for auto-suffix matching
        and existing-record checks comes from the route's JSON (match.host[])
        rather than a domains CSV — see the firstDomain() helper in the
-       per-form JS block below. */}}
+       per-form JS block below. v2.6.0: collapsed into a <details> for
+       parity with the proxy-host form; auto-opens when a provider is
+       already selected so edit flows keep the picker visible. */}}
   {{if .AnyDNSEnabled}}
   {{$provider := .Row.DNSProvider}}
-  <div class="pt-4 border-t border-ink-100">
-    <div class="flex items-center gap-1.5 mb-3">
-      <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-brand-500" aria-hidden="true">
-        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-        <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/>
-      </svg>
-      <span class="text-xs uppercase tracking-wider text-ink-500 font-medium">Managed DNS</span>
-    </div>
-    <p class="text-xs text-ink-400 mb-3">CaddyUI can automatically create an A record for the first hostname in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>, pointing at this server's public IP. The record is deleted when the route is removed. Pick the provider that owns the domain, then select the zone.</p>
+  <details class="pt-4 border-t border-ink-100"{{if $provider}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Managed DNS
+    </summary>
+    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for the first hostname in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>, pointing at this server's public IP. The record is deleted when the route is removed. Pick the provider that owns the domain, then select the zone.</p>
     {{if .CurrentServerIP}}
     <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
     {{else}}
@@ -129,7 +127,7 @@
         </div>
       </div>
     </div>
-  </div>
+  </details>
   {{end}}
 
   <div class="pt-2">
