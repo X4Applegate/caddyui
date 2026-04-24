@@ -147,6 +147,19 @@
     </div>
   </div>
 
+  {{if .Users}}
+  <div class="pt-4 border-t border-ink-100">
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Owner <span class="text-ink-400 font-normal">(admin only)</span></label>
+    <select name="owner_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <option value="0" {{if not .Row.OwnerID.Valid}}selected{{end}}>Global (admin — managed by you)</option>
+      {{range .Users}}
+      <option value="{{.ID}}" {{if and $.Row.OwnerID.Valid (eq $.Row.OwnerID.Int64 .ID)}}selected{{end}}>{{.Email}}{{if .Name}} — {{.Name}}{{end}}</option>
+      {{end}}
+    </select>
+    <p class="text-xs text-ink-500 mt-1.5">Hand this advanced route off to a specific customer — they'll see and manage it in their own dashboard.</p>
+  </div>
+  {{end}}
+
   <div class="flex items-center gap-3 pt-4 border-t border-ink-100">
     <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Row.ID}}Save changes{{else}}Create{{end}}</button>
     <a href="/raw-routes" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>

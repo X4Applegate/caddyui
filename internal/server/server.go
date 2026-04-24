@@ -1505,6 +1505,7 @@ func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "proxy",
 	}))
@@ -1597,6 +1598,16 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	var ownerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
 		ownerID = cu.ID
+	} else if cu != nil && cu.Role == models.RoleAdmin {
+		// v2.7.3: admin can assign the new host to a specific user at create
+		// time via the Owner <select>. Empty/"0" means global (the default).
+		// We never trust this field coming from a non-admin — the branch above
+		// short-circuits them to their own ID regardless of what they posted.
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				ownerID = parsed
+			}
+		}
 	}
 	id, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, p)
 	if err != nil {
@@ -1652,6 +1663,7 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "proxy",
 	}))
@@ -1740,6 +1752,19 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// v2.7.3: admin-only owner reassignment. Handled here (not inside
+	// UpdateProxyHost) so the user-role edit path — which never reaches this
+	// branch — cannot touch ownership even if a non-admin forges owner_id in
+	// the POST body. An absent/blank owner_id (old form, non-admin upgrade
+	// path) leaves ownership untouched; an explicit "0" is the admin saying
+	// "make it global".
+	if isAdmin {
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				_ = models.SetProxyHostOwner(s.DB, p.ID, parsed)
+			}
+		}
+	}
 	if needCreate {
 		// v2.5.6: the override path is gone — same rationale as
 		// createProxyHost above. If a record exists at this FQDN the
@@ -1815,6 +1840,7 @@ func (s *Server) newRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		"User":         s.currentUser(r),
 		"Host":         &models.RedirectionHost{Enabled: true, PreservePath: true, ForwardHTTPCode: 301, ForwardScheme: "auto", SSLEnabled: true, SSLForced: true},
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "redirect",
 	})
@@ -1855,6 +1881,15 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	var rhOwnerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
 		rhOwnerID = cu.ID
+	} else if cu != nil && cu.Role == models.RoleAdmin {
+		// v2.7.3: admin can assign this redirect to a specific user at create
+		// time via the form's Owner <select>. Same safety invariant as proxy
+		// hosts — a non-admin never reaches this branch.
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				rhOwnerID = parsed
+			}
+		}
 	}
 	id, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), rhOwnerID, rh)
 	if err != nil {
@@ -1889,6 +1924,7 @@ func (s *Server) editRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		"User":         s.currentUser(r),
 		"Host":         rh,
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "redirect",
 	})
@@ -1921,6 +1957,15 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	if err := models.UpdateRedirectionHost(s.DB, rh); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// v2.7.3: admin-only owner reassignment. Separate from UpdateRedirectionHost
+	// so the user-role path (ownership-gated above) can never touch ownership.
+	if isAdmin {
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				_ = models.SetRedirectionHostOwner(s.DB, rh.ID, parsed)
+			}
+		}
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_update", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
 	forceTLS := old != nil && old.CertificateID != rh.CertificateID
@@ -2649,6 +2694,35 @@ func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
 
 // --- Certificates ---
 
+// adminUserList returns the full user list for admins (used by the admin-only
+// Owner pickers on new/edit forms so an admin can provision a resource for a
+// specific customer). Returns an empty slice for non-admin viewers so we
+// don't waste a DB round-trip and so a template leak can't surface email
+// addresses to non-admins. v2.7.3.
+// adminUserList returns the user-role accounts an admin can assign resources
+// to. Only admins see anything — nil for non-admin viewers so their templates
+// can't accidentally leak the user roster via the Owner <select>. View-role
+// and admin accounts are filtered out because neither can "own" a resource in
+// the data model (admin ownership is represented as NULL / global; view can't
+// manage anything at all), so they'd be dead options in the picker.
+func (s *Server) adminUserList(r *http.Request) []models.User {
+	cu := s.currentUser(r)
+	if cu == nil || cu.Role != models.RoleAdmin {
+		return nil
+	}
+	users, err := models.ListUsers(s.DB)
+	if err != nil {
+		return nil
+	}
+	out := users[:0]
+	for _, u := range users {
+		if u.Role == models.RoleUser {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
 // certListForRequest returns the certificate list scoped to the signed-in
 // viewer. Admin sees every row; a user-role account sees their own uploads
 // plus any global (admin-owned, owner_id IS NULL) certs. Used by the
@@ -2745,9 +2819,12 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) newCertificate(w http.ResponseWriter, r *http.Request) {
+	// v2.7.3: Users list fuels the admin-only Owner picker on the form.
+	// Non-admins get nil — the template skips rendering the picker.
 	s.render(w, r, "certificate_form.html", map[string]any{
 		"User":    s.currentUser(r),
 		"Cert":    &models.Certificate{Source: models.CertSourcePEM},
+		"Users":   s.adminUserList(r),
 		"Section": "certs",
 	})
 }
@@ -2809,6 +2886,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "certificate_form.html", map[string]any{
 			"User":    s.currentUser(r),
 			"Cert":    fallback,
+			"Users":   s.adminUserList(r),
 			"Error":   errMsg,
 			"Section": "certs",
 		})
@@ -2822,6 +2900,14 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	var ownerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
 		ownerID = cu.ID
+	} else if cu != nil && cu.Role == models.RoleAdmin {
+		// v2.7.3: admin can upload-and-assign a cert directly to a specific
+		// user from the new-cert form.
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				ownerID = parsed
+			}
+		}
 	}
 	id, err := models.CreateCertificate(s.DB, s.currentServerID(r), ownerID, c)
 	if err != nil {
@@ -2856,6 +2942,7 @@ func (s *Server) editCertificate(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "certificate_form.html", map[string]any{
 		"User":    s.currentUser(r),
 		"Cert":    c,
+		"Users":   s.adminUserList(r),
 		"Section": "certs",
 	})
 }
@@ -2892,6 +2979,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "certificate_form.html", map[string]any{
 			"User":    s.currentUser(r),
 			"Cert":    existing,
+			"Users":   s.adminUserList(r),
 			"Error":   errMsg,
 			"Section": "certs",
 		})
@@ -2901,6 +2989,19 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	if err := models.UpdateCertificate(s.DB, c); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// v2.7.3: admin-only owner reassignment. Note: when admin moves a cert
+	// from "global" to a specific user, any existing proxy/redirect/raw rows
+	// referencing this cert continue to work — the syncCaddy call below
+	// rewrites the running Caddy config from the DB, and cert references are
+	// resolved by ID not ownership. This is by design: handing a cert off
+	// should not break whatever's already using it.
+	if isAdmin {
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				_ = models.SetCertificateOwner(s.DB, c.ID, parsed)
+			}
+		}
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.syncCaddy(s.currentServerID(r), true)
@@ -2989,6 +3090,7 @@ func (s *Server) newRawRoute(w http.ResponseWriter, r *http.Request) {
 		"User":         s.currentUser(r),
 		"Row":          &models.RawRoute{Enabled: true},
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"Section":      "raw",
 	}))
 }
@@ -3170,6 +3272,14 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 	var rrOwnerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
 		rrOwnerID = cu.ID
+	} else if cu != nil && cu.Role == models.RoleAdmin {
+		// v2.7.3: admin can assign this raw route to a specific user at create
+		// time. Same pattern as proxy/redirect handlers.
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				rrOwnerID = parsed
+			}
+		}
 	}
 	id, err := models.CreateRawRoute(s.DB, s.currentServerID(r), rrOwnerID, rr)
 	if err != nil {
@@ -3231,6 +3341,7 @@ func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request,
 		"User":         s.currentUser(r),
 		"Row":          rr,
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"Error":        errMsg,
 		"Section":      "raw",
 	}))
@@ -3256,6 +3367,7 @@ func (s *Server) editRawRoute(w http.ResponseWriter, r *http.Request) {
 		"User":         s.currentUser(r),
 		"Row":          rr,
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"Section":      "raw",
 	}))
 }
@@ -3331,6 +3443,15 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	if err := models.UpdateRawRoute(s.DB, rr); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// v2.7.3: admin-only owner reassignment. Kept out of UpdateRawRoute so the
+	// user-role edit path can never touch ownership.
+	if isAdmin {
+		if v := strings.TrimSpace(r.FormValue("owner_id")); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed >= 0 {
+				_ = models.SetRawRouteOwner(s.DB, rr.ID, parsed)
+			}
+		}
 	}
 	if needCreate {
 		s.dnsCreateRecordForRaw(s.currentServerID(r), rr.ID, rr)
@@ -3541,6 +3662,7 @@ func (s *Server) renderRedirectionHostFormError(w http.ResponseWriter, r *http.R
 		"User":         s.currentUser(r),
 		"Host":         rh,
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Error":        errMsg,
 		"Section":      "redirect",
@@ -3607,6 +3729,7 @@ func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
+		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Error":        errMsg,
 		"Section":      "proxy",
