@@ -51,7 +51,7 @@ func main() {
 	}
 
 	caddyClient := caddy.New(caddyAdmin, caddyAdminUser, caddyAdminPass)
-	srv, err := server.New(conn, caddyClient, tplFS, staticFS, caddyfilePath, Version)
+	srv, err := server.New(conn, caddyClient, tplFS, staticFS, caddyfilePath, Version, dbPath)
 	if err != nil {
 		log.Fatalf("server: %v", err)
 	}

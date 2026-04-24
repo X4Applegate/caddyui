@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.7.5] — 2026-04-24 · Fix /backup download on scratch-based image
+
+### Fixed
+- **`/backup` download returned `backup failed: unable to open database file: unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)`.** Reported from a live install. SQLite error 14 is `SQLITE_CANTOPEN` — the `VACUUM INTO` target couldn't be created because the final image (`FROM scratch`, non-root UID 10001) simply has no `/tmp` directory and the unprivileged process can't mkdir it at the filesystem root. The regression landed in v2.7.0 when the Dockerfile switched to `scratch`; it didn't surface until a user actually tried the backup button on that image, and every install built from the pre-2.7.0 images kept working by coincidence. Two fixes, deliberately stacked:
+  - **Handler-level fix.** `getBackup` now writes the temp file next to the live DB (`filepath.Dir(s.DBPath)`) instead of `os.TempDir()`. Same filesystem as the source DB, same UID ownership as the existing `caddyui.db` / `.db-wal` / `.db-shm`, zero chance of CANTOPEN on a directory that was already open two lines earlier. Falls back to `os.TempDir()` only if `DBPath` is empty — defence-in-depth against a future constructor regression.
+  - **Image-level fix.** Dockerfile pre-creates `/tmp` with `1777` (sticky world-writable) in the build stage and copies it into the scratch final image. The backup handler doesn't need this any more, but mime/multipart file uploads, any third-party Go library that calls `os.TempDir()` internally, and anything we add later that reaches for `/tmp` would otherwise silently break the same way. Catches the *next* instance of this bug before a user has to file it.
+
+### Changed
+- **`server.New` takes a new `dbPath string` argument.** Plumbed from `main.go` (which already owns the `CADDYUI_DB` env lookup) through to `Server.DBPath`. Only the backup handler reads it today; future operational handlers (restore, compact, integrity-check) can reuse the same field instead of re-threading the env variable.
+
+### Docker
+- Published as `applegater/caddyui:v2.7.5` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+
+---
+
 ## [2.7.4] — 2026-04-24 · Groups: team-level resource visibility
 
 ### Added
