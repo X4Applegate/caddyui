@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/X4Applegate/caddyui/internal/analytics"
 	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/dns"
@@ -62,6 +63,21 @@ type Server struct {
 	// but the app is wedged (e.g. DB unreachable, slow startup).
 	appHealthMu sync.RWMutex
 	appHealth   map[int64]appHealthEntry
+
+	// v2.7.0: handle to the analytics ingest listener. Wired by main.go
+	// via SetAnalyticsIngest after Server construction (rather than as a
+	// New() arg) so the wiring order stays readable — the ingest owns a
+	// DB ref that has to exist before we hand it over.
+	analyticsIngest *analytics.Ingest
+}
+
+// SetAnalyticsIngest plumbs the analytics ingest listener into the server
+// so handlers can surface its stats on /analytics and /settings. Called
+// once at startup from main.go after the ingest listener has bound.
+// Passing nil is valid and disables the stats card — happens when the
+// CADDYUI_INGEST_LISTEN env var is blank or the bind failed at startup.
+func (s *Server) SetAnalyticsIngest(ing *analytics.Ingest) {
+	s.analyticsIngest = ing
 }
 
 func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, caddyfilePath string, version string) (*Server, error) {
@@ -211,6 +227,57 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 			}
 			return fmt.Sprintf("HTTP %d", code)
 		},
+		// Integer math helpers for SVG bar-chart rendering in the analytics
+		// page. html/template doesn't support arithmetic on ints, so we ship
+		// these three minimal operations rather than pulling in a full
+		// expression language. Kept deliberately narrow — bar height = views
+		// × maxPx / maxViews, bar y = chartHeight - barHeight, next bucket
+		// = index + 1. Any more and we should wire up sprig.
+		"mulDivInt": func(a, b, c int) int {
+			if c == 0 {
+				return 0
+			}
+			return (a * b) / c
+		},
+		"subInt": func(a, b int) int { return a - b },
+		"addInt": func(a, b int) int { return a + b },
+		// fmtRel renders a time as a short human-readable interval from now
+		// ("3m", "2h", "4d"). Used in analytics tables where an absolute
+		// timestamp would eat column width and the admin only cares how
+		// stale the data is. Zero time → "never" so callers don't need to
+		// bracket every use with {{if ...}}. Future times (clock skew)
+		// render as "in <interval>" so we don't silently swallow bad data.
+		"fmtRel": func(t time.Time) string {
+			if t.IsZero() {
+				return "never"
+			}
+			d := time.Since(t)
+			prefix := ""
+			if d < 0 {
+				prefix = "in "
+				d = -d
+			} else {
+				// Past — add "ago" suffix after formatting.
+			}
+			var body string
+			switch {
+			case d < time.Minute:
+				body = fmt.Sprintf("%ds", int(d.Seconds()))
+			case d < time.Hour:
+				body = fmt.Sprintf("%dm", int(d.Minutes()))
+			case d < 24*time.Hour:
+				body = fmt.Sprintf("%dh", int(d.Hours()))
+			case d < 30*24*time.Hour:
+				body = fmt.Sprintf("%dd", int(d.Hours())/24)
+			default:
+				body = t.In(activeLocation()).Format("2006-01-02")
+				return prefix + body
+			}
+			if prefix != "" {
+				return prefix + body
+			}
+			return body + " ago"
+		},
 	}
 	entries, err := fs.ReadDir(tplFS, ".")
 	if err != nil {
@@ -287,6 +354,13 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/raw-routes", s.listRawRoutes)
 		r.Get("/docs", s.getDocs)
 
+		// Server picker — available to every authenticated role. The route
+		// only flips the caddyui_server cookie (a per-user preference) so
+		// viewers and non-admin users can switch between Caddy instances
+		// the admin has registered without needing write access. Admin-only
+		// CRUD on the server list still lives in the admin-gated group below.
+		r.Post("/servers/{id}/select", s.selectServer)
+
 		// Feature B: upstream health check API (authenticated, no requireWrite).
 		r.Get("/api/upstream-health", s.apiUpstreamHealth)
 
@@ -347,11 +421,12 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/snapshots/{id}/restore", s.restoreSnapshot)
 			r.Post("/snapshots/{id}/delete", s.deleteSnapshot)
 
-			r.Get("/certificates/new", s.newCertificate)
-			r.Post("/certificates", s.createCertificate)
-			r.Get("/certificates/{id}/edit", s.editCertificate)
-			r.Post("/certificates/{id}", s.updateCertificate)
-			r.Post("/certificates/{id}/delete", s.deleteCertificate)
+			// Certificate mutation routes moved to the admin-only group below
+			// in v2.6.2. TLS material is shared infra — non-admin roles can
+			// still reference certs from the proxy-host dropdown (listCertificates
+			// at line 286 stays in requireAuth), but only admins may create,
+			// edit, or delete. /certificates GET itself remains all-roles
+			// because the proxy-host form needs to show the dropdown contents.
 
 			r.Get("/raw-routes/new", s.newRawRoute)
 			r.Post("/raw-routes", s.createRawRoute)
@@ -366,6 +441,13 @@ func (s *Server) Routes() http.Handler {
 		// TOTP setup — available to all authenticated users.
 		r.Get("/totp/setup", s.getTOTPSetup)
 		r.Post("/totp/setup", s.postTOTPSetup)
+
+		// v2.7.0: visitor analytics — read-only for every signed-in
+		// user. userAllowedHosts scopes non-admins to their owned
+		// sites so the page doesn't leak traffic for hosts they
+		// don't have Edit permission on.
+		r.Get("/analytics", s.getAnalytics)
+		r.Get("/analytics/{host}", s.getAnalyticsHost)
 
 		// User management and settings — admin-only (both read and write).
 		r.Group(func(r chi.Router) {
@@ -384,7 +466,19 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/servers/{id}/config", s.viewServerConfig)
 			r.Post("/servers/{id}", s.updateServer)
 			r.Post("/servers/{id}/delete", s.deleteServer)
-			r.Post("/servers/{id}/select", s.selectServer)
+
+			// Certificate mutation — admin-only in v2.6.2+. Shared TLS material
+			// is admin-managed infrastructure; non-admin roles can still see
+			// and reference certs (via /certificates GET in requireAuth and
+			// the proxy-host form's dropdown) but cannot create, edit, or
+			// delete. deleteCertificate also has an inline admin check as
+			// defense-in-depth since the route layer is the single enforcement
+			// point and a future refactor could drop it by accident.
+			r.Get("/certificates/new", s.newCertificate)
+			r.Post("/certificates", s.createCertificate)
+			r.Get("/certificates/{id}/edit", s.editCertificate)
+			r.Post("/certificates/{id}", s.updateCertificate)
+			r.Post("/certificates/{id}/delete", s.deleteCertificate)
 
 			// Feature F: settings page (admin-only).
 			r.Get("/settings", s.getSettings)
@@ -694,8 +788,21 @@ func (s *Server) serverIPFor(serverID int64) string {
 }
 
 // verifyTurnstile calls the Cloudflare Turnstile siteverify endpoint.
-// Returns true when the challenge token is valid.
+// Returns true when the challenge token is valid. Error-codes and the
+// hostname Cloudflare echoes back are logged on failure so an admin
+// reading `docker logs caddyui` can tell a wrong-key mistake from a
+// domain-not-registered one — matches what verifyRecaptcha does for
+// the Google siteverify path. (v2.6.1 — previously a failure looked
+// identical to every other "Security check failed" in the UI.)
 func verifyTurnstile(secretKey, token, remoteIP string) (bool, error) {
+	if token == "" {
+		log.Printf("turnstile: reject — no token in form (widget may not have loaded)")
+		return false, nil
+	}
+	if strings.TrimSpace(secretKey) == "" {
+		log.Printf("turnstile: reject — secret key is blank in DB (check Settings → CAPTCHA → Turnstile)")
+		return false, nil
+	}
 	resp, err := http.PostForm("https://challenges.cloudflare.com/turnstile/v0/siteverify",
 		url.Values{
 			"secret":   {secretKey},
@@ -703,16 +810,25 @@ func verifyTurnstile(secretKey, token, remoteIP string) (bool, error) {
 			"remoteip": {remoteIP},
 		})
 	if err != nil {
+		log.Printf("turnstile: network error talking to Cloudflare: %v", err)
 		return false, err
 	}
 	defer resp.Body.Close()
 	var result struct {
-		Success bool `json:"success"`
+		Success    bool     `json:"success"`
+		Hostname   string   `json:"hostname"`
+		ErrorCodes []string `json:"error-codes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("turnstile: decode Cloudflare response: %v", err)
 		return false, err
 	}
-	return result.Success, nil
+	if !result.Success {
+		log.Printf("turnstile: Cloudflare rejected token — error-codes=%v hostname=%q (check Settings → CAPTCHA if this is a keys mismatch)",
+			result.ErrorCodes, result.Hostname)
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
@@ -2707,6 +2823,28 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteCertificate(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	// Certificates are a shared resource — a single cert may be attached to
+	// multiple proxy/redirect/raw rows owned by different users, and
+	// DeleteCertificate NULLs every certificate_id reference before dropping
+	// the row. To stop a non-admin from accidentally (or deliberately) tearing
+	// TLS off another user's site, gate delete behind the admin role. Upload
+	// and edit stay open to the "user" role — they need to manage their own
+	// certs — but tear-down is admin-only because the blast radius crosses
+	// ownership boundaries.
+	cu := s.currentUser(r)
+	if cu == nil || cu.Role != models.RoleAdmin {
+		// Also refuse when the cert is referenced by any row the caller
+		// doesn't own — surfaces a clearer error than the blanket 403 so
+		// an admin reading logs can tell why a legitimate cert delete
+		// failed for a non-admin. Uses the same CertificateInUse helper
+		// that the certificates list page uses to render the in-use badge.
+		if n, _ := models.CertificateInUse(s.DB, id); n > 0 {
+			http.Error(w, "this certificate is in use by other sites — ask an admin to delete it", http.StatusForbidden)
+			return
+		}
+		http.Error(w, "only admins can delete certificates", http.StatusForbidden)
+		return
+	}
 	if err := models.DeleteCertificate(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -4671,6 +4809,18 @@ func (s *Server) apiNotifierStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiSystemStats(w http.ResponseWriter, r *http.Request) {
+	// Admin-only. The dashboard template hides these cards for user/viewer
+	// roles (see dashboard.html "System stats" block), but the endpoint is
+	// still reachable via direct URL — so gate it here too. Host-level data
+	// (uptime, RAM, load avg, Caddy-wide upstream totals) reflects the box
+	// and Caddy as a whole, not anything a regular user owns, so exposing
+	// it to non-admin roles leaks infrastructure details unnecessarily.
+	cu := s.currentUser(r)
+	if cu == nil || cu.Role != models.RoleAdmin {
+		http.Error(w, "admin access required", http.StatusForbidden)
+		return
+	}
+
 	stats := map[string]any{}
 
 	// Uptime from /proc/uptime (always the CaddyUI host machine).
@@ -5861,6 +6011,23 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		providers = append(providers, pv)
 	}
 
+	// v2.7.0: visitor analytics toggle + IP-exclusion list. Loaded via a
+	// helper in analytics.go so both the settings page and the POST handler
+	// see the same field names.
+	analyticsCfg := loadAnalyticsConfig(s.DB)
+	var analyticsIngestSnap map[string]any
+	if s.analyticsIngest != nil {
+		snap := s.analyticsIngest.Stats()
+		analyticsIngestSnap = map[string]any{
+			"Connections": snap.Connections,
+			"Events":      snap.Events,
+			"Excluded":    snap.Excluded,
+			"Errors":      snap.Errors,
+			"LastEvent":   snap.LastEventAt,
+			"Healthy":     snap.Events > 0 && time.Since(snap.LastEventAt) < 10*time.Minute,
+		}
+	}
+
 	success := r.URL.Query().Get("saved") == "1"
 	// "cleared=<provider-id>" is set by postClearDNSProvider's redirect.
 	// Resolve it back to the pretty display name so the banner can say
@@ -5914,6 +6081,12 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"CFProxied":   cfProxiedStr == "1",
 		"Success":     success,
 		"ClearedName": clearedName,
+		// v2.7.0: analytics card
+		"AnalyticsEnabled":      analyticsCfg.Enabled,
+		"AnalyticsTarget":       analyticsCfg.TargetRaw,
+		"AnalyticsTargetPlaceholder": defaultAnalyticsIngestTarget,
+		"AnalyticsExcludeRaw":   analyticsCfg.ExcludeRaw,
+		"AnalyticsIngestStats":  analyticsIngestSnap,
 		"Section":     "settings",
 	})
 }
@@ -5980,6 +6153,16 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// v2.7.0: analytics toggle + ingest target + exclude-IPs. The target
+	// may be blank — loadAnalyticsConfig substitutes the default at read
+	// time, so we store the admin's literal input (possibly "").
+	analyticsEnabled := "0"
+	if r.FormValue("analytics_enabled") == "1" {
+		analyticsEnabled = "1"
+	}
+	analyticsTarget := strings.TrimSpace(r.FormValue("analytics_ingest_target"))
+	analyticsExclude := r.FormValue("analytics_exclude_ips") // preserve whitespace for textarea re-render
+
 	// Shared server IP — the public IP every DNS provider writes as its
 	// record content. Form field name stays as "cf_server_ip" for
 	// backwards compatibility with bookmarked form submissions; the
@@ -6015,6 +6198,10 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingTimezone:           timezone,
 		settingServerIP:           newServerIP,
 		settingCFProxied:          cfProxied,
+		// v2.7.0: visitor analytics
+		settingAnalyticsEnabled:      analyticsEnabled,
+		settingAnalyticsIngestTarget: analyticsTarget,
+		settingAnalyticsExcludeIPs:   analyticsExclude,
 	}
 
 	// Walk every registered DNS provider and pick up credential fields
@@ -6063,6 +6250,16 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// container with /usr/share/zoneinfo baked in).
 	_ = setActiveLocation(timezone)
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", "notify+smtp", smtpHost, true)
+
+	// v2.7.0: push the analytics toggle through to the live ingest +
+	// Caddy admin API after saving to the settings table. Errors are
+	// logged but not surfaced as a page error — the saved row stays, and
+	// the Settings page's "Analytics" card reflects the current wiring
+	// state so the admin can retry. This avoids a half-saved "settings
+	// didn't persist, Caddy pivoted anyway" that would be very confusing.
+	if err := s.applyAnalyticsToggle(loadAnalyticsConfig(s.DB)); err != nil {
+		log.Printf("settings: analytics toggle: %v", err)
+	}
 
 	// v2.4.0: per-server public IP update. The settings form submits one
 	// server_ip_<id> field per Caddy server. For each one that changed,

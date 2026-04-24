@@ -1,9 +1,28 @@
 {{define "title"}}Settings · CaddyUI{{end}}
 {{define "content"}}
-<div class="mb-8">
+<div class="mb-6">
   <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Settings</h1>
   <p class="text-sm text-ink-500 mt-1">Application-wide settings for notifications and email.</p>
 </div>
+
+{{/* ── v2.6.0: jump-to-section nav ──────────────────────────────────
+     Settings has grown past 600 lines rendered — admins who just want
+     to tweak Timezone or CAPTCHA shouldn't have to scroll past SMTP
+     every time. Each link targets a card ID below; scroll-mt-20 on
+     the cards accounts for the top header so they don't land flush
+     under the nav bar. Smooth-scroll comes from html { scroll-behavior }
+     in app.css (auto-disabled for prefers-reduced-motion). */}}
+<nav aria-label="Settings sections" class="mb-6 max-w-2xl flex flex-wrap gap-1.5">
+  <a href="#settings-smtp"        class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Email</a>
+  <a href="#settings-notifications" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifications</a>
+  <a href="#settings-timezone"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Timezone</a>
+  <a href="#settings-dns-ips"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">DNS IPs</a>
+  <a href="#settings-dns-providers" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">DNS Providers</a>
+  <a href="#settings-captcha"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CAPTCHA</a>
+  <a href="#analytics"            class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Analytics</a>
+  <a href="#settings-notifier"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifier</a>
+  <a href="#settings-backup"      class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Backup</a>
+</nav>
 
 {{if .Success}}
 <div class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">Settings saved successfully.</div>
@@ -18,7 +37,7 @@
 <form method="post" action="/settings" class="max-w-2xl space-y-6">
 
   {{/* ── SMTP ── */}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+  <div id="settings-smtp" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="text-sm font-semibold text-ink-900 mb-0.5">Email (SMTP)</div>
       <p class="text-xs text-ink-500">CaddyUI will send email alerts for certificate expiry and proxy upstream health changes.</p>
@@ -115,7 +134,7 @@
   </div>
 
   {{/* ── Notifications / Webhook ── */}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+  <div id="settings-notifications" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="text-sm font-semibold text-ink-900 mb-0.5">Notification Thresholds</div>
       <p class="text-xs text-ink-500">Controls when cert-expiry and upstream alerts are sent (via email and/or webhook).</p>
@@ -160,7 +179,7 @@
        free-text input for anything else tzdata knows about. The small muted
        line beneath shows what the server is *currently* rendering in, which
        matters when the DB value is empty and the TZ env fallback kicks in. */}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+  <div id="settings-timezone" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="text-sm font-semibold text-ink-900 mb-0.5">Timezone</div>
       <p class="text-xs text-ink-500">Render timestamps (cert expiry, activity log, snapshots) in this zone. Leave blank to inherit the container's <code class="font-mono text-ink-700">TZ</code> environment variable.</p>
@@ -205,7 +224,7 @@
   </div>
 
   {{/* ── DNS — per-server public IPs (v2.4.0) ── */}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-3">
+  <div id="settings-dns-ips" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-3">
     <div>
       <div class="text-sm font-semibold text-ink-900 mb-0.5">DNS · Server Public IPs</div>
       <p class="text-xs text-ink-500">Every Caddy server can have its own WAN IP. When a proxy host is created on a server, its managed DNS A record is pointed at that server's IP below. Changing an IP retargets only that server's records in the background.</p>
@@ -239,7 +258,10 @@
     </details>
   </div>
 
-  {{/* ── DNS provider credential cards — one per registered provider ── */}}
+  {{/* ── DNS provider credential cards — one per registered provider ──
+       Outer div carries the TOC anchor so clicking "DNS Providers" jumps
+       to the top of the stack rather than a specific provider's card. */}}
+  <div id="settings-dns-providers" class="scroll-mt-20 space-y-6">
   {{range .DNSProviders}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
@@ -330,6 +352,7 @@
     {{end}}
   </div>
   {{end}}
+  </div>{{/* /settings-dns-providers */}}
 
   {{/* ── CAPTCHA (v2.5.0) ── Unified card for Cloudflare Turnstile and Google
        reCAPTCHA v3. The provider radio hot-swaps which pair of key fields is
@@ -337,7 +360,7 @@
        is the source of truth, this is just a UI affordance. Both providers'
        keys stay in the DB across provider switches so admins can toggle back
        to an already-configured alternate without re-typing credentials. */}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+  <div id="settings-captcha" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="flex items-center gap-2 mb-0.5">
         <div class="text-sm font-semibold text-ink-900">CAPTCHA protection</div>
@@ -456,6 +479,85 @@
   })();
   </script>
 
+  {{/* ── Visitor Analytics (v2.7.0) ──
+       Privacy-light traffic stats built from Caddy's access logs. When the
+       toggle below is ON we (a) install a `net` log writer in the live
+       Caddy config that streams NDJSON over TCP to CaddyUI's ingest
+       listener, (b) keep the ingest's exclude-IP filter synced with the
+       textarea below. No DNT opt-in UI, no 3rd-party tracker loaded —
+       everything runs on localhost and persists in the CaddyUI DB. */}}
+  <div id="analytics" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="flex items-center gap-2 mb-0.5">
+        <div class="text-sm font-semibold text-ink-900">Visitor Analytics</div>
+        {{if .AnalyticsEnabled}}
+          {{if and .AnalyticsIngestStats (index .AnalyticsIngestStats "Healthy")}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>receiving events</span>
+          {{else}}
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>enabled — no events yet</span>
+          {{end}}
+        {{else}}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
+        {{end}}
+        <a href="/analytics" class="ml-auto text-xs text-brand-600 hover:underline">Open dashboard →</a>
+      </div>
+      <p class="text-xs text-ink-500">Stream Caddy's access logs into CaddyUI for per-host visitor and pageview stats. No cookies, no query strings — only host, path, status, and truncated user-agent are stored. Retained 30 days.</p>
+    </div>
+
+    {{/* Enable toggle. Same hidden-input trick as smtp_skip_verify so an
+         unchecked box submits "0" rather than being absent (which would
+         otherwise make the server fall back to mustGetSetting's empty-default
+         behaviour and mis-interpret "no submission" as "leave unchanged"). */}}
+    <div class="flex items-start gap-2">
+      <input type="hidden" name="analytics_enabled" value="0" />
+      <input id="analytics_enabled" name="analytics_enabled" type="checkbox" value="1" {{if .AnalyticsEnabled}}checked{{end}}
+        class="mt-0.5 accent-brand-600 cursor-pointer" />
+      <label for="analytics_enabled" class="text-sm text-ink-700 cursor-pointer">
+        Forward Caddy access logs to CaddyUI
+        <span class="block text-xs text-ink-400 font-normal mt-0.5">On save, CaddyUI adds a <code class="font-mono">net</code> log writer to the live Caddy config pointed at the ingest target below. Disabling removes it. Existing events stay in the DB until they age out.</span>
+      </label>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Ingest target <span class="text-ink-400 font-normal text-xs">(host:port Caddy connects to)</span></label>
+      <input name="analytics_ingest_target" value="{{.AnalyticsTarget}}" type="text" autocomplete="off" placeholder="{{.AnalyticsTargetPlaceholder}}"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1.5">
+        Default <code class="font-mono text-ink-700">{{.AnalyticsTargetPlaceholder}}</code> assumes both containers share a Docker network and CaddyUI's service name is <code class="font-mono">caddyui</code>.
+        On host-network deployments use <code class="font-mono">host.docker.internal:9019</code> (macOS/Windows) or the LAN IP (Linux).
+        The listener binds on <code class="font-mono">:9019</code> inside the CaddyUI container — no host port exposed by default.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Exclude IPs <span class="text-ink-400 font-normal text-xs">(one per line or comma-separated)</span></label>
+      <textarea name="analytics_exclude_ips" rows="3" placeholder="10.0.0.0/8&#10;192.168.1.42&#10;2001:db8::/32"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.AnalyticsExcludeRaw}}</textarea>
+      <p class="text-xs text-ink-500 mt-1.5">Drops events from these IPs/CIDRs before the DB insert — useful for hiding your own LAN, an uptime-monitor provider, or a VPN subnet. Changes take effect immediately (no Caddy reload required).</p>
+    </div>
+
+    {{/* Live ingest metrics — rendered only when the listener is up, which
+         is always in a normal run but would be nil in tests. Atomic counters
+         so reading them is safe from the request handler's goroutine. */}}
+    {{if .AnalyticsIngestStats}}
+    <div class="pt-3 border-t border-ink-100">
+      <div class="text-xs font-medium text-ink-600 mb-2">Ingest pipeline</div>
+      <dl class="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+        <div><dt class="text-ink-500">Connections</dt><dd class="font-mono text-ink-800">{{index .AnalyticsIngestStats "Connections"}}</dd></div>
+        <div><dt class="text-ink-500">Events</dt><dd class="font-mono text-ink-800">{{index .AnalyticsIngestStats "Events"}}</dd></div>
+        <div><dt class="text-ink-500">Excluded</dt><dd class="font-mono text-ink-800">{{index .AnalyticsIngestStats "Excluded"}}</dd></div>
+        <div><dt class="text-ink-500">Errors</dt><dd class="font-mono text-ink-800">{{index .AnalyticsIngestStats "Errors"}}</dd></div>
+        <div><dt class="text-ink-500">Last event</dt><dd class="font-mono text-ink-800">{{fmtRel (index .AnalyticsIngestStats "LastEvent")}}</dd></div>
+      </dl>
+    </div>
+    {{end}}
+
+    <div class="pt-3 border-t border-ink-100 flex flex-wrap items-center gap-3">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+      <span class="text-xs text-ink-400">Saving re-applies the Caddy-side logger config.</span>
+    </div>
+  </div>
+
   <div class="flex items-center gap-3">
     <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save settings</button>
   </div>
@@ -476,7 +578,7 @@
      test without scrolling to the bottom of the page. */}}
 
 {{/* ── Notifier status ── */}}
-<div class="max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-6">
+<div id="settings-notifier" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-6">
   <div class="text-sm font-semibold text-ink-800 mb-3">Notifier Status</div>
   <div id="notifier-status" class="text-sm text-ink-600">
     <span class="text-ink-400 text-xs">Loading…</span>
@@ -484,7 +586,7 @@
 </div>
 
 {{/* ── Backup ── */}}
-<div class="max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-5">
+<div id="settings-backup" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-5">
   <div class="text-sm font-semibold text-ink-800 mb-1">Database Backup</div>
   <p class="text-xs text-ink-500 mb-3">Download a consistent snapshot of the CaddyUI database. To restore, stop the server, replace the <code class="bg-ink-100 px-1 rounded text-xs">caddyui.db</code> file, and restart.</p>
   <a href="/backup" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">

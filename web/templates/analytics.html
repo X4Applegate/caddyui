@@ -1,0 +1,156 @@
+{{define "title"}}Analytics · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex items-start justify-between mb-6 gap-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Analytics</h1>
+    <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+      Privacy-light visitor stats built from Caddy's access logs.
+      {{if .IsAdmin}}You're seeing every host this fleet routes.
+      {{else}}You're seeing the hosts you own.{{end}}
+    </p>
+  </div>
+  {{if .IsAdmin}}
+  <a href="/settings#analytics" class="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-700 border border-brand-200 hover:border-brand-300 px-3 py-1.5 rounded-lg transition">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="3"/></svg>
+    Settings
+  </a>
+  {{end}}
+</div>
+
+{{if .IsAdmin}}{{if not .AnalyticsEnabled}}
+<div class="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 mb-6 flex items-start gap-3">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  <div class="flex-1">
+    <div class="text-sm font-medium text-amber-900">Access log forwarding is off</div>
+    <p class="text-xs text-amber-800 mt-0.5">Turn it on in <a href="/settings#analytics" class="underline font-medium">Settings → Analytics</a> to start collecting visitor data.</p>
+  </div>
+</div>
+{{end}}{{end}}
+
+{{/* ── Summary cards ── */}}
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Live now</div>
+    <div class="mt-1 flex items-baseline gap-2">
+      <div class="text-2xl font-semibold text-ink-900">{{.LiveVisitors}}</div>
+      <div class="text-xs text-ink-400">last 5 min</div>
+    </div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Today</div>
+    <div class="mt-1 flex items-baseline gap-2">
+      <div class="text-2xl font-semibold text-ink-900">{{.Today.Visitors}}</div>
+      <div class="text-xs text-ink-400">visitors · {{.Today.Views}} views</div>
+    </div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Last 7 days</div>
+    <div class="mt-1 flex items-baseline gap-2">
+      <div class="text-2xl font-semibold text-ink-900">{{.SevenDay.Visitors}}</div>
+      <div class="text-xs text-ink-400">visitors · {{.SevenDay.Views}} views</div>
+    </div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Status mix (7d)</div>
+    <div class="mt-1 flex items-center gap-2 text-xs">
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>{{.Status.S2xx}}</span>
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-sky-500"></span>{{.Status.S3xx}}</span>
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-500"></span>{{.Status.S4xx}}</span>
+      <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span>{{.Status.S5xx}}</span>
+    </div>
+    <div class="mt-1 text-[10px] text-ink-400">2xx · 3xx · 4xx · 5xx</div>
+  </div>
+</div>
+
+{{/* ── 24h sparkline ── */}}
+<div class="bg-white border border-ink-200 rounded-xl p-4 mb-6 shadow-card">
+  <div class="flex items-baseline justify-between mb-3">
+    <div>
+      <div class="text-sm font-medium text-ink-800">Requests, last 24 hours</div>
+      <div class="text-xs text-ink-400">1-hour buckets</div>
+    </div>
+  </div>
+  {{if .Sparkline}}
+  <svg viewBox="0 0 {{len .Sparkline}} 40" preserveAspectRatio="none" class="w-full h-24 text-brand-500">
+    {{$max := 0}}
+    {{range .Sparkline}}{{if gt .Views $max}}{{$max = .Views}}{{end}}{{end}}
+    {{if eq $max 0}}{{$max = 1}}{{end}}
+    {{range $i, $b := .Sparkline}}
+      {{$h := 0}}{{if gt $b.Views 0}}{{$h = mulDivInt $b.Views 38 $max}}{{end}}
+      <rect x="{{$i}}" y="{{subInt 40 $h}}" width="0.8" height="{{$h}}" fill="currentColor" opacity="0.8"/>
+    {{end}}
+  </svg>
+  {{else}}
+  <div class="py-8 text-center text-sm text-ink-400">No data in the last 24 hours.</div>
+  {{end}}
+</div>
+
+{{/* ── Per-host table ── */}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-x-auto mb-6">
+  <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+    <div class="text-sm font-medium text-ink-800">Top hosts, last 7 days</div>
+    <div class="text-xs text-ink-400">click a row to drill down</div>
+  </div>
+  <table class="w-full text-sm min-w-[640px]">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-3 font-medium">Host</th>
+        <th class="px-5 py-3 font-medium">Visitors</th>
+        <th class="px-5 py-3 font-medium">Views</th>
+        <th class="px-5 py-3 font-medium">Top path</th>
+        <th class="px-5 py-3 font-medium">Last visit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Hosts}}
+      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition cursor-pointer" onclick="window.location='/analytics/{{.Host}}'">
+        <td class="px-5 py-3 text-ink-800 font-medium">{{if .Host}}{{.Host}}{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+        <td class="px-5 py-3 text-ink-700 font-mono">{{.Visitors}}</td>
+        <td class="px-5 py-3 text-ink-700 font-mono">{{.Views}}</td>
+        <td class="px-5 py-3 text-ink-600 font-mono text-xs truncate max-w-[220px]">{{.TopPath}}</td>
+        <td class="px-5 py-3 font-mono text-xs text-ink-500">{{fmtRel .LastVisit}}</td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="5" class="px-5 py-16 text-center">
+          <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          </div>
+          <div class="text-ink-600 text-sm font-medium">No traffic yet</div>
+          <p class="text-xs text-ink-500 mt-1 max-w-sm mx-auto">
+          {{if .IsAdmin}}{{if .AnalyticsEnabled}}Waiting for Caddy to ship its first access log entry. Make sure your Caddy container can resolve the ingest target.{{else}}Enable access log forwarding in <a href="/settings#analytics" class="underline">Settings → Analytics</a>.{{end}}{{else}}No traffic has been recorded for the hosts you own yet.{{end}}
+          </p>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{/* ── Ingest health (admin only) ── */}}
+{{if and .IsAdmin .IngestStats}}
+<div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+  <div class="flex items-baseline justify-between mb-3">
+    <div class="text-sm font-medium text-ink-800">Ingest pipeline</div>
+    <div>
+      {{if .IngestStats.Healthy}}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>receiving events
+      </span>
+      {{else}}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-600">
+        <span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>idle
+      </span>
+      {{end}}
+    </div>
+  </div>
+  <dl class="grid grid-cols-2 lg:grid-cols-5 gap-4 text-sm">
+    <div><dt class="text-xs text-ink-500">Connections</dt><dd class="font-mono text-ink-800">{{.IngestStats.Connections}}</dd></div>
+    <div><dt class="text-xs text-ink-500">Events</dt><dd class="font-mono text-ink-800">{{.IngestStats.Events}}</dd></div>
+    <div><dt class="text-xs text-ink-500">Excluded</dt><dd class="font-mono text-ink-800">{{.IngestStats.Excluded}}</dd></div>
+    <div><dt class="text-xs text-ink-500">Errors</dt><dd class="font-mono text-ink-800">{{.IngestStats.Errors}}</dd></div>
+    <div><dt class="text-xs text-ink-500">Last event</dt><dd class="font-mono text-ink-800 text-xs">{{if gt .IngestStats.Events 0}}{{fmtRel .IngestStats.LastEvent}}{{else}}never{{end}}</dd></div>
+  </dl>
+</div>
+{{end}}
+{{end}}

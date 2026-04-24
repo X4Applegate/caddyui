@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -175,6 +176,22 @@ func verifyCaptcha(cfg captchaConfig, r *http.Request) (bool, error) {
 		return verifyTurnstile(cfg.SecretKey, token, remoteIP)
 	case captchaProviderRecaptcha:
 		token := r.FormValue("g-recaptcha-response")
+		// When the token is empty, dump the form keys + user-agent so we
+		// can tell whether the hidden input wasn't submitted, was submitted
+		// empty, or the form body itself is malformed. The old log line
+		// ("api.js may not have loaded") was correct but didn't give the
+		// admin enough info to act — now we can see if the browser actually
+		// posted the field and the token just never got populated.
+		if token == "" {
+			keys := make([]string, 0, len(r.PostForm))
+			for k := range r.PostForm {
+				if k == "password" || k == "new_password" || k == "confirm_password" || k == "totp" {
+					continue // never log passwords or TOTP codes
+				}
+				keys = append(keys, k)
+			}
+			log.Printf("recaptcha: empty token — posted_keys=%v ua=%q remote=%s", keys, r.Header.Get("User-Agent"), remoteIP)
+		}
 		return verifyRecaptcha(cfg.SecretKey, token, remoteIP, cfg.MinScore)
 	}
 	return true, nil
@@ -193,6 +210,15 @@ func verifyCaptcha(cfg captchaConfig, r *http.Request) (bool, error) {
 func verifyRecaptcha(secretKey, token, remoteIP string, minScore float64) (bool, error) {
 	if token == "" {
 		// Empty token always fails. Don't bother hitting Google.
+		log.Printf("recaptcha: reject — no token in form (api.js may not have loaded)")
+		return false, nil
+	}
+	if strings.TrimSpace(secretKey) == "" {
+		// A misconfigured admin (provider set to reCAPTCHA but the secret
+		// blank) would have Enabled() return false and never reach here —
+		// but paranoid guard so a partially-wiped settings row doesn't pass
+		// a literal "" secret to Google and trigger missing-input-secret.
+		log.Printf("recaptcha: reject — secret key is blank in DB (check Settings → CAPTCHA → reCAPTCHA)")
 		return false, nil
 	}
 	// Short HTTP timeout so a Google outage doesn't wedge /login for
@@ -206,23 +232,46 @@ func verifyRecaptcha(secretKey, token, remoteIP string, minScore float64) (bool,
 			"remoteip": {remoteIP},
 		})
 	if err != nil {
+		log.Printf("recaptcha: network error talking to Google: %v", err)
 		return false, fmt.Errorf("recaptcha verify: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// v3 response schema: {"success":bool, "score":float, "action":str,
-	//   "challenge_ts":ts, "hostname":str, "error-codes":[...]}
+	//   "challenge_ts":ts, "hostname":str, "error-codes":[...]}.
+	// We decode error-codes so the log line below gives the admin a
+	// concrete reason instead of a generic "Security check failed" —
+	// common values are invalid-input-secret (wrong key / v2 key pasted
+	// into v3 slot), timeout-or-duplicate (token reused or >2min old),
+	// and hostname-mismatch (site not registered at the current domain).
 	var result struct {
-		Success bool    `json:"success"`
-		Score   float64 `json:"score"`
+		Success    bool     `json:"success"`
+		Score      float64  `json:"score"`
+		Action     string   `json:"action"`
+		Hostname   string   `json:"hostname"`
+		ErrorCodes []string `json:"error-codes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("recaptcha: decode Google response: %v", err)
 		return false, fmt.Errorf("recaptcha decode: %w", err)
 	}
 	if !result.Success {
+		// Google said the token itself is bad — most common cause is a
+		// reversed or wrong secret key, or a stale/reused token.
+		log.Printf("recaptcha: Google rejected token — error-codes=%v hostname=%q action=%q (check Settings → CAPTCHA if this is a keys mismatch)",
+			result.ErrorCodes, result.Hostname, result.Action)
 		return false, nil
 	}
-	return result.Score >= minScore, nil
+	if result.Score < minScore {
+		// Token was valid but the bot-score was below the admin's threshold.
+		// Default is 0.5; if the admin set 0.9 they'll see legitimate users
+		// bounce here — Google recommends keeping it around 0.5.
+		log.Printf("recaptcha: score %.2f below threshold %.2f — hostname=%q action=%q (lower Settings → CAPTCHA → Min score if this blocks real users)",
+			result.Score, minScore, result.Hostname, result.Action)
+		return false, nil
+	}
+	log.Printf("recaptcha: ok — score=%.2f threshold=%.2f action=%q", result.Score, minScore, result.Action)
+	return true, nil
 }
 
 // captchaTemplateData returns the map the form templates merge into

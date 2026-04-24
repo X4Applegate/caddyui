@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/X4Applegate/caddyui/internal/analytics"
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/db"
 	"github.com/X4Applegate/caddyui/internal/server"
@@ -21,6 +22,12 @@ func main() {
 	listen := envOr("CADDYUI_LISTEN", ":8080")
 	caddyAdmin := envOr("CADDY_ADMIN_URL", "http://caddy:2019")
 	caddyfilePath := envOr("CADDYFILE_PATH", "/etc/caddy/Caddyfile")
+	// v2.7.0: visitor-analytics ingest listener. Caddy's `net` log writer
+	// connects here over plain TCP and streams one JSON access-log entry
+	// per line. Default :9019 inside the container; host-mode deployments
+	// should set CADDYUI_INGEST_LISTEN=127.0.0.1:9019 so the LAN can't
+	// inject fake events. Empty value disables the listener entirely.
+	ingestListen := envOr("CADDYUI_INGEST_LISTEN", ":9019")
 	// Optional HTTP Basic Auth for the bootstrap Caddy admin endpoint. Useful
 	// when port 2019 is wrapped behind a reverse proxy that enforces basic auth
 	// (a simpler alternative to WireGuard/Tailscale for remote admin). Empty
@@ -63,6 +70,22 @@ func main() {
 	// Feature F: start cert-expiry webhook notifier.
 	server.StartNotifier(conn, caddyClient)
 
+	// v2.7.0: analytics ingest listener. Started unconditionally when
+	// an address is configured — the separate "analytics enabled" toggle
+	// (in Settings) controls whether *Caddy* is configured to ship logs,
+	// not whether we listen for them. A listener with no connections is
+	// a few KB of RAM and no CPU, so there's no reason to gate it.
+	var ingest *analytics.Ingest
+	if ingestListen != "" {
+		ingest = &analytics.Ingest{DB: conn, Addr: ingestListen}
+		if err := ingest.Start(pollerCtx); err != nil {
+			log.Printf("analytics: failed to start ingest on %s: %v (analytics disabled)", ingestListen, err)
+			ingest = nil
+		} else {
+			srv.SetAnalyticsIngest(ingest)
+		}
+	}
+
 	// Opt-in startup sync. Default: no initial sync — pushing an empty config
 	// would wipe Caddy's existing routes. Set CADDYUI_SYNC_ON_START=1 once all
 	// live site blocks have equivalents in the CaddyUI DB; then on Caddy
@@ -93,6 +116,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
+	if ingest != nil {
+		ingest.Stop()
+	}
 }
 
 // Version is set at build time via -ldflags "-X main.Version=vX.Y.Z".

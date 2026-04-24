@@ -40,9 +40,18 @@
         </td>
         <td class="px-5 py-3 text-ink-600">{{if .Name}}{{.Name}}{{else}}<span class="text-ink-400">—</span>{{end}}</td>
         <td class="px-5 py-3">
+          {{/* Three roles — admin (full), user (write but not admin), view
+               (read-only). Before v2.6.2 this template had only a two-way
+               admin/else branch, which silently painted every "user" row
+               with the "view" badge. Now a proper switch so the badge
+               matches whatever the user_form writes to the DB. */}}
           {{if eq .Role "admin"}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
               <span class="w-1.5 h-1.5 rounded-full bg-purple-500"></span>admin
+            </span>
+          {{else if eq .Role "user"}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
+              <span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>user
             </span>
           {{else}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-600">
