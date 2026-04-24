@@ -442,6 +442,18 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 	return err
 }
 
+// SetProxyHostOwner reassigns a proxy host to a new owner. ownerID == 0
+// means global/admin (stored as NULL); >0 means that user's uploads bucket.
+// v2.7.3: admin-only feature for handing off a host to a customer after
+// initial provisioning. Kept separate from UpdateProxyHost so the regular
+// edit path — which is callable by a user-role account — can never alter
+// ownership. Handler enforces the role gate before calling this.
+func SetProxyHostOwner(db *sql.DB, id int64, ownerID int64) error {
+	_, err := db.Exec(`UPDATE proxy_hosts SET owner_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		nilIfZero(ownerID), id)
+	return err
+}
+
 // UpdateProxyHostDNSRecord persists the record ID + zone identifier after
 // a successful provider create/delete. Kept as a minimal UPDATE (instead
 // of round-tripping the full proxy host) so the IP-retarget goroutine and
@@ -640,6 +652,14 @@ func DeleteRedirectionHost(db *sql.DB, id int64) error {
 	return err
 }
 
+// SetRedirectionHostOwner reassigns ownership. See SetProxyHostOwner for the
+// rationale behind keeping this separate from UpdateRedirectionHost.
+func SetRedirectionHostOwner(db *sql.DB, id int64, ownerID int64) error {
+	_, err := db.Exec(`UPDATE redirection_hosts SET owner_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		nilIfZero(ownerID), id)
+	return err
+}
+
 type RawRoute struct {
 	ID                  int64
 	Label               string
@@ -777,6 +797,14 @@ func UpdateRawRoute(db *sql.DB, r *RawRoute) error {
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
 		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
 		r.ID)
+	return err
+}
+
+// SetRawRouteOwner reassigns ownership. See SetProxyHostOwner for the
+// rationale behind keeping this separate from UpdateRawRoute.
+func SetRawRouteOwner(db *sql.DB, id int64, ownerID int64) error {
+	_, err := db.Exec(`UPDATE raw_routes SET owner_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		nilIfZero(ownerID), id)
 	return err
 }
 
@@ -1032,6 +1060,14 @@ func UpdateCertificate(db *sql.DB, c *Certificate) error {
         UPDATE certificates SET name=?, domains=?, source=?, cert_pem=?, key_pem=?,
             cert_path=?, key_path=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM, c.CertPath, c.KeyPath, c.ID)
+	return err
+}
+
+// SetCertificateOwner reassigns ownership. See SetProxyHostOwner for the
+// rationale behind keeping this separate from UpdateCertificate.
+func SetCertificateOwner(db *sql.DB, id int64, ownerID int64) error {
+	_, err := db.Exec(`UPDATE certificates SET owner_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		nilIfZero(ownerID), id)
 	return err
 }
 

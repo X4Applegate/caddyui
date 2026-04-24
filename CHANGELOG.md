@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.7.3] — 2026-04-24 · Admin can reassign ownership per resource
+
+### Added
+- **Admin-only Owner picker on every ownership-aware resource form.** Proxy hosts, redirection hosts, advanced (raw) routes, and certificates now render an `Owner` `<select>` at the bottom of the new/edit form for admins. Options are `Global (admin — managed by you)` (the default, equivalent to `owner_id IS NULL`) plus one entry per `user`-role account. Use case: admin provisions a proxy host for a customer, then assigns it to them in one step — the row shows up in that user's dashboard, fully theirs to edit / delete, while the admin retains oversight.
+- **Reassign-on-edit.** Editing any of the four resources re-posts the picker, so an admin can hand off an existing row (e.g. a proxy host initially set up under the admin account) to a customer without recreating anything. The TLS cert references on other routes keep working — cert resolution is by ID, not ownership.
+
+### Changed
+- **`Server.adminUserList(r)` returns only `user`-role accounts.** Admin and view-role accounts are filtered out before reaching the picker: neither can "own" a resource in the data model (admin ownership is modeled as `NULL` / global; view-role can't manage anything). Returning them would populate the dropdown with dead options. Non-admin viewers still get `nil` so their templates can't accidentally leak the user roster.
+
+### Implementation notes
+- **New model-layer helpers kept separate from `Update*`.** `SetProxyHostOwner`, `SetRedirectionHostOwner`, `SetRawRouteOwner`, `SetCertificateOwner` each run a single `UPDATE ... SET owner_id=?` statement. They are NOT folded into the existing `Update*` functions — the user-role edit path calls those same functions, and we never want a forged `owner_id` in a user's POST body to silently rewrite the row's owner. The handler gates the owner write on `isAdmin` before calling the dedicated setter.
+- **Create-time assignment uses the same admin-gated form field.** `createProxyHost`, `createRedirectionHost`, `createRawRoute`, `createCertificate` read `r.FormValue("owner_id")` only when the current user is admin; a non-admin's branch ignores the field and short-circuits to `cu.ID`. An absent / blank `owner_id` on the edit path leaves ownership untouched (so the upgrade path — old form, no picker rendered — stays safe).
+- **Template picker uses `{{if .Users}}` as the admin gate.** `adminUserList` returns `nil` for non-admin, and `{{if .Users}}` on a `nil` slice is false, so the picker markup is simply absent in non-admin DOMs — no conditional role check in the template.
+
+### Docker
+- Published as `applegater/caddyui:v2.7.3` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+
+---
+
 ## [2.7.2] — 2026-04-24 · Per-user certificate ownership
 
 ### Added
