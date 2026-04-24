@@ -316,6 +316,10 @@ domainChanged := !slices.Equal(oldDomains, newDomains)</code></pre>
   Here's the complete thing, copy-pasteable.
 </p>
 
+<div class="callout">
+  <strong>Prefer a step-by-step runbook?</strong> The same recipe is now also written up as a <a href="adguard-home-setup.html">numbered 9-step guide with a contents sidebar and all the gotchas called out</a> — including the <code>systemd-resolved</code> port-53 fix that trips up every fresh Linux host.
+</div>
+
 <h3>1. Wildcard cert via Caddy + Cloudflare DNS-01</h3>
 
 <p>
