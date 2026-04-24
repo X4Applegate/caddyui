@@ -421,12 +421,22 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/snapshots/{id}/restore", s.restoreSnapshot)
 			r.Post("/snapshots/{id}/delete", s.deleteSnapshot)
 
-			// Certificate mutation routes moved to the admin-only group below
-			// in v2.6.2. TLS material is shared infra — non-admin roles can
-			// still reference certs from the proxy-host dropdown (listCertificates
-			// at line 286 stays in requireAuth), but only admins may create,
-			// edit, or delete. /certificates GET itself remains all-roles
-			// because the proxy-host form needs to show the dropdown contents.
+			// v2.7.2: certificate create + edit are writer-level, not admin-only.
+			// Each cert now carries owner_id (NULL = global/admin, >0 = private
+			// to a user). user-role uploads land with owner_id = cu.ID so they
+			// don't collide with other tenants' TLS material. The per-handler
+			// 403 in editCertificate / updateCertificate enforces ownership
+			// defensively — route layer only filters view-role out.
+			//
+			// Delete stays admin-only (see /certificates/{id}/delete down in
+			// the requireAdmin group) because its blast radius is NULL-ing
+			// certificate_id on proxy_hosts/redirection_hosts/raw_routes across
+			// owners. That check would be racy if we distributed it.
+			r.Get("/certificates/new", s.newCertificate)
+			r.Post("/certificates", s.createCertificate)
+			r.Get("/certificates/{id}/edit", s.editCertificate)
+			r.Post("/certificates/{id}", s.updateCertificate)
+			r.Post("/certificates/{id}/delete", s.deleteCertificate)
 
 			r.Get("/raw-routes/new", s.newRawRoute)
 			r.Post("/raw-routes", s.createRawRoute)
@@ -467,18 +477,13 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/servers/{id}", s.updateServer)
 			r.Post("/servers/{id}/delete", s.deleteServer)
 
-			// Certificate mutation — admin-only in v2.6.2+. Shared TLS material
-			// is admin-managed infrastructure; non-admin roles can still see
-			// and reference certs (via /certificates GET in requireAuth and
-			// the proxy-host form's dropdown) but cannot create, edit, or
-			// delete. deleteCertificate also has an inline admin check as
-			// defense-in-depth since the route layer is the single enforcement
-			// point and a future refactor could drop it by accident.
-			r.Get("/certificates/new", s.newCertificate)
-			r.Post("/certificates", s.createCertificate)
-			r.Get("/certificates/{id}/edit", s.editCertificate)
-			r.Post("/certificates/{id}", s.updateCertificate)
-			r.Post("/certificates/{id}/delete", s.deleteCertificate)
+			// v2.7.2: create/edit moved up to the requireWrite group so
+			// user-role accounts can manage their own certs. The remaining
+			// admin-only cert concern — whole-cert delete with its
+			// cross-owner blast radius — is enforced by the inline role check
+			// inside deleteCertificate, not by route gating, so a user-role
+			// account can still delete a cert they own (see the ownership
+			// branch in that handler).
 
 			// Feature F: settings page (admin-only).
 			r.Get("/settings", s.getSettings)
@@ -1043,7 +1048,9 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	hosts, _ := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin)
 	redirs, _ := models.ListRedirectionHosts(s.DB, sid, viewerID, isAdmin)
 	raws, _ := models.ListRawRoutes(s.DB, sid, viewerID, isAdmin)
-	certs, _ := models.ListCertificates(s.DB, sid)
+	// v2.7.2: cert card count matches what the /certificates page will show —
+	// admin sees every cert, user-role sees their uploads + globals.
+	certs, _ := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin)
 
 	// Most-recent sync timestamp from activity log (best-effort).
 	var lastSync *time.Time
@@ -1434,10 +1441,17 @@ func parsePEMExpiry(pemData string) *time.Time {
 }
 
 // certView wraps a Certificate with computed expiry metadata for the template.
+//
+// CanEdit is the per-row ownership verdict precomputed server-side so the
+// template doesn't have to re-do the (admin || owner.ID == viewer.ID) logic
+// every row. True for admin on any row; true for user-role on their own
+// uploads; false on another user's row or on a global/admin row that a
+// user-role viewer is seeing through the dropdown scope.
 type certView struct {
 	models.Certificate
 	ExpiresAt *time.Time
-	DaysLeft  int // positive = days until expiry; negative = already expired
+	DaysLeft  int  // positive = days until expiry; negative = already expired
+	CanEdit   bool // per-row ownership (see above)
 }
 
 // dnsProviderViewData builds the template data describing which DNS
@@ -1483,7 +1497,10 @@ func (s *Server) applyDNSViewData(serverID int64, m map[string]any) map[string]a
 }
 
 func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	// v2.7.2: cert dropdown scoped to the current viewer — user-role sees
+	// only their own + global admin-owned certs, not other users' private
+	// material.
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
@@ -1630,7 +1647,7 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
@@ -1793,7 +1810,7 @@ func (s *Server) listRedirectionHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) newRedirectionHost(w http.ResponseWriter, r *http.Request) {
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "redirection_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.RedirectionHost{Enabled: true, PreservePath: true, ForwardHTTPCode: 301, ForwardScheme: "auto", SSLEnabled: true, SSLForced: true},
@@ -1867,7 +1884,7 @@ func (s *Server) editRedirectionHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "redirection_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         rh,
@@ -2632,16 +2649,49 @@ func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
 
 // --- Certificates ---
 
+// certListForRequest returns the certificate list scoped to the signed-in
+// viewer. Admin sees every row; a user-role account sees their own uploads
+// plus any global (admin-owned, owner_id IS NULL) certs. Used by the
+// proxy-host / redirection / raw-route form dropdowns so a non-admin never
+// sees another tenant's private TLS material in the picker.
+//
+// Back-end callers that build Caddy's tls.certificates config (sync paths,
+// cert-expiry background job, dashboard across servers) should keep using
+// models.ListCertificates — they need the complete set regardless of who's
+// looking.
+func (s *Server) certListForRequest(r *http.Request) ([]models.Certificate, error) {
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	var viewerID int64
+	if cu != nil {
+		viewerID = cu.ID
+	}
+	return models.ListCertificatesForUser(s.DB, s.currentServerID(r), viewerID, isAdmin)
+}
+
 func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	sid := s.currentServerID(r)
-	certs, err := models.ListCertificates(s.DB, sid)
+	cu := s.currentUser(r)
+	var viewerID int64
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	if cu != nil {
+		viewerID = cu.ID
+	}
+	// v2.7.2: non-admin sees only their own uploads + global (admin-owned)
+	// certs. Admin view still gets every row plus the owner email via JOIN
+	// for the Owner column in certificates.html.
+	certs, err := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	views := make([]certView, len(certs))
 	for i, c := range certs {
-		views[i] = certView{Certificate: c}
+		// Edit/delete predicate: admin → always; user-role → their own rows
+		// only (not global admin-owned ones, even though they're visible in
+		// the list for the dropdown-reference case).
+		canEdit := isAdmin || (c.OwnerID.Valid && viewerID != 0 && c.OwnerID.Int64 == viewerID)
+		views[i] = certView{Certificate: c, CanEdit: canEdit}
 		var exp *time.Time
 		switch c.Source {
 		case models.CertSourcePEM:
@@ -2764,7 +2814,16 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	id, err := models.CreateCertificate(s.DB, s.currentServerID(r), c)
+	// v2.7.2: non-admin uploads are tagged with their user ID so they land in
+	// their own scoped list. Admin uploads get owner_id = NULL → shared/global
+	// (visible from every user's proxy-host dropdown). Matches the pattern
+	// used by createProxyHost/createRedirectionHost/createRawRoute.
+	cu := s.currentUser(r)
+	var ownerID int64
+	if cu != nil && cu.Role != models.RoleAdmin {
+		ownerID = cu.ID
+	}
+	id, err := models.CreateCertificate(s.DB, s.currentServerID(r), ownerID, c)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2781,6 +2840,19 @@ func (s *Server) editCertificate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	// v2.7.2: ownership gate. Admin edits anything; a user can edit a cert
+	// they uploaded but not one owned by somebody else or a global/admin
+	// cert (owner_id NULL). Mirrors the check pattern used by
+	// editProxyHost / updateRedirectionHost etc. so all four resource types
+	// enforce the same rule.
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	if !isAdmin {
+		if !c.OwnerID.Valid || cu == nil || c.OwnerID.Int64 != cu.ID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
 	s.render(w, r, "certificate_form.html", map[string]any{
 		"User":    s.currentUser(r),
 		"Cert":    c,
@@ -2790,6 +2862,20 @@ func (s *Server) editCertificate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	// Re-fetch to enforce ownership server-side — never trust the form.
+	existing, err := models.GetCertificate(s.DB, id)
+	if err != nil || existing == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	if !isAdmin {
+		if !existing.OwnerID.Valid || cu == nil || existing.OwnerID.Int64 != cu.ID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
 	c, errMsg := parseCertificateForm(r)
 	if errMsg != "" {
 		existing, _ := models.GetCertificate(s.DB, id)
@@ -2823,27 +2909,49 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteCertificate(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	// Certificates are a shared resource — a single cert may be attached to
-	// multiple proxy/redirect/raw rows owned by different users, and
-	// DeleteCertificate NULLs every certificate_id reference before dropping
-	// the row. To stop a non-admin from accidentally (or deliberately) tearing
-	// TLS off another user's site, gate delete behind the admin role. Upload
-	// and edit stay open to the "user" role — they need to manage their own
-	// certs — but tear-down is admin-only because the blast radius crosses
-	// ownership boundaries.
+	// v2.7.2: ownership-aware delete. DeleteCertificate NULLs every
+	// certificate_id that points at this row across proxy_hosts,
+	// redirection_hosts, and raw_routes — cross-owner fan-out that we have
+	// to gate carefully.
+	//
+	//   admin  → can delete anything (global + anyone's private).
+	//   user   → can delete only a cert they own (owner_id = their ID) AND
+	//            only when no site they don't own still references it.
+	//            Global (owner_id NULL) stays admin-only because tearing
+	//            it off the shared wildcard would silently break other
+	//            tenants. The CertificateInUse check below is stricter
+	//            than "zero refs" — it lets a user delete even if some of
+	//            their own sites use it (they'll fall back to auto-ssl)
+	//            but blocks delete when any other owner's site would be
+	//            collaterally affected.
+	//   view   → never reaches here; requireWrite already 403'd at the
+	//            route layer.
 	cu := s.currentUser(r)
-	if cu == nil || cu.Role != models.RoleAdmin {
-		// Also refuse when the cert is referenced by any row the caller
-		// doesn't own — surfaces a clearer error than the blanket 403 so
-		// an admin reading logs can tell why a legitimate cert delete
-		// failed for a non-admin. Uses the same CertificateInUse helper
-		// that the certificates list page uses to render the in-use badge.
-		if n, _ := models.CertificateInUse(s.DB, id); n > 0 {
-			http.Error(w, "this certificate is in use by other sites — ask an admin to delete it", http.StatusForbidden)
+	if cu == nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	if !isAdmin {
+		cert, err := models.GetCertificate(s.DB, id)
+		if err != nil || cert == nil {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		http.Error(w, "only admins can delete certificates", http.StatusForbidden)
-		return
+		if !cert.OwnerID.Valid {
+			http.Error(w, "only admins can delete global certificates", http.StatusForbidden)
+			return
+		}
+		if cert.OwnerID.Int64 != cu.ID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		// Block when a site the caller doesn't own still references this
+		// cert — prevents accidental TLS removal from a co-tenant's host.
+		if foreign, _ := models.CertificateInUseByOthers(s.DB, id, cu.ID); foreign > 0 {
+			http.Error(w, "this certificate is in use by another user's site — ask an admin to delete it", http.StatusForbidden)
+			return
+		}
 	}
 	if err := models.DeleteCertificate(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2876,7 +2984,7 @@ func (s *Server) listRawRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) newRawRoute(w http.ResponseWriter, r *http.Request) {
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "raw_route_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Row":          &models.RawRoute{Enabled: true},
@@ -3091,7 +3199,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 // that case we reconstruct it from the raw form values so the user's input
 // isn't wiped.
 func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request, rr *models.RawRoute, errMsg string) {
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	if rr == nil {
 		certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
 		// Reconstruct DNS fields too so the picker state survives an error
@@ -3143,7 +3251,7 @@ func (s *Server) editRawRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "raw_route_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Row":          rr,
@@ -3428,7 +3536,7 @@ func validateSSLFlags(enabled, forced bool, certID int64) string {
 }
 
 func (s *Server) renderRedirectionHostFormError(w http.ResponseWriter, r *http.Request, rh *models.RedirectionHost, errMsg string) {
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "redirection_host_form.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         rh,
@@ -3494,7 +3602,7 @@ func scanTopLevelDirective(src string, banned []string) string {
 }
 
 func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request, p *models.ProxyHost, errMsg string) {
-	certs, _ := models.ListCertificates(s.DB, s.currentServerID(r))
+	certs, _ := s.certListForRequest(r)
 	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,

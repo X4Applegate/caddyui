@@ -898,6 +898,16 @@ type Certificate struct {
 	KeyPath   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// v2.7.2: per-user ownership. OwnerID.Valid == false means admin-owned /
+	// global — any user-role account can reference it from the proxy-host
+	// dropdown, but only admin can edit or delete it. OwnerID.Int64 == user.ID
+	// means a user-role account uploaded it; only the uploader (or admin) can
+	// see it in the dropdown, edit, or delete. OwnerEmail is populated by
+	// ListCertificates when the caller is admin (for the Owner column); blank
+	// otherwise to avoid a JOIN round-trip in the non-admin hot path.
+	OwnerID    sql.NullInt64
+	OwnerEmail string
 }
 
 func (c Certificate) DomainList() []string {
@@ -912,9 +922,14 @@ func (c Certificate) DomainList() []string {
 	return out
 }
 
+// ListCertificates returns every certificate configured on a server regardless
+// of owner. Used by the Caddy sync path (which builds tls.certificates for the
+// whole config) and by any other back-end path that needs a complete view.
+// For user-facing lists and form dropdowns, use ListCertificatesForUser so
+// non-admin accounts don't see another user's private TLS material.
 func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 	rows, err := db.Query(`
-        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path, created_at, updated_at
+        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path, owner_id, created_at, updated_at
         FROM certificates WHERE server_id = ? ORDER BY id DESC`, serverID)
 	if err != nil {
 		return nil, err
@@ -924,8 +939,51 @@ func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 	for rows.Next() {
 		var c Certificate
 		if err := rows.Scan(&c.ID, &c.Name, &c.Domains, &c.Source,
-			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
+			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath, &c.OwnerID,
 			&c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListCertificatesForUser scopes the list to what the viewer is allowed to
+// see. Admin gets every row plus the owner's email (for the Owner column on
+// /certificates). A non-admin gets their own uploads plus global
+// (admin-owned, owner_id IS NULL) certs — the latter so the proxy-host form's
+// TLS dropdown still offers the shared wildcard etc. that admins maintain.
+//
+// OwnerEmail is populated only on the admin path; the non-admin path can't
+// surface other users' emails and the column isn't shown to them anyway.
+func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin bool) ([]Certificate, error) {
+	var rows *sql.Rows
+	var err error
+	if isAdmin {
+		rows, err = db.Query(`
+            SELECT c.id, c.name, c.domains, c.source, c.cert_pem, c.key_pem, c.cert_path, c.key_path,
+                   c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
+            FROM certificates c
+            LEFT JOIN users u ON u.id = c.owner_id
+            WHERE c.server_id = ? ORDER BY c.id DESC`, serverID)
+	} else {
+		rows, err = db.Query(`
+            SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path,
+                   owner_id, created_at, updated_at, ''
+            FROM certificates
+            WHERE server_id = ? AND (owner_id IS NULL OR owner_id = ?)
+            ORDER BY id DESC`, serverID, viewerID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Certificate
+	for rows.Next() {
+		var c Certificate
+		if err := rows.Scan(&c.ID, &c.Name, &c.Domains, &c.Source,
+			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath, &c.OwnerID,
+			&c.CreatedAt, &c.UpdatedAt, &c.OwnerEmail); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -936,10 +994,10 @@ func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 func GetCertificate(db *sql.DB, id int64) (*Certificate, error) {
 	var c Certificate
 	err := db.QueryRow(`
-        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path, created_at, updated_at
+        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path, owner_id, created_at, updated_at
         FROM certificates WHERE id = ?`, id).Scan(
 		&c.ID, &c.Name, &c.Domains, &c.Source,
-		&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
+		&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath, &c.OwnerID,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -948,14 +1006,18 @@ func GetCertificate(db *sql.DB, id int64) (*Certificate, error) {
 	return &c, nil
 }
 
-func CreateCertificate(db *sql.DB, serverID int64, c *Certificate) (int64, error) {
+// CreateCertificate inserts a new TLS cert. ownerID == 0 → global / admin
+// (owner_id stored as NULL). ownerID > 0 → owned by that user (stored as-is).
+// Pairs with nilIfZero so the ownership column is consistent with the other
+// three tables that use the same sentinel.
+func CreateCertificate(db *sql.DB, serverID int64, ownerID int64, c *Certificate) (int64, error) {
 	if c.Source == "" {
 		c.Source = CertSourcePEM
 	}
 	res, err := db.Exec(`
-        INSERT INTO certificates (server_id, name, domains, source, cert_pem, key_pem, cert_path, key_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		serverID, c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM, c.CertPath, c.KeyPath)
+        INSERT INTO certificates (server_id, owner_id, name, domains, source, cert_pem, key_pem, cert_path, key_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		serverID, nilIfZero(ownerID), c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM, c.CertPath, c.KeyPath)
 	if err != nil {
 		return 0, err
 	}
@@ -1127,6 +1189,27 @@ func CertificateInUse(db *sql.DB, id int64) (int, error) {
           (SELECT COUNT(*) FROM redirection_hosts WHERE certificate_id=?) +
           (SELECT COUNT(*) FROM raw_routes WHERE certificate_id=?)`,
 		id, id, id).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// CertificateInUseByOthers returns how many proxy/redirect/raw rows reference
+// this cert AND are owned by someone other than excludeOwnerID (a NULL owner
+// counts as "other" — those are admin/global sites). Used by the user-role
+// delete path to block a cert-delete that would strip TLS off another
+// tenant's site; the caller's own sites are allowed to fall back to auto-ssl.
+func CertificateInUseByOthers(db *sql.DB, id int64, excludeOwnerID int64) (int, error) {
+	var n int
+	if err := db.QueryRow(`
+        SELECT
+          (SELECT COUNT(*) FROM proxy_hosts
+             WHERE certificate_id=? AND (owner_id IS NULL OR owner_id != ?)) +
+          (SELECT COUNT(*) FROM redirection_hosts
+             WHERE certificate_id=? AND (owner_id IS NULL OR owner_id != ?)) +
+          (SELECT COUNT(*) FROM raw_routes
+             WHERE certificate_id=? AND (owner_id IS NULL OR owner_id != ?))`,
+		id, excludeOwnerID, id, excludeOwnerID, id, excludeOwnerID).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
