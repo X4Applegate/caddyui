@@ -20,6 +20,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1571,16 +1572,20 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	// Unified DNS lifecycle. A record needs replacing when:
 	//   1. The user switched provider or cleared DNS entirely
 	//   2. The user picked a different zone on the same provider
-	//   3. The primary domain (first in the Domains list) changed
-	// In any of those cases we delete the old record and create a new
-	// one after the DB save succeeds. If nothing changed, we preserve
-	// the existing record ID so the record stays in place.
-	oldDomain := dns.FirstDomain("")
+	//   3. The Domains list changed in any way — added alias, removed
+	//      alias, renamed primary, or reordered
+	// In any of those cases we delete every old record and create a
+	// fresh record per current hostname after the DB save succeeds.
+	// v2.5.10: comparison widened from FirstDomain to the full list
+	// so adding/removing an alias actually provisions/removes the
+	// matching A record — pre-v2.5.10 only the first-domain change
+	// triggered this path, leaving aliases with no DNS.
+	var oldDomains []string
 	if old != nil {
-		oldDomain = dns.FirstDomain(old.Domains)
+		oldDomains = old.DomainList()
 	}
-	newDomain := dns.FirstDomain(p.Domains)
-	domainChanged := oldDomain != newDomain
+	newDomains := p.DomainList()
+	domainChanged := !slices.Equal(oldDomains, newDomains)
 
 	providerChanged := old != nil && old.DNSProvider != p.DNSProvider
 	zoneChanged := old != nil && old.DNSZoneID != p.DNSZoneID
@@ -3042,16 +3047,20 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// v2.5.6: Managed DNS lifecycle. Same rules as proxy-host update —
-	// replace the record when the provider, zone, or primary hostname
-	// changes. The primary hostname for raw routes is the first entry
-	// of match[].host[]; parsing the two blobs once here keeps the
-	// logic readable.
-	oldFQDN := ""
+	// replace records when the provider, zone, or set of match[].host[]
+	// entries changes. v2.5.10: comparison widened from the first host
+	// to the full list so adding/removing a secondary hostname actually
+	// provisions/removes the matching A record.
+	var oldHosts []string
 	if old != nil {
-		oldFQDN = firstRawRouteHost(old.JSONData)
+		oldHosts = rawRouteHosts(*old)
 	}
-	newFQDN := firstRawRouteHost(rr.JSONData)
-	fqdnChanged := oldFQDN != newFQDN
+	newHosts := rawRouteHosts(*rr)
+	fqdnChanged := !slices.Equal(oldHosts, newHosts)
+	newFQDN := ""
+	if len(newHosts) > 0 {
+		newFQDN = newHosts[0]
+	}
 
 	providerChanged := old != nil && old.DNSProvider != rr.DNSProvider
 	zoneChanged := old != nil && old.DNSZoneID != rr.DNSZoneID
@@ -3066,7 +3075,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		// the DB save would clear it.
 		rr.DNSRecordID = old.DNSRecordID
 	}
-	needCreate := rr.DNSProvider != "" && rr.DNSZoneID != "" && newFQDN != "" &&
+	needCreate := rr.DNSProvider != "" && rr.DNSZoneID != "" && len(newHosts) > 0 &&
 		(rr.DNSRecordID == "" || providerChanged || zoneChanged || fqdnChanged)
 
 	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {

@@ -253,8 +253,11 @@ func IsProxyConflictingType(t string) bool {
 }
 
 // FirstDomain extracts the first comma-separated domain from a ProxyHost's
-// Domains field. DNS records are only ever created for the first domain —
-// the rest are aliases handled by Caddy at the proxy level.
+// Domains field. Used where a single representative hostname is needed
+// (UI labels, deploying-page probes, etc.). v2.5.9 stopped treating "first
+// domain" as the sole DNS-managed entry — the create/update/retarget paths
+// now iterate ProxyHost.DomainList() so every hostname gets its own A
+// record — so do NOT use FirstDomain for DNS lifecycle decisions.
 func FirstDomain(domains string) string {
 	for _, d := range strings.Split(domains, ",") {
 		if d = strings.TrimSpace(d); d != "" {
