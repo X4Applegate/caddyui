@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CaddyUI v2.5.10 — Alias domains now get DNS records, plus an AdGuard Home recipe</title>
+<meta name="description" content="CaddyUI v2.5.10 fixes a bug where adding an alias domain to an existing proxy host didn't provision a DNS record. Bundled with a full AdGuard Home + Caddy DoH/DoT/DoQ recipe with per-client identification.">
+<meta property="og:title" content="CaddyUI v2.5.10 — Alias domains now get DNS records, plus an AdGuard Home recipe">
+<meta property="og:description" content="A bug fix that started with Chrome's DNS_PROBE_FINISHED_BAD_SECURE_CONFIG and ended in a complete self-hosted encrypted-DNS stack with per-device client names.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-04-23">
+<style>
+  :root {
+    --brand-50: #eff6ff;
+    --brand-100: #dbeafe;
+    --brand-500: #3b82f6;
+    --brand-600: #2563eb;
+    --brand-700: #1d4ed8;
+    --ink-50:  #f8fafc;
+    --ink-100: #f1f5f9;
+    --ink-200: #e2e8f0;
+    --ink-300: #cbd5e1;
+    --ink-400: #94a3b8;
+    --ink-500: #64748b;
+    --ink-600: #475569;
+    --ink-700: #334155;
+    --ink-800: #1e293b;
+    --ink-900: #0f172a;
+    --bg: #ffffff;
+    --fg: var(--ink-800);
+    --muted: var(--ink-500);
+    --card-bg: #ffffff;
+    --card-border: var(--ink-200);
+    --code-bg: var(--ink-100);
+    --code-fg: var(--ink-800);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220;
+      --fg: #e2e8f0;
+      --muted: #94a3b8;
+      --card-bg: #111a2e;
+      --card-border: #1e293b;
+      --code-bg: #0f172a;
+      --code-fg: #e2e8f0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 48px 20px 96px;
+  }
+  header.hero { margin-bottom: 40px; }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--brand-600);
+    background: var(--brand-50);
+    padding: 6px 12px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .eyebrow { background: rgba(59, 130, 246, 0.15); }
+  }
+  h1 {
+    font-size: clamp(28px, 4.5vw, 40px);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    margin: 0 0 16px;
+    font-weight: 700;
+  }
+  .lead {
+    font-size: 19px;
+    color: var(--muted);
+    margin: 0 0 24px;
+    line-height: 1.55;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .meta time::before { content: "📅 "; }
+  .meta .tag::before { content: "🏷️ "; }
+  h2 {
+    font-size: 26px;
+    letter-spacing: -0.01em;
+    margin: 56px 0 12px;
+    font-weight: 700;
+  }
+  h3 {
+    font-size: 19px;
+    margin: 28px 0 10px;
+    font-weight: 600;
+  }
+  p { margin: 0 0 18px; }
+  ul { padding-left: 22px; margin: 0 0 18px; }
+  li { margin-bottom: 8px; }
+  a {
+    color: var(--brand-600);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(37, 99, 235, 0.3);
+    transition: border-color 0.15s;
+  }
+  a:hover { border-bottom-color: var(--brand-600); }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 16px 18px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 18px 0 22px;
+    border: 1px solid var(--card-border);
+  }
+  pre code { background: transparent; padding: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0 22px;
+    font-size: 15px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  blockquote {
+    border-left: 3px solid var(--brand-500);
+    padding: 4px 0 4px 18px;
+    margin: 20px 0;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .callout {
+    background: var(--brand-50);
+    border: 1px solid var(--brand-100);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 22px 0;
+    font-size: 15px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .callout {
+      background: rgba(59, 130, 246, 0.08);
+      border-color: rgba(59, 130, 246, 0.2);
+    }
+  }
+  .callout strong { color: var(--brand-700); }
+  @media (prefers-color-scheme: dark) {
+    .callout strong { color: #93bbfc; }
+  }
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 28px 0;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 15px;
+    border: 1px solid transparent;
+    text-decoration: none;
+    border-bottom: none;
+    transition: transform 0.1s, box-shadow 0.15s;
+  }
+  .btn.primary {
+    background: var(--brand-600);
+    color: #fff;
+  }
+  .btn.primary:hover { background: var(--brand-700); }
+  .btn.secondary {
+    background: var(--card-bg);
+    color: var(--fg);
+    border-color: var(--card-border);
+  }
+  .btn.secondary:hover { background: var(--ink-100); }
+  @media (prefers-color-scheme: dark) {
+    .btn.secondary:hover { background: rgba(255,255,255,0.05); }
+  }
+  footer.signoff {
+    margin-top: 56px;
+    padding-top: 24px;
+    border-top: 1px solid var(--card-border);
+    color: var(--muted);
+    font-size: 14px;
+  }
+  footer.signoff p { margin-bottom: 8px; }
+  hr.divider {
+    border: 0;
+    border-top: 1px solid var(--card-border);
+    margin: 40px 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<article>
+
+<header class="hero">
+  <span class="eyebrow">🐛 Release + Recipe</span>
+  <h1>CaddyUI v2.5.10 — Alias domains now get DNS records, plus a self-hosted encrypted-DNS recipe</h1>
+  <p class="lead">Started as a bug report: "adding an alias domain breaks with <code>DNS_PROBE_FINISHED_BAD_SECURE_CONFIG</code>." Ended as a complete AdGuard Home + Caddy DoH/DoT/DoQ stack with per-device client names.</p>
+  <div class="meta">
+    <time datetime="2026-04-23">April 23, 2026</time>
+    <span class="tag">v2.5.10</span>
+    <span>☕ ~8 min read</span>
+  </div>
+</header>
+
+<h2>The bug</h2>
+<p>
+  I was setting up <a href="https://adguard.com/en/adguard-home/overview.html">AdGuard Home</a> behind Caddy so my phone could use DNS-over-HTTPS at <code>laptop.dns.richardapplegate.io</code>. The proxy host worked on the first save. Then I added a second hostname on the same row as an alias — and Chrome started showing this on every request to the alias:
+</p>
+<pre><code>DNS_PROBE_FINISHED_BAD_SECURE_CONFIG
+
+This site can't be reached
+Checking the proxy, firewall, and Secure DNS configuration</code></pre>
+
+<p>
+  The primary domain still worked. Only the alias broke. That's a weirdly specific failure mode, and it turned out to be a weirdly specific bug.
+</p>
+
+<h2>What v2.5.9 fixed — and what it missed</h2>
+<p>
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.5.9">v2.5.9</a> (shipped an hour before v2.5.10) changed <code>dnsCreateRecord</code> to iterate every hostname in a proxy host's <code>Domains</code> list and request one A record per FQDN, instead of only the first. The create path started working correctly, and the bulk IP-retarget path (the one that fires when you change a Caddy server's public IP) got the same treatment.
+</p>
+
+<p>
+  The user-initiated <strong>edit</strong> path did not. In <code>updateProxyHost</code> the change-detection logic was still:
+</p>
+
+<pre><code>oldDomain := dns.FirstDomain(old.Domains)
+newDomain := dns.FirstDomain(p.Domains)
+domainChanged := oldDomain != newDomain</code></pre>
+
+<p>
+  Which means: if you take an existing proxy host with a single domain, and you add an alias to it, the <em>first</em> domain hasn't changed — so <code>domainChanged</code> is <code>false</code>, <code>needCreate</code> is <code>false</code>, and no record ever gets provisioned for the new alias. The row in the DB looks right. Caddy is happy to serve the alias. But there's no A record at the provider, so the recursive resolver returns NXDOMAIN.
+</p>
+
+<div class="callout">
+  <strong>Why does NXDOMAIN show as <code>DNS_PROBE_FINISHED_BAD_SECURE_CONFIG</code> and not "no such domain"?</strong>
+  When Chrome has Secure DNS (DoH) enabled, the resolver returns a DNSSEC-signed NXDOMAIN. If Chrome can't validate the signature chain for a subdomain that <em>should</em> be signed by the parent zone — because the parent has a wildcard DS record or CAA policy pointing at records that the resolver never received — it surfaces the generic "bad secure config" error instead of the cleaner "DNS address could not be found." Chrome is being helpful and confusing at the same time.
+</div>
+
+<h2>The v2.5.10 fix</h2>
+<p>
+  The patch is six lines of logic plus a <code>"slices"</code> import. Compare the full <code>DomainList()</code> instead of just the first element:
+</p>
+
+<pre><code>var oldDomains []string
+if old != nil {
+    oldDomains = old.DomainList()
+}
+newDomains := p.DomainList()
+domainChanged := !slices.Equal(oldDomains, newDomains)</code></pre>
+
+<p>
+  Same change for the raw-route edit path (<code>updateRawRoute</code>): compare <code>rawRouteHosts(*old)</code> to <code>rawRouteHosts(*rr)</code> instead of only the first host. Any addition, removal, rename, or reorder now triggers the same delete-all-then-create-all cycle that <code>dnsCreateRecord</code> / <code>dnsCreateRecordForRaw</code> have done since v2.5.9. All three mutation paths (create, edit, IP retarget) now agree on "every hostname in the list gets an A record."
+</p>
+
+<p>
+  No schema change, no migration. Existing rows with a stale alias list self-heal on the next save.
+</p>
+
+<hr class="divider">
+
+<h2>🧅 The recipe this bug unblocked</h2>
+
+<p>
+  Once the fix was live, I put together the whole stack the bug was originally blocking: wildcard cert via Caddy's DNS-01, AdGuard Home running on the same box, DoH proxied through Caddy, DoT/DoQ direct to AdGuard using the shared cert, per-device client names showing up correctly on both protocols.
+</p>
+
+<p>
+  Here's the complete thing, copy-pasteable.
+</p>
+
+<h3>1. Wildcard cert via Caddy + Cloudflare DNS-01</h3>
+
+<p>
+  <a href="https://github.com/X4Applegate/caddyui/blob/main/Dockerfile.caddy">Dockerfile.caddy</a> already bakes in the Cloudflare DNS provider module, so all that's needed is a Caddyfile snippet. Paste this into CaddyUI → <code>/caddyfile-import</code>:
+</p>
+
+<pre><code>*.dns.richardapplegate.io, dns.richardapplegate.io {
+  tls {
+    dns cloudflare {env.CF_API_TOKEN}
+  }
+
+  reverse_proxy http://adguardhome:8080
+}</code></pre>
+
+<p>
+  The wildcard covers every <code>&lt;device&gt;.dns.richardapplegate.io</code> I'll ever need (phone, laptop, router, TV, …) on a single cert. The apex is included as an extra SAN so the same file covers bare <code>dns.richardapplegate.io</code> too. Everything — DoH at <code>/dns-query</code>, the admin UI, device management — all goes to AdGuard on port 8080; AdGuard routes internally.
+</p>
+
+<div class="callout">
+  <strong>Gotcha:</strong> a wildcard only matches one level of subdomains. <code>*.dns.richardapplegate.io</code> covers <code>phone.dns....</code> but NOT <code>dns.richardapplegate.io</code> itself. If you want the apex, add it as a second SAN like the example above. One cert, two subjects.
+</div>
+
+<h3>2. AdGuard Home as a Portainer stack</h3>
+
+<pre><code>services:
+  adguardhome:
+    image: adguard/adguardhome:v0.107.56
+    container_name: adguardhome
+    restart: unless-stopped
+    ports:
+      # DNS - must be on host
+      - "53:53/tcp"
+      - "53:53/udp"
+      # Optional: DoT / DoQ direct (not via Caddy)
+      - "853:853/tcp"
+      - "784:784/udp"
+    environment:
+      TZ: America/Los_Angeles
+    volumes:
+      - /mnt/1TB/adguard/work:/opt/adguardhome/work
+      - /mnt/1TB/adguard/conf:/opt/adguardhome/conf
+      - /mnt/1TB/caddy/caddy_data:/caddy-certs:ro
+    networks:
+      - caddy-and-ui_caddy_net
+
+networks:
+  caddy-and-ui_caddy_net:
+    external: true</code></pre>
+
+<p>
+  The critical piece is the read-only mount of Caddy's data volume (<code>/caddy-certs</code>). Caddy writes the wildcard cert there after the DNS-01 challenge completes; AdGuard reads the same files for its DoT/DoQ listener. Pin the AdGuard image tag (not <code>:latest</code>) so a surprise major upgrade doesn't land overnight.
+</p>
+
+<p>
+  The <code>caddy-and-ui_caddy_net</code> network name comes from Portainer — it's the <code>&lt;stack-name&gt;_&lt;network-name&gt;</code> form, external because the network is owned by the CaddyUI stack and we're joining it from a separate stack.
+</p>
+
+<h3>3. AdGuardHome.yaml — the TLS block that actually works</h3>
+
+<pre><code>tls:
+  enabled: true
+  server_name: dns.richardapplegate.io
+  force_https: false
+  port_https: 443
+  port_dns_over_tls: 853
+  port_dns_over_quic: 853
+  port_dnscrypt: 0
+  dnscrypt_config_file: ""
+  allow_unencrypted_doh: true
+  certificate_chain: ""
+  private_key: ""
+  certificate_path: /caddy-certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/wildcard_.dns.richardapplegate.io/wildcard_.dns.richardapplegate.io.crt
+  private_key_path:  /caddy-certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/wildcard_.dns.richardapplegate.io/wildcard_.dns.richardapplegate.io.key
+  strict_sni_check: false</code></pre>
+
+<p>
+  Three settings matter here and are easy to miss:
+</p>
+<ul>
+  <li><strong><code>allow_unencrypted_doh: true</code></strong> — lets AdGuard serve DoH over plain HTTP on its admin port. Caddy does the TLS. Without this, Caddy proxies <code>/dns-query</code> and gets 502 back from AdGuard.</li>
+  <li><strong><code>certificate_path</code> / <code>private_key_path</code></strong> — Caddy stores multi-subject certs under the first subject's name, with wildcards normalised to <code>wildcard_</code>. Both filenames are the same directory, different extensions.</li>
+  <li><strong><code>strict_sni_check: false</code></strong> — clients connect to <code>phone.dns.richardapplegate.io:853</code>, not to the exact <code>server_name</code>. Strict check rejects those.</li>
+</ul>
+
+<p>
+  AdGuard reads the cert once at startup, so after each Caddy renewal (~60-day cycle) you need to restart the container. A monthly cron on the host is plenty:
+</p>
+
+<pre><code>0 4 1 * * docker restart adguardhome</code></pre>
+
+<h3>4. Per-device ClientIDs</h3>
+
+<p>
+  The whole point of a private DNS resolver is per-device filtering: "block YouTube on the kids' tablet, not on mine." AdGuard Home extracts the ClientID differently for each protocol:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Protocol</th><th>ClientID source</th><th>URL on the device</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>DoT / DoQ</td>
+      <td>TLS SNI leftmost label</td>
+      <td><code>phone.dns.richardapplegate.io</code><br>(port 853 for DoT, 784 for DoQ)</td>
+    </tr>
+    <tr>
+      <td>DoH</td>
+      <td>URL path suffix</td>
+      <td><code>https://dns.richardapplegate.io/dns-query/phone</code></td>
+    </tr>
+    <tr>
+      <td>DoH (alternate)</td>
+      <td>Host header leftmost label</td>
+      <td><code>https://phone.dns.richardapplegate.io/dns-query</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  The SNI-based path is cleanest because the ClientID lives in the hostname, not in a URL suffix that Android's private-DNS field won't accept. The DoH path-suffix form is useful when a DoH client (some browsers, some apps) locks the URL format to a specific domain.
+</p>
+
+<div class="callout">
+  <strong>Debugging tip:</strong> after the phone connects, if AdGuard shows the source IP instead of your chosen ClientID, the SNI isn't reaching AdGuard correctly. Check <code>strict_sni_check: false</code> and verify the cert actually covers the leftmost label — if the SNI is <code>phone.dns.richardapplegate.io</code> and the cert is only for <code>dns.richardapplegate.io</code> (apex only, no wildcard), TLS handshake fails before AdGuard sees the SNI.
+</div>
+
+<h3>5. Routing diagram</h3>
+
+<table>
+  <thead>
+    <tr><th>Request</th><th>Port</th><th>Who terminates TLS</th><th>Who answers</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>DoH — <code>https://phone.dns.richardapplegate.io/dns-query</code></td><td>443/tcp</td><td>Caddy</td><td>AdGuard (via reverse_proxy)</td></tr>
+    <tr><td>DoT — <code>phone.dns.richardapplegate.io:853</code></td><td>853/tcp</td><td>AdGuard</td><td>AdGuard</td></tr>
+    <tr><td>DoQ — <code>phone.dns.richardapplegate.io:784</code></td><td>784/udp</td><td>AdGuard</td><td>AdGuard</td></tr>
+    <tr><td>Plain DNS (LAN only)</td><td>53/udp,tcp</td><td>n/a</td><td>AdGuard</td></tr>
+    <tr><td>Admin UI — <code>https://dns.richardapplegate.io/</code></td><td>443/tcp</td><td>Caddy</td><td>AdGuard</td></tr>
+  </tbody>
+</table>
+
+<hr class="divider">
+
+<h2>📦 Upgrade</h2>
+
+<pre><code>docker pull applegater/caddyui:v2.5.10
+# or
+docker pull applegater/caddyui:latest</code></pre>
+
+<p>
+  Multi-arch <code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001. No schema migration. Rows with stale alias lists self-heal on the next edit.
+</p>
+
+<div class="cta">
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.5.10" class="btn primary">
+    📦 View v2.5.10 release
+  </a>
+  <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
+    🐳 Docker Hub
+  </a>
+  <a href="https://github.com/X4Applegate/caddyui" class="btn secondary">
+    ⭐ GitHub repo
+  </a>
+</div>
+
+<hr class="divider">
+
+<h2>💬 Feedback</h2>
+<p>
+  The bug that kicked this off was mine — I hit it live while adding a second alias to the AdGuard proxy host and got the "can't be reached" screen for twenty minutes before I figured out which side of the stack was lying. If you've got a similar "X seems set up right but Y doesn't work" story, <a href="https://github.com/X4Applegate/caddyui/issues">open an issue</a>. A lot of the smaller fixes in the 2.5.x series started that way.
+</p>
+
+<footer class="signoff">
+  <p>Thanks to everyone running CaddyUI in anger and reporting the rough edges. The 2.5.x line has been almost entirely shaped by that feedback loop. 🙏</p>
+  <p>— Richard · <a href="https://github.com/X4Applegate">@X4Applegate</a></p>
+</footer>
+
+</article>
+
+</div>
+</body>
+</html>
