@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.5.10 — Alias domains now get DNS records, plus an AdGuard Home recipe</title>
-<meta name="description" content="CaddyUI v2.5.10 fixes a bug where adding an alias domain to an existing proxy host didn't provision a DNS record. Bundled with a full AdGuard Home + Caddy DoH/DoT/DoQ recipe with per-client identification.">
-<meta property="og:title" content="CaddyUI v2.5.10 — Alias domains now get DNS records, plus an AdGuard Home recipe">
-<meta property="og:description" content="A bug fix that started with Chrome's DNS_PROBE_FINISHED_BAD_SECURE_CONFIG and ended in a complete self-hosted encrypted-DNS stack with per-device client names.">
+<title>CaddyUI v2.7.5 — Groups, analytics, ownership &amp; a stable two-week window</title>
+<meta name="description" content="A tour of everything shipped in CaddyUI since v2.5.0 — Groups, visitor analytics, per-user ownership, admin reassignment, the Deploying page, the multi-provider Managed DNS expansion, and today's backup fix. Cadence moves to twice a month.">
+<meta property="og:title" content="CaddyUI v2.7.5 — Groups, analytics, ownership &amp; a stable two-week window">
+<meta property="og:description" content="Groups let you share visibility across teammates. Per-user ownership on every resource. Admins can reassign. Visitor analytics. Deploying page. And today's backup fix. Then a two-week quiet window as we move to twice-a-month releases.">
 <meta property="og:type" content="article">
-<meta property="article:published_time" content="2026-04-23">
+<meta property="article:published_time" content="2026-04-24">
 <style>
   :root {
     --brand-50: #eff6ff;
@@ -33,6 +33,9 @@
     --card-border: var(--ink-200);
     --code-bg: var(--ink-100);
     --code-fg: var(--ink-800);
+    --amber-50: #fffbeb;
+    --amber-200: #fde68a;
+    --amber-700: #b45309;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -43,6 +46,9 @@
       --card-border: #1e293b;
       --code-bg: #0f172a;
       --code-fg: #e2e8f0;
+      --amber-50: rgba(251, 191, 36, 0.08);
+      --amber-200: rgba(251, 191, 36, 0.25);
+      --amber-700: #fcd34d;
     }
   }
   * { box-sizing: border-box; }
@@ -185,6 +191,24 @@
   @media (prefers-color-scheme: dark) {
     .callout strong { color: #93bbfc; }
   }
+  .callout.amber {
+    background: var(--amber-50);
+    border-color: var(--amber-200);
+  }
+  .callout.amber strong { color: var(--amber-700); }
+  .team-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--amber-50);
+    color: var(--amber-700);
+    border: 1px solid var(--amber-200);
+    font-size: 12px;
+    font-weight: 500;
+    vertical-align: middle;
+  }
   .cta {
     display: flex;
     flex-wrap: wrap;
@@ -218,6 +242,17 @@
   @media (prefers-color-scheme: dark) {
     .btn.secondary:hover { background: rgba(255,255,255,0.05); }
   }
+  .toc {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 16px 22px;
+    margin: 24px 0 32px;
+    font-size: 15px;
+  }
+  .toc strong { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.03em; font-weight: 600; }
+  .toc ul { padding-left: 18px; margin: 0; }
+  .toc li { margin-bottom: 4px; }
   footer.signoff {
     margin-top: 56px;
     padding-top: 24px;
@@ -239,244 +274,367 @@
 <article>
 
 <header class="hero">
-  <span class="eyebrow">🐛 Release + Recipe</span>
-  <h1>CaddyUI v2.5.10 — Alias domains now get DNS records, plus a self-hosted encrypted-DNS recipe</h1>
-  <p class="lead">Started as a bug report: "adding an alias domain breaks with <code>DNS_PROBE_FINISHED_BAD_SECURE_CONFIG</code>." Ended as a complete AdGuard Home + Caddy DoH/DoT/DoQ stack with per-device client names.</p>
+  <span class="eyebrow">🚀 Release Roundup</span>
+  <h1>CaddyUI v2.7.5 — Groups, analytics, ownership &amp; a stable two-week window</h1>
+  <p class="lead">Twenty releases have landed since v2.5.0. Here's the tour — what's actually new and what you can do with it — and why the next two weeks are going to be quiet on purpose.</p>
   <div class="meta">
-    <time datetime="2026-04-23">April 23, 2026</time>
-    <span class="tag">v2.5.10</span>
-    <span>☕ ~8 min read</span>
+    <time datetime="2026-04-24">April 24, 2026</time>
+    <span class="tag">v2.7.5</span>
+    <span>☕ ~10 min read</span>
   </div>
 </header>
 
-<h2>The bug</h2>
-<p>
-  I was setting up <a href="https://adguard.com/en/adguard-home/overview.html">AdGuard Home</a> behind Caddy so my phone could use DNS-over-HTTPS at <code>laptop.dns.richardapplegate.io</code>. The proxy host worked on the first save. Then I added a second hostname on the same row as an alias — and Chrome started showing this on every request to the alias:
-</p>
-<pre><code>DNS_PROBE_FINISHED_BAD_SECURE_CONFIG
-
-This site can't be reached
-Checking the proxy, firewall, and Secure DNS configuration</code></pre>
-
-<p>
-  The primary domain still worked. Only the alias broke. That's a weirdly specific failure mode, and it turned out to be a weirdly specific bug.
-</p>
-
-<h2>What v2.5.9 fixed — and what it missed</h2>
-<p>
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.5.9">v2.5.9</a> (shipped an hour before v2.5.10) changed <code>dnsCreateRecord</code> to iterate every hostname in a proxy host's <code>Domains</code> list and request one A record per FQDN, instead of only the first. The create path started working correctly, and the bulk IP-retarget path (the one that fires when you change a Caddy server's public IP) got the same treatment.
-</p>
-
-<p>
-  The user-initiated <strong>edit</strong> path did not. In <code>updateProxyHost</code> the change-detection logic was still:
-</p>
-
-<pre><code>oldDomain := dns.FirstDomain(old.Domains)
-newDomain := dns.FirstDomain(p.Domains)
-domainChanged := oldDomain != newDomain</code></pre>
-
-<p>
-  Which means: if you take an existing proxy host with a single domain, and you add an alias to it, the <em>first</em> domain hasn't changed — so <code>domainChanged</code> is <code>false</code>, <code>needCreate</code> is <code>false</code>, and no record ever gets provisioned for the new alias. The row in the DB looks right. Caddy is happy to serve the alias. But there's no A record at the provider, so the recursive resolver returns NXDOMAIN.
-</p>
-
-<div class="callout">
-  <strong>Why does NXDOMAIN show as <code>DNS_PROBE_FINISHED_BAD_SECURE_CONFIG</code> and not "no such domain"?</strong>
-  When Chrome has Secure DNS (DoH) enabled, the resolver returns a DNSSEC-signed NXDOMAIN. If Chrome can't validate the signature chain for a subdomain that <em>should</em> be signed by the parent zone — because the parent has a wildcard DS record or CAA policy pointing at records that the resolver never received — it surfaces the generic "bad secure config" error instead of the cleaner "DNS address could not be found." Chrome is being helpful and confusing at the same time.
+<div class="toc">
+  <strong>What's in this post</strong>
+  <ul>
+    <li><a href="#groups">Groups — team-level resource visibility (v2.7.4)</a></li>
+    <li><a href="#analytics">Visitor analytics (v2.7.0, polished in v2.7.1)</a></li>
+    <li><a href="#ownership">Per-user ownership of every resource (v2.7.2 → v2.7.4)</a></li>
+    <li><a href="#deploying">The Deploying page (v2.5.2 → v2.5.6)</a></li>
+    <li><a href="#import">Import &amp; migration — paste-a-Caddyfile workflow</a></li>
+    <li><a href="#dns">Managed DNS — multi-provider expansion</a></li>
+    <li><a href="#fleet">Multi-server fleet management</a></li>
+    <li><a href="#security">Security &amp; hardening</a></li>
+    <li><a href="#login">Login security — 2FA, CAPTCHA, kill switches</a></li>
+    <li><a href="#notifications">Notifications — SMTP, webhooks, cert expiry</a></li>
+    <li><a href="#snapshots">Snapshots, backups &amp; activity log</a></li>
+    <li><a href="#ux">UX polish</a></li>
+    <li><a href="#mobile">Dark mode, mobile &amp; keyboard-friendly</a></li>
+    <li><a href="#reliability">Reliability &amp; bug fixes</a></li>
+    <li><a href="#v275">Today's release specifically (v2.7.5)</a></li>
+    <li><a href="#upgrade">Upgrade &amp; roadmap</a></li>
+    <li><a href="#quiet">Why the quiet window</a></li>
+  </ul>
 </div>
-
-<h2>The v2.5.10 fix</h2>
-<p>
-  The patch is six lines of logic plus a <code>"slices"</code> import. Compare the full <code>DomainList()</code> instead of just the first element:
-</p>
-
-<pre><code>var oldDomains []string
-if old != nil {
-    oldDomains = old.DomainList()
-}
-newDomains := p.DomainList()
-domainChanged := !slices.Equal(oldDomains, newDomains)</code></pre>
-
-<p>
-  Same change for the raw-route edit path (<code>updateRawRoute</code>): compare <code>rawRouteHosts(*old)</code> to <code>rawRouteHosts(*rr)</code> instead of only the first host. Any addition, removal, rename, or reorder now triggers the same delete-all-then-create-all cycle that <code>dnsCreateRecord</code> / <code>dnsCreateRecordForRaw</code> have done since v2.5.9. All three mutation paths (create, edit, IP retarget) now agree on "every hostname in the list gets an A record."
-</p>
-
-<p>
-  No schema change, no migration. Existing rows with a stale alias list self-heal on the next save.
-</p>
 
 <hr class="divider">
 
-<h2>🧅 The recipe this bug unblocked</h2>
+<h2 id="groups">🧑‍🤝‍🧑 Groups — team-level resource visibility <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.7.4</span></h2>
 
 <p>
-  Once the fix was live, I put together the whole stack the bug was originally blocking: wildcard cert via Caddy's DNS-01, AdGuard Home running on the same box, DoH proxied through Caddy, DoT/DoQ direct to AdGuard using the shared cert, per-device client names showing up correctly on both protocols.
+  This is the headline of the release cycle. If you host sites for teams or customers, <strong>Groups</strong> is the feature you've been quietly wishing for.
 </p>
 
 <p>
-  Here's the complete thing, copy-pasteable.
-</p>
-
-<div class="callout">
-  <strong>Prefer a step-by-step runbook?</strong> The same recipe is now also written up as a <a href="adguard-home-setup.html">numbered 9-step guide with a contents sidebar and all the gotchas called out</a> — including the <code>systemd-resolved</code> port-53 fix that trips up every fresh Linux host.
-</div>
-
-<h3>1. Wildcard cert via Caddy + Cloudflare DNS-01</h3>
-
-<p>
-  <a href="https://github.com/X4Applegate/caddyui/blob/main/Dockerfile.caddy">Dockerfile.caddy</a> already bakes in the Cloudflare DNS provider module, so all that's needed is a Caddyfile snippet. Paste this into CaddyUI → <code>/caddyfile-import</code>:
-</p>
-
-<pre><code>*.dns.richardapplegate.io, dns.richardapplegate.io {
-  tls {
-    dns cloudflare {env.CF_API_TOKEN}
-  }
-
-  reverse_proxy http://adguardhome:8080
-}</code></pre>
-
-<p>
-  The wildcard covers every <code>&lt;device&gt;.dns.richardapplegate.io</code> I'll ever need (phone, laptop, router, TV, …) on a single cert. The apex is included as an extra SAN so the same file covers bare <code>dns.richardapplegate.io</code> too. Everything — DoH at <code>/dns-query</code>, the admin UI, device management — all goes to AdGuard on port 8080; AdGuard routes internally.
-</p>
-
-<div class="callout">
-  <strong>Gotcha:</strong> a wildcard only matches one level of subdomains. <code>*.dns.richardapplegate.io</code> covers <code>phone.dns....</code> but NOT <code>dns.richardapplegate.io</code> itself. If you want the apex, add it as a second SAN like the example above. One cert, two subjects.
-</div>
-
-<h3>2. AdGuard Home as a Portainer stack</h3>
-
-<pre><code>services:
-  adguardhome:
-    image: adguard/adguardhome:v0.107.56
-    container_name: adguardhome
-    restart: unless-stopped
-    ports:
-      # DNS - must be on host
-      - "53:53/tcp"
-      - "53:53/udp"
-      # Optional: DoT / DoQ direct (not via Caddy)
-      - "853:853/tcp"
-      - "784:784/udp"
-    environment:
-      TZ: America/Los_Angeles
-    volumes:
-      - /mnt/1TB/adguard/work:/opt/adguardhome/work
-      - /mnt/1TB/adguard/conf:/opt/adguardhome/conf
-      - /mnt/1TB/caddy/caddy_data:/caddy-certs:ro
-    networks:
-      - caddy-and-ui_caddy_net
-
-networks:
-  caddy-and-ui_caddy_net:
-    external: true</code></pre>
-
-<p>
-  The critical piece is the read-only mount of Caddy's data volume (<code>/caddy-certs</code>). Caddy writes the wildcard cert there after the DNS-01 challenge completes; AdGuard reads the same files for its DoT/DoQ listener. Pin the AdGuard image tag (not <code>:latest</code>) so a surprise major upgrade doesn't land overnight.
+  Until now, every resource in CaddyUI — proxy host, redirection, advanced route, certificate — belonged to exactly one user. If Alice and Bob both worked for Customer X, one of them had to "own" everything and the other had zero visibility. Or you gave them both admin, which blew up your access model.
 </p>
 
 <p>
-  The <code>caddy-and-ui_caddy_net</code> network name comes from Portainer — it's the <code>&lt;stack-name&gt;_&lt;network-name&gt;</code> form, external because the network is owned by the CaddyUI stack and we're joining it from a separate stack.
+  <strong>Groups fix that cleanly.</strong> Admin creates a group, drops user accounts into it, and every member sees every other member's rows in their own dashboard. Example:
 </p>
 
-<h3>3. AdGuardHome.yaml — the TLS block that actually works</h3>
-
-<pre><code>tls:
-  enabled: true
-  server_name: dns.richardapplegate.io
-  force_https: false
-  port_https: 443
-  port_dns_over_tls: 853
-  port_dns_over_quic: 853
-  port_dnscrypt: 0
-  dnscrypt_config_file: ""
-  allow_unencrypted_doh: true
-  certificate_chain: ""
-  private_key: ""
-  certificate_path: /caddy-certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/wildcard_.dns.richardapplegate.io/wildcard_.dns.richardapplegate.io.crt
-  private_key_path:  /caddy-certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/wildcard_.dns.richardapplegate.io/wildcard_.dns.richardapplegate.io.key
-  strict_sni_check: false</code></pre>
-
-<p>
-  Three settings matter here and are easy to miss:
-</p>
 <ul>
-  <li><strong><code>allow_unencrypted_doh: true</code></strong> — lets AdGuard serve DoH over plain HTTP on its admin port. Caddy does the TLS. Without this, Caddy proxies <code>/dns-query</code> and gets 502 back from AdGuard.</li>
-  <li><strong><code>certificate_path</code> / <code>private_key_path</code></strong> — Caddy stores multi-subject certs under the first subject's name, with wildcards normalised to <code>wildcard_</code>. Both filenames are the same directory, different extensions.</li>
-  <li><strong><code>strict_sni_check: false</code></strong> — clients connect to <code>phone.dns.richardapplegate.io:853</code>, not to the exact <code>server_name</code>. Strict check rejects those.</li>
+  <li>Admin creates a group called <code>Customer X</code> with members <code>alice@customer.com</code> and <code>bob@customer.com</code>.</li>
+  <li>Alice logs in to <code>/proxy-hosts</code> — she sees her own sites <em>and</em> every site Bob created, plus every redirection, raw route, and certificate Bob owns.</li>
+  <li>Each of Bob's rows shows a small amber chip <span class="team-chip">Team: bob@customer.com</span> so Alice knows at a glance which rows are hers vs. her teammate's.</li>
+  <li>Alice can <em>read</em> but not edit or delete Bob's rows. Ownership stays with the creator; the group just shares visibility.</li>
+  <li>Carol (not in any group) sees only her own stuff, as always.</li>
+  <li>Admin sees everything, no chips, exactly like before.</li>
 </ul>
 
 <p>
-  AdGuard reads the cert once at startup, so after each Caddy renewal (~60-day cycle) you need to restart the container. A monthly cron on the host is plenty:
+  Where to find it: sidebar → Access Control → Groups (admin only). Create a group, check the members, save. Done — no restart, no config file, no migration.
 </p>
 
-<pre><code>0 4 1 * * docker restart adguardhome</code></pre>
+<div class="callout">
+  <strong>How it works under the hood.</strong> Two new tables (<code>groups</code> and <code>user_groups</code>, with <code>ON DELETE CASCADE</code> on both join legs). A de-duped self-join on <code>user_groups</code> returns the list of teammate IDs for the viewer, which is then spliced into <code>owner_id IN (...)</code> on every list query. A peerless viewer collapses cleanly to <code>owner_id IN (NULL)</code> (always false), so users with no group membership see exactly what they saw before — zero risk of the rollout breaking existing installs.
+</div>
 
-<h3>4. Per-device ClientIDs</h3>
+<hr class="divider">
+
+<h2 id="analytics">📊 Visitor analytics <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.7.0 → v2.7.1</span></h2>
 
 <p>
-  The whole point of a private DNS resolver is per-device filtering: "block YouTube on the kids' tablet, not on mine." AdGuard Home extracts the ClientID differently for each protocol:
+  Opt-in traffic analytics, fully self-hosted, no external service. Caddy streams its access log to a TCP listener in CaddyUI — no Google Analytics, no third-party pixel, nothing leaves your box.
+</p>
+
+<ul>
+  <li>Top hosts by view count, with unique-visitor estimates.</li>
+  <li>24-hour sparkline so you can spot traffic spikes at a glance.</li>
+  <li>Status-code pie chart — if your 5xx rate goes up, you see it.</li>
+  <li><strong>Per-server filter</strong> (added in v2.7.1) — narrow to one Caddy node in a multi-server fleet.</li>
+</ul>
+
+<p>
+  Completely off by default. Toggle at <code>Settings → Analytics</code>. Until you flip that switch, zero access-log traffic is collected or even listened for. The per-server filter makes this usable for fleet admins who previously couldn't tell which node a traffic spike was hitting.
+</p>
+
+<div class="callout amber">
+  <strong>v2.7.1 bug worth calling out:</strong> if you enabled analytics in v2.7.0 and saw no data, the <code>FormValue</code> call in the Settings save path was always storing <code>0</code> due to the hidden-input-plus-checkbox pattern browsers use. Fixed in v2.7.1 (same save also broke <code>smtp_skip_verify</code> and <code>cf_proxied</code> silently). If you toggled analytics on and saw an empty page, try again after upgrading.
+</div>
+
+<hr class="divider">
+
+<h2 id="ownership">👤 Per-user ownership of <em>every</em> resource <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.7.2 → v2.7.4</span></h2>
+
+<p>
+  Proxy hosts got per-user ownership early (<code>0.0.15</code>). This cycle extended it to the remaining three resource types and made the model much richer:
 </p>
 
 <table>
   <thead>
-    <tr><th>Protocol</th><th>ClientID source</th><th>URL on the device</th></tr>
+    <tr><th>Version</th><th>What shipped</th></tr>
   </thead>
   <tbody>
-    <tr>
-      <td>DoT / DoQ</td>
-      <td>TLS SNI leftmost label</td>
-      <td><code>phone.dns.richardapplegate.io</code><br>(port 853 for DoT, 784 for DoQ)</td>
-    </tr>
-    <tr>
-      <td>DoH</td>
-      <td>URL path suffix</td>
-      <td><code>https://dns.richardapplegate.io/dns-query/phone</code></td>
-    </tr>
-    <tr>
-      <td>DoH (alternate)</td>
-      <td>Host header leftmost label</td>
-      <td><code>https://phone.dns.richardapplegate.io/dns-query</code></td>
-    </tr>
+    <tr><td>v2.7.2</td><td><strong>Certificates</strong> joined the ownership model. Users can upload their own TLS material; other users don't see it in the list or the dropdown. Admin-owned certs remain globally visible (so your wildcard still works for everyone).</td></tr>
+    <tr><td>v2.7.3</td><td><strong>Admin can reassign ownership</strong> on any resource's edit form. Provision a proxy host under your admin account, then hand it off to a customer in one click. Works on proxy hosts, redirections, advanced routes, and certificates.</td></tr>
+    <tr><td>v2.7.4</td><td><strong>Groups</strong> extend ownership into read-share visibility (covered above).</td></tr>
   </tbody>
 </table>
 
 <p>
-  The SNI-based path is cleanest because the ClientID lives in the hostname, not in a URL suffix that Android's private-DNS field won't accept. The DoH path-suffix form is useful when a DoH client (some browsers, some apps) locks the URL format to a specific domain.
+  A delete on a user-owned cert that's still referenced by another user's site is blast-radius-protected: you'll get <em>this certificate is in use by another user's site — ask an admin to delete it</em> instead of a silently broken site elsewhere.
 </p>
 
+<hr class="divider">
+
+<h2 id="deploying">🚀 The Deploying page <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.5.2 → v2.5.6</span></h2>
+
+<p>
+  Save a proxy host or advanced route and you now land on an interstitial page that polls your domain in real time:
+</p>
+
+<ul>
+  <li>✅ <strong>DNS propagates</strong> — an external resolver sees the A record you just provisioned.</li>
+  <li>✅ <strong>TLS cert issued</strong> — Caddy's automatic HTTPS completed the ACME dance.</li>
+  <li>✅ <strong>HTTPS responds</strong> — the site is actually serving.</li>
+</ul>
+
+<p>
+  No more guessing whether Caddy picked up your change. The page handles the tricky real-world cases:
+</p>
+
+<ul>
+  <li><strong>v2.5.3</strong> — multi-server setups use the <em>target</em> server's public IP, not the CaddyUI host's, as the expected A record value.</li>
+  <li><strong>v2.5.4</strong> — routers without hairpin NAT (common on consumer ISPs) are checked from <em>outside</em> your LAN, so they stop reporting false red.</li>
+  <li><strong>v2.5.5</strong> — Cloudflare-proxied domains (the orange cloud) aren't expected to resolve to your origin IP, so the check doesn't flag them as broken.</li>
+  <li><strong>v2.5.6</strong> — advanced routes get the same treatment as proxy hosts.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="import">🔄 Import &amp; migration — paste a Caddyfile, keep going</h2>
+
+<p>
+  One of the most common rollout questions was "I already have a Caddyfile with 40 sites in it — do I need to retype everything?" The answer is no. <strong>CaddyUI can adopt an existing Caddy config in a single paste.</strong>
+</p>
+
+<ul>
+  <li><strong>Paste-to-import</strong> (<code>/caddyfile-import</code>) — pipe your existing Caddyfile into the textarea. CaddyUI runs it through Caddy's own <code>/adapt</code> endpoint, then extracts every site block into a proxy host or raw route (whichever fits), and pushes the result back. Snippets and globals stay in the Caddyfile — we don't touch those — so you can keep hand-authored bits next to UI-managed ones.</li>
+  <li><strong>TLS automation policies come along for the ride</strong> (v2.5.8) — if any of your pasted site blocks used <code>tls { dns cloudflare ... }</code> (DNS-01 challenge, custom issuer, off-the-shelf ZeroSSL, etc.), those per-site automation policies are extracted alongside the routes and merged into <code>apps.tls.automation.policies[]</code>. Previously the routes were imported but the policies were silently dropped, which meant Caddy fell back to HTTP-01 and failed for any host that wasn't reachable on <code>:80</code>.</li>
+  <li><strong>"Import from live Caddy"</strong> — if CaddyUI is pointed at a Caddy that already has a running config (e.g. you're adding CaddyUI to an existing deployment), the import page offers a "fetch current config" button that pulls the adapted JSON out of <code>/config/</code> and lets you review before writing anything to the DB.</li>
+  <li><strong>Incremental adoption</strong> — you don't have to import all at once. Pasted blocks become DB rows; unimported blocks stay in the Caddyfile. The sync path merges both so Caddy always has the union.</li>
+</ul>
+
+<p>
+  There's also a <strong><code>CADDYUI_SYNC_ON_START=1</code></strong> env var that tells CaddyUI to push its DB state back to Caddy every time it boots — useful once every live site block has an equivalent in the DB, so the Caddyfile only needs to hold globals + snippets. Safe by default: it refuses to sync when the DB is empty (which would otherwise wipe Caddy's live routes on a first-boot race).
+</p>
+
+<hr class="divider">
+
+<h2 id="dns">🌐 Managed DNS — multi-provider expansion <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.3.0 → v2.5.11</span></h2>
+
+<p>
+  What started as "Cloudflare only" is now a full multi-provider system. Providers currently supported: Cloudflare, Porkbun, Namecheap, GoDaddy, DigitalOcean, Hetzner.
+</p>
+
+<ul>
+  <li><strong>Per-provider zone allow-lists</strong> (v2.4.7) — whitelist which zones CaddyUI is allowed to touch. Keeps it out of domains you don't want it managing.</li>
+  <li><strong>Per-server public IPs</strong> (v2.4.0) — multi-Caddy fleets resolve the correct A record for the host that'll actually serve the site.</li>
+  <li><strong>Safe surgical edits</strong> (v2.4.9) — DNS "override" only touches A / AAAA / CNAME records. Your MX, TXT, SRV, CAA are never touched, ever.</li>
+  <li><strong>"Clear credentials" button</strong> per provider (v2.4.6) — rotate or remove secrets without hunting through Settings.</li>
+  <li><strong>A record per hostname</strong> (v2.5.9) — a proxy host with three domains creates three A records, not one.</li>
+  <li><strong>Alias-only changes react on edit</strong> (v2.5.10) — add an alias to an existing host and the new DNS record appears automatically. This one was a nasty silent-fail bug; see the <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.5.10">v2.5.10 notes</a>.</li>
+  <li><strong>Smarter zone picker</strong> (v2.5.1) — ranks matching zones by specificity so <code>api.example.com</code> finds <code>example.com</code> before <code>example.net</code>.</li>
+  <li><strong>Collision warnings</strong> (v2.4.8 + v2.5.6) — "DNS record already exists" warning with one-click "yes, overwrite" confirmation instead of a silent stomp.</li>
+  <li><strong>Advanced routes</strong> (v2.5.6) — Managed DNS now works for advanced routes too, not just proxy hosts.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="fleet">🏗️ Multi-server fleet management</h2>
+
+<p>
+  CaddyUI isn't locked to one Caddy. One control plane can administer a whole fleet — every page has a server picker in the top bar, every resource carries a <code>server_id</code>, and every Managed DNS call resolves the right public IP for whichever Caddy is actually going to answer the request.
+</p>
+
+<ul>
+  <li><strong><code>/servers</code> admin page</strong> — add a Caddy by admin URL (<code>http://10.0.0.5:2019</code>, <code>https://caddy.internal:2019</code>, or a Unix socket <code>unix:///var/run/caddy-admin.sock</code>), optionally with HTTP Basic Auth credentials if you've fronted its admin endpoint with a reverse proxy. First-boot seeds your primary Caddy from the <code>CADDY_ADMIN_URL</code> env var so the single-box case is zero-config.</li>
+  <li><strong>Per-server public IP</strong> (v2.4.0) — each server row has its own <code>server_public_ip</code>. Managed DNS provisions A records pointing at the specific Caddy that'll serve the site, not a globally-shared IP. Drag a proxy host from server A to server B and the DNS record retargets automatically.</li>
+  <li><strong>Retarget-all-records</strong> — when you change a server's public IP (migration to a new box, ISP change), one click re-writes every managed DNS record for every resource bound to that server. Also iterates raw routes since v2.5.6, so advanced routes don't get left behind.</li>
+  <li><strong>Health polling every 10s</strong> — the server picker shows a coloured dot per server. Three consecutive failed pings are required before a server flips to offline (v2.4.2), so one 100ms tunnel blip in a WireGuard mesh doesn't mark your whole fleet down.</li>
+  <li><strong>App-response poller</strong> (v2.4.4) — in addition to TCP port probes, every proxy host is HTTPS-GET'd once a minute. Catches the "port open, app wedged" case — upstream <code>:3000</code> accepts connections but your Node process is stuck in a DB retry loop. The TCP dot goes green; the App dot goes red.</li>
+  <li><strong>Split-horizon DNS handled gracefully</strong> (v2.4.5) — LAN DNS often resolves your public hostnames to the LAN IP, and Caddy's internal probe can't reach itself that way. CaddyUI now treats this as "unknown" (amber) rather than "down" (red), so you don't get false-red for a healthy server.</li>
+  <li><strong>Edge-only Caddy is a supported topology</strong> — you can run CaddyUI on a separate admin box and a lean Caddy-only container at the edge (no Go, no SQLite, just the official <code>caddy:2-alpine</code> image). The CaddyUI container talks to the edge Caddy over its admin port. Useful for keeping the admin UI off the public internet while Caddy handles L7 traffic.</li>
+</ul>
+
 <div class="callout">
-  <strong>Debugging tip:</strong> after the phone connects, if AdGuard shows the source IP instead of your chosen ClientID, the SNI isn't reaching AdGuard correctly. Check <code>strict_sni_check: false</code> and verify the cert actually covers the leftmost label — if the SNI is <code>phone.dns.richardapplegate.io</code> and the cert is only for <code>dns.richardapplegate.io</code> (apex only, no wildcard), TLS handshake fails before AdGuard sees the SNI.
+  <strong>Admin-endpoint safety.</strong> Caddy's admin API is unauthenticated by default — anyone who can reach <code>:2019</code> can reconfigure it. CaddyUI supports three hardening paths: bind it to a private Docker network (the default compose setup), front it with a reverse proxy enforcing HTTP Basic Auth (CaddyUI will send the credentials on every call — see <code>CADDY_ADMIN_USER</code> / <code>CADDY_ADMIN_PASS</code>), or run Caddy with a Unix-socket admin listener. The <code>/servers</code> form accepts all three URL shapes.
 </div>
 
-<h3>5. Routing diagram</h3>
+<hr class="divider">
+
+<h2 id="security">🔐 Security &amp; hardening</h2>
+
+<ul>
+  <li><strong>Login CAPTCHA</strong> (v2.5.0) — switchable between Cloudflare Turnstile and reCAPTCHA v3. Off by default.</li>
+  <li><strong>reCAPTCHA v3 threshold fix</strong> (v2.7.0) — the score check was accepting very low scores; tightened to the documented default (0.5).</li>
+  <li><strong>Three-role RBAC</strong> (v2.7.0) — <code>admin</code> / <code>user</code> / <code>view</code>. Admin-only pages (Users, Groups, Settings, Caddy Servers, Snapshots) return <code>404</code> for non-admins, not a rendered page with disabled buttons.</li>
+  <li><strong>XSS hardening</strong> (v2.5.11) — zone-picker error paths now escape provider-supplied strings. Nobody was actively exploited; found during CodeQL review.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="login">🔑 Login security — 2FA, CAPTCHA, and kill switches</h2>
+
+<p>
+  Login is where every admin panel gets tested. CaddyUI ships three independent layers you can stack or turn off:
+</p>
+
+<ul>
+  <li><strong>TOTP two-factor auth</strong> — any user account can enroll a TOTP authenticator (Aegis, 1Password, Authy, Google Authenticator, etc.). Enroll flow shows a QR + manual secret, verifies a current code before turning it on, and issues 10 single-use recovery codes you print and stash. Admin can force-reset 2FA on any user; admin cannot see or recover another user's TOTP secret (the enrollment's the secret, not the DB).</li>
+  <li><strong>CAPTCHA — switchable</strong> between <strong>Cloudflare Turnstile</strong> and <strong>Google reCAPTCHA v3</strong>, off by default (v2.5.0). Applies to <code>/login</code>, <code>/login/totp</code> (the 2FA code page), and <code>/users/new</code>. reCAPTCHA v3 is invisible (runs on submit); Turnstile shows its managed widget inline. Switching providers preserves both sets of credentials in the DB so you can A/B without retyping.</li>
+  <li><strong>reCAPTCHA v3 score threshold</strong> input (0.0 = bot, 1.0 = human). Default <code>0.5</code> per Google's recommendation. v2.7.0 tightened a bug where the server-side score check was accepting scores well below threshold; if you're on v2.6.x with reCAPTCHA enabled, upgrade.</li>
+  <li><strong>Env kill switch</strong> <code>CADDYUI_CAPTCHA_DISABLE=1</code> — if Cloudflare goes out and your Turnstile challenge stops responding, you'd normally be locked out of your own admin panel. Setting this env and restarting the container bypasses the challenge without touching the DB, so you can log in, fix things, and unset it. Settings page shows an amber "overridden by env" badge while it's active.</li>
+  <li><strong>Three-role RBAC</strong> (v2.7.0) — <code>admin</code> / <code>user</code> / <code>view</code>. Admin-only pages (Users, Groups, Settings, Caddy Servers, Snapshots) return <code>404</code> for non-admins, not a rendered page with disabled buttons. Route-level enforcement in <code>server.go</code>'s <code>requireAdmin</code> / <code>requireWrite</code> chi groups means the router is the single enforcement point — no individual handler can forget the check.</li>
+  <li><strong>TOTP failure ≠ burned slot</strong> — getting CAPTCHA wrong on the 2FA form re-renders with the same pending-TOTP token, so fat-finger doesn't kick you back to the email/password screen. The 5-minute auto-expire on the pending token still caps abuse.</li>
+</ul>
 
 <table>
   <thead>
-    <tr><th>Request</th><th>Port</th><th>Who terminates TLS</th><th>Who answers</th></tr>
+    <tr><th>Role</th><th>Sees</th><th>Can do</th></tr>
   </thead>
   <tbody>
-    <tr><td>DoH — <code>https://phone.dns.richardapplegate.io/dns-query</code></td><td>443/tcp</td><td>Caddy</td><td>AdGuard (via reverse_proxy)</td></tr>
-    <tr><td>DoT — <code>phone.dns.richardapplegate.io:853</code></td><td>853/tcp</td><td>AdGuard</td><td>AdGuard</td></tr>
-    <tr><td>DoQ — <code>phone.dns.richardapplegate.io:784</code></td><td>784/udp</td><td>AdGuard</td><td>AdGuard</td></tr>
-    <tr><td>Plain DNS (LAN only)</td><td>53/udp,tcp</td><td>n/a</td><td>AdGuard</td></tr>
-    <tr><td>Admin UI — <code>https://dns.richardapplegate.io/</code></td><td>443/tcp</td><td>Caddy</td><td>AdGuard</td></tr>
+    <tr><td><code>admin</code></td><td>Everything, every server, every user</td><td>Everything — create/edit/delete/reassign on any resource, manage users + groups + settings + Caddy servers</td></tr>
+    <tr><td><code>user</code></td><td>Own rows + global (admin-owned) rows + group teammates' rows (read-only)</td><td>Create, edit, delete own rows; read teammates' rows; upload own certs (v2.7.2)</td></tr>
+    <tr><td><code>view</code></td><td>Same visibility as <code>user</code></td><td>Read-only — no create, edit, delete, or upload anywhere</td></tr>
   </tbody>
 </table>
 
 <hr class="divider">
 
-<h2>📦 Upgrade</h2>
+<h2 id="notifications">📬 Notifications — SMTP, webhooks, cert expiry</h2>
 
-<pre><code>docker pull applegater/caddyui:v2.5.10
+<p>
+  CaddyUI can tell you when things go wrong (or right) via two independent notification channels you configure in Settings. Both channels are tested with inline buttons that land right next to the credential fields — no separate "test" tab to scroll to (v2.4.12).
+</p>
+
+<ul>
+  <li><strong>SMTP email notifications</strong> — generic SMTP credentials (host + port + user + password + from + to list). TLS toggle, optional <code>smtp_skip_verify</code> for self-signed internal relays (bug fixed in v2.7.1 that was silently ignoring this toggle). Inline <strong>"Send test email"</strong> button fires a real message using the live form values so you can verify without saving.</li>
+  <li><strong>Webhook notifications</strong> — plain HTTP POST to an arbitrary URL with a JSON payload. Works with Discord, Slack, Mattermost, ntfy, Gotify, Home Assistant, n8n, anything that takes a webhook. Inline <strong>"Send test webhook"</strong> button.</li>
+  <li><strong>Cert-expiry alerts</strong> — a background notifier wakes up nightly and fires both channels (if configured) for any certificate — managed Let's Encrypt or user-uploaded — within 14 days of expiring. Each cert/domain only alerts once per day, so a forgotten cert doesn't spam you for a week.</li>
+  <li><strong>Update-available badge</strong> — the top bar shows an amber "update available" pill when a newer CaddyUI release is on Docker Hub. Click it for release notes. Admin-only (other roles don't need to think about pulling images).</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="snapshots">💾 Snapshots, backups &amp; activity log</h2>
+
+<p>
+  Three overlapping tools for "what did I just do, and can I undo it?"
+</p>
+
+<ul>
+  <li><strong>Named snapshots</strong> — <code>/snapshots</code> (admin-only) lets you capture the full Caddy config + CaddyUI DB state under a named label. Restore with one click. Typical usage: snapshot before trying a big Caddyfile paste-import or a multi-route refactor, roll back if it goes sideways. Snapshots are stored in the DB, so they ride along with <code>/backup</code>.</li>
+  <li><strong>One-click DB backup</strong> — the Settings page has a <code>/backup</code> link that downloads a consistent SQLite snapshot (via <code>VACUUM INTO</code>, so the WAL is flushed into a single file). Drop the file back into the <code>/data</code> volume to restore. Fixed in v2.7.5 to work on the scratch image — see below.</li>
+  <li><strong>Activity log</strong> — <code>/activity</code> shows a chronological feed of every mutation across the fleet: proxy host created, redirection deleted, user password reset, group membership changed, certificate rotated, Caddy config pushed. Each entry carries the actor (user email), resource (host / route / user / group / cert / server), and the change summary. Filterable by actor, resource type, and date range. Survives container restarts — stored in the main DB, not a separate log file.</li>
+  <li><strong>WAL-mode-aware exports</strong> — SQLite's <code>VACUUM INTO</code> is the right tool here specifically because it handles the write-ahead log coherently. A naive <code>cp caddyui.db</code> while the server is running would miss uncommitted pages in <code>-wal</code> and <code>-shm</code>. The backup endpoint never has that problem.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="ux">🎨 UX polish</h2>
+
+<ul>
+  <li><strong>Tap-to-edit rows</strong> (v2.4.10) — click anywhere on a proxy-host row to open the edit form.</li>
+  <li><strong>Explicit Edit + Delete buttons</strong> (v2.5.7) — on mobile, the tap-to-edit zone and the delete button are now clearly separated so you don't delete by accident.</li>
+  <li><strong>Visible pencil icons</strong> on every editable identifier (v2.4.11).</li>
+  <li><strong>Sticky Actions column</strong> on wide tables (v2.4.8).</li>
+  <li><strong>Branded error pages</strong> (v2.4.12) — CaddyUI-styled 404 / 502 / 503 / 504 pages, injected into Caddy automatically, consistent with the admin UI look.</li>
+  <li><strong>Timezone picker in Settings</strong> (v2.4.12) — all timestamps render in your picked zone. Defaults to <code>TZ</code> env var, falls back to UTC.</li>
+  <li><strong>Caddyfile paste-import captures TLS policies</strong> (v2.5.8) — per-site <code>tls</code> automation blocks (DNS challenge, issuer overrides) are preserved, not dropped.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="mobile">📱 Dark mode, mobile &amp; keyboard-friendly</h2>
+
+<p>
+  Admin tools get used in the worst possible conditions — on the phone, at 2am, in bed, while something is broken. CaddyUI has been shaped around that:
+</p>
+
+<ul>
+  <li><strong>Dark mode follows the system preference</strong> via <code>prefers-color-scheme</code>. No theme toggle, no extra setting — match the OS. Every page, dropdown, table, chart, and error banner is re-tinted for dark mode (including the analytics sparklines, which render their SVG fills from CSS variables so the line colour adjusts automatically).</li>
+  <li><strong>Mobile cards on every list page</strong> — narrow viewports get card layouts instead of tables, with the whole card tap-to-edit. Delete stays a separate button (explicit in v2.5.7 so you don't fat-finger a delete while trying to edit). Domain pills still open in new tabs. The Actions column sticks to the right so you can always reach it on a narrow phone (v2.4.8).</li>
+  <li><strong>PWA-ready</strong> — service worker, manifest, touch icons, Apple meta tags. "Add to Home Screen" gets you a standalone CaddyUI app on iOS and Android with proper app icon. No offline support (you need the network to talk to Caddy anyway) but the chrome feels native.</li>
+  <li><strong>Keyboard shortcuts</strong> — <kbd>/</kbd> focuses the first search field on the page; <kbd>Esc</kbd> closes open dropdowns. Form submit on <kbd>Cmd/Ctrl+Enter</kbd> from any textarea so long raw-route JSON edits don't need a mouse reach. Cmd/Ctrl-click and middle-click on any tap-to-edit row open edit in a new tab (v2.4.10) — same convention as any other navigational UI.</li>
+  <li><strong>Sticky Actions column</strong> (v2.4.8) on every admin table — pin the Edit / Delete column to the right edge, whatever the viewport width. Purple "advanced" rows get a matching purple-tinted sticky cell so the overlay doesn't look transparent.</li>
+  <li><strong>In-app <code>/docs</code> page</strong> — built-in reference for every page, field, and DB env var, rendered from the same Go templates as the rest of the UI. No external wiki to fall out of date.</li>
+  <li><strong>Timezone picker</strong> (v2.4.12) — every timestamp in the UI (cert expiry, activity feed, snapshot names, analytics windows) renders in the active zone. Picks from a common-zones list or type any IANA zone name. DB setting wins over the <code>TZ</code> env var wins over UTC.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="reliability">💊 Reliability &amp; bug fixes</h2>
+
+<ul>
+  <li><strong>Backup download works on scratch image</strong> (v2.7.5, today — see below).</li>
+  <li><strong>Analytics toggle actually enables analytics</strong> (v2.7.1) — described above.</li>
+  <li><strong>End-to-end App health dot</strong> (v2.4.4) — catches "port open but app wedged" where Caddy thinks upstream is fine but the app itself is hung.</li>
+  <li><strong>Split-horizon DNS handled gracefully</strong> (v2.4.5) — no more false-red App dot when the server can't reach its own public hostname because LAN DNS resolves it to the private IP.</li>
+  <li><strong>Amber "unknown" for Docker-named backends</strong> (v2.4.3) — hostnames like <code>myapp:3000</code> that only resolve inside Docker don't show red (we can't probe them from outside).</li>
+  <li><strong>Health-poller WG flap fix</strong> (v2.4.2) — three consecutive failed pings required before a server flips to "offline". One tunnel blip no longer marks your whole fleet down.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="v275">🐛 Today's release specifically — v2.7.5</h2>
+
+<p>
+  One bug fix, reported live: <code>/backup</code> was returning <code>SQLITE_CANTOPEN</code> on every v2.7.x install.
+</p>
+
+<pre><code>backup failed: unable to open database file:
+unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)</code></pre>
+
+<p>
+  Error 14 is <code>SQLITE_CANTOPEN</code>. Root cause: the v2.7.x scratch-based final image has no <code>/tmp</code> directory, and our non-root UID can't <code>mkdir</code> one at the filesystem root. This has been silently broken since v2.7.0 — nobody hit it until today because the backup button wasn't commonly used.
+</p>
+
+<p>
+  <strong>Two fixes, stacked:</strong>
+</p>
+
+<ul>
+  <li><strong>Handler-level:</strong> <code>/backup</code> now writes the temp file next to the live DB (<code>filepath.Dir(s.DBPath)</code>) instead of <code>/tmp</code>. Same filesystem as the source DB, same UID ownership as the existing <code>caddyui.db</code> / <code>.db-wal</code> / <code>.db-shm</code>. Zero chance of <code>CANTOPEN</code> on a directory that was already open two lines earlier.</li>
+  <li><strong>Image-level:</strong> Dockerfile now pre-creates <code>/tmp</code> with <code>1777</code> (sticky world-writable) in the scratch final image. The backup handler doesn't need this anymore, but mime/multipart file uploads or any third-party library that calls <code>os.TempDir()</code> internally would otherwise silently break the same way. Catches the <em>next</em> instance of this bug before anyone has to file it.</li>
+</ul>
+
+<p>
+  Smoke-tested end-to-end: downloaded a valid 104 KB backup with 15 tables and the admin row intact, where v2.7.4 returned HTTP 500. Pull <code>:latest</code> and the backup button works.
+</p>
+
+<hr class="divider">
+
+<h2 id="upgrade">📦 Upgrade</h2>
+
+<pre><code>docker compose pull &amp;&amp; docker compose up -d</code></pre>
+
+<p>
+  Or in Portainer: <strong>Recreate</strong> → enable <strong>Re-pull image</strong>. Migrations run automatically on startup. No downtime beyond the container restart.
+</p>
+
+<p>
+  Multi-arch on Docker Hub (<code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001):
+</p>
+
+<pre><code>docker pull applegater/caddyui:v2.7.5
 # or
 docker pull applegater/caddyui:latest</code></pre>
 
-<p>
-  Multi-arch <code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001. No schema migration. Rows with stale alias lists self-heal on the next edit.
-</p>
-
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.5.10" class="btn primary">
-    📦 View v2.5.10 release
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.5" class="btn primary">
+    📦 View v2.7.5 release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub
@@ -486,15 +644,41 @@ docker pull applegater/caddyui:latest</code></pre>
   </a>
 </div>
 
+<h3>🗺️ On the whiteboard for upcoming releases</h3>
+
+<p>No promises, but things being considered:</p>
+
+<ul>
+  <li><strong>Per-group resource templates</strong> — spin up a new user in a group and auto-seed them with a starter proxy host.</li>
+  <li><strong>Export / import for migrations</strong> — move a set of proxy hosts between servers in one click.</li>
+  <li><strong>More DNS providers</strong> — Route 53, Gandi, Njalla if there's demand.</li>
+  <li><strong>Audit-log retention policies</strong> — configurable rollover for the activity table.</li>
+  <li><strong>Per-host rate limiting</strong> — Caddy supports it natively; the UI doesn't expose it yet.</li>
+</ul>
+
+<p>
+  Want something specific? <a href="https://github.com/X4Applegate/caddyui/issues">Open an issue on GitHub</a>. Every feature above started as someone going "wait, I wish it did X." Keep that loop going.
+</p>
+
 <hr class="divider">
 
-<h2>💬 Feedback</h2>
+<h2 id="quiet">⏸️ Why the next two weeks are quiet</h2>
+
 <p>
-  The bug that kicked this off was mine — I hit it live while adding a second alias to the AdGuard proxy host and got the "can't be reached" screen for twenty minutes before I figured out which side of the stack was lying. If you've got a similar "X seems set up right but Y doesn't work" story, <a href="https://github.com/X4Applegate/caddyui/issues">open an issue</a>. A lot of the smaller fixes in the 2.5.x series started that way.
+  Twenty releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between.
+</p>
+
+<p>
+  The next two weeks: <strong>no more updates.</strong> Go set up your groups. Migrate a customer to their own account. Turn on analytics and watch the sparkline build. Hand off some sites. Enjoy the stability.
+</p>
+
+<p>
+  Bug reports are still welcome — they'll land in the next window. Feature requests too.
 </p>
 
 <footer class="signoff">
-  <p>Thanks to everyone running CaddyUI in anger and reporting the rough edges. The 2.5.x line has been almost entirely shaped by that feedback loop. 🙏</p>
+  <p>Thanks to everyone running CaddyUI in production and reporting the rough edges. The 2.5 → 2.7 arc has been shaped almost entirely by that feedback loop. 🙏</p>
+  <p>Please enjoy. 🚀</p>
   <p>— Richard · <a href="https://github.com/X4Applegate">@X4Applegate</a></p>
 </footer>
 
