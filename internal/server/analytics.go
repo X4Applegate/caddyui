@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -130,19 +131,75 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 // analytics for. Admins get nil, which callers interpret as "no filter".
 // Non-admins get the union of their owned proxy-host domains and raw-route
 // names across every Caddy server in the DB — analytics is cross-server by
-// design (one dashboard for the whole fleet), so we don't scope to the
-// currently-selected server.
+// default (one dashboard for the whole fleet).
+//
+// Thin wrapper over scopedHostsForAnalytics — preserved as a separate name
+// for callers that don't yet pass a server scope.
 func (s *Server) userAllowedHosts(u *models.User) ([]string, error) {
+	return s.scopedHostsForAnalytics(u, 0)
+}
+
+// scopedHostsForAnalytics returns the set of hosts a user is allowed to see
+// analytics for, optionally narrowed to a single Caddy server. v2.7.1
+// added the `serverID` parameter to power the inline server-filter UI on
+// /analytics — admins with 5+ servers were swamped by a fleet-wide dashboard
+// and wanted to focus on one at a time.
+//
+//	serverID == 0 → cross-fleet scope (legacy behaviour).
+//	  - admin    → nil (means "no host filter", single-query hot path).
+//	  - non-admin → union of owned hosts across every server.
+//
+//	serverID > 0 → scoped to that one server.
+//	  - admin    → every host routed by that server (a *concrete* list so
+//	              the existing per-host-list query paths apply).
+//	  - non-admin → intersection of "owned" with "routed by this server"
+//	              (i.e. the same ListProxyHosts/ListRawRoutes call with
+//	              viewerID + isAdmin=false).
+//
+// The host list is lowercased + deduped so downstream SQL IN-clauses don't
+// have to worry about case or repeats.
+func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]string, error) {
 	if u == nil {
 		return []string{}, nil
 	}
-	if u.Role == models.RoleAdmin {
-		return nil, nil // no filter
+	isAdmin := u.Role == models.RoleAdmin
+	// Cross-fleet + admin → no filter. Single-query hot path through
+	// AccessTotalsSince("") / TopHostsSince(...).
+	if isAdmin && serverID == 0 {
+		return nil, nil
 	}
-	servers, err := models.ListCaddyServers(s.DB)
-	if err != nil {
-		return nil, err
+
+	var servers []models.CaddyServer
+	if serverID > 0 {
+		// Single-server scope — fetch just that one and proceed with a
+		// one-element loop. Missing/unknown server_id returns empty hosts
+		// rather than an error so a stale query-string doesn't 500 the
+		// page; the UI picker will re-render with "All servers" selected.
+		sr, err := models.GetCaddyServer(s.DB, serverID)
+		if err != nil || sr == nil {
+			return []string{}, nil
+		}
+		servers = []models.CaddyServer{*sr}
+	} else {
+		// Cross-fleet non-admin: every server.
+		var err error
+		servers, err = models.ListCaddyServers(s.DB)
+		if err != nil {
+			return nil, err
+		}
 	}
+
+	// viewerID is only consulted when isAdmin=false. For admin + specific
+	// server we pass ID=0 + isAdmin=true so the ListProxyHosts path returns
+	// every row; non-admin passes the user's ID + isAdmin=false so only
+	// owned rows come back.
+	viewerID := int64(0)
+	queryAsAdmin := true
+	if !isAdmin {
+		viewerID = u.ID
+		queryAsAdmin = false
+	}
+
 	var hosts []string
 	seen := make(map[string]bool)
 	add := func(raw string) {
@@ -154,7 +211,7 @@ func (s *Server) userAllowedHosts(u *models.User) ([]string, error) {
 		hosts = append(hosts, d)
 	}
 	for _, sr := range servers {
-		proxies, err := models.ListProxyHosts(s.DB, sr.ID, u.ID, false)
+		proxies, err := models.ListProxyHosts(s.DB, sr.ID, viewerID, queryAsAdmin)
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +220,7 @@ func (s *Server) userAllowedHosts(u *models.User) ([]string, error) {
 				add(d)
 			}
 		}
-		raws, err := models.ListRawRoutes(s.DB, sr.ID, u.ID, false)
+		raws, err := models.ListRawRoutes(s.DB, sr.ID, viewerID, queryAsAdmin)
 		if err != nil {
 			return nil, err
 		}
@@ -182,15 +239,40 @@ func (s *Server) userAllowedHosts(u *models.User) ([]string, error) {
 // getAnalytics renders the /analytics overview page. Shows totals (today +
 // last 7d), the "live now" visitor count, a per-host table, a 24-hour
 // hourly sparkline, and a status-code breakdown. Scope is admin-see-all
-// vs non-admin-see-only-my-hosts, driven by userAllowedHosts above.
+// vs non-admin-see-only-my-hosts, driven by scopedHostsForAnalytics above.
+//
+// v2.7.1 added the `?server=<id>` query-param for the inline server filter
+// — an admin with 5+ Caddy servers can now narrow the dashboard to one
+// server without changing their global CurrentServer selection.
 func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
-	allowedHosts, err := s.userAllowedHosts(u)
+
+	// Parse + validate the optional ?server=<id> filter. Bad values
+	// (negative, non-numeric, unknown ID) fall back silently to "all".
+	var serverScopeID int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("server")); raw != "" && raw != "0" && raw != "all" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			serverScopeID = n
+		}
+	}
+
+	allowedHosts, err := s.scopedHostsForAnalytics(u, serverScopeID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	isAdmin := u != nil && u.Role == models.RoleAdmin
+	// If we have a concrete scope — either non-admin anywhere or admin
+	// picking a specific server — treat it as per-host filter mode. The
+	// hot "nil allowedHosts = no filter" path only kicks in for admin
+	// viewing the full fleet.
+	//
+	// When an admin picks a server that has no routes at all, allowedHosts
+	// comes back as an empty non-nil slice. We still want the totals to
+	// show 0 rather than all-fleet, so "scoped" stays true and the per-host
+	// loops below execute with an empty list (zero iterations, zero sums).
+	scoped := allowedHosts != nil
+	allServers, _ := models.ListCaddyServers(s.DB)
 
 	now := time.Now()
 	// UTC midnight boundaries — access_events stores unix seconds, so all
@@ -202,17 +284,17 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	sevenDaysAgo := now.Add(-7 * 24 * time.Hour)
 	twentyFourHoursAgo := now.Add(-24 * time.Hour)
 
-	// Filter helper: admin sees everything, non-admin sees their hosts.
-	// For aggregates we either pass host="" (all) or loop per-host and sum.
-	// Looping is what we do here since a non-admin with 20 hosts would
-	// otherwise need a 20-way IN clause on every aggregate query. Keeping
-	// the admin path as a single query keeps the hot path fast.
+	// Filter helper: unscoped (admin + no server filter) sees everything via
+	// a single-query hot path. Scoped (non-admin anywhere, or admin with
+	// ?server=<id>) loops per-host and sums, because a 20-way IN clause on
+	// every aggregate query is slower than 20 indexed single-host lookups
+	// — and keeps AccessTotalsSince's public signature uncluttered.
 	var (
 		todayTotals  models.AccessTotals
 		sevenTotals  models.AccessTotals
 		liveVisitors int
 	)
-	if isAdmin {
+	if !scoped {
 		todayTotals, _ = models.AccessTotalsSince(s.DB, todayStart, "")
 		sevenTotals, _ = models.AccessTotalsSince(s.DB, sevenDaysAgo, "")
 		liveVisitors, _ = models.AccessLiveVisitors(s.DB, 5*time.Minute)
@@ -231,9 +313,9 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		liveVisitors = s.liveVisitorsAcrossHosts(allowedHosts, 5*time.Minute)
 	}
 
-	// Per-host table: top 10 by views in last 7 days.
+	// Per-host table: top 50 by views in last 7 days.
 	var hostRows []models.HostStats
-	if isAdmin {
+	if !scoped {
 		hostRows, _ = models.TopHostsSince(s.DB, sevenDaysAgo, 50)
 	} else {
 		hostRows, _ = models.HostStatsForHosts(s.DB, sevenDaysAgo, allowedHosts)
@@ -241,10 +323,12 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 
 	// 24h hourly sparkline: fill zero-buckets so the chart doesn't jump.
 	bucketSec := int64(3600) // 1h buckets
-	rawBuckets, _ := models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "")
-	if !isAdmin {
-		// Non-admins need per-host buckets summed. AccessBuckets takes a
-		// single host string, so loop and merge.
+	var rawBuckets []models.HourlyBucket
+	if !scoped {
+		rawBuckets, _ = models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "")
+	} else {
+		// Scoped path needs per-host buckets summed. AccessBuckets takes a
+		// single host string, so loop and merge by hour.
 		merged := make(map[int64]models.HourlyBucket)
 		for _, h := range allowedHosts {
 			bs, _ := models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, h)
@@ -257,7 +341,6 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 				merged[key] = m
 			}
 		}
-		rawBuckets = nil
 		for _, b := range merged {
 			rawBuckets = append(rawBuckets, b)
 		}
@@ -266,7 +349,7 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 
 	// Status-class pie.
 	var statusBuckets models.StatusBuckets
-	if isAdmin {
+	if !scoped {
 		statusBuckets, _ = models.StatusBucketsSince(s.DB, sevenDaysAgo, "")
 	} else {
 		for _, h := range allowedHosts {
@@ -306,6 +389,13 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		"Status":           statusBuckets,
 		"IngestStats":      ingestStats,
 		"AnalyticsEnabled": cfg.Enabled,
+		// Server-switcher data. AllServers feeds the <select>; the template
+		// only renders the picker when len > 1 so a one-server deployment
+		// doesn't get a useless dropdown. SelectedServerID is 0 for "all
+		// servers" so the picker's first <option value="0"> is marked
+		// selected when nothing's been picked.
+		"AllServers":       allServers,
+		"SelectedServerID": serverScopeID,
 		"Section":          "analytics",
 	})
 }

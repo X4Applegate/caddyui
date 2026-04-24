@@ -60,7 +60,35 @@ func (c *Client) EnableAccessLogs(target string) error {
 		"include": []string{"http.log.access"},
 	}
 	if err := c.PutPath("/config/logging/logs/"+AccessLogLoggerName, logger); err != nil {
-		return fmt.Errorf("install access-log logger: %w", err)
+		// v2.7.1: Caddy's admin API can't traverse through a null parent.
+		// On a fresh Caddy (no `logging` key at all, or `logging` present
+		// but `logging.logs` missing), the call above returns
+		//   {"error":"invalid traversal path at: config/logging/logs"}
+		// Bootstrap by PUT-ing the whole `/config/logging` object with our
+		// logger nested inside. We fetch the current config first so we
+		// preserve any other loggers the admin might have configured
+		// through the Caddyfile or a prior patch — only the null-parent
+		// case hits this fallback, but the merge costs nothing in the
+		// non-null path and makes the call idempotent either way.
+		if !isCaddyMissingPathErr(err.Error()) {
+			return fmt.Errorf("install access-log logger: %w", err)
+		}
+		logs := map[string]any{AccessLogLoggerName: logger}
+		if cfg, _, cfgErr := c.FetchConfig(); cfgErr == nil {
+			if logging, _ := cfg["logging"].(map[string]any); logging != nil {
+				if existing, _ := logging["logs"].(map[string]any); existing != nil {
+					for k, v := range existing {
+						if k == AccessLogLoggerName {
+							continue // our own key wins, skip the old one
+						}
+						logs[k] = v
+					}
+				}
+			}
+		}
+		if err2 := c.PutPath("/config/logging", map[string]any{"logs": logs}); err2 != nil {
+			return fmt.Errorf("install access-log logger (bootstrap logging tree): %w", err2)
+		}
 	}
 
 	// Step 2+3: fetch the server names, then patch each one's logs block.
@@ -179,12 +207,31 @@ func (c *Client) deletePathIgnoreMissing(path string) error {
 	// the admin can see what went wrong without having to tail caddyui
 	// logs and the caddy logs side-by-side.
 	if body.Error != "" {
-		// "config path not found" is the 404-equivalent text Caddy returns
-		// for some older versions that send 400 instead of 404 — normalise.
-		if strings.Contains(body.Error, "not found") || strings.Contains(body.Error, "unknown") {
+		// "target doesn't exist" phrasings across Caddy versions are the
+		// expected outcome of disable-when-already-disabled — treat as
+		// idempotent success. Details at isCaddyMissingPathErr below.
+		if isCaddyMissingPathErr(body.Error) {
 			return nil
 		}
 		return fmt.Errorf("caddy DELETE %s: %s", path, body.Error)
 	}
 	return fmt.Errorf("caddy DELETE %s: status %d", path, resp.StatusCode)
+}
+
+// isCaddyMissingPathErr reports whether a Caddy admin-API error body means
+// "this path or one of its parents doesn't exist." Shared by the delete
+// flow (treats it as idempotent success — already gone) and the enable
+// flow (treats it as a signal to bootstrap the parent tree and retry).
+//
+// Empirically observed phrasings across Caddy versions:
+//   - "config path not found"                  (modern 404)
+//   - "unknown key: <name>"                    (older releases, 400)
+//   - "invalid traversal path at: <path>"      (parent is null/missing —
+//     e.g. a fresh Caddy where `logging` has never been set. Hit by DELETE
+//     on first toggle-off before any enable, and by PUT on first enable
+//     before any logger has ever been installed.)
+func isCaddyMissingPathErr(msg string) bool {
+	return strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "unknown") ||
+		strings.Contains(msg, "invalid traversal path")
 }
