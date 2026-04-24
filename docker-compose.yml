@@ -1,6 +1,11 @@
 services:
   caddy:
-    image: caddy:2-alpine
+    # Custom build — bakes in the Cloudflare DNS provider module so
+    # wildcard certs can solve DNS-01. See Dockerfile.caddy.
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: caddyui-caddy:latest
     container_name: caddyui-caddy
     restart: unless-stopped
     ports:
@@ -17,13 +22,16 @@ services:
       # UTC, …). Defaults to UTC when unset. CaddyUI honors the same
       # TZ var — pair them so log timestamps line up across both containers.
       TZ: ${TZ:-UTC}
+      # Cloudflare API token for DNS-01 challenges (wildcard certs).
+      # Read by the Caddyfile `tls { dns cloudflare {env.CF_API_TOKEN} }`.
+      CF_API_TOKEN: ${CF_API_TOKEN}
     command: caddy run --config /config/caddy/autosave.json --resume --adapter json
     networks:
       - caddyui
 
   caddyui:
     # Local build. Pass CADDYUI_VERSION to stamp the version string the UI
-    # shows — e.g. `CADDYUI_VERSION=v2.5.7 docker compose up -d --build`.
+    # shows — e.g. `CADDYUI_VERSION=v2.5.8 docker compose up -d --build`.
     # Defaults to "dev" when unset, which is why a fresh `docker compose up`
     # shows version "dev". For the published release image instead, swap
     # this block for `image: applegater/caddyui:latest` and drop `build:`.

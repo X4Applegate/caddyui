@@ -2018,6 +2018,10 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	routes := extractAdaptedRoutes(adapted.Result)
+	// v2.5.8: also pull per-site TLS automation policies (DNS-01 providers,
+	// custom issuers) — these were previously dropped, so `tls { dns <p> ... }`
+	// in a pasted block never reached Caddy and ACME fell back to HTTP-01.
+	autoPolicies := extractAdaptedAutomationPolicies(adapted.Result)
 	if len(routes) == 0 {
 		s.render(w, r, "caddyfile_import.html", map[string]any{
 			"User":    s.currentUser(r),
@@ -2102,6 +2106,14 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// v2.5.8: push any per-site TLS automation policies the adapter
+		// emitted. Merged into live apps.tls.automation, deduped by subject
+		// against existing policies so we never clobber hand-set config.
+		// Non-fatal: if this fails, routes are still saved + synced, but
+		// users should check Caddy logs since ACME may fall back to HTTP-01.
+		if err := s.pushAutomationPolicies(r, autoPolicies); err != nil {
+			log.Printf("caddyfile import: automation-policy push failed (%d policies): %v", len(autoPolicies), err)
+		}
 	}
 
 	s.render(w, r, "caddyfile_import.html", map[string]any{
@@ -2162,6 +2174,99 @@ func extractAdaptedRoutes(cfg map[string]any) []map[string]any {
 		}
 	}
 	return out
+}
+
+// extractAdaptedAutomationPolicies pulls apps.tls.automation.policies[] from an
+// adapted Caddy config. These are emitted when a site block carries a per-site
+// TLS directive like `tls { dns cloudflare {env.CF_API_TOKEN} }` or `tls { issuer ... }`.
+// Without capturing them on paste-import the DNS-01 / custom-issuer config would
+// be silently lost, since syncCaddy intentionally leaves apps.tls.automation
+// untouched to avoid cancelling in-flight ACME challenges.
+func extractAdaptedAutomationPolicies(cfg map[string]any) []map[string]any {
+	apps, _ := cfg["apps"].(map[string]any)
+	tlsApp, _ := apps["tls"].(map[string]any)
+	automation, _ := tlsApp["automation"].(map[string]any)
+	policies, _ := automation["policies"].([]any)
+	var out []map[string]any
+	for _, p := range policies {
+		if m, ok := p.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// mergeAutomationPolicies combines adapter-emitted policies into the live
+// apps.tls.automation.policies[] array without clobbering hosts that already
+// have a policy. Subjects already covered by an existing per-subject policy
+// are stripped from the incoming policy; a new policy whose subjects are all
+// already covered is dropped entirely. Remaining new policies are prepended
+// so more-specific (with-subject) policies are evaluated before any catch-all
+// policy Caddy has in place. Caddy scans policies in order and uses the first
+// match, so prepend order matters.
+func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
+	existingSubjects := map[string]bool{}
+	for _, p := range existing {
+		m, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		subs, _ := m["subjects"].([]any)
+		for _, s := range subs {
+			if str, ok := s.(string); ok {
+				existingSubjects[str] = true
+			}
+		}
+	}
+	var prepend []any
+	for _, p := range incoming {
+		subs, _ := p["subjects"].([]any)
+		var keptSubs []any
+		for _, s := range subs {
+			str, ok := s.(string)
+			if !ok {
+				continue
+			}
+			if !existingSubjects[str] {
+				keptSubs = append(keptSubs, str)
+				existingSubjects[str] = true
+			}
+		}
+		if len(keptSubs) == 0 {
+			continue
+		}
+		cp := map[string]any{}
+		for k, v := range p {
+			cp[k] = v
+		}
+		cp["subjects"] = keptSubs
+		prepend = append(prepend, cp)
+	}
+	return append(prepend, existing...)
+}
+
+// pushAutomationPolicies reads the live apps.tls.automation object, merges the
+// given incoming policies in front of existing ones (deduped by subject), and
+// POSTs the updated automation object back so Caddy applies the new DNS-01 /
+// custom-issuer config without disturbing anything already in place.
+func (s *Server) pushAutomationPolicies(r *http.Request, incoming []map[string]any) error {
+	if len(incoming) == 0 {
+		return nil
+	}
+	cl := s.caddyForRequest(r)
+	cfg, _, err := cl.FetchConfig()
+	if err != nil {
+		return fmt.Errorf("fetch config: %w", err)
+	}
+	apps := ensureMap(cfg, "apps")
+	tlsApp := ensureMap(apps, "tls")
+	automation, _ := tlsApp["automation"].(map[string]any)
+	if automation == nil {
+		automation = map[string]any{}
+	}
+	existing, _ := automation["policies"].([]any)
+	automation["policies"] = mergeAutomationPolicies(existing, incoming)
+	return cl.PutPath("/config/apps/tls/automation", automation)
 }
 
 // --- Snapshots ---
