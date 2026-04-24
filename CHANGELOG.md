@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.5.8] — 2026-04-23 · Caddyfile paste-import now captures per-site TLS automation policies
+
+### Fixed
+- **Pasted `tls { dns <provider> ... }` directives are no longer dropped on import.** Previously, the Caddyfile paste-importer at `/caddyfile-import` only extracted `apps.http.servers.*.routes[]` from Caddy's `/adapt` output and ignored `apps.tls.automation.policies[]`. That meant a site block carrying a DNS-01 challenge config (or any per-site custom issuer) would have its routes saved and pushed to Caddy, but the automation policy — the piece that tells Caddy *how* to get the cert — never reached the live config. Caddy would then fall back to the default HTTP-01 challenge and fail for any host that wasn't reachable on `:80`, or issue via ZeroSSL fallback, or just sit retrying. The importer now extracts those policies too, merges them into live `apps.tls.automation` deduped by subject (so existing per-host policies and hand-set catch-alls are preserved), and POSTs the merged object back so DNS-01 providers baked into the Caddy binary (like the Cloudflare module in `Dockerfile.caddy`) actually get used. Applies to `/caddyfile-import`; the per-raw-route form's `adaptRawRouteCaddyfile` path has the same underlying pattern and is unchanged in this release — users authoring one route at a time should either use the form's dedicated DNS provider fields or push the policy via `curl http://caddy:2019/config/apps/tls/automation`.
+
+### Implementation notes
+- New helpers in `internal/server/server.go`: `extractAdaptedAutomationPolicies(cfg)` mirrors `extractAdaptedRoutes` but reads `apps.tls.automation.policies[]`; `mergeAutomationPolicies(existing, incoming)` strips subjects already covered by an existing policy and prepends the rest (Caddy scans policies in declaration order — more-specific ones must come first).
+- `pushAutomationPolicies(r, incoming)` fetches the live config, merges, and writes the full `automation` object back via `PUT /config/apps/tls/automation`. Replacing the whole object (not just `.policies`) preserves other fields like `on_demand`, `renew_interval`, and `ocsp_interval`.
+- Policy push is best-effort — a failure is logged but does not roll back the route import, since the routes themselves are already saved to the DB and in Caddy's live config. Users who see ACME fail after import should check `docker logs caddyui` for `automation-policy push failed`.
+
+### Docker
+- Published as `applegater/caddyui:v2.5.8` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`, SBOM + provenance, scratch base, non-root UID 10001)
+
+---
+
 ## [2.5.7] — 2026-04-23 · Explicit Edit button next to Delete on list pages
 
 ### Changed
