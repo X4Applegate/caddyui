@@ -43,22 +43,45 @@ See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
 
 ## Features
 
+### Routing
+
 - **Proxy Hosts** — point domains at upstream services with one-click TLS via Caddy's automatic HTTPS
 - **Redirections** — 301/302/307/308 redirect rules across hostnames
 - **Advanced Routes** — import raw Caddyfile blocks or write JSON directly for anything the UI can't model
-- **Certificates** — manage custom PEM/path certificates; expiry alerts via email and/or webhook
-- **Multi-server** — manage multiple Caddy instances from a single UI; switch with a dropdown. Edge hosts only need Caddy — no CaddyUI container required (see [Agent mode](#agent-mode-edge-only-caddy-no-caddyui))
-- **Multi-user** — admin and user roles; each user sees and manages only their own proxies
-- **Email notifications** — SMTP support (STARTTLS / TLS / plain) for cert-expiry and upstream health alerts
-- **Upstream health** — live health check per proxy; polls Caddy's own admin API so Docker-internal hostnames work correctly
-- **Activity log** — every create/edit/delete/sync action is logged with actor and timestamp
-- **Snapshots** — one-click SQLite database backup; auto-snapshot on sync
-- **Import from Caddy** — pull your existing live Caddy config into the DB on first run
+- **Certificates** — upload and manage custom PEM / path-based certificates; expiry alerts via email or webhook
+- **Managed DNS (Cloudflare)** — create the A / AAAA record for a new proxy host without leaving CaddyUI; zone lookup is automatic from the domain
 - **Paste Caddyfile** — convert a Caddyfile block into a managed advanced route
-- **Dark mode** — toggleable, remembers your choice; system preference respected on first visit
+- **Import from Caddy** — pull your existing live Caddy config into the DB on first run
+- **Branded error pages** — CaddyUI-styled 404 / 502 / 503 / 504 pages are injected into Caddy automatically
+
+### Multi-server
+
+- **Remote Caddy management** — manage multiple Caddy instances from a single UI; switch with a dropdown. Edge hosts only need Caddy — no CaddyUI container required (see [Agent mode](#agent-mode-edge-only-caddy-no-caddyui))
+- **Per-server scoping** — proxy hosts, redirections, routes, and certificates are all scoped to the active server; cross-server conflicts can't happen
+
+### Access control
+
+- **Three-role RBAC** — `admin` (full control), `user` (manage their own resources), `view` (read-only). Admin-only pages: Users, Groups, Settings, Caddy Servers, Snapshots
+- **Per-user ownership** — proxy hosts, redirections, advanced routes, and certificates each belong to one user; only the owner (and admins) can edit or delete them. Admins can reassign ownership from any resource's edit form
+- **Groups** *(v2.7.4)* — admin bundles `user`-role accounts into a team; every member sees every other member's resources in their list views (read-only), with a `Team` chip so it's clear which rows are "mine" vs. "my teammate's"
 - **2FA / TOTP** — per-user time-based one-time passwords
-- **PWA** — installable on desktop and mobile; offline-capable service worker
+- **Login CAPTCHA** — optional Cloudflare Turnstile or reCAPTCHA v3 gate on the login form
+
+### Observability
+
+- **Visitor analytics** *(v2.7.0)* — opt-in per-host traffic counters; top hosts, 24 h sparkline, status-code mix, unique visitors. Per-server filter for multi-Caddy fleets
+- **Upstream health** — live health check per proxy; polls Caddy's own admin API so Docker-internal hostnames work correctly
+- **App health** — detects whether the upstream actually responds, not just whether its TCP port is open
+- **Activity log** — every create / edit / delete / sync action is logged with actor, timestamp, and resource
+
+### Operational
+
+- **Snapshots** — one-click SQLite database backup; auto-snapshot on sync
+- **Email notifications** — SMTP support (STARTTLS / TLS / plain) for cert-expiry and upstream-health alerts
+- **Webhook notifications** — generic JSON POST for cert-expiry (pair with any notifier that accepts webhooks)
 - **Update notifications** — sidebar badge when a newer Docker Hub release is available
+- **Dark mode** — toggleable, remembers your choice; system preference respected on first visit
+- **PWA** — installable on desktop and mobile; offline-capable service worker
 
 ---
 
@@ -227,7 +250,7 @@ docker build --build-arg VERSION=v1.0.0 -t caddyui:v1.0.0 .
 
 ### Dependencies
 
-- [Go 1.22+](https://go.dev/)
+- [Go 1.24+](https://go.dev/)
 - [Caddy 2.x](https://caddyserver.com/) with the admin API enabled (default)
 - No external database required — uses embedded SQLite
 
