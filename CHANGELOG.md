@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.7.2] — 2026-04-24 · Per-user certificate ownership
+
+### Added
+- **Users can upload and manage their own TLS certificates.** Until now, `/certificates` was admin-only — a `user`-role account could see the list and reference certs from the proxy-host dropdown but couldn't create, edit, or delete. v2.7.2 extends the same `owner_id` ownership model already used by proxy hosts / redirections / raw routes to the `certificates` table:
+  - `owner_id IS NULL` → **global / admin-owned**. Visible to every user's proxy-host dropdown (so the admin wildcard still works for everyone). Only admins can edit or delete.
+  - `owner_id = <user.ID>` → **private to that user**. The uploader can see, edit, and delete it; admins can do the same. Other user-role accounts never see it — not in the list, not in the dropdown.
+  - Pre-2.7.2 rows migrate with `owner_id = NULL` (treated as global) so nothing existing changes behaviour for current admins.
+- **Owner column on `/certificates` (admin view).** Shows the uploader's email for user-owned certs and a `Global` chip for admin-owned rows. Non-admin views don't render the column since the list is already scoped to their own uploads + globals.
+
+### Changed
+- **`+ New Certificate` is now writer-level, not admin-only.** Route `/certificates/new`, `/certificates` POST, `/certificates/{id}/edit`, `/certificates/{id}` POST moved from the `requireAdmin` group to the `requireWrite` group. Per-handler ownership checks in `editCertificate` / `updateCertificate` 403 a user trying to edit another owner's cert (or a global cert) so route loosening doesn't become a privilege escalation.
+- **Delete is ownership-aware but still blast-radius-protected.** Admins can delete any cert. User-role accounts can delete a cert they own, *unless* a site belonging to another owner (or a global admin site) still references it — in which case the handler returns `403 this certificate is in use by another user's site — ask an admin to delete it`. The new `models.CertificateInUseByOthers(db, certID, excludeOwnerID)` helper drives the check.
+- **Cert dropdown on proxy-host / redirection / raw-route forms is scoped to the viewer.** A user-role account picking a cert from the TLS dropdown now only sees their own uploads + global certs. The form never surfaces another user's private TLS material. Sync paths (`syncCaddy`, cert-expiry notifier background job) keep using the unscoped `models.ListCertificates` so the Caddy config is still built from every cert on the server.
+
+### Fixed
+- **Missing `+ New` button for user-role accounts on `/certificates`.** Reported from a live screenshot (`richard@joe.coffee`, role = `user`) showing the Actions column as em-dash placeholders and no New button in the header. The old template gated both on `{{if eq .User.Role "admin"}}`. v2.7.2 switches the header button to `{{if ne .User.Role "view"}}` and the per-row Edit/Delete buttons to the precomputed `.CanEdit` predicate, which is true for admin on any row and for user-role on their own rows only.
+
+### Implementation notes
+- **New helper `Server.certListForRequest(r)`.** Nine dropdown callsites across `newProxyHost` / `editProxyHost` / `newRedirectionHost` / `editRedirectionHost` / `newRawRoute` / `editRawRoute` / `renderRawRouteFormError` / `renderRedirectionHostFormError` / `renderProxyHostFormError` all ran the same `ListCertificates(db, currentServerID)` boilerplate. v2.7.2 consolidates to `s.certListForRequest(r)` which internally reads `currentUser` + `RoleAdmin` and calls `ListCertificatesForUser`. Keeps the dropdown behaviour consistent across every form — future form additions only need to pick the right helper.
+- **`ListCertificatesForUser(db, serverID, viewerID, isAdmin)` mirrors the `ListProxyHosts` signature.** Admin path does a `LEFT JOIN users` to populate `OwnerEmail` for the Owner column; non-admin path skips the JOIN entirely (there's no column to populate and we shouldn't surface other users' emails to a user-role account anyway) and filters by `owner_id IS NULL OR owner_id = viewerID`.
+- **`certView.CanEdit` is precomputed server-side, not re-derived in the template.** The template was already comparing `.User.Role` on every row; the ownership check adds `viewer.ID == row.OwnerID.Int64`. Doing that per-row in the Go code keeps the template readable (`{{if .CanEdit}}` vs. a three-term `{{if or … …}}`) and the predicate is the same one the server-side route handler uses, so they can't drift.
+- **Delete handler keeps its inline role/ownership check.** The route is now in the `requireWrite` group which only filters the `view` role, so the handler itself is the single enforcement point for "can this user delete this specific cert". The handler logic is: admin → always OK; global cert → admin only; owned cert → uploader only, and only when no cross-owner references remain. Viewers don't reach the handler.
+
+### Docker
+- Published as `applegater/caddyui:v2.7.2` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+
+---
+
 ## [2.7.1] — 2026-04-24 · Analytics toggle fix, per-server filter, form layout polish
 
 ### Fixed

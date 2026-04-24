@@ -285,7 +285,13 @@ func migrate(db *sql.DB) error {
 	}
 
 	// Per-user ownership: owner_id NULL = global/admin-owned; owner_id = user.ID = owned by that user.
-	for _, tbl := range []string{"proxy_hosts", "redirection_hosts", "raw_routes"} {
+	//
+	// v2.7.2: certificates joined the ownership model. Pre-2.7.2 rows migrate
+	// with owner_id = NULL, i.e. admin-owned / global — any user-role account
+	// can still pick them from the proxy-host dropdown, but only admin can
+	// edit or delete them. New uploads from a user-role account get tagged
+	// with that user's ID so they're private to the uploader + admin.
+	for _, tbl := range []string{"proxy_hosts", "redirection_hosts", "raw_routes", "certificates"} {
 		has, err := columnExists(db, tbl, "owner_id")
 		if err != nil {
 			return err
