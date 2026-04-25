@@ -766,6 +766,78 @@ func (s *Server) zoneAllowed(providerID, zoneName string) bool {
 	return false
 }
 
+// validateZoneMatchesHostname returns "" if the (provider, zoneID, zoneName,
+// domains) combination is consistent — either no DNS is configured (provider
+// or zoneID empty, in which case the row is opting out of managed DNS), or
+// the first hostname in `domains` lives inside `zoneName`. Returns a
+// user-facing error message ready to surface on the form when the pairing is
+// inconsistent.
+//
+// Why "first hostname" and not all of them: a single proxy host row can serve
+// several hostnames (the comma-separated Domains field), but managed DNS only
+// provisions records for the *primary* hostname today. The other entries are
+// SAN aliases on the same TLS cert. Validating just the primary keeps the
+// check aligned with what dnsCreateRecord actually does.
+//
+// v2.7.8.
+func validateZoneMatchesHostname(provider, zoneID, zoneName string, domains []string) string {
+	if strings.TrimSpace(provider) == "" || strings.TrimSpace(zoneID) == "" {
+		return "" // no managed DNS configured — nothing to validate
+	}
+	if len(domains) == 0 {
+		return "" // can't validate without a hostname; other validators catch empty-domain saves
+	}
+	first := strings.TrimSpace(domains[0])
+	if first == "" {
+		return ""
+	}
+	if domainInZone(first, zoneName) {
+		return ""
+	}
+	return fmt.Sprintf("Hostname %q doesn't live in DNS zone %q. Pick a zone whose apex matches the hostname (e.g. zone %q for hostname %q), or change the DNS provider to (none) if you don't want CaddyUI to manage the A record.",
+		first, zoneName, guessApex(first), first)
+}
+
+// guessApex returns a "good enough" suggested zone name for an FQDN — the
+// rightmost two labels (e.g. "richardapplegate.io" for
+// "api.richardapplegate.io"). Used only inside the v2.7.8 mismatch error
+// message; doesn't influence routing decisions. A real public-suffix-aware
+// implementation would handle .co.uk etc., but the suggestion is just a hint
+// for the user reading the error — they pick the actual zone from the
+// dropdown.
+func guessApex(fqdn string) string {
+	parts := strings.Split(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(fqdn)), "."), ".")
+	if len(parts) < 2 {
+		return fqdn
+	}
+	return strings.Join(parts[len(parts)-2:], ".")
+}
+
+// domainInZone reports whether fqdn belongs to the DNS zone named zoneName.
+// True iff fqdn is the apex (fqdn == zoneName) or a subdomain of zoneName
+// (fqdn ends in "." + zoneName). Comparison is case-insensitive and strips a
+// trailing dot from either side, matching how Caddy and every DNS provider we
+// integrate with normalises FQDNs.
+//
+// Empty inputs return false — callers must decide whether "no zone configured"
+// is an error (it isn't for the create-record path; it is for the form
+// validators added in v2.7.8 that reject saving a non-matching pairing).
+//
+// v2.7.8: introduced so the proxy-host and raw-route save handlers can reject
+// "you typed richardapplegate.io but picked the applegatecloud.com zone"
+// before the row hits the DB. Without this guard the save would succeed, the
+// front-end's amber mismatch warning would be the only feedback, and the
+// subsequent dnsCreateRecord call would either fail at the provider API or
+// silently put the A record in the wrong zone.
+func domainInZone(fqdn, zoneName string) bool {
+	f := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(fqdn)), ".")
+	z := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zoneName)), ".")
+	if f == "" || z == "" {
+		return false
+	}
+	return f == z || strings.HasSuffix(f, "."+z)
+}
+
 // dnsCreds returns the current credential map for a provider, reading from
 // the settings table. Pass it straight to dns.Build.
 func (s *Server) dnsCreds(providerID string) map[string]string {
@@ -1628,6 +1700,16 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once — edit the existing entry or remove it before reusing the name.", conflict))
 		return
 	}
+	// v2.7.8: refuse to save a proxy whose first hostname doesn't live in the
+	// selected DNS zone. The form's amber mismatch warning was advisory only
+	// — users were saving anyway and ending up with rows that either failed
+	// at the provider API on the next dnsCreateRecord call or quietly put the
+	// A record in the wrong zone. Validate at save time so the row never
+	// reaches the DB in a half-broken state.
+	if errMsg := validateZoneMatchesHostname(p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DomainList()); errMsg != "" {
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	// Parse and hash basic auth users.
 	if r.FormValue("basicauth_enabled") == "on" {
 		p.BasicAuthEnabled = true
@@ -1755,6 +1837,13 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if conflict != "" {
 		s.renderProxyHostFormError(w, r, p, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once.", conflict))
+		return
+	}
+	// v2.7.8: zone/hostname match check — same as create path. Editing path
+	// matters because users hit this most often when they renamed the
+	// hostname on an existing row but the dropdown stayed on the old zone.
+	if errMsg := validateZoneMatchesHostname(p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DomainList()); errMsg != "" {
+		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
 	// Parse and hash basic auth users; preserve existing hashes if password left blank.
@@ -3372,6 +3461,15 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
+	// v2.7.8: refuse to save a raw route whose first match.host doesn't live
+	// in the selected DNS zone. Same logic and rationale as the proxy-host
+	// path. Routes with no host matcher (path- or port-only) skip the check
+	// because there's no FQDN to validate against — those rows opt out of
+	// managed DNS regardless of what the form had selected.
+	if errMsg := validateZoneMatchesHostname(rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, rawRouteHosts(*rr)); errMsg != "" {
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
 	cu := s.currentUser(r)
 	var rrOwnerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
@@ -3494,6 +3592,12 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rr.ID = id
+	// v2.7.8: zone/hostname match — same as create path. Routes with no host
+	// matcher skip the check (rawRouteHosts returns nil → validator returns "").
+	if errMsg := validateZoneMatchesHostname(rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, rawRouteHosts(*rr)); errMsg != "" {
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
 	// Preserve the Caddyfile source on JSON-only edits: when the form didn't
 	// submit caddyfile_src (textarea was hidden because the row had none, or
 	// user cleared it), keep the existing snippet as long as the JSON matches

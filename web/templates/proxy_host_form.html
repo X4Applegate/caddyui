@@ -388,7 +388,7 @@
         if (mismatchMsg) {
           mismatchMsg.textContent = '“' + fqdn + '” isn\'t a subdomain of “' +
             (zname || 'the selected zone') +
-            '”. Double-check the domain, or pick a zone that matches — saving will create the DNS record in the wrong place otherwise.';
+            '”. Save will be rejected — pick a zone whose apex matches the domain, or set the provider to (none) to skip managed DNS.';
         }
       }
     }
@@ -400,16 +400,16 @@
         updateMismatchWarn();
         return;
       }
-      // v2.5.1: if nothing is pre-selected and the user hasn't manually
-      // picked a zone, auto-select the longest-suffix match against the
-      // first entered domain. This is the fix for "I typed
-      // test.richardapplegate.io but the form auto-picked applegatecloud.com"
-      // — the browser's default-to-first-option behaviour was the bug.
-      var effectiveSelected = selectedID;
-      if (!effectiveSelected && !userPickedZone) {
-        var best = bestZoneMatch(firstDomain(), zones);
-        if (best) effectiveSelected = best.id;
-      }
+      // v2.7.8: hostname-derived zone always wins. Strengthens v2.5.1
+      // (which only auto-picked when nothing was pre-selected) — that
+      // earlier rule left existing rows showing whatever zone got saved
+      // even when it was the wrong one for the hostname, and a manual
+      // mis-pick stuck around even after the user changed the domain.
+      // Server-side now also rejects mismatched saves, so any
+      // selection that doesn't match the hostname is just a UX detour
+      // toward an error message; snap to the right zone instead.
+      var best = bestZoneMatch(firstDomain(), zones);
+      var effectiveSelected = best ? best.id : selectedID;
       var html = zones.map(function(z) {
         var sel = (z.id === effectiveSelected) ? ' selected' : '';
         var label = z.name;
