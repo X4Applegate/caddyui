@@ -1614,6 +1614,20 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
+	// v2.7.7: refuse to create a proxy whose domain list collides with an
+	// existing proxy or redirect on the same server. Without this guard the
+	// row goes in fine, but Caddy's route table only keeps one match per
+	// hostname — so the newer entry silently shadows the older one and users
+	// see "my domain got overridden" complaints. The check is global across
+	// owners (admin view) because Caddy routes are resolved by hostname, not
+	// by who owns the row in the UI.
+	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), p.DomainList(), 0, 0); err != nil {
+		s.renderProxyHostFormError(w, r, p, "Could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		s.renderProxyHostFormError(w, r, p, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once — edit the existing entry or remove it before reusing the name.", conflict))
+		return
+	}
 	// Parse and hash basic auth users.
 	if r.FormValue("basicauth_enabled") == "on" {
 		p.BasicAuthEnabled = true
@@ -1730,6 +1744,17 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if errMsg := s.validateProxyAdvanced(p); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
+	// v2.7.7: refuse to save when the new domain list collides with another
+	// proxy or redirect. excludeProxyID=p.ID lets the user save their own
+	// edit unchanged — only OTHER rows count as conflicts. Symmetric with the
+	// create path above; same rationale (Caddy resolves routes by hostname).
+	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), p.DomainList(), p.ID, 0); err != nil {
+		s.renderProxyHostFormError(w, r, p, "Could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		s.renderProxyHostFormError(w, r, p, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once.", conflict))
 		return
 	}
 	// Parse and hash basic auth users; preserve existing hashes if password left blank.
@@ -1914,6 +1939,17 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
+	// v2.7.7: same domain-conflict guard as proxy hosts. A redirect that
+	// shadows an existing proxy (or vice versa) is a common mis-configuration
+	// — Caddy keeps one route per hostname, so the older entry stops working
+	// silently. Reject at save time instead.
+	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), rh.DomainList(), 0, 0); err != nil {
+		s.renderRedirectionHostFormError(w, r, rh, "Could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		s.renderRedirectionHostFormError(w, r, rh, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once — edit the existing entry or remove it before reusing the name.", conflict))
+		return
+	}
 	deployTo := parseDeployTo(r)
 	cu := s.currentUser(r)
 	var rhOwnerID int64
@@ -1988,6 +2024,15 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	rh.ID = id
 	if errMsg := validateSSLFlags(rh.SSLEnabled, rh.SSLForced, rh.CertificateID); errMsg != "" {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
+	}
+	// v2.7.7: domain-conflict guard. excludeRedirectID=rh.ID keeps a no-op
+	// edit (e.g. user toggling SSL on the same redirect) from flagging itself.
+	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), rh.DomainList(), 0, rh.ID); err != nil {
+		s.renderRedirectionHostFormError(w, r, rh, "Could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		s.renderRedirectionHostFormError(w, r, rh, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once.", conflict))
 		return
 	}
 	deployTo := parseDeployTo(r)
@@ -2068,7 +2113,7 @@ func (s *Server) postImport(w http.ResponseWriter, r *http.Request) {
 	}
 	// Build a set of every hostname already represented in the DB — proxies,
 	// redirects, AND raw routes. Re-import would otherwise duplicate raw routes
-	// (they don't go through ProxyHostDomainsConflict) and re-creating conflicting
+	// (they don't go through models.DomainsConflict) and re-creating conflicting
 	// proxies/redirects would fail at sync when two entries claim the same host.
 	// Use admin view (isAdmin=true) to see all existing entries for deduplication.
 	taken := map[string]struct{}{}

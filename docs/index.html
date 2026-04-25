@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.7.6 — Groups, analytics, ownership &amp; a stable two-week window</title>
+<title>CaddyUI v2.7.7 — Reject duplicate domains across proxies &amp; redirects</title>
 <meta name="description" content="A tour of everything shipped in CaddyUI since v2.5.0 — Groups, visitor analytics, per-user ownership, admin reassignment, the Deploying page, the multi-provider Managed DNS expansion, plus today's multi-server analytics fix. Cadence moves to twice a month.">
-<meta property="og:title" content="CaddyUI v2.7.6 — Groups, analytics, ownership &amp; a stable two-week window">
+<meta property="og:title" content="CaddyUI v2.7.7 — Reject duplicate domains across proxies &amp; redirects">
 <meta property="og:description" content="Groups let you share visibility across teammates. Per-user ownership on every resource. Admins can reassign. Visitor analytics. Deploying page. Plus today's multi-server analytics fix and the backup fix. Then a two-week quiet window as we move to twice-a-month releases.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-04-24">
@@ -275,11 +275,11 @@
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.7.6 — Groups, analytics, ownership &amp; a stable two-week window</h1>
-  <p class="lead">Twenty-one releases have landed since v2.5.0. Here's the tour — what's actually new and what you can do with it — and why the next two weeks are going to be quiet on purpose.</p>
+  <h1>CaddyUI v2.7.7 — Reject duplicate domains across proxies &amp; redirects</h1>
+  <p class="lead">Twenty-two releases since v2.5.0. v2.7.7 closes a real gotcha: two rows could claim the same hostname and silently fight over Caddy's route table. Now they can't.</p>
   <div class="meta">
     <time datetime="2026-04-24">April 24, 2026</time>
-    <span class="tag">v2.7.6</span>
+    <span class="tag">v2.7.7</span>
     <span>☕ ~10 min read</span>
   </div>
 </header>
@@ -301,7 +301,7 @@
     <li><a href="#ux">UX polish</a></li>
     <li><a href="#mobile">Dark mode, mobile &amp; keyboard-friendly</a></li>
     <li><a href="#reliability">Reliability &amp; bug fixes</a></li>
-    <li><a href="#v276">Today's releases — v2.7.5 &amp; v2.7.6 fixes</a></li>
+    <li><a href="#v277">Today's release — v2.7.7 duplicate-domain guard</a></li>
     <li><a href="#upgrade">Upgrade &amp; roadmap</a></li>
     <li><a href="#quiet">Why the quiet window</a></li>
   </ul>
@@ -588,11 +588,42 @@
 
 <hr class="divider">
 
-<h2 id="v276">🐛 Today's fixes — v2.7.5 &amp; v2.7.6</h2>
+<h2 id="v277">🐛 Today's fix — v2.7.7</h2>
+
+<h3>v2.7.7 — Duplicate domains were silently overriding each other</h3>
 
 <p>
-  Two live-reported bugs, both fixed today.
+  Reported live: a proxy host's traffic suddenly started going to the wrong upstream. Cause: somebody (a teammate, or the same admin in a second tab) had created a second proxy claiming the same hostname. The form accepted it. Caddy's route table only keeps one match per host, so on the next sync the newer entry's <code>reverse_proxy</code> handler took the slot and the older row stopped working — even though both still showed up in <code>/proxy-hosts</code> as enabled.
 </p>
+
+<p>
+  Root cause: <code>ProxyHostDomainsConflict</code> existed in <code>internal/models/models.go</code> but was <strong>dead code</strong> — none of the four save handlers (<code>createProxyHost</code>, <code>updateProxyHost</code>, <code>createRedirectionHost</code>, <code>updateRedirectionHost</code>) called it. There was also a latent bug in the helper itself: the redirection-host loop didn't honour <code>excludeID</code>, so it would have falsely flagged an in-place redirect edit as a self-conflict the moment we tried to wire it in.
+</p>
+
+<p>
+  <strong>Fix:</strong> rewrote the helper as <code>models.DomainsConflict(db, serverID, domains, excludeProxyID, excludeRedirectID)</code> and called it from all four handlers. The two-exclude split is required because proxies and redirects live in separate tables with overlapping IDs — a single <code>excludeID</code> would be ambiguous, so create-path callers pass <code>(0, 0)</code> and update-path callers pass <code>(p.ID, 0)</code> for proxy edits or <code>(0, rh.ID)</code> for redirect edits. A no-op save (e.g. toggling SSL on the same row) doesn't trip the new guard.
+</p>
+
+<p>
+  Comparison is case-insensitive and trim-tolerant — <code>Example.com&nbsp;</code>, <code>example.com</code>, and <code>EXAMPLE.COM</code> all collapse to the same key, matching Caddy's host-matcher semantics. The error renders inline on the form (same path as the SSL-flag and Advanced-config validators) and the user's input is preserved:
+</p>
+
+<pre><code>Domain "example.com" is already in use by another proxy
+or redirect on this server. Each domain can only be claimed
+once — edit the existing entry or remove it before reusing
+the name.</code></pre>
+
+<p>
+  <strong>Admin view is forced</strong> for the conflict check so user A can't claim <code>example.com</code> after user B already claimed it via a different account. Caddy resolves routes by hostname, not by who owns the row in the UI — owner-scoped checking would let two users each create a working-looking proxy and only one would actually receive traffic.
+</p>
+
+<p>
+  Raw routes are intentionally not part of this round. Their host matchers live inside the route's JSON body rather than a flat column, and the <code>postImport</code> flow already covers raw-route deduplication. Most reports were proxy↔proxy or proxy↔redirect, so v2.7.7 scopes there; raw-route conflict checking can land separately when there's evidence it's needed.
+</p>
+
+<hr class="divider">
+
+<h2 id="v276">🐛 Previous fixes — v2.7.5 &amp; v2.7.6</h2>
 
 <h3>v2.7.6 — <code>/analytics</code> server filter showed "no data" on multi-server installs</h3>
 
@@ -648,13 +679,13 @@ unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)</code></pre
   Multi-arch on Docker Hub (<code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001):
 </p>
 
-<pre><code>docker pull applegater/caddyui:v2.7.6
+<pre><code>docker pull applegater/caddyui:v2.7.7
 # or
 docker pull applegater/caddyui:latest</code></pre>
 
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.6" class="btn primary">
-    📦 View v2.7.6 release
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.7" class="btn primary">
+    📦 View v2.7.7 release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub
@@ -685,7 +716,7 @@ docker pull applegater/caddyui:latest</code></pre>
 <h2 id="quiet">⏸️ Why the next two weeks are quiet</h2>
 
 <p>
-  Twenty-one releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between. (v2.7.6 is one of those "emergency fixes only" patches — it shipped within the quiet-window promise because it was a real bug, not a feature.)
+  Twenty-two releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between. (v2.7.6 and v2.7.7 are exactly that — both shipped within the quiet-window promise because they were real bugs, not features. Same rule going forward.)
 </p>
 
 <p>

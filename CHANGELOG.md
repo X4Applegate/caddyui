@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.7.7] — 2026-04-25 · Reject duplicate domains across proxies and redirects
+
+### Fixed
+- **A proxy or redirect could silently shadow another row with the same hostname.** Reported by users seeing "my domain got overridden to a different upstream" after another teammate (or the same admin in a second tab) created a second proxy claiming the same FQDN. Caddy's route table only keeps one match per host, so on the next `syncCaddy` push the newer entry's `reverse_proxy` handler took the slot and the older row stopped working — even though both rows were still listed in `/proxy-hosts` as enabled. There was no save-time guard against this: the form accepted any hostname the user typed and `CreateProxyHost` / `UpdateProxyHost` wrote it straight to the DB.
+- **Root cause: `ProxyHostDomainsConflict` (in `internal/models/models.go`) existed but was never called.** Dead code since v2.2 — none of the four save handlers (`createProxyHost`, `updateProxyHost`, `createRedirectionHost`, `updateRedirectionHost`) referenced it. The function also had a latent bug: the redirection-host loop didn't honour the `excludeID` parameter, so editing a redirect would have falsely flagged a self-conflict the moment we tried to wire it in.
+- **Fix: rewrote the helper as `models.DomainsConflict(db, serverID, domains, excludeProxyID, excludeRedirectID)` and called it from all four handlers.** The two-exclude split is required because proxy hosts and redirection hosts live in separate tables with overlapping ID space — a single `excludeID` would be ambiguous. Create-path callers pass `(0, 0)` (nothing to exclude); update-path callers pass `(p.ID, 0)` for proxy edits and `(0, rh.ID)` for redirect edits, so a no-op save (e.g. toggling SSL on the same row) doesn't trip the new guard.
+- **Comparison is case-insensitive and trim-tolerant.** `Example.com `, `example.com`, and `EXAMPLE.COM` all collapse to the same key, matching Caddy's host-matcher semantics. Returns the conflicting domain in its original casing so the error message reads back what the user actually typed.
+- **Admin view (`isAdmin=true`) is forced for the conflict check** so user A can't claim `example.com` after user B already claimed it via a different account. Caddy resolves routes by hostname, not by who owns the row in the UI, so the conflict has to be evaluated globally — owner-scoped checking would let two users each create a working-looking proxy and only one would actually receive traffic.
+
+### UX
+- **Error renders inline on the form, the user's input is preserved.** Both `renderProxyHostFormError` and `renderRedirectionHostFormError` (the same paths the SSL-flag and Advanced-config validators already use) now surface the conflict message: `Domain "example.com" is already in use by another proxy or redirect on this server. Each domain can only be claimed once — edit the existing entry or remove it before reusing the name.` No 500, no half-saved row, no opaque sync error after the fact.
+
+### Not changed
+- **Raw routes are intentionally not part of the conflict check yet.** Their host matchers live inside the route's JSON body rather than a flat column, and the `postImport` flow already covers raw-route deduplication via `rawRouteHosts`. Most of the user complaints we received were proxy↔proxy or proxy↔redirect, so the v2.7.7 scope is those two; raw-route conflict checking can land separately when there's evidence it matters.
+
+### Docker
+- Published as `applegater/caddyui:v2.7.7` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+
+---
+
 ## [2.7.6] — 2026-04-24 · Fix /analytics server filter on multi-server installs
 
 ### Fixed
