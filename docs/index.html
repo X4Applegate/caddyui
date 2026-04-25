@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.7.7 — Reject duplicate domains across proxies &amp; redirects</title>
+<title>CaddyUI v2.7.8 — Enforce zone ↔ hostname match on the DNS picker</title>
 <meta name="description" content="A tour of everything shipped in CaddyUI since v2.5.0 — Groups, visitor analytics, per-user ownership, admin reassignment, the Deploying page, the multi-provider Managed DNS expansion, plus today's multi-server analytics fix. Cadence moves to twice a month.">
-<meta property="og:title" content="CaddyUI v2.7.7 — Reject duplicate domains across proxies &amp; redirects">
+<meta property="og:title" content="CaddyUI v2.7.8 — Enforce zone ↔ hostname match on the DNS picker">
 <meta property="og:description" content="Groups let you share visibility across teammates. Per-user ownership on every resource. Admins can reassign. Visitor analytics. Deploying page. Plus today's multi-server analytics fix and the backup fix. Then a two-week quiet window as we move to twice-a-month releases.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-04-24">
@@ -275,11 +275,11 @@
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.7.7 — Reject duplicate domains across proxies &amp; redirects</h1>
-  <p class="lead">Twenty-two releases since v2.5.0. v2.7.7 closes a real gotcha: two rows could claim the same hostname and silently fight over Caddy's route table. Now they can't.</p>
+  <h1>CaddyUI v2.7.8 — Enforce zone ↔ hostname match on the DNS picker</h1>
+  <p class="lead">Twenty-three releases since v2.5.0. v2.7.8 closes another real gotcha: the DNS picker would let you save a hostname into the wrong zone. The amber "isn't a subdomain of…" warning was advisory only; now it's enforced both client- and server-side.</p>
   <div class="meta">
     <time datetime="2026-04-24">April 24, 2026</time>
-    <span class="tag">v2.7.7</span>
+    <span class="tag">v2.7.8</span>
     <span>☕ ~10 min read</span>
   </div>
 </header>
@@ -301,7 +301,7 @@
     <li><a href="#ux">UX polish</a></li>
     <li><a href="#mobile">Dark mode, mobile &amp; keyboard-friendly</a></li>
     <li><a href="#reliability">Reliability &amp; bug fixes</a></li>
-    <li><a href="#v277">Today's release — v2.7.7 duplicate-domain guard</a></li>
+    <li><a href="#v278">Today's release — v2.7.8 zone/hostname enforcement</a></li>
     <li><a href="#upgrade">Upgrade &amp; roadmap</a></li>
     <li><a href="#quiet">Why the quiet window</a></li>
   </ul>
@@ -588,7 +588,51 @@
 
 <hr class="divider">
 
-<h2 id="v277">🐛 Today's fix — v2.7.7</h2>
+<h2 id="v278">🐛 Today's fix — v2.7.8</h2>
+
+<h3>v2.7.8 — DNS picker let you save a hostname into the wrong zone</h3>
+
+<p>
+  Reported live (with screenshot): a route for <code>richardapplegate.io</code> ended up paired with the <code>applegatecloud.com</code> zone in the dropdown. The form rendered the v2.5.1 amber "isn't a subdomain of …" warning, but it was advisory only — clicking Save committed the row, and the subsequent <code>dnsCreateRecord</code> call either failed at the provider API or quietly put the A record in the wrong zone. Symmetric on both the proxy-host form and the raw-route form, since both share the picker logic.
+</p>
+
+<p>
+  <strong>Two parts to the fix — front-end and back-end:</strong>
+</p>
+
+<p>
+  <strong>Front-end:</strong> hostname-derived zone always wins now. <code>renderZones</code> used to call <code>bestZoneMatch(firstDomain, zones)</code> only when nothing was pre-selected and the user hadn't manually picked. That left two failure paths — editing a row whose saved <code>dns_zone_id</code> was wrong, and a manual mis-pick that stuck around even after the user changed the hostname. v2.7.8 strips both gates: if any zone in the list is a parent of the first hostname, the dropdown snaps to it on every render. Falls back to the saved selection only when no zone matches (in which case you should set the provider to "(none)" anyway).
+</p>
+
+<p>
+  <strong>Back-end:</strong> new <code>validateZoneMatchesHostname(provider, zoneID, zoneName, domains)</code> validator wired into all four DNS-aware save handlers — <code>createProxyHost</code>, <code>updateProxyHost</code>, <code>createRawRoute</code>, <code>updateRawRoute</code>. Returns "" when no managed DNS is configured (provider or zoneID empty) or when the first hostname is a suffix of the zone name; otherwise returns a user-facing error and the row is refused. Matching is case-insensitive and trim-tolerant via a new <code>domainInZone(fqdn, zoneName)</code> helper that mirrors how Caddy and every DNS provider we integrate with normalises FQDNs.
+</p>
+
+<p>
+  Validates the <em>first</em> hostname only — that matches what <code>dnsCreateRecord</code> actually provisions records for. Extra entries in the comma-separated Domains field are SAN aliases on the same TLS cert, not separate DNS records.
+</p>
+
+<p>
+  <strong>Error message is actionable:</strong>
+</p>
+
+<pre><code>Hostname "richardapplegate.io" doesn't live in DNS zone
+"applegatecloud.com". Pick a zone whose apex matches the
+hostname (e.g. zone "richardapplegate.io" for hostname
+"richardapplegate.io"), or change the DNS provider to
+(none) if you don't want CaddyUI to manage the A record.</code></pre>
+
+<p>
+  The amber warning text is also strengthened — from "saving will create the DNS record in the wrong place otherwise" (advisory) to "Save will be rejected — pick a zone whose apex matches the hostname, or set the provider to (none) to skip managed DNS." (actionable). Matches the new server-side reality.
+</p>
+
+<div class="callout amber">
+  <strong>Existing rows with mismatched zones aren't auto-cleaned.</strong> The validator only fires on save. Re-saving an affected row through the edit form will surface the new error and force you to pick the correct zone. Rows you don't re-save keep their current behaviour — the next <code>dnsCreateRecord</code> call still fails the same way it always did, but the new warning text makes it obvious why.
+</div>
+
+<hr class="divider">
+
+<h2 id="v277">🐛 Previous fix — v2.7.7</h2>
 
 <h3>v2.7.7 — Duplicate domains were silently overriding each other</h3>
 
@@ -679,13 +723,13 @@ unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)</code></pre
   Multi-arch on Docker Hub (<code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001):
 </p>
 
-<pre><code>docker pull applegater/caddyui:v2.7.7
+<pre><code>docker pull applegater/caddyui:v2.7.8
 # or
 docker pull applegater/caddyui:latest</code></pre>
 
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.7" class="btn primary">
-    📦 View v2.7.7 release
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.8" class="btn primary">
+    📦 View v2.7.8 release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub
@@ -716,7 +760,7 @@ docker pull applegater/caddyui:latest</code></pre>
 <h2 id="quiet">⏸️ Why the next two weeks are quiet</h2>
 
 <p>
-  Twenty-two releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between. (v2.7.6 and v2.7.7 are exactly that — both shipped within the quiet-window promise because they were real bugs, not features. Same rule going forward.)
+  Twenty-three releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between. (v2.7.6, v2.7.7, and v2.7.8 are exactly that — three live-reported bugs, three quiet-window patches, three fixes shipped same-day. Same rule going forward.)
 </p>
 
 <p>

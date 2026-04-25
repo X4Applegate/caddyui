@@ -306,7 +306,7 @@
       if (mismatchMsg) {
         mismatchMsg.textContent = '“' + fqdn + '” isn\'t a subdomain of “' +
           (zname || 'the selected zone') +
-          '”. Double-check the hostname in the route, or pick a zone that matches — saving will create the DNS record in the wrong place otherwise.';
+          '”. Save will be rejected — pick a zone whose apex matches the hostname, or set the provider to (none) to skip managed DNS.';
       }
     }
   }
@@ -318,11 +318,16 @@
       updateMismatchWarn();
       return;
     }
-    var effectiveSelected = selectedID;
-    if (!effectiveSelected && !userPickedZone) {
-      var best = bestZoneMatch(firstDomain(), zones);
-      if (best) effectiveSelected = best.id;
-    }
+    // v2.7.8: hostname is the source of truth. When a zone in the list is
+    // a parent of the route's first match.host, snap the dropdown to it
+    // even if a (possibly stale or wrong) zone was saved on the row or the
+    // user manually picked something else. Saving with a non-matching pair
+    // is rejected server-side, so showing the wrong selection just delays
+    // the inevitable error. v2.5.1's "only auto-pick when nothing's
+    // selected" rule was the original behaviour and produced exactly the
+    // "richardapplegate.io stays on applegatecloud.com" complaint we got.
+    var best = bestZoneMatch(firstDomain(), zones);
+    var effectiveSelected = best ? best.id : selectedID;
     var html = zones.map(function(z) {
       var sel = (z.id === effectiveSelected) ? ' selected' : '';
       var label = z.name;

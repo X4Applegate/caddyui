@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.7.8] — 2026-04-25 · Enforce zone ↔ hostname match on proxy hosts and raw routes
+
+### Fixed
+- **The DNS picker would let you save a hostname into the wrong zone.** Reported live: a route for `richardapplegate.io` ended up paired with the `applegatecloud.com` zone in the dropdown. The form rendered the v2.5.1 amber "isn't a subdomain of …" warning, but it was advisory only — clicking Save committed the row, and the subsequent `dnsCreateRecord` call either failed at the provider API or silently put the A record in the wrong zone. Symmetric on both the proxy-host form and the raw-route form, since both share the picker logic.
+- **Front-end: hostname-derived zone now always wins.** `renderZones` (in both `web/templates/proxy_host_form.html` and `web/templates/raw_route_form.html`) used to call `bestZoneMatch(firstDomain, zones)` only when nothing was pre-selected and the user hadn't manually picked. That left two failure paths: (a) editing an existing row whose saved `dns_zone_id` was wrong — the dropdown stayed on the wrong zone — and (b) a manual mis-pick stuck around even after the user changed the hostname. v2.7.8 strips both gates: if any zone in the list is a parent of the route's first hostname, the dropdown snaps to it on every render. Falls back to the saved selection only when no zone matches (e.g. the user has zones for other domains and is willing to save without managed DNS, in which case they should pick "(none)" as the provider anyway).
+- **Server-side: new `validateZoneMatchesHostname(provider, zoneID, zoneName, domains)` validator wired into all four DNS-aware save handlers** — `createProxyHost`, `updateProxyHost`, `createRawRoute`, `updateRawRoute`. Returns "" when no managed DNS is configured (provider or zoneID empty) or when the first hostname is a suffix of the zone name; otherwise returns a user-facing error and the row is refused. Matching is case-insensitive and trim-tolerant via the new `domainInZone(fqdn, zoneName)` helper, which mirrors how Caddy and every DNS provider we integrate with normalises FQDNs (case-insensitive, trailing-dot stripped). Validates the *first* hostname only (matching what `dnsCreateRecord` actually provisions records for) — extra entries in the comma-separated Domains field are SAN aliases on the same TLS cert, not separate DNS records.
+- **Error message is actionable.** `Hostname "richardapplegate.io" doesn't live in DNS zone "applegatecloud.com". Pick a zone whose apex matches the hostname (e.g. zone "richardapplegate.io" for hostname "richardapplegate.io"), or change the DNS provider to (none) if you don't want CaddyUI to manage the A record.` The suggested apex comes from a `guessApex` helper that takes the rightmost two labels — good enough for `.com`/`.io`/`.net` style TLDs; doesn't try to be public-suffix-list-aware (the user picks the actual zone from the dropdown anyway, the suggestion is just a hint in the error text).
+
+### Changed
+- **Mismatch warning text strengthened** from "saving will create the DNS record in the wrong place otherwise" (advisory) to "Save will be rejected — pick a zone whose apex matches the hostname, or set the provider to (none) to skip managed DNS" (actionable). Matches the new server-side reality where the save is, in fact, rejected.
+
+### Docker
+- Published as `applegater/caddyui:v2.7.8` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+
+### Compatibility
+- **Existing rows with mismatched zone/hostname pairings are not auto-cleaned.** The validator only fires on save. Re-saving an affected row (via the edit form) will surface the new error and force you to pick the correct zone before it'll save. Rows you don't re-save keep their current behaviour — the next `dnsCreateRecord` call still fails the same way it always did, but now the new amber warning text on the form makes it obvious why.
+
+---
+
 ## [2.7.7] — 2026-04-25 · Reject duplicate domains across proxies and redirects
 
 ### Fixed
