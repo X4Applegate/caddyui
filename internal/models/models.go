@@ -1069,8 +1069,25 @@ func SetSetting(db *sql.DB, key, value string) error {
 	return err
 }
 
-func ProxyHostDomainsConflict(db *sql.DB, serverID int64, domains []string, excludeID int64) (string, error) {
-	// Use admin view (isAdmin=true) so conflict checking is global across all owners.
+// DomainsConflict checks whether any of `domains` is already claimed by another
+// proxy host or redirection host on the same server. Returns the first
+// conflicting domain (in its original casing) or "" if none.
+//
+// excludeProxyID / excludeRedirectID let the caller skip the row being edited
+// — exactly one is non-zero per call (proxy edit → excludeProxyID, redirect
+// edit → excludeRedirectID, create on either form → both 0). Proxies and
+// redirects share no ID space (separate tables), so a single excludeID would
+// be ambiguous, hence the split.
+//
+// Matching is case-insensitive and trim-tolerant. Admin view is forced
+// (isAdmin=true) so the check is global across all owners — a hostname claimed
+// by user A's proxy still conflicts with user B trying to create the same
+// proxy, since Caddy resolves routes by hostname not by owner.
+//
+// Raw routes are intentionally NOT checked here. Their host matchers live
+// inside the route's JSON body rather than a flat column, and `postImport`
+// already covers that case during the Caddyfile import flow. v2.7.7.
+func DomainsConflict(db *sql.DB, serverID int64, domains []string, excludeProxyID, excludeRedirectID int64) (string, error) {
 	hosts, err := ListProxyHosts(db, serverID, 0, true, nil)
 	if err != nil {
 		return "", err
@@ -1079,22 +1096,29 @@ func ProxyHostDomainsConflict(db *sql.DB, serverID int64, domains []string, excl
 	if err != nil {
 		return "", err
 	}
-	existing := map[string]int64{}
+	existing := map[string]struct{}{}
 	for _, h := range hosts {
-		if h.ID == excludeID {
+		if h.ID == excludeProxyID {
 			continue
 		}
 		for _, d := range h.DomainList() {
-			existing[strings.ToLower(d)] = h.ID
+			existing[strings.ToLower(strings.TrimSpace(d))] = struct{}{}
 		}
 	}
 	for _, r := range redirs {
+		if r.ID == excludeRedirectID {
+			continue
+		}
 		for _, d := range r.DomainList() {
-			existing[strings.ToLower(d)] = r.ID
+			existing[strings.ToLower(strings.TrimSpace(d))] = struct{}{}
 		}
 	}
 	for _, d := range domains {
-		if _, ok := existing[strings.ToLower(d)]; ok {
+		key := strings.ToLower(strings.TrimSpace(d))
+		if key == "" {
+			continue
+		}
+		if _, ok := existing[key]; ok {
 			return d, nil
 		}
 	}
