@@ -12,6 +12,7 @@
     <li><a href="#what-is" class="text-brand-600 hover:text-brand-700 hover:underline">What is CaddyUI?</a></li>
     <li><a href="#first-time" class="text-brand-600 hover:text-brand-700 hover:underline">First-time setup</a></li>
     <li><a href="#proxy-hosts" class="text-brand-600 hover:text-brand-700 hover:underline">Proxy Hosts</a></li>
+    <li><a href="#caddyfile-mapping" class="text-brand-600 hover:text-brand-700 hover:underline">Caddyfile ↔ form mapping</a></li>
     <li><a href="#redirections" class="text-brand-600 hover:text-brand-700 hover:underline">Redirections</a></li>
     <li><a href="#advanced" class="text-brand-600 hover:text-brand-700 hover:underline">Advanced Routes</a></li>
     <li><a href="#certificates" class="text-brand-600 hover:text-brand-700 hover:underline">Certificates</a></li>
@@ -93,6 +94,131 @@
     <div class="bg-ink-50 border border-ink-200 rounded-lg px-4 py-3 text-xs text-ink-600">
       <strong class="text-ink-800">Tip:</strong> use the <strong>Enabled</strong> toggle to temporarily turn a rule off without deleting it. Great for maintenance windows.
     </div>
+  </div>
+</section>
+
+{{/* ── Caddyfile ↔ form-field mapping (v2.10) ── */}}
+<section id="caddyfile-mapping" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+    </span>
+    Caddyfile ↔ form mapping
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-4">
+
+    <p>If you've used Caddy before, you've probably written a <strong>Caddyfile</strong> — Caddy's friendly text format. The proxy-host form covers the same ground, just point-and-click. This section translates between them so you can move existing configs into the form (or read what the form actually generates).</p>
+
+    <h3 class="text-base font-semibold text-ink-900 pt-2">A minimal Caddyfile, broken down</h3>
+
+<pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs overflow-x-auto"><code>example.com {
+    reverse_proxy backend:8080
+}</code></pre>
+
+    <p>Three things happen here:</p>
+    <ol class="list-decimal ml-5 space-y-1">
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">example.com</code> — the <strong>site address</strong> (your public hostname). Caddy auto-provisions an HTTPS cert via Let's Encrypt for it.</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">reverse_proxy backend:8080</code> — forward all requests to <code class="px-1 bg-ink-100 rounded font-mono text-xs">backend:8080</code>. The hostname can be a Docker container name, an internal LAN host, or an IP.</li>
+      <li>Everything else is implicit defaults: HTTPS only, auto-cert, X-Forwarded-For added, Host header preserved.</li>
+    </ol>
+
+    <p class="mt-3">In the proxy-host form, that's:</p>
+
+    <table class="w-full text-xs border border-ink-200 rounded-lg overflow-hidden">
+      <thead class="bg-ink-50 text-left">
+        <tr>
+          <th class="px-3 py-2 font-medium">Caddyfile bit</th>
+          <th class="px-3 py-2 font-medium">Form field</th>
+          <th class="px-3 py-2 font-medium">Value</th>
+        </tr>
+      </thead>
+      <tbody class="font-mono">
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">example.com {</td><td class="px-3 py-1.5">Domains</td><td class="px-3 py-1.5">example.com</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">reverse_proxy</td><td class="px-3 py-1.5">Forward Scheme</td><td class="px-3 py-1.5">http (default)</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">backend</td><td class="px-3 py-1.5">Forward Host</td><td class="px-3 py-1.5">backend</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">:8080</td><td class="px-3 py-1.5">Forward Port</td><td class="px-3 py-1.5">8080</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">(implicit HTTPS)</td><td class="px-3 py-1.5">Auto SSL + Force SSL</td><td class="px-3 py-1.5">both ticked</td></tr>
+      </tbody>
+    </table>
+
+    <h3 class="text-base font-semibold text-ink-900 pt-4">Common Caddyfile directives → form fields</h3>
+
+    <table class="w-full text-xs border border-ink-200 rounded-lg overflow-hidden">
+      <thead class="bg-ink-50 text-left">
+        <tr>
+          <th class="px-3 py-2 font-medium">Caddyfile</th>
+          <th class="px-3 py-2 font-medium">Form field</th>
+          <th class="px-3 py-2 font-medium">Notes</th>
+        </tr>
+      </thead>
+      <tbody class="font-mono">
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">reverse_proxy https://...</td><td class="px-3 py-1.5">Forward Scheme = https</td><td class="px-3 py-1.5 font-sans text-ink-500">use when upstream serves TLS itself</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">tls_server_name name</td><td class="px-3 py-1.5">Upstream SNI</td><td class="px-3 py-1.5 font-sans text-ink-500">override SNI for self-signed / shared-cert backends</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">tls_insecure_skip_verify</td><td class="px-3 py-1.5">SSL Verify Upstream = off</td><td class="px-3 py-1.5 font-sans text-ink-500">skip cert verification for internal CA / self-signed</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header_up Host {host}</td><td class="px-3 py-1.5">(default — no field)</td><td class="px-3 py-1.5 font-sans text-ink-500">Caddy passes the original Host by default</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header_up X-Real-IP {remote_host}</td><td class="px-3 py-1.5">Add X-Real-IP Header (checkbox)</td><td class="px-3 py-1.5 font-sans text-ink-500"></td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header_up X-Forwarded-Host {host}</td><td class="px-3 py-1.5">Add X-Forwarded-Host (checkbox)</td><td class="px-3 py-1.5 font-sans text-ink-500"></td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header_up X-Forwarded-Proto {scheme}</td><td class="px-3 py-1.5">(default — Caddy adds it)</td><td class="px-3 py-1.5 font-sans text-ink-500">explicit only if you want to be sure</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">encode gzip zstd</td><td class="px-3 py-1.5">Enable compression (checkbox)</td><td class="px-3 py-1.5 font-sans text-ink-500">in Security &amp; Performance details</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header X-Frame-Options DENY</td><td class="px-3 py-1.5">Custom Response Headers</td><td class="px-3 py-1.5 font-sans text-ink-500">or use Security headers bundle for a curated set</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">@root path /</td><td class="px-3 py-1.5">Path redirects table</td><td class="px-3 py-1.5 font-sans text-ink-500">add a row with Path = /</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">redir @root /webmail 302</td><td class="px-3 py-1.5">Path redirects table</td><td class="px-3 py-1.5 font-sans text-ink-500">Code = 302, Destination = /webmail</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">handle /push/* {…}</td><td class="px-3 py-1.5">Path-based upstream overrides</td><td class="px-3 py-1.5 font-sans text-ink-500">add a rule with that path + upstream</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">handle_path /push/* {…}</td><td class="px-3 py-1.5">Same + tick "Strip Prefix"</td><td class="px-3 py-1.5 font-sans text-ink-500">handle_path drops the matched prefix from the upstream URI</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">basicauth /admin {…}</td><td class="px-3 py-1.5">Basic Auth fields</td><td class="px-3 py-1.5 font-sans text-ink-500">in Security details</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">request_body { max_size 100MB }</td><td class="px-3 py-1.5">Max Request Body (MB)</td><td class="px-3 py-1.5 font-sans text-ink-500"></td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">@bots header User-Agent *Bot* / abort</td><td class="px-3 py-1.5">Block Common Bots (checkbox)</td><td class="px-3 py-1.5 font-sans text-ink-500">built-in regex covers AhrefsBot, SemrushBot, etc.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 class="text-base font-semibold text-ink-900 pt-4">Worked example — a Nextcloud Caddyfile</h3>
+
+<pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs overflow-x-auto"><code>cloud.example.com {
+    redir /.well-known/carddav /remote.php/dav 301
+    redir /.well-known/caldav  /remote.php/dav 301
+
+    handle_path /push/* {
+        reverse_proxy notify_push:7867
+    }
+
+    handle /exapps/* {
+        reverse_proxy nextcloud-harp:8780
+    }
+
+    handle {
+        reverse_proxy nextcloud:80
+    }
+}</code></pre>
+
+    <p>Same thing in the proxy-host form — <em>one</em> proxy host:</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><strong>Domains</strong>: <code class="px-1 bg-ink-100 rounded font-mono text-xs">cloud.example.com</code></li>
+      <li><strong>Forward Host / Port</strong>: <code class="px-1 bg-ink-100 rounded font-mono text-xs">nextcloud</code> / <code class="px-1 bg-ink-100 rounded font-mono text-xs">80</code> (the <em>catch-all</em> upstream — `handle { reverse_proxy nextcloud:80 }`)</li>
+      <li><strong>Path redirects</strong> — two rows: <code class="px-1 bg-ink-100 rounded font-mono text-xs">/.well-known/carddav</code> → 301 → <code class="px-1 bg-ink-100 rounded font-mono text-xs">/remote.php/dav</code>, and the same for <code class="px-1 bg-ink-100 rounded font-mono text-xs">/.well-known/caldav</code></li>
+      <li><strong>Path-based upstream overrides</strong> — two rows:
+        <ul class="list-disc ml-5 mt-1">
+          <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">/push/*</code> → <code class="px-1 bg-ink-100 rounded font-mono text-xs">notify_push:7867</code> + <strong>Strip Prefix</strong> ticked (because Caddyfile uses <code class="px-1 bg-ink-100 rounded font-mono text-xs">handle_path</code>)</li>
+          <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">/exapps/*</code> → <code class="px-1 bg-ink-100 rounded font-mono text-xs">nextcloud-harp:8780</code> + Strip Prefix <em>not</em> ticked (Caddyfile used <code class="px-1 bg-ink-100 rounded font-mono text-xs">handle</code>)</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3 class="text-base font-semibold text-ink-900 pt-4">Things Caddy adds automatically (no field needed)</h3>
+    <p>Don't bother flipping toggles for these — Caddy's reverse_proxy module adds them by default:</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-For</code> — the original client IP, with previous values preserved</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-Proto</code> — http or https, matching what the client used</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">Host</code> — the original Host header from the client</li>
+      <li>HTTPS termination + auto-cert via Let's Encrypt</li>
+      <li>HTTP → HTTPS auto-redirect (when Auto SSL is on)</li>
+    </ul>
+
+    <h3 class="text-base font-semibold text-ink-900 pt-4">When the form isn't enough</h3>
+    <p>For exotic setups (custom matchers like <code class="px-1 bg-ink-100 rounded font-mono text-xs">@nightowl client_ip 192.168.1.0/24</code>, layer-4 SSH proxies, complex template matching) drop into <a href="/raw-routes/new" class="text-brand-600 hover:text-brand-700">Advanced &rarr; New advanced route</a>. There you can paste full Caddyfile and CaddyUI runs it through Caddy's <code class="px-1 bg-ink-100 rounded font-mono text-xs">/adapt</code> on save. The Validate button will tell you if Caddy accepts your snippet before you commit.</p>
+
+    <h3 class="text-base font-semibold text-ink-900 pt-4">Reading what the form generates</h3>
+    <p>If you ever want to see the actual Caddy JSON CaddyUI is producing, hit <a href="/caddy-config" class="text-brand-600 hover:text-brand-700">Caddy Config</a> in the sidebar. That page shows the full live config Caddy is running. Useful for debugging unexpected behaviour or learning what each form toggle actually emits.</p>
+
   </div>
 </section>
 

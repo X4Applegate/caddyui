@@ -25,6 +25,9 @@
       class="w-full rounded-lg border border-ink-200 pl-9 pr-32 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
     <span id="ph-form-search-count" class="hidden absolute right-3 top-1/2 -translate-y-1/2 text-xs text-ink-500 pointer-events-none"></span>
   </div>
+  <p class="text-[11px] text-ink-500 mt-1.5">
+    New here? See <a href="/docs#caddyfile-mapping" class="text-brand-600 hover:text-brand-700">Docs → Caddyfile ↔ form mapping</a> for how each Caddyfile directive translates to the fields below.
+  </p>
 </div>
 
 <form method="post" action="{{if .Host.ID}}/proxy-hosts/{{.Host.ID}}{{else}}/proxy-hosts{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
