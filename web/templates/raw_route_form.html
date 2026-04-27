@@ -553,7 +553,12 @@
           out.classList.remove('text-ink-500');
           if (d.ok) {
             out.classList.add('text-green-600');
-            out.textContent = '✓ Caddy accepts this configuration';
+            // v2.9.233: Caddyfile gets full /adapt validation; JSON only
+            // gets parse + shape check (Caddy's admin API has no JSON-
+            // only validate mode). Make the success message reflect that.
+            out.textContent = (cfArea && cfArea.value.trim())
+              ? '✓ Caddyfile parses cleanly via /adapt'
+              : '✓ JSON parses and has the right shape (deeper validation happens at sync)';
           } else {
             out.classList.add('text-red-600');
             out.textContent = '✗ ' + (d.error || 'Validation failed');
