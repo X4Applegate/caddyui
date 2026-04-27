@@ -1,0 +1,306 @@
+{{define "title"}}API Reference · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">REST API Reference</h1>
+  <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+    CaddyUI exposes a versioned REST API under <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/api/v1</code>. All endpoints return JSON.
+  </p>
+</div>
+
+{{/* ── Table of contents ── */}}
+<nav class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-8 max-w-3xl">
+  <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">On this page</div>
+  <ul class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+    <li><a href="#authentication" class="text-brand-600 hover:text-brand-700 hover:underline">Authentication</a></li>
+    <li><a href="#proxy-hosts" class="text-brand-600 hover:text-brand-700 hover:underline">Proxy Hosts</a></li>
+    <li><a href="#redirection-hosts" class="text-brand-600 hover:text-brand-700 hover:underline">Redirection Hosts</a></li>
+  </ul>
+</nav>
+
+<div class="max-w-3xl space-y-10">
+
+{{/* ── Authentication ── */}}
+<section id="authentication" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </span>
+    Authentication
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>All endpoints require authentication via either a session cookie or an <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">Authorization: Bearer &lt;token&gt;</code> header. API tokens can be created on the <a href="/api-tokens" class="text-brand-600 hover:text-brand-700">API Tokens</a> page (sidebar → API Tokens).</p>
+    <div class="bg-ink-50 border border-ink-200 rounded-lg px-4 py-3">
+      <p class="text-xs font-medium text-ink-800 mb-2">Example — Bearer token header</p>
+      <pre class="font-mono text-xs text-ink-700 overflow-x-auto">Authorization: Bearer caddyui_tok_abc123…</pre>
+    </div>
+    <p class="text-xs text-ink-500">Requests without a valid credential receive <code class="font-mono">401 Unauthorized</code>.</p>
+  </div>
+</section>
+
+{{/* ── Proxy Hosts ── */}}
+<section id="proxy-hosts" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </span>
+    Proxy Hosts
+  </h2>
+
+  {{/* List */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100">
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-brand-100 text-brand-700 font-mono">GET</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/proxy-hosts</code>
+      </div>
+      <p class="text-sm text-ink-600">List all proxy hosts for the current server.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">[
+  {
+    "id": 1,
+    "domain_names": "app.example.com",
+    "forward_scheme": "http",
+    "forward_host": "192.168.1.10",
+    "forward_port": 3000,
+    "enabled": true,
+    "ssl_enabled": true,
+    "http2_support": true,
+    "maintenance_mode": false,
+    "created_at": "2026-01-15T12:00:00Z"
+  }
+]</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-brand-100 text-brand-700 font-mono">GET</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/proxy-hosts/{id}</code>
+      </div>
+      <p class="text-sm text-ink-600">Get a single proxy host by its numeric ID.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
+  "id": 1,
+  "domain_names": "app.example.com",
+  "forward_scheme": "http",
+  "forward_host": "192.168.1.10",
+  "forward_port": 3000,
+  "enabled": true,
+  "ssl_enabled": true,
+  "http2_support": true,
+  "maintenance_mode": false,
+  "created_at": "2026-01-15T12:00:00Z"
+}</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700 font-mono">POST</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/proxy-hosts</code>
+      </div>
+      <p class="text-sm text-ink-600">Create a new proxy host. Returns the created object with its assigned <code class="font-mono text-xs">id</code>.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
+  "domain_names": "app.example.com",
+  "forward_scheme": "http",
+  "forward_host": "192.168.1.10",
+  "forward_port": 3000,
+  "ssl_enabled": true,
+  "http2_support": true,
+  "websocket_support": true
+}</pre>
+      </div>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response — <span class="font-mono normal-case">201 Created</span></p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 7, "domain_names": "app.example.com", … }</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700 font-mono">PUT</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/proxy-hosts/{id}</code>
+      </div>
+      <p class="text-sm text-ink-600">Replace a proxy host's configuration. Send only the fields you wish to update; omitted fields retain their current values.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
+  "forward_host": "192.168.1.20",
+  "forward_port": 8080
+}</pre>
+      </div>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response — <span class="font-mono normal-case">200 OK</span></p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 7, "forward_host": "192.168.1.20", "forward_port": 8080, … }</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700 font-mono">DELETE</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/proxy-hosts/{id}</code>
+      </div>
+      <p class="text-sm text-ink-600">Delete a proxy host. The corresponding Caddy route is removed immediately.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">204 No Content</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700 font-mono">POST</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/proxy-hosts/{id}/toggle</code>
+      </div>
+      <p class="text-sm text-ink-600">Toggle a proxy host between enabled and disabled. The route is added to or removed from Caddy accordingly.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 7, "enabled": false, … }</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700 font-mono">POST</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/proxy-hosts/{id}/maintenance</code>
+      </div>
+      <p class="text-sm text-ink-600">Toggle maintenance mode on a proxy host. When active, all requests to the domain receive a branded maintenance page instead of being proxied upstream.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 7, "maintenance_mode": true, … }</pre>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+{{/* ── Redirection Hosts ── */}}
+<section id="redirection-hosts" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+    </span>
+    Redirection Hosts
+  </h2>
+
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100">
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-brand-100 text-brand-700 font-mono">GET</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/redirection-hosts</code>
+      </div>
+      <p class="text-sm text-ink-600">List all redirection hosts for the current server.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">[
+  {
+    "id": 1,
+    "domain_names": "old.example.com",
+    "forward_scheme": "https",
+    "forward_domain_name": "new.example.com",
+    "http_code": 301,
+    "preserve_path": true,
+    "enabled": true,
+    "created_at": "2026-01-15T12:00:00Z"
+  }
+]</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-brand-100 text-brand-700 font-mono">GET</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/redirection-hosts/{id}</code>
+      </div>
+      <p class="text-sm text-ink-600">Get a single redirection host by its numeric ID.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
+  "id": 1,
+  "domain_names": "old.example.com",
+  "forward_scheme": "https",
+  "forward_domain_name": "new.example.com",
+  "http_code": 301,
+  "preserve_path": true,
+  "enabled": true,
+  "created_at": "2026-01-15T12:00:00Z"
+}</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700 font-mono">POST</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/redirection-hosts</code>
+      </div>
+      <p class="text-sm text-ink-600">Create a new redirection host. Returns the created object with its assigned <code class="font-mono text-xs">id</code>.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
+  "domain_names": "old.example.com",
+  "forward_scheme": "https",
+  "forward_domain_name": "new.example.com",
+  "http_code": 301,
+  "preserve_path": true
+}</pre>
+      </div>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response — <span class="font-mono normal-case">201 Created</span></p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 3, "domain_names": "old.example.com", … }</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700 font-mono">PUT</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/redirection-hosts/{id}</code>
+      </div>
+      <p class="text-sm text-ink-600">Update a redirection host's configuration.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
+  "http_code": 308,
+  "preserve_path": false
+}</pre>
+      </div>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response — <span class="font-mono normal-case">200 OK</span></p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 3, "http_code": 308, "preserve_path": false, … }</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700 font-mono">DELETE</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/redirection-hosts/{id}</code>
+      </div>
+      <p class="text-sm text-ink-600">Delete a redirection host. The corresponding Caddy route is removed immediately.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">204 No Content</pre>
+      </div>
+    </div>
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700 font-mono">POST</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/redirection-hosts/{id}/toggle</code>
+      </div>
+      <p class="text-sm text-ink-600">Toggle a redirection host between enabled and disabled.</p>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 3, "enabled": false, … }</pre>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+</div>
+{{end}}

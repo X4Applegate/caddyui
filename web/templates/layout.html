@@ -4,7 +4,7 @@
   <script>(function(){try{var t=localStorage.getItem('caddyui-theme');if(t==='dark'||(t===null&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark')}}catch(e){}})();</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>{{block "title" .}}CaddyUI{{end}}</title>
+  <title>{{block "title" .}}{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}{{end}}</title>
   <meta name="theme-color" content="#2563eb" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -12,9 +12,18 @@
   <meta name="apple-mobile-web-app-title" content="CaddyUI" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
+  {{if .FaviconURL}}
+  <link rel="icon" href="{{.FaviconURL}}">
+  {{else}}
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+  {{end}}
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
+      darkMode: 'class',
       theme: {
         extend: {
           colors: {
@@ -40,6 +49,9 @@
               900: '#0f172a',
             },
           },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'sans-serif'],
+          },
           boxShadow: {
             card: '0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06)',
           },
@@ -49,8 +61,88 @@
   </script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <link rel="stylesheet" href="/static/app.css" />
+  <style>
+    /* ── Dark mode overrides ──
+       These target Tailwind utility classes via CSS specificity so we don't
+       need dark: variants on every element. The .dark class is toggled on
+       <html> by the theme button and persisted in localStorage. */
+    .dark body { background-color: #0f172a; color: #cbd5e1; }
+
+    /* Backgrounds */
+    .dark .bg-white { background-color: #1e293b !important; }
+    .dark .bg-ink-50 { background-color: #0f172a !important; }
+    .dark .bg-ink-100 { background-color: #1e293b !important; }
+    .dark .bg-ink-200 { background-color: #334155 !important; }
+    .dark .bg-ink-50\/50, .dark .bg-ink-50\/60 { background-color: rgba(15,23,42,0.5) !important; }
+
+    /* Borders */
+    .dark .border-ink-100 { border-color: #1e293b !important; }
+    .dark .border-ink-200 { border-color: #334155 !important; }
+    .dark .border-ink-300 { border-color: #475569 !important; }
+    .dark .divide-ink-100 > * + * { border-color: #1e293b !important; }
+
+    /* Text */
+    .dark .text-ink-900 { color: #f1f5f9 !important; }
+    .dark .text-ink-800 { color: #e2e8f0 !important; }
+    .dark .text-ink-700 { color: #cbd5e1 !important; }
+    .dark .text-ink-600 { color: #94a3b8 !important; }
+    .dark .text-ink-500 { color: #64748b !important; }
+    .dark .text-ink-400 { color: #475569 !important; }
+    .dark .text-ink-300 { color: #334155 !important; }
+
+    /* Inputs and selects */
+    .dark input:not([type=checkbox]):not([type=radio]),
+    .dark select,
+    .dark textarea {
+      background-color: #0f172a !important;
+      border-color: #334155 !important;
+      color: #e2e8f0 !important;
+    }
+    .dark input::placeholder,
+    .dark textarea::placeholder { color: #475569 !important; }
+
+    /* Hover backgrounds on rows/cards */
+    .dark .hover\:bg-ink-50:hover,
+    .dark .hover\:bg-ink-50\/50:hover,
+    .dark .hover\:bg-ink-50\/60:hover { background-color: rgba(30,41,59,0.6) !important; }
+
+    /* Navigation sidebar */
+    .dark #sidebar { background-color: #1e293b; border-color: #334155; }
+
+    /* Tables */
+    .dark table { color: #cbd5e1; }
+    .dark thead,
+    .dark .bg-ink-50.border-b { background-color: #0f172a !important; border-color: #334155 !important; }
+
+    /* Badges and pills – keep brand colors mostly, soften ink ones */
+    .dark .bg-ink-50.text-ink-500,
+    .dark .bg-ink-50.text-ink-600 {
+      background-color: #334155 !important;
+      color: #cbd5e1 !important;
+    }
+    .dark .border-ink-200 { border-color: #334155 !important; }
+
+    /* Header bar (mobile) */
+    .dark header { background-color: #1e293b !important; border-color: #334155 !important; }
+
+    /* Main content area */
+    .dark main { background-color: #0f172a; }
+
+    /* Shadow cards in dark get a subtle border instead */
+    .dark .shadow-card { box-shadow: 0 0 0 1px rgba(51,65,85,0.8) !important; }
+
+    /* Code / monospace */
+    .dark code { background-color: #0f172a; color: #a5b4fc; }
+    .dark pre { background-color: #0f172a !important; border-color: #334155 !important; }
+
+    /* Scrollbar (webkit) */
+    .dark ::-webkit-scrollbar { width: 8px; height: 8px; }
+    .dark ::-webkit-scrollbar-track { background: #0f172a; }
+    .dark ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    .dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
 </head>
-<body class="min-h-screen bg-ink-50 text-ink-800 antialiased">
+<body class="min-h-screen bg-ink-50 text-ink-800 antialiased font-sans">
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function() {
@@ -72,34 +164,40 @@ if ('serviceWorker' in navigator) {
       {{else if eq .CurrentServer.Status "offline"}}<span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
       {{else}}<span class="w-1.5 h-1.5 rounded-full bg-ink-400 shrink-0"></span>{{end}}
       {{else}}
-      <span class="text-base font-semibold tracking-tight text-ink-900">CaddyUI</span>
+      <span class="text-base font-semibold tracking-tight text-ink-900">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}</span>
       {{end}}
     </a>
-    <button type="button" aria-label="Open navigation" onclick="document.getElementById('sidebar').classList.remove('-translate-x-full');document.getElementById('sidebar-scrim').classList.remove('hidden');" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 transition">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-    </button>
+    <div class="flex items-center gap-1">
+      <button type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 dark:text-slate-400 dark:hover:bg-slate-800 transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden dark:block"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 block dark:hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button type="button" aria-label="Open navigation" onclick="document.getElementById('sidebar').classList.remove('-translate-x-full');document.getElementById('sidebar-scrim').classList.remove('hidden');" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
   </header>
   <div id="sidebar-scrim" class="hidden lg:hidden fixed inset-0 z-20 bg-ink-900/40" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');this.classList.add('hidden');"></div>
   <div class="flex min-h-screen lg:h-screen lg:overflow-hidden">
-    <aside id="sidebar" class="fixed lg:static inset-y-0 left-0 z-30 w-60 shrink-0 bg-white border-r border-ink-200 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform">
-      <div class="px-5 py-5 border-b border-ink-200 flex items-center justify-between">
+    <aside id="sidebar" class="fixed lg:static inset-y-0 left-0 z-30 w-60 shrink-0 bg-slate-900 border-r border-slate-800 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform">
+      <div class="px-5 py-5 border-b border-slate-800 flex items-center justify-between">
         <a href="/" class="flex items-center gap-2.5">
           <span class="relative inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-500 shadow-card">
             <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
           </span>
-          <span class="text-base font-semibold tracking-tight text-ink-900">CaddyUI</span>
+          <span class="text-base font-semibold tracking-tight text-white">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}</span>
         </a>
-        <button type="button" aria-label="Close navigation" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');document.getElementById('sidebar-scrim').classList.add('hidden');" class="lg:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-500 hover:bg-ink-100 transition">
+        <button type="button" aria-label="Close navigation" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');document.getElementById('sidebar-scrim').classList.add('hidden');" class="lg:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-slate-400 hover:bg-slate-800 transition">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
 
       {{if and .Servers (gt (len .Servers) 1)}}
-      <div class="px-3 py-2 border-b border-ink-100">
-        <p class="text-[10px] font-semibold uppercase tracking-wider text-ink-400 mb-1">Active Server</p>
+      <div class="px-3 py-2 border-b border-slate-800">
+        <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Active Server</p>
         <form id="server-picker-form" method="post" action="">
           <select onchange="var _id=parseInt(this.value,10);if(_id>0){document.getElementById('server-picker-form').action='/servers/'+_id+'/select';document.getElementById('server-picker-form').submit();}"
-            class="w-full text-xs bg-ink-50 border border-ink-200 rounded-md px-2 py-1.5 text-ink-700 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-100">
+            class="w-full text-xs bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-slate-200 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/20">
             {{range .Servers}}
             <option value="{{.ID}}" {{if and $.CurrentServer (eq $.CurrentServer.ID .ID)}}selected{{end}}>
               {{.Name}}{{if eq .Status "online"}} ●{{else if eq .Status "offline"}} ○{{end}}
@@ -113,21 +211,25 @@ if ('serviceWorker' in navigator) {
         {{$sec := .Section}}
         {{template "navItem" (dict "Section" $sec "Active" "dashboard" "Href" "/" "Label" "Dashboard" "Icon" "dashboard")}}
 
-        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">Routes</div>
+        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Routes</div>
         {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" "Proxy Hosts" "Icon" "proxy")}}
         {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" "Redirections" "Icon" "redirect")}}
         {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" "Advanced" "Icon" "code")}}
 
-        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">Config</div>
+        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Config</div>
         {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" "Certificates" "Icon" "lock")}}
         {{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}
         {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
 
-        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">System</div>
+        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">System</div>
         {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" "Analytics" "Icon" "chart")}}
+        {{template "navItem" (dict "Section" $sec "Active" "live_traffic" "Href" "/live-traffic" "Label" "Live Traffic" "Icon" "lightning")}}
         {{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}
         {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" "Activity" "Icon" "pulse")}}
+        {{template "navItem" (dict "Section" $sec "Active" "caddy_config" "Href" "/caddy-config" "Label" "Caddy Config" "Icon" "code")}}
         {{template "navItem" (dict "Section" $sec "Active" "docs" "Href" "/docs" "Label" "Docs / Tutorial" "Icon" "book")}}
+        {{template "navItem" (dict "Section" $sec "Active" "api_docs" "Href" "/api/docs" "Label" "API" "Icon" "code")}}
+        {{template "navItem" (dict "Section" $sec "Active" "api_tokens" "Href" "/api-tokens" "Label" "API Tokens" "Icon" "key")}}
         {{if eq .User.Role "admin"}}
         {{template "navItem" (dict "Section" $sec "Active" "servers" "Href" "/servers" "Label" "Caddy Servers" "Icon" "server")}}
         {{template "navItem" (dict "Section" $sec "Active" "users" "Href" "/users" "Label" "Users" "Icon" "users")}}
@@ -140,22 +242,22 @@ if ('serviceWorker' in navigator) {
            copyright / GitHub / License on a second line. Profile cluster
            (email, role, 2FA, sign out, dark toggle) lives in the top bar
            since v2.6.2 — the sidebar footer is pure project-meta now. */}}
-      <div class="border-t border-ink-200 px-4 py-3 space-y-1.5">
+      <div class="border-t border-slate-800 px-4 py-3 space-y-1.5">
         {{if .AppVersion}}
         <div class="text-xs flex items-center gap-1.5">
-          <span class="text-[10px] font-mono text-ink-400">CaddyUI {{.AppVersion}}</span>
+          <span class="text-[10px] font-mono text-slate-500">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}} {{.AppVersion}}</span>
           <span id="update-badge" class="hidden inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 cursor-pointer" title="Click to dismiss"></span>
         </div>
         {{end}}
-        <div class="text-[10px] text-ink-400 flex items-center gap-1.5 flex-wrap">
+        <div class="text-[10px] text-slate-500 flex items-center gap-1.5 flex-wrap">
           <span>&copy; 2026</span>
-          <span class="text-ink-300">·</span>
-          <a href="https://github.com/X4Applegate/caddyui" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 hover:text-ink-600 transition" title="GitHub repository">
+          <span class="text-slate-700">·</span>
+          <a href="https://github.com/X4Applegate/caddyui" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 hover:text-slate-300 transition" title="GitHub repository">
             <svg viewBox="0 0 24 24" fill="currentColor" class="w-3 h-3"><path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.21 3.44 9.62 8.21 11.18.6.11.82-.26.82-.57v-2c-3.34.72-4.04-1.41-4.04-1.41-.55-1.37-1.34-1.74-1.34-1.74-1.09-.74.08-.72.08-.72 1.21.08 1.84 1.22 1.84 1.22 1.07 1.8 2.81 1.28 3.5.98.11-.76.42-1.28.76-1.57-2.67-.3-5.47-1.31-5.47-5.83 0-1.29.47-2.34 1.23-3.17-.12-.3-.54-1.51.12-3.14 0 0 1.01-.32 3.3 1.21.96-.26 1.98-.39 3-.4 1.02.01 2.05.14 3 .4 2.29-1.53 3.3-1.21 3.3-1.21.66 1.63.24 2.84.12 3.14.77.83 1.23 1.88 1.23 3.17 0 4.53-2.81 5.53-5.49 5.82.43.37.82 1.1.82 2.21v3.28c0 .32.22.69.82.57C20.57 21.91 24 17.5 24 12.29 24 5.78 18.63.5 12 .5z"/></svg>
             GitHub
           </a>
-          <span class="text-ink-300">·</span>
-          <a href="https://github.com/X4Applegate/caddyui/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" class="hover:text-ink-600 transition" title="CaddyUI Source Available License 1.0">License</a>
+          <span class="text-slate-700">·</span>
+          <a href="https://github.com/X4Applegate/caddyui/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" class="hover:text-slate-300 transition" title="CaddyUI Source Available License 1.0">License</a>
         </div>
       </div>
     </aside>
@@ -199,12 +301,19 @@ if ('serviceWorker' in navigator) {
             {{if eq .User.Role "admin"}}bg-purple-100 text-purple-700
             {{else if eq .User.Role "user"}}bg-blue-50 text-blue-700
             {{else}}bg-ink-100 text-ink-600{{end}}">{{.User.Role}}</span>
+          <a href="/profile" class="text-[11px] text-ink-400 hover:text-brand-600 transition">Profile</a>
           <a href="/totp/setup" class="text-[11px] text-ink-400 hover:text-brand-600 transition">2FA</a>
           <form method="post" action="/logout" class="inline-flex">
             <button class="text-[11px] text-ink-400 hover:text-red-500 transition">Sign out</button>
           </form>
-          <button type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="text-ink-400 hover:text-ink-700 transition shrink-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <a href="/search" title="Search" class="text-ink-400 hover:text-ink-700 transition shrink-0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </a>
+          <button id="theme-toggle" type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="p-1 rounded text-ink-400 hover:text-ink-700 dark:text-slate-400 dark:hover:text-slate-100 transition shrink-0">
+            <!-- Sun icon: shown in dark mode -->
+            <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden dark:block"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+            <!-- Moon icon: shown in light mode -->
+            <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 block dark:hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           </button>
         </div>
       </div>
@@ -276,8 +385,8 @@ if ('serviceWorker' in navigator) {
 </html>{{end}}
 
 {{define "navItem"}}
-<a href="{{.Href}}" class="group flex items-center gap-2.5 px-2.5 py-2 rounded-md transition {{if eq .Section .Active}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-100 hover:text-ink-900{{end}}">
-  <span class="w-4 h-4 shrink-0 {{if eq .Section .Active}}text-brand-600{{else}}text-ink-400 group-hover:text-ink-600{{end}}">{{template "icon" .Icon}}</span>
+<a href="{{.Href}}" class="group flex items-center gap-2.5 px-2.5 py-2 rounded-md transition {{if eq .Section .Active}}bg-slate-700/60 text-white font-medium{{else}}text-slate-400 hover:bg-slate-800 hover:text-slate-100{{end}}">
+  <span class="w-4 h-4 shrink-0 {{if eq .Section .Active}}text-blue-400{{else}}text-slate-500 group-hover:text-slate-300{{end}}">{{template "icon" .Icon}}</span>
   <span>{{.Label}}</span>
 </a>
 {{end}}
@@ -467,4 +576,4 @@ if ('serviceWorker' in navigator) {
 {{end}}
 {{end}}
 
-{{define "icon"}}{{if eq . "dashboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>{{else if eq . "proxy"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>{{else if eq . "redirect"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>{{else if eq . "code"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>{{else if eq . "lock"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{else if eq . "download"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{else if eq . "clipboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>{{else if eq . "camera"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>{{else if eq . "pulse"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>{{else if eq . "users"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>{{else if eq . "server"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>{{else if eq . "settings"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>{{else if eq . "book"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>{{else if eq . "chart"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>{{else if eq . "group"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20v-1a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v1"/><path d="M15 20v-0.5a4 4 0 0 1 4-4h0.5a2.5 2.5 0 0 1 2.5 2.5V20"/></svg>{{end}}{{end}}
+{{define "icon"}}{{if eq . "dashboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>{{else if eq . "proxy"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>{{else if eq . "redirect"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>{{else if eq . "code"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>{{else if eq . "lock"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{else if eq . "download"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{else if eq . "clipboard"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>{{else if eq . "camera"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>{{else if eq . "pulse"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>{{else if eq . "users"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>{{else if eq . "server"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>{{else if eq . "settings"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>{{else if eq . "book"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>{{else if eq . "chart"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>{{else if eq . "group"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20v-1a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v1"/><path d="M15 20v-0.5a4 4 0 0 1 4-4h0.5a2.5 2.5 0 0 1 2.5 2.5V20"/></svg>{{else if eq . "lightning"}}<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>{{else if eq . "key"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>{{end}}{{end}}
