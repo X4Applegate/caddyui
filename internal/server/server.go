@@ -1290,6 +1290,45 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "login.html", data)
 }
 
+// sanitizeForLog escapes CR/LF in user-controlled strings before they land
+// in a log line so an attacker can't smuggle a forged log entry by typing
+// `victim@example.com\n[CRITICAL] system compromised` into a form field.
+// Replaces newlines with their literal escape sequence so the original
+// content is still readable for diagnosis without breaking line boundaries.
+// v2.9.225 — addresses CodeQL "Log entries created from user input" finding
+// on the forgot-password and invite handlers' log.Printf calls.
+func sanitizeForLog(s string) string {
+	return strings.NewReplacer("\n", "\\n", "\r", "\\r").Replace(s)
+}
+
+// clientIPFromRequest extracts the real client IP, preferring forwarded
+// headers when present so installs behind a reverse proxy (the typical
+// CaddyUI deployment — it sits behind the very Caddy it manages) record
+// the actual visitor IP in activity_log instead of 127.0.0.1. Order:
+// X-Real-IP → first entry of X-Forwarded-For → r.RemoteAddr (host portion).
+// Returns the raw string with no normalisation; activity log just stores
+// it as text for the operator to read. v2.9.210.
+func clientIPFromRequest(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("X-Real-Ip")); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		// Left-most entry is the original client; rest are intermediate hops.
+		if i := strings.Index(v, ","); i >= 0 {
+			v = v[:i]
+		}
+		v = strings.TrimSpace(v)
+		if v != "" {
+			return v
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 
@@ -1311,7 +1350,9 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// v2.9.5: brute-force protection — check recent failed login attempts from this IP.
-	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	// v2.9.210: use clientIPFromRequest so installs behind a reverse proxy
+	// match by the actual visitor IP, not the proxy's loopback address.
+	clientIP := clientIPFromRequest(r)
 	if maxStr, _ := models.GetSetting(s.DB, settingMaxLoginAttempts); maxStr != "" {
 		if maxAttempts, err := strconv.Atoi(strings.TrimSpace(maxStr)); err == nil && maxAttempts > 0 {
 			var failCount int
@@ -1354,14 +1395,29 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, r, tok, exp)
+	// v2.9.210: surface successful logins in the activity feed so admins can
+	// see who signed in from where. Detail carries the User-Agent for forensic
+	// context (browser fingerprint mismatch on a teammate's account is useful
+	// signal during an incident).
+	_ = models.LogActivity(s.DB, 0, u.Email, "login_success", "ip:"+clientIP, r.UserAgent(), true)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) postLogout(w http.ResponseWriter, r *http.Request) {
+	// v2.9.210: capture the actor before deleting the session so the activity
+	// row gets the actual user's email rather than empty.
+	cu := s.currentUser(r)
+	actor := ""
+	if cu != nil {
+		actor = cu.Email
+	}
 	if c, err := r.Cookie(auth.SessionCookie); err == nil {
 		_ = auth.DeleteSession(s.DB, c.Value)
 	}
 	auth.ClearSessionCookie(w, r)
+	if actor != "" {
+		_ = models.LogActivity(s.DB, 0, actor, "logout", "ip:"+clientIPFromRequest(r), "", true)
+	}
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -1435,6 +1491,10 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	if !validTOTP {
 		// Put token back so user can retry.
 		s.pendingTOTP.Store(tok, userID)
+		// v2.9.210: log failed TOTP attempts for the same forensic reason
+		// as login_fail — repeated login_totp_fail rows from one IP signal
+		// somebody got past the password but is brute-forcing the 2FA code.
+		_ = models.LogActivity(s.DB, 0, u.Email, "login_totp_fail", "ip:"+clientIPFromRequest(r), "invalid TOTP code", false)
 		renderTOTPErr("Invalid code. Try again.")
 		return
 	}
@@ -1445,6 +1505,9 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, r, sessionTok, exp)
+	// v2.9.210: log the second-factor success so the audit trail mirrors
+	// the password-only login_success path.
+	_ = models.LogActivity(s.DB, 0, u.Email, "login_totp_success", "ip:"+clientIPFromRequest(r), r.UserAgent(), true)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -2934,6 +2997,28 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.AddXRequestHostname = r.FormValue("add_x_request_hostname") == "on"
 	// v2.9.202: add_x_xss_protection_disabled — set X-XSS-Protection: 0 response header.
 	ph.AddXXSSProtectionDisabled = r.FormValue("add_x_xss_protection_disabled") == "on"
+	// v2.9.212: add_x_request_remote_port — forward X-Request-Remote-Port header to upstream.
+	ph.AddXRequestRemotePort = r.FormValue("add_x_request_remote_port") == "on"
+	// v2.9.213: add_x_request_protocol — forward X-Request-Protocol header (HTTP version) to upstream.
+	ph.AddXRequestProtocol = r.FormValue("add_x_request_protocol") == "on"
+	// v2.9.214: add_save_data_vary — append Save-Data to Vary response header.
+	ph.AddSaveDataVary = r.FormValue("add_save_data_vary") == "on"
+	// v2.9.217: add_x_environment — static X-Environment request header value.
+	ph.AddXEnvironment = strings.TrimSpace(r.FormValue("add_x_environment"))
+	// v2.9.218: add_x_trace_id — forward X-Trace-ID header (Caddy UUID per request) to upstream.
+	ph.AddXTraceID = r.FormValue("add_x_trace_id") == "on"
+	// v2.9.219: health_check_query_params — query string appended to active health check URL.
+	ph.HealthCheckQueryParams = strings.TrimSpace(r.FormValue("health_check_query_params"))
+	// v2.9.220: add_x_session_id — forward X-Session-ID header to upstream.
+	ph.AddXSessionID = r.FormValue("add_x_session_id") == "on"
+	// v2.9.221: add_x_response_trace_id — set X-Response-Trace-ID response header.
+	ph.AddXResponseTraceID = r.FormValue("add_x_response_trace_id") == "on"
+	// v2.9.222: add_x_request_local_addr — forward X-Local-Addr header to upstream.
+	ph.AddXRequestLocalAddr = r.FormValue("add_x_request_local_addr") == "on"
+	// v2.9.223: add_x_request_local_port — forward X-Local-Port header to upstream.
+	ph.AddXRequestLocalPort = r.FormValue("add_x_request_local_port") == "on"
+	// v2.9.224: add_x_request_path_info — forward X-PathInfo header to upstream.
+	ph.AddXRequestPathInfo = r.FormValue("add_x_request_path_info") == "on"
 	return ph, nil
 }
 
@@ -7196,11 +7281,33 @@ func (s *Server) apiTestUpstream(w http.ResponseWriter, r *http.Request) {
 	latencyMs := time.Since(start).Milliseconds()
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]any{
+		// v2.9.212: surface actionable hints for the most common failure
+		// classes so users don't have to interpret raw Go net errors.
+		// DNS failures from inside the caddyui container are extremely
+		// common when targeting LAN device hostnames (NetBIOS / mDNS / a
+		// router's DHCP-resolved name) — the Caddy that will actually
+		// proxy to it may resolve fine while caddyui's container can't.
+		hint := ""
+		msg := err.Error()
+		switch {
+		case isDNSError(err):
+			hint = "DNS lookup failed inside the CaddyUI container. The hostname may resolve fine for the actual Caddy server but not from CaddyUI's DNS resolver. Try the upstream's IP address directly, add `--add-host=" + host + ":<ip>` to the CaddyUI container, or point the container at your LAN DNS with `--dns=<router-ip>`."
+		case strings.Contains(msg, "x509") || strings.Contains(msg, "tls:") || strings.Contains(msg, "certificate"):
+			hint = "TLS handshake failed even with cert verification disabled. The upstream may not be listening on " + port + " over TLS, or it speaks plain HTTP. Try scheme=http instead of https."
+		case strings.Contains(msg, "connection refused"):
+			hint = "TCP connection refused — the upstream isn't listening on " + host + ":" + port + ", or a firewall is blocking the CaddyUI container from reaching it."
+		case strings.Contains(msg, "i/o timeout") || strings.Contains(msg, "deadline exceeded"):
+			hint = "Request timed out after 5s. Upstream may be unreachable from the CaddyUI container's network, or it's too slow to respond."
+		}
+		out := map[string]any{
 			"ok":         false,
 			"latency_ms": latencyMs,
-			"error":      err.Error(),
-		})
+			"error":      msg,
+		}
+		if hint != "" {
+			out["hint"] = hint
+		}
+		json.NewEncoder(w).Encode(out)
 		return
 	}
 	resp.Body.Close()
@@ -7421,6 +7528,17 @@ func sendEmailTo(db *sql.DB, to, subject, body string) error {
 		from = "caddyui@localhost"
 	}
 
+	// v2.9.225: same CRLF strip applied to sendEmail (v2.9.209) — the second
+	// SMTP code path in sendEmailTo also interpolated user-controlled values
+	// straight into header lines, allowing header smuggling via \r\n in
+	// `to`/`from`/`subject`. CodeQL flagged it as a separate "Email content
+	// injection" finding from the v2.9.209 fix because the sites are distinct.
+	stripCRLFTo := func(s string) string {
+		return strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	}
+	from = stripCRLFTo(from)
+	subject = stripCRLFTo(subject)
+	to = stripCRLFTo(to)
 	serverAddr := fmt.Sprintf("%s:%d", host, port)
 	msg := []byte(
 		"From: CaddyUI <" + from + ">\r\n" +
@@ -7519,7 +7637,7 @@ func (s *Server) postForgotPassword(w http.ResponseWriter, r *http.Request) {
 				"If you did not request this, you can safely ignore this email.\n\n"+
 				"— CaddyUI", u.Name, resetURL)
 		if err := sendEmailTo(s.DB, email, "CaddyUI password reset", body); err != nil {
-			log.Printf("forgot-password: sendEmail to %s: %v", email, err)
+			log.Printf("forgot-password: sendEmail to %s: %v", sanitizeForLog(email), err)
 		}
 	}
 	http.Redirect(w, r, "/forgot-password?sent=1", http.StatusSeeOther)
@@ -7635,7 +7753,7 @@ func (s *Server) postInviteUser(w http.ResponseWriter, r *http.Request) {
 			"%s\n\n"+
 			"— CaddyUI", acceptURL)
 	if err := sendEmailTo(s.DB, email, "You're invited to CaddyUI", body); err != nil {
-		log.Printf("invite: sendEmail to %s: %v", email, err)
+		log.Printf("invite: sendEmail to %s: %v", sanitizeForLog(email), err)
 	}
 	http.Redirect(w, r, "/users?invited=1", http.StatusSeeOther)
 }
