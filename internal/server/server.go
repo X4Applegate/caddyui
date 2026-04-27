@@ -3965,6 +3965,10 @@ type caddyfileImportResult struct {
 	Head     string // site-address line (e.g. "example.com")
 	Snippet  string // original Caddyfile block
 	Status   string // "created", "skipped", "error"
+	// Kind, when Status == "created", is one of "proxy", "redirect", "raw" so
+	// the import result table can show the user which list each block landed
+	// in. Empty for skipped/error rows. v2.10.8.
+	Kind     string
 	Message  string // error message or ID info
 	RouteIdx int
 }
@@ -4169,7 +4173,8 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 				created++
 				results = append(results, caddyfileImportResult{
 					Head: label, Snippet: blockText, RouteIdx: idx,
-					Status: "created", Message: fmt.Sprintf("proxy_host:%d", id),
+					Status: "created", Kind: "proxy",
+					Message: fmt.Sprintf("proxy_host:%d", id),
 				})
 				continue
 			}
@@ -4190,7 +4195,8 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 				created++
 				results = append(results, caddyfileImportResult{
 					Head: label, Snippet: blockText, RouteIdx: idx,
-					Status: "created", Message: fmt.Sprintf("redirection:%d", id),
+					Status: "created", Kind: "redirect",
+					Message: fmt.Sprintf("redirection:%d", id),
 				})
 				continue
 			}
@@ -4226,7 +4232,8 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		created++
 		results = append(results, caddyfileImportResult{
 			Head: label, Snippet: blockText, RouteIdx: idx,
-			Status: "created", Message: fmt.Sprintf("raw_route:%d", id),
+			Status: "created", Kind: "raw",
+			Message: fmt.Sprintf("raw_route:%d", id),
 		})
 	}
 
@@ -4256,12 +4263,30 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// v2.10.8: per-kind tallies for the result banner so users can see at
+	// a glance "2 proxies, 1 redirection, 0 advanced" instead of a flat
+	// "imported 3 routes". Kind is empty for skipped/error rows so they
+	// don't inflate the success counts.
+	var nProxy, nRedir, nRaw int
+	for _, res := range results {
+		switch res.Kind {
+		case "proxy":
+			nProxy++
+		case "redirect":
+			nRedir++
+		case "raw":
+			nRaw++
+		}
+	}
 	s.render(w, r, "caddyfile_import.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Section": "paste",
-		"Results": results,
-		"Created": created,
-		"Input":   "",
+		"User":           s.currentUser(r),
+		"Section":        "paste",
+		"Results":        results,
+		"Created":        created,
+		"CreatedProxy":   nProxy,
+		"CreatedRedir":   nRedir,
+		"CreatedRaw":     nRaw,
+		"Input":          "",
 	})
 }
 

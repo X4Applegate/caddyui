@@ -26,14 +26,20 @@
 
 {{if .Results}}
 <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden mb-6 max-w-4xl">
-  <div class="bg-ink-50/50 px-5 py-3 text-xs uppercase tracking-wider text-ink-600 font-medium border-b border-ink-100">
-    {{if .Created}}Imported {{.Created}} route(s){{else}}No routes imported{{end}}
+  <div class="bg-ink-50/50 px-5 py-3 text-xs uppercase tracking-wider text-ink-600 font-medium border-b border-ink-100 flex items-center gap-3 flex-wrap">
+    {{if .Created}}
+      <span>Imported {{.Created}} route{{if ne .Created 1}}s{{end}}</span>
+      {{if .CreatedProxy}}<span class="normal-case tracking-normal text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full text-[11px] font-medium">{{.CreatedProxy}} proxy{{if ne .CreatedProxy 1}} hosts{{else}} host{{end}}</span>{{end}}
+      {{if .CreatedRedir}}<span class="normal-case tracking-normal text-sky-700 bg-sky-50 px-2 py-0.5 rounded-full text-[11px] font-medium">{{.CreatedRedir}} redirection{{if ne .CreatedRedir 1}}s{{end}}</span>{{end}}
+      {{if .CreatedRaw}}<span class="normal-case tracking-normal text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full text-[11px] font-medium">{{.CreatedRaw}} advanced</span>{{end}}
+    {{else}}No routes imported{{end}}
   </div>
   <table class="w-full text-sm">
     <thead class="bg-ink-50/50 text-left">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         <th class="px-5 py-3 font-medium">Block</th>
         <th class="px-5 py-3 font-medium">Status</th>
+        <th class="px-5 py-3 font-medium">Imported as</th>
         <th class="px-5 py-3 font-medium">Detail</th>
       </tr>
     </thead>
@@ -48,6 +54,17 @@
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">skipped</span>
           {{else}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700">error</span>
+          {{end}}
+        </td>
+        <td class="px-5 py-3 text-xs">
+          {{if eq .Kind "proxy"}}
+            <a href="/proxy-hosts" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition">Proxy Host</a>
+          {{else if eq .Kind "redirect"}}
+            <a href="/redirection-hosts" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-sky-50 text-sky-700 hover:bg-sky-100 transition">Redirection</a>
+          {{else if eq .Kind "raw"}}
+            <a href="/raw-routes" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 transition">Advanced</a>
+          {{else}}
+            <span class="text-ink-300">—</span>
           {{end}}
         </td>
         <td class="px-5 py-3 text-ink-600 font-mono text-xs">{{.Message}}</td>
