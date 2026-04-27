@@ -1,9 +1,13 @@
 package models
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,6 +29,7 @@ type User struct {
 	CreatedAt    time.Time
 	TOTPSecret   string
 	TOTPEnabled  bool
+	BackupCodes  string // JSON array of SHA-256 hex hashes; empty means no backup codes set
 }
 
 const (
@@ -79,8 +84,510 @@ type ProxyHost struct {
 	CompressionEnabled     bool   // prepend gzip/zstd encode handler
 	SecurityHeadersEnabled bool   // add HSTS, X-Frame-Options, X-Content-Type-Options, etc.
 	TLSMinVersion          string // "" | "1.0" | "1.1" | "1.2" | "1.3"
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	CustomReqHeaders  string // JSON: map[string]string of request headers to set/delete
+	CustomRespHeaders string // JSON: map[string]string of response headers to set/delete
+	URLRewrites       string // JSON: []URLRewriteRule
+	MaintenanceMode       bool   // v2.9.3: serve 503 instead of proxying
+	MaintenanceMsg        string // custom message shown on the 503 page
+	MaintenanceStatusCode int    // 503 (default), 429, 502, or 520
+	MaxRequestBodyMB  int    // 0 = unlimited; >0 = max body size in MiB
+	StickySessions    bool   // cookie-based LB for multi-upstream hosts
+	UpstreamTimeoutSec int  // 0 = Caddy default; >0 = dial/response timeout seconds
+	CORSEnabled  bool   // add CORS response headers
+	CORSOrigins  string // comma-separated allowed origins, or "*"
+	HealthCheckURI         string // e.g. "/health"; empty = no active checks
+	HealthCheckIntervalSec int    // default 30 when HealthCheckURI is set
+	HealthCheckMethod      string // "GET" (default) or "HEAD"
+	KeepaliveConns         int    // max idle conns per host; 0 = Caddy default
+	Tags                   string // comma-separated labels, UI-only
+	Notes                  string // freeform admin notes, UI-only
+	DisableAccessLog       bool   // skip analytics ingest for this host
+	AddRequestID           bool   // inject X-Request-Id header for distributed tracing
+	StripRespHeaders       string // comma-separated response header names to delete
+	BlockedAgents          string // comma-separated user-agent patterns to block (403)
+	ResponseCacheControl   string // override Cache-Control response header; empty = keep upstream value
+	UpstreamSNI            string // override TLS SNI for HTTPS upstreams with a different hostname
+	HSTSPreload            bool   // append "; preload" to the HSTS header when SecurityHeadersEnabled
+	MaxConnsPerHost        int    // max concurrent connections per upstream (0 = unlimited)
+	HealthCheckTimeoutSec  int    // active health check timeout in seconds (default 5)
+	UpstreamRetries        int    // number of retries on upstream failure (0 = no retry)
+	ForceHTTP1             bool   // force HTTP/1.1 to upstream (disables H2 upstreams)
+	BasicAuthRealm         string // realm shown in browser basic-auth prompt (default "Restricted")
+	ErrorPageHTML          string // custom HTML served when upstream returns 4xx/5xx; empty = pass through
+	// v2.9.5: scheduled maintenance window
+	MaintenanceWindowStart string // "HH:MM" (24-hour) when the window begins; "" = disabled
+	MaintenanceWindowEnd   string // "HH:MM" (24-hour) when the window ends
+	MaintenanceWindowDays  string // "" = every day; "mon,wed,fri" subset (3-letter abbrevs)
+	// v2.9.5: per-host security
+	IPBlocklist   string // comma-separated CIDR ranges to block (403 response)
+	LBPolicy      string // "" | "round_robin" | "random" | "ip_hash" | "least_conn" | "uri_hash" | "cookie"
+	ProxyProtocol         string // "" | "v1" | "v2" — PROXY protocol version for upstream transport
+	RobotsTxt             string // custom robots.txt body injected before the reverse proxy; empty = passthrough
+	PassiveFailDurationSec int    // seconds to hold upstream out-of-rotation after failures; 0 = disabled
+	PassiveMaxFails        int    // consecutive failures before marking unhealthy; 0 = Caddy default (1)
+	HSTSMaxAgeSec          int    // 0 = use default 31536000; >0 = custom max-age for Strict-Transport-Security
+	CSPHeader              string // Content-Security-Policy header value; empty = omit
+	H2CEnabled             bool   // use h2c (HTTP/2 cleartext) transport to upstream
+	HealthCheckHeaders     string // JSON map of headers to include in active health check requests
+	// v2.9.6: streaming, buffering, trusted proxy control
+	FlushImmediate  bool   // set flush_interval:-1 for SSE/streaming backends
+	BufferResponses bool   // buffer full response body before sending to client
+	TrustedProxies  string // comma-separated CIDR ranges trusted for X-Forwarded-For
+	// v2.9.7: host override, per-host read timeout, dotfile blocking
+	UpstreamHostOverride string // override Host header sent to upstream; "" = forward original
+	ReadTimeoutSec       int    // response body read timeout in seconds; 0 = no limit
+	DenyDotfiles         bool   // block requests to dotfiles/directories (403)
+	// v2.9.8: request buffering; CORS enhancements
+	RequestBuffersKB      int    // buffer this many KB of request body before forwarding; 0 = disabled
+	CORSAllowCredentials  bool   // add Access-Control-Allow-Credentials: true
+	CORSExposeHeaders     string // comma-separated list for Access-Control-Expose-Headers
+	// v2.9.9: upstream TLS verification; separate dial timeout
+	SSLVerifyUpstream bool // verify upstream TLS certificate (default: skip verify)
+	DialTimeoutSec    int  // dial/connect timeout in seconds; 0 = use upstream_timeout_sec or Caddy default
+	// v2.9.10: header-based API key auth; empty User-Agent blocking
+	APIKeyHeader          string // header name for API key authentication (e.g. "X-API-Key"); "" = disabled
+	APIKeyValue           string // expected API key value; "" = disabled
+	BlockEmptyUserAgent   bool   // return 403 if the request has no User-Agent header
+	// v2.9.11: error redirect URL; granular security header overrides
+	ErrorRedirectURL  string // redirect client here on 4xx/5xx from upstream (overrides error_page_html)
+	PermissionsPolicy string // custom Permissions-Policy header value; empty = omit
+	XFrameOptions     string // override X-Frame-Options in security bundle; empty = use "SAMEORIGIN"
+	ReferrerPolicy    string // override Referrer-Policy in security bundle; empty = use default
+	// v2.9.14: HSTS includeSubDomains toggle; CSP report-only; keepalive idle timeout
+	HSTSIncludeSubdomains   bool   // add "; includeSubDomains" to HSTS header (DB DEFAULT 1 preserves prior always-on behaviour)
+	CSPReportOnly           string // Content-Security-Policy-Report-Only header value
+	KeepaliveIdleTimeoutSec int    // upstream keepalive idle timeout in seconds (0 = default 90 s)
+	// v2.9.15: active health check expected response controls
+	HealthCheckExpectStatus    int    // 0 = any 2xx; >0 = require that exact HTTP status code
+	HealthCheckExpectBody      string // regexp that must match somewhere in the response body
+	HealthCheckFollowRedirects bool   // follow redirects during active health probes
+	// v2.9.16: path-based routing
+	PathMatcher     string // if non-empty, route only matches this path prefix (e.g. "/api")
+	StripPathPrefix bool   // strip PathMatcher prefix before forwarding to upstream
+	// v2.9.17: load-balancer tuning
+	StickyCookieName  string // custom cookie name for sticky-session LB (default "lb_backend")
+	LBTryDurationSec  int    // seconds to keep retrying across upstreams (0 = Caddy default)
+	LBTryIntervalMS   int    // ms between retry attempts (0 = Caddy default 250ms)
+	// v2.9.18: compression min size + client IP forwarding
+	CompressionMinSizeKB int  // minimum response size in KB to compress (0 = always compress)
+	ForwardClientIP      bool // add X-Real-IP header with the real client IP to upstream requests
+	// v2.9.19: CORS fine-tuning
+	CORSMaxAgeSec      int    // Access-Control-Max-Age in seconds (0 = default 86400)
+	CORSAllowMethods   string // override Access-Control-Allow-Methods (empty = use default)
+	CORSAllowHeaders   string // override Access-Control-Allow-Headers (empty = use default)
+	// v2.9.22
+	RetryStatusCodes string // comma-separated HTTP status codes to trigger retry (e.g. "502,503,504")
+	WriteTimeoutSec  int    // time to write request body to upstream; 0 = no limit
+	// v2.9.23
+	UpstreamTLSMinVersion string // "" | "1.2" | "1.3" — minimum TLS version for upstream connections
+	ForwardProxyURL       string // chain through an upstream HTTP proxy (e.g. "http://squid:3128")
+	// v2.9.25
+	BlockedMethods string // comma-separated HTTP methods to block with 405 (e.g. "TRACE,CONNECT")
+	// v2.9.27: forward auth
+	ForwardAuthURL         string // auth service URL; empty = disabled
+	ForwardAuthCopyHeaders string // comma-separated response headers to copy from auth service to upstream
+	// v2.9.28: query string control
+	StripQueryString  bool   // remove the entire query string before forwarding
+	DeleteQueryParams string // comma-separated query param names to strip (e.g. "utm_source,fbclid")
+	// v2.9.29: request/response timing
+	RequestBodyReadTimeoutSec  int // client→caddy request body read timeout; 0 = no limit
+	ResponseHeaderTimeoutSec   int // caddy→upstream response header wait; 0 = use upstream_timeout_sec
+	// v2.9.31: upstream connection lifetime limit
+	MaxConnDurationSec int // 0 = unlimited; >0 = max seconds before Caddy replaces the upstream conn
+	// v2.9.32: upstream response decompression before client delivery
+	DecompressResponse bool // when true, decompress gzip/br upstream responses before forwarding
+	// v2.9.33: color label for visual grouping in list views (no Caddy impact)
+	Color string // "" | "red" | "orange" | "yellow" | "green" | "teal" | "blue" | "purple" | "pink" | "gray"
+	// v2.9.34: automatic www ↔ bare domain redirect injected before the proxy
+	WWWRedirect string // "" (off) | "to_www" (bare→www) | "to_bare" (www→bare)
+	// v2.9.35: strip request headers — companion to StripRespHeaders for the request side
+	StripReqHeaders string // comma-separated request header names to delete before forwarding
+	// v2.9.36: upstream path prefix — prepend a static prefix to every upstream request URI
+	UpstreamPathPrefix string // e.g. "/v2" → proxy / → upstream /v2/
+	// v2.9.37: compression tuning
+	CompressionLevel      int  // 0 = default; 1-9 for gzip level (1 fast, 9 best)
+	CompressionPreferGzip bool // when true, prefer gzip over zstd in encode handler
+	// v2.9.39: sort order — manual ordering weight in the list view (0 = default, lower = first)
+	SortOrder int
+	// v2.9.41: allowed_methods — HTTP method allowlist; empty = allow all (complement to BlockedMethods denylist)
+	AllowedMethods string // comma-separated methods, e.g. "GET,POST,PUT" — requests with other methods get 405
+	// v2.9.42: upstream max response header size in KB (0 = Caddy default ~1MB)
+	UpstreamMaxRespHeaderKB int // transport.max_response_header_size in bytes = value * 1024
+	// v2.9.43: dedicated health check port — run active probes on a different port than traffic (0 = same port)
+	HealthCheckPort int // e.g. 8080 when the app serves /health on :8080 but traffic on :80
+	// v2.9.44: request_id_header_name — custom header for injected request IDs ('' = X-Request-Id default)
+	RequestIDHeaderName string // e.g. "X-Trace-Id"; only used when AddRequestID is true
+	// v2.9.45: lb_cookie_path — path scope for the sticky-session LB cookie ('' = / default)
+	LBCookiePath string // e.g. "/api" scopes the cookie to /api subtree only
+	// v2.9.46: passive_unhealthy_latency_ms — mark upstream passive-unhealthy above this latency (0 = disabled)
+	PassiveUnhealthyLatencyMS int // e.g. 5000 → trigger unhealthy if response > 5s
+	// v2.9.47: tls_handshake_timeout_sec — TLS handshake timeout for upstream connections (0 = Caddy default)
+	TLSHandshakeTimeoutSec int // only applies when ForwardScheme=https or UpstreamTLSMinVersion is set
+	// v2.9.48: expect_continue_timeout_sec — wait for upstream 100-Continue (0 = disabled/no wait)
+	ExpectContinueTimeoutSec int // useful for large file uploads behind a reverse proxy
+	// v2.9.49: response_buffers_kb — per-connection response streaming buffer size (0 = Caddy default)
+	ResponseBuffersKB int // sets Caddy reverse_proxy.response_buffers; distinct from BufferResponses bool
+	// v2.9.50: upstream_max_idle_conns — total idle connections across all upstream hosts (0 = Caddy default)
+	UpstreamMaxIdleConns int // transport.keep_alive.max_idle_conns; complement to per-host KeepaliveConns
+	// v2.9.51: upstream_keep_alive_probe_sec — interval for TCP keepalive probes to upstreams (0 = no probing)
+	UpstreamKeepAliveProbeIntervalSec int // transport.keep_alive.probe_interval
+	// v2.9.52: forward_auth_method — HTTP method for ForwardAuth subrequest ('' = GET default)
+	ForwardAuthMethod string // "GET" | "POST" | "HEAD" — method used when calling the auth service
+	// v2.9.53: grpc_web_enabled — prepend the grpc_web handler to transcode gRPC-Web to gRPC for the upstream
+	GRPCWebEnabled bool // allows browser clients that use gRPC-Web or gRPC-Gateway to reach gRPC upstreams
+	// v2.9.54: forward_auth_headers_prefix — prefix applied to all headers copied from the ForwardAuth response
+	ForwardAuthHeadersPrefix string // e.g. "X-Auth-" → header Foo from auth becomes X-Auth-Foo upstream
+	// v2.9.55: health_check_max_size_kb — max body bytes read from upstream during active health checks (0 = Caddy default)
+	HealthCheckMaxSizeKB int // reduces memory use when upstream returns large responses on the health endpoint
+	// v2.9.56: strip_path_suffix — strip this static suffix from the request path before proxying (e.g. ".html")
+	StripPathSuffix string // Caddy rewrite.strip_path_suffix; complements StripPathPrefix
+	// v2.9.57: add_req_query_params — newline or comma-separated key=value pairs appended to upstream query string
+	AddReqQueryParams string // e.g. "version=2,debug=false" → upstream gets ?version=2&debug=false appended
+	// v2.9.58: error_page_codes — comma-separated HTTP codes that trigger ErrorPageHTML (empty = all 4xx/5xx)
+	ErrorPageCodes string // e.g. "404,500,503" — only serve custom error page for these codes
+	// v2.9.59: upstream_tls_ca_pem_file — path to CA certificate bundle for upstream TLS verification
+	UpstreamTLSCAPEMFile string // only used when SSLVerifyUpstream=true; '' = system default CA
+	// v2.9.60: keepalive_disabled — completely disable upstream TCP keepalive (for NTLM/kerberos auth upstreams)
+	KeepaliveDisabled bool // when true, every upstream request uses a new connection (no pooling)
+	// v2.9.61: trailing_slash_redirect — auto-redirect for trailing slash normalisation ('' = off | "add" = add / | "remove" = strip /)
+	TrailingSlashRedirect string // injected as a subroute redirect before the proxy
+	// v2.9.62: dial_fallback_delay_ms — ms to wait before falling back to the next upstream on dial failure
+	DialFallbackDelayMS int // Caddy transport.dial_fallback_delay; 0 = Caddy default (300ms)
+	// v2.9.63: upstream_network — TCP protocol variant for upstream dial ('' = tcp | "tcp4" | "tcp6")
+	UpstreamNetwork string // force IPv4 or IPv6 for upstream connections
+	// v2.9.64: dns_resolver — custom DNS server for resolving upstream hostnames ('' = system resolver)
+	DNSResolver string // e.g. "1.1.1.1:53"; only used when UpstreamNetwork or dial requires DNS
+	// v2.9.65: path_matcher_type — how PathMatcher is interpreted ('' = prefix | "exact" | "regexp")
+	PathMatcherType string // '' (prefix, default) | "exact" | "regexp"
+	// v2.9.66: cors_allow_private_network — add Access-Control-Allow-Private-Network: true for Chrome private network access
+	CORSAllowPrivateNetwork bool // RFC-compliant CORS extension for private network requests from browser
+	// v2.9.67: robots_txt_disallow_all — serve "User-agent: *\nDisallow: /" robots.txt as a quick bot block
+	RobotsTxtDisallowAll bool // overrides RobotsTxt field; prepended before the proxy
+	// v2.9.68: maintenance_retry_after_sec — Retry-After header value in maintenance 503 response (0 = default 3600)
+	MaintenanceRetryAfterSec int
+	// v2.9.69: upstream_resolve_timeout_sec — timeout in seconds for DNS resolution of upstream hostnames (0 = Caddy default)
+	UpstreamResolveTimeoutSec int
+	// v2.9.70: upstream_read_buffer_size_kb — transport read buffer size in KB (0 = Caddy default 32KB)
+	UpstreamReadBufferSizeKB int
+	// v2.9.71: upstream_write_buffer_size_kb — transport write buffer size in KB (0 = Caddy default 32KB)
+	UpstreamWriteBufferSizeKB int
+	// v2.9.72: req_header_replace — newline-separated "Name|regexp|replacement" rules applied to request header values
+	ReqHeaderReplace string
+	// v2.9.73: resp_header_replace — newline-separated "Name|regexp|replacement" rules applied to response header values
+	RespHeaderReplace string
+	// v2.9.74: upstream_http_versions — comma-separated HTTP version list for upstream transport ('' = Caddy default)
+	UpstreamHTTPVersions string // e.g. "1.1" | "2" | "1.1,2" — overrides ForceHTTP1/H2CEnabled when set
+	// v2.9.75: health_check_body — request body sent with active health check probes (e.g. a JSON payload)
+	HealthCheckBody string
+	// v2.9.76: add_canonical_link_header — inject Link: <https://primarydomain/>; rel="canonical" response header
+	AddCanonicalLinkHeader bool
+	// v2.9.77: http_basic_auth_upstream — "user:pass" credentials injected as Authorization: Basic to upstream requests
+	HTTPBasicAuthUpstream string // stored in plain text; base64-encoded at config-build time
+	// v2.9.78: block_ua_regexp — Go regexp pattern; requests whose User-Agent matches receive a 403
+	BlockUARegexp string
+	// v2.9.79: security_txt_body — serve this text at GET/HEAD /.well-known/security.txt before proxying
+	SecurityTxtBody string
+	// v2.9.80: server_header_value — override the Server response header ('' = keep upstream value)
+	ServerHeaderValue string
+	// v2.9.81: x_robots_tag — X-Robots-Tag response header value ('' = omit header)
+	XRobotsTag string
+	// v2.9.82: add_forwarded_header — inject RFC 7239 Forwarded header on upstream requests
+	AddForwardedHeader bool
+	// v2.9.83: lb_cookie_secret — HMAC secret for signing sticky-session cookies (prevents client tampering)
+	LBCookieSecret string
+	// v2.9.84: passive_unhealthy_status_codes — comma-separated HTTP codes that mark upstream passive-unhealthy
+	PassiveUnhealthyStatusCodes string
+	// v2.9.85: health_check_content_type — Content-Type header value sent with active health check requests
+	HealthCheckContentType string
+	// v2.9.86: upstream_tls_client_cert_file — path to PEM client certificate for mutual TLS to upstream
+	UpstreamTLSClientCertFile string
+	// v2.9.87: upstream_tls_client_key_file — path to PEM private key matching UpstreamTLSClientCertFile
+	UpstreamTLSClientKeyFile string
+	// v2.9.88: block_private_ips — reject incoming connections from RFC 1918 / loopback IP ranges (403)
+	BlockPrivateIPs bool
+	// v2.9.89: enable_brotli — include brotli (br) in the encode handler when CompressionEnabled is true
+	EnableBrotli bool
+	// v2.9.90: vary_header — value for the Vary response header ('' = omit)
+	VaryHeader string
+	// v2.9.91: strip_etag — delete ETag response header from upstream responses
+	StripETag bool
+	// v2.9.92: http2_push_paths — newline-separated resource paths to push via HTTP/2 server push
+	HTTP2PushPaths string
+	// v2.9.93: deny_content_types — comma-separated Content-Type prefixes that receive 415
+	DenyContentTypes string
+	// v2.9.94: upstream_local_addr — local IP address to bind when dialing upstream connections
+	UpstreamLocalAddr string
+	// v2.9.95: upstream_tls_renegotiation — TLS renegotiation policy for upstream connections: '' (never) | 'once' | 'freely'
+	UpstreamTLSRenegotiation string
+	// v2.9.96: upstream_tls_curves — comma-separated TLS curve names for upstream connections ('' = Caddy default)
+	UpstreamTLSCurves string
+	// v2.9.97: upstream_tls_max_version — maximum TLS version for upstream connections: '' | '1.2' | '1.3'
+	UpstreamTLSMaxVersion string
+	// v2.9.98: upstream_tls_pins — newline-separated SHA-256 SPKI fingerprints for upstream certificate pinning
+	UpstreamTLSPins string
+	// v2.9.99: lb_header_field — request header name used by the 'header' LB selection policy for sticky routing
+	LBHeaderField string
+	// v2.9.100: maintenance_custom_headers — newline-separated "Name: Value" headers added to the 503 maintenance response
+	MaintenanceCustomHeaders string
+	// v2.9.101: deny_extensions — comma-separated file extensions to block (e.g. ".php,.asp,.aspx") — returns 403
+	DenyExtensions string
+	// v2.9.102: inject_request_timestamp — add X-Request-Timestamp header with UNIX epoch to upstream requests
+	InjectRequestTimestamp bool
+	// v2.9.103: add_resp_cookies — newline-separated Set-Cookie header values added to every response
+	AddRespCookies string
+	// v2.9.104: strip_accept_encoding — delete Accept-Encoding request header before forwarding to upstream
+	StripAcceptEncoding bool
+	// v2.9.105: add_upstream_timing_header — inject X-Upstream-Time response header with upstream latency
+	AddUpstreamTimingHeader bool
+	// v2.9.106: strip_server_header — delete Server response header from upstream replies
+	StripServerHeader bool
+	// v2.9.107: block_referer_regexp — Go regexp; requests whose Referer header matches receive 403 (hotlink protection)
+	BlockRefererRegexp string
+	// v2.9.108: add_content_type_nosniff — add X-Content-Type-Options: nosniff response header
+	AddContentTypeNosniff bool
+	// v2.9.109: strip_authorization_header — delete Authorization request header before forwarding to upstream
+	StripAuthorizationHeader bool
+	// v2.9.110: real_ip_from_header — copy real client IP from this request header name into X-Real-IP (e.g. "CF-Connecting-IP")
+	RealIPFromHeader string
+	// v2.9.111: health_check_host_override — override Host header sent during active health check probes
+	HealthCheckHostOverride string
+	// v2.9.112: add_x_forwarded_port — add X-Forwarded-Port request header with the incoming request port
+	AddXForwardedPort bool
+	// v2.9.113: lb_retry_on — comma-separated retry trigger conditions ("error","5xx","4xx","connect_error","timeout","reset")
+	LBRetryOn string
+	// v2.9.114: max_buffer_size_kb — maximum bytes to buffer when buffer_responses is enabled (0 = unlimited)
+	MaxBufferSizeKB int
+	// v2.9.115: upstream_keepalive_probes — TCP keepalive probe count for upstream connections
+	UpstreamKeepaliveProbes int
+	// v2.9.116: upstream_flush_interval_ms — flush_interval override in ms (0=default, -1=immediate, >0=interval)
+	UpstreamFlushIntervalMS int
+	// v2.9.117: add_x_forwarded_host — inject X-Forwarded-Host request header with original Host value
+	AddXForwardedHost bool
+	// v2.9.118: maintenance_allowed_ips — comma-separated CIDRs that bypass maintenance mode
+	MaintenanceAllowedIPs string
+	// v2.9.119: upstream_tls_cipher_suites — comma-separated TLS cipher suite names for upstream connections
+	UpstreamTLSCipherSuites string
+	// v2.9.120: add_cache_control_no_store — add Cache-Control: no-store response header
+	AddCacheControlNoStore bool
+	// v2.9.121: deny_referer_empty — block requests that have no Referer header (anti-hotlinking)
+	DenyRefererEmpty bool
+	// v2.9.122: lb_cookie_httponly — set HttpOnly flag on the sticky-session cookie
+	LBCookieHTTPOnly bool
+	// v2.9.123: lb_cookie_secure — set Secure flag on the sticky-session cookie
+	LBCookieSecure bool
+	// v2.9.124: lb_cookie_same_site — SameSite attribute on the sticky-session cookie ("Strict","Lax","None")
+	LBCookieSameSite string
+	// v2.9.125: upstream_tls_early_data — enable TLS 1.3 early data (0-RTT) for upstream connections
+	UpstreamTLSEarlyData bool
+	// v2.9.126: add_via_header — add Via response header identifying this proxy
+	AddViaHeader bool
+	// v2.9.127: req_header_rename — newline-separated "OldName: NewName" pairs to rename request headers
+	ReqHeaderRename string
+	// v2.9.128: add_expect_ct_header — add Expect-CT: enforce response header for certificate transparency
+	AddExpectCTHeader bool
+	// v2.9.129: force_upstream_encoding — override Accept-Encoding sent to upstream (e.g. "gzip","identity","br")
+	ForceUpstreamEncoding string
+	// v2.9.130: passive_unhealthy_count — max concurrent in-flight requests before flagging upstream overloaded
+	PassiveUnhealthyCount int
+	// v2.9.131: strip_x_powered_by — delete X-Powered-By response header from upstream replies
+	StripXPoweredBy bool
+	// v2.9.132: add_timing_allow_origin — value for Timing-Allow-Origin response header (e.g. "*")
+	AddTimingAllowOrigin string
+	// v2.9.133: lb_cookie_max_age_sec — max-age in seconds for the sticky-session cookie (0 = session)
+	LBCookieMaxAgeSec int
+	// v2.9.134: cross_origin_opener_policy — Cross-Origin-Opener-Policy response header value
+	CrossOriginOpenerPolicy string
+	// v2.9.135: cross_origin_resource_policy — Cross-Origin-Resource-Policy response header value
+	CrossOriginResourcePolicy string
+	// v2.9.136: cross_origin_embedder_policy — Cross-Origin-Embedder-Policy response header value
+	CrossOriginEmbedderPolicy string
+	// v2.9.137: deny_request_content_type — comma-separated MIME types to block on request Content-Type (returns 415)
+	DenyRequestContentType string
+	// v2.9.138: compression_exclude_regexp — regexp of paths to exclude from response compression
+	CompressionExcludeRegexp string
+	// v2.9.139: add_cache_control_public — add Cache-Control: public response header
+	AddCacheControlPublic bool
+	// v2.9.140: add_x_request_start — inject X-Request-Start header with Unix ms timestamp for APM tools
+	AddXRequestStart bool
+	// v2.9.141: maintenance_window_timezone — IANA timezone name for the scheduled maintenance window (empty = server local)
+	MaintenanceWindowTimezone string
+	// v2.9.142: lb_random_choose_count — "choose" count for random_choice lb policy (0 = disabled)
+	LBRandomChooseCount int
+	// v2.9.143: add_x_forwarded_scheme — inject X-Forwarded-Scheme: {scheme} request header
+	AddXForwardedScheme bool
+	// v2.9.144: response_cache_ttl_sec — set Cache-Control: max-age=N on responses (0 = disabled)
+	ResponseCacheTTLSec int
+	// v2.9.145: add_link_preload — Link response header value for HTTP/2 preload hints
+	AddLinkPreload string
+	// v2.9.146: deny_path_regexp — block requests whose path matches this regex (403)
+	DenyPathRegexp string
+	// v2.9.147: add_request_id_to_response — echo request trace ID in response header for debugging
+	AddRequestIDToResponse bool
+	// v2.9.148: health_check_tls_server_name — TLS SNI override for active health check connections
+	HealthCheckTLSServerName string
+	// v2.9.149: add_x_real_ip — inject X-Real-IP request header with the direct client IP
+	AddXRealIP bool
+	// v2.9.150: strip_incoming_x_forwarded_for — delete X-Forwarded-For from incoming requests (prevent IP spoofing)
+	StripIncomingXForwardedFor bool
+	// v2.9.151: health_check_tls_insecure_skip_verify — skip TLS cert verification for health check probes
+	HealthCheckTLSInsecureSkipVerify bool
+	// v2.9.152: add_cors_vary_header — add Vary: Origin response header for CDN caching of CORS responses
+	AddCORSVaryHeader bool
+	// v2.9.153: upstream_tls_alpn — comma-separated ALPN protocol list for upstream TLS connections
+	UpstreamTLSALPN string
+	// v2.9.154: add_x_powered_by — custom X-Powered-By response header value (empty = disabled)
+	AddXPoweredBy string
+	// v2.9.155: block_query_params — comma-separated query param names to block (403 if any present)
+	BlockQueryParams string
+	// v2.9.156: add_document_policy — Document-Policy response header value
+	AddDocumentPolicy string
+	// v2.9.157: maintenance_redirect_url — redirect to this URL during maintenance (overrides inline 503)
+	MaintenanceRedirectURL string
+	// v2.9.158: upstream_keepalive_max_lifetime_sec — max lifetime for keepalive connections before recycling (0 = no limit)
+	UpstreamKeepaliveMaxLifetimeSec int
+	// v2.9.159: add_origin_header — inject Origin: <value> request header for upstream APIs that require it
+	AddOriginHeader string
+	// v2.9.160: upstream_tls_ca_pem_inline — inline PEM CA certificate for upstream TLS verification
+	UpstreamTLSCAPEMInline string
+	// v2.9.161: add_server_timing_header — inject Server-Timing response header with upstream duration
+	AddServerTimingHeader bool
+	// v2.9.162: add_clear_site_data — Clear-Site-Data response header value (e.g. "cache","cookies")
+	AddClearSiteData string
+	// v2.9.163: add_x_dns_prefetch_control — set X-DNS-Prefetch-Control: off response header
+	AddXDNSPrefetchControl bool
+	// v2.9.164: add_accept_ranges — set Accept-Ranges: bytes response header
+	AddAcceptRanges bool
+	// v2.9.165: add_content_disposition — Content-Disposition response header value
+	AddContentDisposition string
+	// v2.9.166: upstream_tls_server_name_from_host — use request Host as upstream TLS SNI (dynamic)
+	UpstreamTLSServerNameFromHost bool
+	// v2.9.167: add_x_permitted_cross_domain_policies — X-Permitted-Cross-Domain-Policies response header value
+	AddXPermittedCrossDomainPolicies string
+	// v2.9.168: strip_response_headers — comma-separated list of response header names to delete
+	StripResponseHeaders string
+	// v2.9.169: add_report_to — Report-To response header value (JSON endpoint group for CSP/NEL reporting)
+	AddReportTo string
+	// v2.9.170: add_nel_header — NEL response header JSON config (Network Error Logging)
+	AddNELHeader string
+	// v2.9.171: block_http_methods — comma-separated HTTP methods to reject with 405
+	BlockHTTPMethods string
+	// v2.9.172: add_service_worker_allowed — Service-Worker-Allowed response header value
+	AddServiceWorkerAllowed string
+	// v2.9.173: add_accept_ch — Accept-CH response header value (declare accepted client hints)
+	AddAcceptCH string
+	// v2.9.174: add_alt_svc — Alt-Svc response header value (advertise HTTP/2 or HTTP/3 service endpoint)
+	AddAltSvc string
+	// v2.9.175: add_content_language — Content-Language response header value
+	AddContentLanguage string
+	// v2.9.176: add_critical_ch — Critical-CH response header (client hints required before rendering)
+	AddCriticalCH string
+	// v2.9.177: add_x_download_options — set X-Download-Options: noopen (IE file open prevention)
+	AddXDownloadOptions bool
+	// v2.9.178: deny_user_agent_regexp — block requests whose User-Agent matches this regexp with 403
+	DenyUserAgentRegexp string
+	// v2.9.179: add_pragma_no_cache — set Pragma: no-cache response header (HTTP/1.0 cache directive)
+	AddPragmaNoCache bool
+	// v2.9.180: health_check_user_agent — custom User-Agent for active health check probes
+	HealthCheckUserAgent string
+	// v2.9.181: add_x_request_path — inject X-Request-Path header (request URI path) on upstream requests
+	AddXRequestPath bool
+	// v2.9.182: add_x_clacks_overhead — X-Clacks-Overhead response header value
+	AddXClacksOverhead string
+	// v2.9.183: add_x_ua_compatible — X-UA-Compatible response header value (e.g. 'IE=edge')
+	AddXUACompatible string
+	// v2.9.184: forward_auth_skip_paths — comma-separated path prefixes that bypass forward_auth
+	ForwardAuthSkipPaths string
+	// v2.9.185: add_age_zero — set Age: 0 response header (signal fresh response to CDNs)
+	AddAgeZero bool
+	// v2.9.186: add_surrogate_control — Surrogate-Control response header value (CDN-only cache directive)
+	AddSurrogateControl string
+	// v2.9.187: add_warning_header — Warning response header value (RFC 7234 warning codes)
+	AddWarningHeader string
+	// v2.9.188: add_x_request_method — forward X-Request-Method header (echoes HTTP method) to upstream
+	AddXRequestMethod bool
+	// v2.9.189: add_x_request_query — forward X-Request-Query header (echoes query string) to upstream
+	AddXRequestQuery bool
+	// v2.9.190: add_x_forwarded_user — static X-Forwarded-User request header value
+	AddXForwardedUser string
+	// v2.9.191: add_x_real_scheme — forward X-Real-Scheme request header (http or https) to upstream
+	AddXRealScheme bool
+	// v2.9.192: add_origin_agent_cluster — set Origin-Agent-Cluster: ?1 response header (origin-keyed isolation hint)
+	AddOriginAgentCluster bool
+	// v2.9.193: add_x_forwarded_groups — static X-Forwarded-Groups request header value
+	AddXForwardedGroups string
+	// v2.9.194: add_x_forwarded_email — static X-Forwarded-Email request header value
+	AddXForwardedEmail string
+	// v2.9.195: add_x_forwarded_roles — static X-Forwarded-Roles request header value
+	AddXForwardedRoles string
+	// v2.9.196: block_query_param_regexp — block requests whose raw query string matches this regexp with 403
+	BlockQueryParamRegexp string
+	// v2.9.197: add_x_request_referer — forward X-Request-Referer header (echoes original Referer) to upstream
+	AddXRequestReferer bool
+	// v2.9.198: add_x_request_origin — forward X-Request-Origin header (echoes original Origin) to upstream
+	AddXRequestOrigin bool
+	// v2.9.199: add_x_forwarded_uri — forward X-Forwarded-URI header (echoes original URI) to upstream
+	AddXForwardedURI bool
+	// v2.9.200: add_x_no_archive — set X-No-Archive: yes response header to block archive caching
+	AddXNoArchive bool
+	// v2.9.201: add_x_request_hostname — forward X-Request-Hostname header (echoes hostname) to upstream
+	AddXRequestHostname bool
+	// v2.9.202: add_x_xss_protection_disabled — set X-XSS-Protection: 0 response header
+	AddXXSSProtectionDisabled bool
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// InScheduledMaintenanceWindow returns true when the current wall-clock time
+// falls inside this host's scheduled maintenance window, respecting the optional
+// day-of-week restriction (MaintenanceWindowDays). Returns false when the window
+// is not configured or the time strings are malformed.
+func (p *ProxyHost) InScheduledMaintenanceWindow() bool {
+	if p.MaintenanceWindowStart == "" || p.MaintenanceWindowEnd == "" {
+		return false
+	}
+	now := time.Now()
+	// v2.9.141: maintenance_window_timezone — evaluate the window in the configured IANA timezone.
+	if p.MaintenanceWindowTimezone != "" {
+		if loc, err := time.LoadLocation(p.MaintenanceWindowTimezone); err == nil {
+			now = now.In(loc)
+		}
+	}
+	if p.MaintenanceWindowDays != "" {
+		abbr := strings.ToLower(now.Weekday().String()[:3])
+		matched := false
+		for _, d := range strings.Split(strings.ToLower(p.MaintenanceWindowDays), ",") {
+			if strings.TrimSpace(d) == abbr {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	parseHHMM := func(s string) (int, bool) {
+		parts := strings.SplitN(strings.TrimSpace(s), ":", 2)
+		if len(parts) != 2 {
+			return 0, false
+		}
+		h, e1 := strconv.Atoi(parts[0])
+		m, e2 := strconv.Atoi(parts[1])
+		if e1 != nil || e2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+			return 0, false
+		}
+		return h*60 + m, true
+	}
+	startMins, ok1 := parseHHMM(p.MaintenanceWindowStart)
+	endMins, ok2 := parseHHMM(p.MaintenanceWindowEnd)
+	if !ok1 || !ok2 {
+		return false
+	}
+	nowMins := now.Hour()*60 + now.Minute()
+	if startMins < endMins {
+		return nowMins >= startMins && nowMins < endMins
+	}
+	// Overnight window (e.g. 23:00–01:00): active after start OR before end.
+	return nowMins >= startMins || nowMins < endMins
 }
 
 // BasicAuthUserList parses the JSON-encoded BasicAuthUsers string into a slice.
@@ -105,6 +612,47 @@ func (p *ProxyHost) ExtraUpstreamList() []string {
 	return list
 }
 
+// CustomReqHeaderMap parses CustomReqHeaders into a map. Returns nil if empty.
+func (p *ProxyHost) CustomReqHeaderMap() map[string]string {
+	if p.CustomReqHeaders == "" || p.CustomReqHeaders == "{}" {
+		return nil
+	}
+	var m map[string]string
+	_ = json.Unmarshal([]byte(p.CustomReqHeaders), &m)
+	return m
+}
+
+// CustomRespHeaderMap parses CustomRespHeaders into a map. Returns nil if empty.
+func (p *ProxyHost) CustomRespHeaderMap() map[string]string {
+	if p.CustomRespHeaders == "" || p.CustomRespHeaders == "{}" {
+		return nil
+	}
+	var m map[string]string
+	_ = json.Unmarshal([]byte(p.CustomRespHeaders), &m)
+	return m
+}
+
+// URLRewriteRule is one rewrite entry on a proxy host.
+// Type is "strip_prefix", "add_prefix", or "regex".
+// For strip_prefix/add_prefix: From is the prefix string, To is ignored/target prefix.
+// For regex: From is the pattern, To is the replacement.
+type URLRewriteRule struct {
+	Type string `json:"type"` // "strip_prefix" | "add_prefix" | "regex"
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// URLRewriteList parses the JSON-encoded URLRewrites string.
+// Returns nil if empty or unparseable.
+func (p *ProxyHost) URLRewriteList() []URLRewriteRule {
+	if p.URLRewrites == "" || p.URLRewrites == "[]" {
+		return nil
+	}
+	var rules []URLRewriteRule
+	_ = json.Unmarshal([]byte(p.URLRewrites), &rules)
+	return rules
+}
+
 func (p ProxyHost) DomainList() []string {
 	parts := strings.Split(p.Domains, ",")
 	out := make([]string, 0, len(parts))
@@ -112,6 +660,52 @@ func (p ProxyHost) DomainList() []string {
 		d = strings.TrimSpace(d)
 		if d != "" {
 			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// TagList returns Tags split into individual trimmed strings, filtering empties.
+func (p *ProxyHost) TagList() []string {
+	if p.Tags == "" {
+		return nil
+	}
+	parts := strings.Split(p.Tags, ",")
+	out := make([]string, 0, len(parts))
+	for _, t := range parts {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// StripRespHeaderList parses the comma-separated strip_resp_headers field.
+func (p *ProxyHost) StripRespHeaderList() []string {
+	if p.StripRespHeaders == "" {
+		return nil
+	}
+	var out []string
+	for _, h := range strings.Split(p.StripRespHeaders, ",") {
+		h = strings.TrimSpace(h)
+		if h != "" {
+			out = append(out, http.CanonicalHeaderKey(h))
+		}
+	}
+	return out
+}
+
+// StripReqHeaderList parses the comma-separated strip_req_headers field.
+func (p *ProxyHost) StripReqHeaderList() []string {
+	if p.StripReqHeaders == "" {
+		return nil
+	}
+	var out []string
+	for _, h := range strings.Split(p.StripReqHeaders, ",") {
+		h = strings.TrimSpace(h)
+		if h != "" {
+			out = append(out, http.CanonicalHeaderKey(h))
 		}
 	}
 	return out
@@ -130,8 +724,30 @@ type RedirectionHost struct {
 	CertificateID   int64
 	OwnerID         sql.NullInt64
 	OwnerEmail      string // populated via JOIN for display
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	Tags            string // comma-separated labels (UI-only, same as proxy hosts)
+	Notes           string // freeform admin notes (UI-only)
+	// v2.9.13: access control + maintenance mode (parity with proxy hosts)
+	AccessList      string // comma/newline-separated CIDR allowlist (empty = allow all)
+	MaintenanceMode bool   // when true, respond 503 before redirecting
+	MaintenanceMsg  string // custom maintenance message body
+	// v2.9.20: custom response headers injected into every redirect response
+	CustomRespHeaders string // JSON: map[string]string — empty value means delete header
+	// v2.9.21: IP blocklist — deny specific CIDRs before the redirect fires
+	IPBlocklist string // comma-separated CIDR ranges to block with 403
+	// v2.9.24: HSTS — inject Strict-Transport-Security on redirect responses
+	HSTSMaxAgeSec         int  // 0 = disabled; >0 = seconds for max-age
+	HSTSIncludeSubdomains bool // include includeSubDomains directive
+	HSTSPreload           bool // include preload directive
+	// v2.9.26: advanced config — raw JSON array of Caddy handlers injected before the redirect
+	AdvancedConfig string // JSON: []any of handler maps
+	// v2.9.33: color label for visual grouping in list views (no Caddy impact)
+	Color string // "" | "red" | "orange" | "yellow" | "green" | "teal" | "blue" | "purple" | "pink" | "gray"
+	// v2.9.38: maintenance status code — HTTP code used during maintenance mode (default 503)
+	MaintenanceStatusCode int // 503 (default), 429, 502, 520
+	// v2.9.39: sort order — manual ordering weight in the list view (0 = default, lower = first)
+	SortOrder int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func (r RedirectionHost) DomainList() []string {
@@ -146,16 +762,26 @@ func (r RedirectionHost) DomainList() []string {
 	return out
 }
 
+// CustomRespHeaderMap parses CustomRespHeaders into a map. Returns nil if empty.
+func (r RedirectionHost) CustomRespHeaderMap() map[string]string {
+	if r.CustomRespHeaders == "" || r.CustomRespHeaders == "{}" {
+		return nil
+	}
+	var m map[string]string
+	_ = json.Unmarshal([]byte(r.CustomRespHeaders), &m)
+	return m
+}
+
 const userCols = `id, email, password_hash, COALESCE(name,''), is_admin,
     COALESCE(role, CASE WHEN is_admin=1 THEN 'admin' ELSE 'view' END), created_at,
-    COALESCE(totp_secret,''), COALESCE(totp_enabled,0)`
+    COALESCE(totp_secret,''), COALESCE(totp_enabled,0), COALESCE(totp_backup_codes,'')`
 
 func scanUser(s interface {
 	Scan(dest ...any) error
 }) (*User, error) {
 	u := &User{}
 	var isAdmin, totpEnabled int
-	if err := s.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &isAdmin, &u.Role, &u.CreatedAt, &u.TOTPSecret, &totpEnabled); err != nil {
+	if err := s.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &isAdmin, &u.Role, &u.CreatedAt, &u.TOTPSecret, &totpEnabled, &u.BackupCodes); err != nil {
 		return nil, err
 	}
 	u.IsAdmin = isAdmin == 1
@@ -168,6 +794,60 @@ func scanUser(s interface {
 		}
 	}
 	return u, nil
+}
+
+// GenerateBackupCodes creates n single-use backup codes as uppercase alphanumeric strings.
+func GenerateBackupCodes(n int) ([]string, error) {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	codes := make([]string, n)
+	for i := range codes {
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			return nil, err
+		}
+		for j := range b {
+			b[j] = chars[int(b[j])%len(chars)]
+		}
+		codes[i] = string(b)
+	}
+	return codes, nil
+}
+
+// HashBackupCode returns the hex-encoded SHA-256 of an uppercase code.
+func HashBackupCode(code string) string {
+	sum := sha256.Sum256([]byte(strings.ToUpper(strings.TrimSpace(code))))
+	return fmt.Sprintf("%x", sum)
+}
+
+// SaveBackupCodes stores hashed backup codes for the user.
+func SaveBackupCodes(db *sql.DB, userID int64, codes []string) error {
+	hashes := make([]string, len(codes))
+	for i, c := range codes {
+		hashes[i] = HashBackupCode(c)
+	}
+	data, _ := json.Marshal(hashes)
+	_, err := db.Exec(`UPDATE users SET totp_backup_codes = ? WHERE id = ?`, string(data), userID)
+	return err
+}
+
+// ConsumeBackupCode checks whether the given code matches a stored hash.
+// If it matches, the code is removed (single-use) and the DB is updated.
+// Returns true if the code was valid and has been consumed.
+func ConsumeBackupCode(db *sql.DB, userID int64, codesJSON, rawCode string) (bool, error) {
+	var hashes []string
+	if codesJSON == "" || json.Unmarshal([]byte(codesJSON), &hashes) != nil {
+		return false, nil
+	}
+	target := HashBackupCode(rawCode)
+	for i, h := range hashes {
+		if h == target {
+			remaining := append(hashes[:i:i], hashes[i+1:]...)
+			data, _ := json.Marshal(remaining)
+			_, err := db.Exec(`UPDATE users SET totp_backup_codes = ? WHERE id = ?`, string(data), userID)
+			return err == nil, err
+		}
+	}
+	return false, nil
 }
 
 func SetUserTOTP(db *sql.DB, userID int64, secret string, enabled bool) error {
@@ -462,7 +1142,261 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.dns_provider,''), COALESCE(ph.dns_zone_id,''),
     COALESCE(ph.dns_zone_name,''), COALESCE(ph.dns_record_id,''),
     COALESCE(ph.compression_enabled,0), COALESCE(ph.security_headers_enabled,0),
-    COALESCE(ph.tls_min_version,'')`
+    COALESCE(ph.tls_min_version,''),
+    COALESCE(ph.custom_req_headers,'{}'), COALESCE(ph.custom_resp_headers,'{}'),
+    COALESCE(ph.url_rewrites,'[]'),
+    COALESCE(ph.maintenance_mode,0), COALESCE(ph.maintenance_msg, ''),
+    COALESCE(ph.max_request_body_mb,0),
+    COALESCE(ph.sticky_sessions,0),
+    COALESCE(ph.upstream_timeout_sec,0),
+    COALESCE(ph.cors_enabled,0), COALESCE(ph.cors_origins,'*'),
+    COALESCE(ph.health_check_uri,''), COALESCE(ph.health_check_interval_sec,30),
+    COALESCE(ph.keepalive_conns,0),
+    COALESCE(ph.tags,''),
+    COALESCE(ph.notes,''),
+    COALESCE(ph.disable_access_log,0),
+    COALESCE(ph.add_request_id,0),
+    COALESCE(ph.strip_resp_headers,''),
+    COALESCE(ph.blocked_agents,''),
+    COALESCE(ph.health_check_method,'GET'),
+    COALESCE(ph.maintenance_status_code,503),
+    COALESCE(ph.response_cache_control,''),
+    COALESCE(ph.upstream_sni,''),
+    COALESCE(ph.hsts_preload,0),
+    COALESCE(ph.max_conns_per_host,0),
+    COALESCE(ph.health_check_timeout_sec,5),
+    COALESCE(ph.upstream_retries,0),
+    COALESCE(ph.force_http1,0),
+    COALESCE(ph.basicauth_realm,'Restricted'),
+    COALESCE(ph.error_page_html,''),
+    COALESCE(ph.maintenance_window_start,''), COALESCE(ph.maintenance_window_end,''),
+    COALESCE(ph.maintenance_window_days,''),
+    COALESCE(ph.ip_blocklist,''),
+    COALESCE(ph.lb_policy,''),
+    COALESCE(ph.proxy_protocol,''),
+    COALESCE(ph.robots_txt,''),
+    COALESCE(ph.passive_fail_duration_sec,0),
+    COALESCE(ph.passive_max_fails,0),
+    COALESCE(ph.hsts_max_age_sec,0),
+    COALESCE(ph.csp_header,''),
+    COALESCE(ph.h2c_enabled,0),
+    COALESCE(ph.health_check_headers,'{}'),
+    COALESCE(ph.flush_immediate,0),
+    COALESCE(ph.buffer_responses,0),
+    COALESCE(ph.trusted_proxies,''),
+    COALESCE(ph.upstream_host_override,''),
+    COALESCE(ph.read_timeout_sec,0),
+    COALESCE(ph.deny_dotfiles,0),
+    COALESCE(ph.request_buffers_kb,0),
+    COALESCE(ph.cors_allow_credentials,0),
+    COALESCE(ph.cors_expose_headers,''),
+    COALESCE(ph.ssl_verify_upstream,0),
+    COALESCE(ph.dial_timeout_sec,0),
+    COALESCE(ph.api_key_header,''),
+    COALESCE(ph.api_key_value,''),
+    COALESCE(ph.block_empty_user_agent,0),
+    COALESCE(ph.error_redirect_url,''),
+    COALESCE(ph.permissions_policy,''),
+    COALESCE(ph.x_frame_options,''),
+    COALESCE(ph.referrer_policy,''),
+    COALESCE(ph.hsts_include_subdomains,1),
+    COALESCE(ph.csp_report_only,''),
+    COALESCE(ph.keepalive_idle_timeout_sec,0),
+    COALESCE(ph.health_check_expect_status,0),
+    COALESCE(ph.health_check_expect_body,''),
+    COALESCE(ph.health_check_follow_redirects,0),
+    COALESCE(ph.path_matcher,''),
+    COALESCE(ph.strip_path_prefix,0),
+    COALESCE(ph.sticky_cookie_name,''),
+    COALESCE(ph.lb_try_duration_sec,0),
+    COALESCE(ph.lb_try_interval_ms,0),
+    COALESCE(ph.compression_min_size_kb,0),
+    COALESCE(ph.forward_client_ip,0),
+    COALESCE(ph.cors_max_age_sec,0),
+    COALESCE(ph.cors_allow_methods,''),
+    COALESCE(ph.cors_allow_headers,''),
+    COALESCE(ph.retry_status_codes,''),
+    COALESCE(ph.write_timeout_sec,0),
+    COALESCE(ph.upstream_tls_min_version,''),
+    COALESCE(ph.forward_proxy_url,''),
+    COALESCE(ph.blocked_methods,''),
+    COALESCE(ph.forward_auth_url,''),
+    COALESCE(ph.forward_auth_copy_headers,''),
+    COALESCE(ph.strip_query_string,0),
+    COALESCE(ph.delete_query_params,''),
+    COALESCE(ph.request_body_read_timeout_sec,0),
+    COALESCE(ph.response_header_timeout_sec,0),
+    COALESCE(ph.max_conn_duration_sec,0),
+    COALESCE(ph.decompress_response,0),
+    COALESCE(ph.color,''),
+    COALESCE(ph.www_redirect,''),
+    COALESCE(ph.strip_req_headers,''),
+    COALESCE(ph.upstream_path_prefix,''),
+    COALESCE(ph.compression_level,0),
+    COALESCE(ph.compression_prefer_gzip,0),
+    COALESCE(ph.sort_order,0),
+    COALESCE(ph.allowed_methods,''),
+    COALESCE(ph.upstream_max_resp_header_kb,0),
+    COALESCE(ph.health_check_port,0),
+    COALESCE(ph.request_id_header_name,''),
+    COALESCE(ph.lb_cookie_path,''),
+    COALESCE(ph.passive_unhealthy_latency_ms,0),
+    COALESCE(ph.tls_handshake_timeout_sec,0),
+    COALESCE(ph.expect_continue_timeout_sec,0),
+    COALESCE(ph.response_buffers_kb,0),
+    COALESCE(ph.upstream_max_idle_conns,0),
+    COALESCE(ph.upstream_keep_alive_probe_sec,0),
+    COALESCE(ph.forward_auth_method,''),
+    COALESCE(ph.grpc_web_enabled,0),
+    COALESCE(ph.forward_auth_headers_prefix,''),
+    COALESCE(ph.health_check_max_size_kb,0),
+    COALESCE(ph.strip_path_suffix,''),
+    COALESCE(ph.add_req_query_params,''),
+    COALESCE(ph.error_page_codes,''),
+    COALESCE(ph.upstream_tls_ca_pem_file,''),
+    COALESCE(ph.keepalive_disabled,0),
+    COALESCE(ph.trailing_slash_redirect,''),
+    COALESCE(ph.dial_fallback_delay_ms,0),
+    COALESCE(ph.upstream_network,''),
+    COALESCE(ph.dns_resolver,''),
+    COALESCE(ph.path_matcher_type,''),
+    COALESCE(ph.cors_allow_private_network,0),
+    COALESCE(ph.robots_txt_disallow_all,0),
+    COALESCE(ph.maintenance_retry_after_sec,0),
+    COALESCE(ph.upstream_resolve_timeout_sec,0),
+    COALESCE(ph.upstream_read_buffer_size_kb,0),
+    COALESCE(ph.upstream_write_buffer_size_kb,0),
+    COALESCE(ph.req_header_replace,''),
+    COALESCE(ph.resp_header_replace,''),
+    COALESCE(ph.upstream_http_versions,''),
+    COALESCE(ph.health_check_body,''),
+    COALESCE(ph.add_canonical_link_header,0),
+    COALESCE(ph.http_basic_auth_upstream,''),
+    COALESCE(ph.block_ua_regexp,''),
+    COALESCE(ph.security_txt_body,''),
+    COALESCE(ph.server_header_value,''),
+    COALESCE(ph.x_robots_tag,''),
+    COALESCE(ph.add_forwarded_header,0),
+    COALESCE(ph.lb_cookie_secret,''),
+    COALESCE(ph.passive_unhealthy_status_codes,''),
+    COALESCE(ph.health_check_content_type,''),
+    COALESCE(ph.upstream_tls_client_cert_file,''),
+    COALESCE(ph.upstream_tls_client_key_file,''),
+    COALESCE(ph.block_private_ips,0),
+    COALESCE(ph.enable_brotli,0),
+    COALESCE(ph.vary_header,''),
+    COALESCE(ph.strip_etag,0),
+    COALESCE(ph.http2_push_paths,''),
+    COALESCE(ph.deny_content_types,''),
+    COALESCE(ph.upstream_local_addr,''),
+    COALESCE(ph.upstream_tls_renegotiation,''),
+    COALESCE(ph.upstream_tls_curves,''),
+    COALESCE(ph.upstream_tls_max_version,''),
+    COALESCE(ph.upstream_tls_pins,''),
+    COALESCE(ph.lb_header_field,''),
+    COALESCE(ph.maintenance_custom_headers,''),
+    COALESCE(ph.deny_extensions,''),
+    COALESCE(ph.inject_request_timestamp,0),
+    COALESCE(ph.add_resp_cookies,''),
+    COALESCE(ph.strip_accept_encoding,0),
+    COALESCE(ph.add_upstream_timing_header,0),
+    COALESCE(ph.strip_server_header,0),
+    COALESCE(ph.block_referer_regexp,''),
+    COALESCE(ph.add_content_type_nosniff,0),
+    COALESCE(ph.strip_authorization_header,0),
+    COALESCE(ph.real_ip_from_header,''),
+    COALESCE(ph.health_check_host_override,''),
+    COALESCE(ph.add_x_forwarded_port,0),
+    COALESCE(ph.lb_retry_on,''),
+    COALESCE(ph.max_buffer_size_kb,0),
+    COALESCE(ph.upstream_keepalive_probes,0),
+    COALESCE(ph.upstream_flush_interval_ms,0),
+    COALESCE(ph.add_x_forwarded_host,0),
+    COALESCE(ph.maintenance_allowed_ips,''),
+    COALESCE(ph.upstream_tls_cipher_suites,''),
+    COALESCE(ph.add_cache_control_no_store,0),
+    COALESCE(ph.deny_referer_empty,0),
+    COALESCE(ph.lb_cookie_httponly,0),
+    COALESCE(ph.lb_cookie_secure,0),
+    COALESCE(ph.lb_cookie_same_site,''),
+    COALESCE(ph.upstream_tls_early_data,0),
+    COALESCE(ph.add_via_header,0),
+    COALESCE(ph.req_header_rename,''),
+    COALESCE(ph.add_expect_ct_header,0),
+    COALESCE(ph.force_upstream_encoding,''),
+    COALESCE(ph.passive_unhealthy_count,0),
+    COALESCE(ph.strip_x_powered_by,0),
+    COALESCE(ph.add_timing_allow_origin,''),
+    COALESCE(ph.lb_cookie_max_age_sec,0),
+    COALESCE(ph.cross_origin_opener_policy,''),
+    COALESCE(ph.cross_origin_resource_policy,''),
+    COALESCE(ph.cross_origin_embedder_policy,''),
+    COALESCE(ph.deny_request_content_type,''),
+    COALESCE(ph.compression_exclude_regexp,''),
+    COALESCE(ph.add_cache_control_public,0),
+    COALESCE(ph.add_x_request_start,0),
+    COALESCE(ph.maintenance_window_timezone,''),
+    COALESCE(ph.lb_random_choose_count,0),
+    COALESCE(ph.add_x_forwarded_scheme,0),
+    COALESCE(ph.response_cache_ttl_sec,0),
+    COALESCE(ph.add_link_preload,''),
+    COALESCE(ph.deny_path_regexp,''),
+    COALESCE(ph.add_request_id_to_response,0),
+    COALESCE(ph.health_check_tls_server_name,''),
+    COALESCE(ph.add_x_real_ip,0),
+    COALESCE(ph.strip_incoming_x_forwarded_for,0),
+    COALESCE(ph.health_check_tls_insecure_skip_verify,0),
+    COALESCE(ph.add_cors_vary_header,0),
+    COALESCE(ph.upstream_tls_alpn,''),
+    COALESCE(ph.add_x_powered_by,''),
+    COALESCE(ph.block_query_params,''),
+    COALESCE(ph.add_document_policy,''),
+    COALESCE(ph.maintenance_redirect_url,''),
+    COALESCE(ph.upstream_keepalive_max_lifetime_sec,0),
+    COALESCE(ph.add_origin_header,''),
+    COALESCE(ph.upstream_tls_ca_pem_inline,''),
+    COALESCE(ph.add_server_timing_header,0),
+    COALESCE(ph.add_clear_site_data,''),
+    COALESCE(ph.add_x_dns_prefetch_control,0),
+    COALESCE(ph.add_accept_ranges,0),
+    COALESCE(ph.add_content_disposition,''),
+    COALESCE(ph.upstream_tls_server_name_from_host,0),
+    COALESCE(ph.add_x_permitted_cross_domain_policies,''),
+    COALESCE(ph.strip_response_headers,''),
+    COALESCE(ph.add_report_to,''),
+    COALESCE(ph.add_nel_header,''),
+    COALESCE(ph.block_http_methods,''),
+    COALESCE(ph.add_service_worker_allowed,''),
+    COALESCE(ph.add_accept_ch,''),
+    COALESCE(ph.add_alt_svc,''),
+    COALESCE(ph.add_content_language,''),
+    COALESCE(ph.add_critical_ch,''),
+    COALESCE(ph.add_x_download_options,0),
+    COALESCE(ph.deny_user_agent_regexp,''),
+    COALESCE(ph.add_pragma_no_cache,0),
+    COALESCE(ph.health_check_user_agent,''),
+    COALESCE(ph.add_x_request_path,0),
+    COALESCE(ph.add_x_clacks_overhead,''),
+    COALESCE(ph.add_x_ua_compatible,''),
+    COALESCE(ph.forward_auth_skip_paths,''),
+    COALESCE(ph.add_age_zero,0),
+    COALESCE(ph.add_surrogate_control,''),
+    COALESCE(ph.add_warning_header,''),
+    COALESCE(ph.add_x_request_method,0),
+    COALESCE(ph.add_x_request_query,0),
+    COALESCE(ph.add_x_forwarded_user,''),
+    COALESCE(ph.add_x_real_scheme,0),
+    COALESCE(ph.add_origin_agent_cluster,0),
+    COALESCE(ph.add_x_forwarded_groups,''),
+    COALESCE(ph.add_x_forwarded_email,''),
+    COALESCE(ph.add_x_forwarded_roles,''),
+    COALESCE(ph.block_query_param_regexp,''),
+    COALESCE(ph.add_x_request_referer,0),
+    COALESCE(ph.add_x_request_origin,0),
+    COALESCE(ph.add_x_forwarded_uri,0),
+    COALESCE(ph.add_x_no_archive,0),
+    COALESCE(ph.add_x_request_hostname,0),
+    COALESCE(ph.add_x_xss_protection_disabled,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -471,7 +1405,7 @@ func scanProxyHost(s interface {
 }, p *ProxyHost, ownerEmail *string) error {
 	var ws, bce, ssl, sslf, h2, en, bae int
 	var ownerID int64
-	var compr, sechdrs int
+	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis int
 	dst := []any{
 		&p.ID, &p.ServerID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
@@ -481,6 +1415,259 @@ func scanProxyHost(s interface {
 		&ownerID,
 		&p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID,
 		&compr, &sechdrs, &p.TLSMinVersion,
+		&p.CustomReqHeaders, &p.CustomRespHeaders,
+		&p.URLRewrites,
+		&maint,
+		&p.MaintenanceMsg,
+		&p.MaxRequestBodyMB,
+		&sticky,
+		&p.UpstreamTimeoutSec,
+		&cors, &p.CORSOrigins,
+		&p.HealthCheckURI, &p.HealthCheckIntervalSec, &p.KeepaliveConns,
+		&p.Tags,
+		&p.Notes,
+		&disableAccessLog,
+		&addReqID,
+		&p.StripRespHeaders,
+		&p.BlockedAgents,
+		&p.HealthCheckMethod,
+		&p.MaintenanceStatusCode,
+		&p.ResponseCacheControl,
+		&p.UpstreamSNI,
+		&hstsPreload,
+		&p.MaxConnsPerHost,
+		&p.HealthCheckTimeoutSec,
+		&p.UpstreamRetries,
+		&forceHTTP1,
+		&p.BasicAuthRealm,
+		&p.ErrorPageHTML,
+		&p.MaintenanceWindowStart, &p.MaintenanceWindowEnd, &p.MaintenanceWindowDays,
+		&p.IPBlocklist,
+		&p.LBPolicy,
+		&p.ProxyProtocol,
+		&p.RobotsTxt,
+		&p.PassiveFailDurationSec,
+		&p.PassiveMaxFails,
+		&p.HSTSMaxAgeSec,
+		&p.CSPHeader,
+		&h2c,
+		&p.HealthCheckHeaders,
+		&flushImm,
+		&bufResp,
+		&p.TrustedProxies,
+		&p.UpstreamHostOverride,
+		&p.ReadTimeoutSec,
+		&denyDot,
+		&p.RequestBuffersKB,
+		&corsCredentials,
+		&p.CORSExposeHeaders,
+		&sslVerify,
+		&p.DialTimeoutSec,
+		&p.APIKeyHeader,
+		&p.APIKeyValue,
+		&blockUA,
+		&p.ErrorRedirectURL,
+		&p.PermissionsPolicy,
+		&p.XFrameOptions,
+		&p.ReferrerPolicy,
+		&hstsSubdomains,
+		&p.CSPReportOnly,
+		&p.KeepaliveIdleTimeoutSec,
+		&p.HealthCheckExpectStatus,
+		&p.HealthCheckExpectBody,
+		&hcFollowRedirects,
+		&p.PathMatcher,
+		&stripPfx,
+		&p.StickyCookieName,
+		&p.LBTryDurationSec,
+		&p.LBTryIntervalMS,
+		&p.CompressionMinSizeKB,
+		&fwdClientIP,
+		&p.CORSMaxAgeSec,
+		&p.CORSAllowMethods,
+		&p.CORSAllowHeaders,
+		&p.RetryStatusCodes,
+		&p.WriteTimeoutSec,
+		&p.UpstreamTLSMinVersion,
+		&p.ForwardProxyURL,
+		&p.BlockedMethods,
+		&p.ForwardAuthURL,
+		&p.ForwardAuthCopyHeaders,
+		&stripQS,
+		&p.DeleteQueryParams,
+		&p.RequestBodyReadTimeoutSec,
+		&p.ResponseHeaderTimeoutSec,
+		&p.MaxConnDurationSec,
+		&decompResp,
+		&p.Color,
+		&p.WWWRedirect,
+		&p.StripReqHeaders,
+		&p.UpstreamPathPrefix,
+		&p.CompressionLevel,
+		&comprPrefGzip,
+		&p.SortOrder,
+		&p.AllowedMethods,
+		&p.UpstreamMaxRespHeaderKB,
+		&p.HealthCheckPort,
+		&p.RequestIDHeaderName,
+		&p.LBCookiePath,
+		&p.PassiveUnhealthyLatencyMS,
+		&p.TLSHandshakeTimeoutSec,
+		&p.ExpectContinueTimeoutSec,
+		&p.ResponseBuffersKB,
+		&p.UpstreamMaxIdleConns,
+		&p.UpstreamKeepAliveProbeIntervalSec,
+		&p.ForwardAuthMethod,
+		&grpcWeb,
+		&p.ForwardAuthHeadersPrefix,
+		&p.HealthCheckMaxSizeKB,
+		&p.StripPathSuffix,
+		&p.AddReqQueryParams,
+		&p.ErrorPageCodes,
+		&p.UpstreamTLSCAPEMFile,
+		&kaDisabled,
+		&p.TrailingSlashRedirect,
+		&p.DialFallbackDelayMS,
+		&p.UpstreamNetwork,
+		&p.DNSResolver,
+		&p.PathMatcherType,
+		&corsPrivNet,
+		&robotsDisallowAll,
+		&p.MaintenanceRetryAfterSec,
+		&p.UpstreamResolveTimeoutSec,
+		&p.UpstreamReadBufferSizeKB,
+		&p.UpstreamWriteBufferSizeKB,
+		&p.ReqHeaderReplace,
+		&p.RespHeaderReplace,
+		&p.UpstreamHTTPVersions,
+		&p.HealthCheckBody,
+		&canonicalLink,
+		&p.HTTPBasicAuthUpstream,
+		&p.BlockUARegexp,
+		&p.SecurityTxtBody,
+		&p.ServerHeaderValue,
+		&p.XRobotsTag,
+		&fwdHeader,
+		&p.LBCookieSecret,
+		&p.PassiveUnhealthyStatusCodes,
+		&p.HealthCheckContentType,
+		&p.UpstreamTLSClientCertFile,
+		&p.UpstreamTLSClientKeyFile,
+		&blockPrivIP,
+		&brotli,
+		&p.VaryHeader,
+		&stripEtag,
+		&p.HTTP2PushPaths,
+		&p.DenyContentTypes,
+		&p.UpstreamLocalAddr,
+		&p.UpstreamTLSRenegotiation,
+		&p.UpstreamTLSCurves,
+		&p.UpstreamTLSMaxVersion,
+		&p.UpstreamTLSPins,
+		&p.LBHeaderField,
+		&p.MaintenanceCustomHeaders,
+		&p.DenyExtensions,
+		&injectReqTimestamp,
+		&p.AddRespCookies,
+		&stripAcceptEnc,
+		&addUpstreamTiming,
+		&stripSrvHdr,
+		&p.BlockRefererRegexp,
+		&addNosniff,
+		&stripAuthHdr,
+		&p.RealIPFromHeader,
+		&p.HealthCheckHostOverride,
+		&addXFwdPort,
+		&p.LBRetryOn,
+		&p.MaxBufferSizeKB,
+		&p.UpstreamKeepaliveProbes,
+		&p.UpstreamFlushIntervalMS,
+		&addXFwdHost,
+		&p.MaintenanceAllowedIPs,
+		&p.UpstreamTLSCipherSuites,
+		&addCacheCtrlNoStore,
+		&denyRefEmpty,
+		&lbCookieHTTPOnly,
+		&lbCookieSecure,
+		&p.LBCookieSameSite,
+		&tlsEarlyData,
+		&addVia,
+		&p.ReqHeaderRename,
+		&addExpectCT,
+		&p.ForceUpstreamEncoding,
+		&p.PassiveUnhealthyCount,
+		&stripXPoweredBy,
+		&p.AddTimingAllowOrigin,
+		&p.LBCookieMaxAgeSec,
+		&p.CrossOriginOpenerPolicy,
+		&p.CrossOriginResourcePolicy,
+		&p.CrossOriginEmbedderPolicy,
+		&p.DenyRequestContentType,
+		&p.CompressionExcludeRegexp,
+		&addCacheCtrlPublic,
+		&addXReqStart,
+		&p.MaintenanceWindowTimezone,
+		&p.LBRandomChooseCount,
+		&addXFwdScheme,
+		&p.ResponseCacheTTLSec,
+		&p.AddLinkPreload,
+		&p.DenyPathRegexp,
+		&addReqIDToResp,
+		&p.HealthCheckTLSServerName,
+		&addXRealIP,
+		&stripIncomingXFwdFor,
+		&hcTLSSkipVerify,
+		&addCORSVary,
+		&p.UpstreamTLSALPN,
+		&p.AddXPoweredBy,
+		&p.BlockQueryParams,
+		&p.AddDocumentPolicy,
+		&p.MaintenanceRedirectURL,
+		&p.UpstreamKeepaliveMaxLifetimeSec,
+		&p.AddOriginHeader,
+		&p.UpstreamTLSCAPEMInline,
+		&addSrvTiming,
+		&p.AddClearSiteData,
+		&addXDNSPrefetch,
+		&addAcceptRanges,
+		&p.AddContentDisposition,
+		&tlsSNIFromHost,
+		&p.AddXPermittedCrossDomainPolicies,
+		&p.StripResponseHeaders,
+		&p.AddReportTo,
+		&p.AddNELHeader,
+		&p.BlockHTTPMethods,
+		&p.AddServiceWorkerAllowed,
+		&p.AddAcceptCH,
+		&p.AddAltSvc,
+		&p.AddContentLanguage,
+		&p.AddCriticalCH,
+		&addXDlOpts,
+		&p.DenyUserAgentRegexp,
+		&addPragmaNC,
+		&p.HealthCheckUserAgent,
+		&addXReqPath,
+		&p.AddXClacksOverhead,
+		&p.AddXUACompatible,
+		&p.ForwardAuthSkipPaths,
+		&addAgeZero,
+		&p.AddSurrogateControl,
+		&p.AddWarningHeader,
+		&addXReqMethod,
+		&addXReqQuery,
+		&p.AddXForwardedUser,
+		&addXRealScheme,
+		&addOAC,
+		&p.AddXForwardedGroups,
+		&p.AddXForwardedEmail,
+		&p.AddXForwardedRoles,
+		&p.BlockQueryParamRegexp,
+		&addXReqReferer,
+		&addXReqOrigin,
+		&addXFwdURI,
+		&addXNoArch,
+		&addXReqHost,
+		&addXXSSDis,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -497,6 +1684,78 @@ func scanProxyHost(s interface {
 	p.BasicAuthEnabled = bae == 1
 	p.CompressionEnabled = compr == 1
 	p.SecurityHeadersEnabled = sechdrs == 1
+	p.MaintenanceMode = maint == 1
+	p.StickySessions = sticky == 1
+	p.CORSEnabled = cors == 1
+	p.DisableAccessLog = disableAccessLog == 1
+	p.AddRequestID = addReqID == 1
+	p.HSTSPreload = hstsPreload == 1
+	p.ForceHTTP1 = forceHTTP1 == 1
+	p.H2CEnabled = h2c == 1
+	p.FlushImmediate = flushImm == 1
+	p.BufferResponses = bufResp == 1
+	p.DenyDotfiles = denyDot == 1
+	p.CORSAllowCredentials = corsCredentials == 1
+	p.SSLVerifyUpstream = sslVerify == 1
+	p.BlockEmptyUserAgent = blockUA == 1
+	p.HSTSIncludeSubdomains = hstsSubdomains == 1
+	p.HealthCheckFollowRedirects = hcFollowRedirects == 1
+	p.StripPathPrefix = stripPfx == 1
+	p.ForwardClientIP = fwdClientIP == 1
+	p.StripQueryString = stripQS == 1
+	p.DecompressResponse = decompResp == 1
+	p.CompressionPreferGzip = comprPrefGzip == 1
+	p.GRPCWebEnabled = grpcWeb == 1
+	p.KeepaliveDisabled = kaDisabled == 1
+	p.CORSAllowPrivateNetwork = corsPrivNet == 1
+	p.RobotsTxtDisallowAll = robotsDisallowAll == 1
+	p.AddCanonicalLinkHeader = canonicalLink == 1
+	p.AddForwardedHeader = fwdHeader == 1
+	p.BlockPrivateIPs = blockPrivIP == 1
+	p.EnableBrotli = brotli == 1
+	p.StripETag = stripEtag == 1
+	p.InjectRequestTimestamp = injectReqTimestamp == 1
+	p.StripAcceptEncoding = stripAcceptEnc == 1
+	p.AddUpstreamTimingHeader = addUpstreamTiming == 1
+	p.StripServerHeader = stripSrvHdr == 1
+	p.AddContentTypeNosniff = addNosniff == 1
+	p.StripAuthorizationHeader = stripAuthHdr == 1
+	p.AddXForwardedPort = addXFwdPort == 1
+	p.AddXForwardedHost = addXFwdHost == 1
+	p.AddCacheControlNoStore = addCacheCtrlNoStore == 1
+	p.DenyRefererEmpty = denyRefEmpty == 1
+	p.LBCookieHTTPOnly = lbCookieHTTPOnly == 1
+	p.LBCookieSecure = lbCookieSecure == 1
+	p.UpstreamTLSEarlyData = tlsEarlyData == 1
+	p.AddViaHeader = addVia == 1
+	p.AddExpectCTHeader = addExpectCT == 1
+	p.StripXPoweredBy = stripXPoweredBy == 1
+	p.AddCacheControlPublic = addCacheCtrlPublic == 1
+	p.AddXRequestStart = addXReqStart == 1
+	p.AddXForwardedScheme = addXFwdScheme == 1
+	p.AddRequestIDToResponse = addReqIDToResp == 1
+	p.AddXRealIP = addXRealIP == 1
+	p.StripIncomingXForwardedFor = stripIncomingXFwdFor == 1
+	p.HealthCheckTLSInsecureSkipVerify = hcTLSSkipVerify == 1
+	p.AddCORSVaryHeader = addCORSVary == 1
+	p.AddServerTimingHeader = addSrvTiming == 1
+	p.AddXDNSPrefetchControl = addXDNSPrefetch == 1
+	p.AddAcceptRanges = addAcceptRanges == 1
+	p.UpstreamTLSServerNameFromHost = tlsSNIFromHost == 1
+	p.AddXDownloadOptions = addXDlOpts == 1
+	p.AddPragmaNoCache = addPragmaNC == 1
+	p.AddXRequestPath = addXReqPath == 1
+	p.AddAgeZero = addAgeZero == 1
+	p.AddXRequestMethod = addXReqMethod == 1
+	p.AddXRequestQuery = addXReqQuery == 1
+	p.AddXRealScheme = addXRealScheme == 1
+	p.AddOriginAgentCluster = addOAC == 1
+	p.AddXRequestReferer = addXReqReferer == 1
+	p.AddXRequestOrigin = addXReqOrigin == 1
+	p.AddXForwardedURI = addXFwdURI == 1
+	p.AddXNoArchive = addXNoArch == 1
+	p.AddXRequestHostname = addXReqHost == 1
+	p.AddXXSSProtectionDisabled = addXXSSDis == 1
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -518,7 +1777,7 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pe
         SELECT `+proxyHostBaseCols+`, COALESCE(u.email, '')
         FROM proxy_hosts ph
         LEFT JOIN users u ON u.id = ph.owner_id
-        WHERE ph.server_id = ? ORDER BY ph.id DESC`, serverID)
+        WHERE ph.server_id = ? ORDER BY ph.sort_order ASC, ph.id DESC`, serverID)
 	} else {
 		inStr, inArgs := inClause(peerIDs)
 		args := append([]any{serverID, viewerID}, inArgs...)
@@ -528,7 +1787,7 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pe
         LEFT JOIN users u ON u.id = ph.owner_id
         WHERE ph.server_id = ?
           AND (ph.owner_id = ? OR ph.owner_id IN (`+inStr+`))
-        ORDER BY ph.id DESC`, args...)
+        ORDER BY ph.sort_order ASC, ph.id DESC`, args...)
 	}
 	if err != nil {
 		return nil, err
@@ -559,6 +1818,26 @@ func GetProxyHost(db *sql.DB, id int64) (*ProxyHost, error) {
 	return &p, nil
 }
 
+// ListProxyHostsWithMaintenanceWindow returns all enabled proxy hosts that have
+// a scheduled maintenance window configured (maintenance_window_start is non-empty).
+// Used by the background window-boundary loop to know which servers need a sync.
+func ListProxyHostsWithMaintenanceWindow(db *sql.DB) ([]ProxyHost, error) {
+	rows, err := db.Query(`SELECT ` + proxyHostBaseCols + ` FROM proxy_hosts ph WHERE ph.maintenance_window_start != '' AND ph.enabled = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProxyHost
+	for rows.Next() {
+		var p ProxyHost
+		if err := scanProxyHost(rows, &p, nil); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // nilIfZero returns nil for 0 so INSERT/UPDATE stores NULL in certificate_id.
 func nilIfZero(id int64) any {
 	if id == 0 {
@@ -585,14 +1864,112 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 	if p.ExtraUpstreams == "" {
 		p.ExtraUpstreams = "[]"
 	}
+	if p.CustomReqHeaders == "" {
+		p.CustomReqHeaders = "{}"
+	}
+	if p.CustomRespHeaders == "" {
+		p.CustomRespHeaders = "{}"
+	}
+	if p.URLRewrites == "" {
+		p.URLRewrites = "[]"
+	}
 	res, err := db.Exec(`
         INSERT INTO proxy_hosts (server_id, domains, forward_scheme, forward_host, forward_port,
             websocket_support, block_common_exploits, ssl_enabled, ssl_forced,
             http2_support, advanced_config, enabled, certificate_id,
             basicauth_enabled, basicauth_users, access_list, extra_upstreams, owner_id,
             dns_provider, dns_zone_id, dns_zone_name, dns_record_id,
-            compression_enabled, security_headers_enabled, tls_min_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            compression_enabled, security_headers_enabled, tls_min_version,
+            custom_req_headers, custom_resp_headers, url_rewrites, maintenance_mode, maintenance_msg,
+            max_request_body_mb, sticky_sessions, upstream_timeout_sec,
+            cors_enabled, cors_origins,
+            health_check_uri, health_check_interval_sec, keepalive_conns,
+            tags, notes, disable_access_log,
+            add_request_id, strip_resp_headers, blocked_agents, health_check_method,
+            maintenance_status_code, response_cache_control,
+            upstream_sni, hsts_preload, max_conns_per_host,
+            health_check_timeout_sec, upstream_retries,
+            force_http1, basicauth_realm, error_page_html,
+            maintenance_window_start, maintenance_window_end, maintenance_window_days,
+            ip_blocklist, lb_policy, proxy_protocol, robots_txt,
+            passive_fail_duration_sec, passive_max_fails,
+            hsts_max_age_sec, csp_header,
+            h2c_enabled, health_check_headers,
+            flush_immediate, buffer_responses, trusted_proxies,
+            upstream_host_override, read_timeout_sec, deny_dotfiles,
+            request_buffers_kb, cors_allow_credentials, cors_expose_headers,
+            ssl_verify_upstream, dial_timeout_sec,
+            api_key_header, api_key_value, block_empty_user_agent,
+            error_redirect_url, permissions_policy, x_frame_options, referrer_policy,
+            hsts_include_subdomains, csp_report_only, keepalive_idle_timeout_sec,
+            health_check_expect_status, health_check_expect_body, health_check_follow_redirects,
+            path_matcher, strip_path_prefix,
+            sticky_cookie_name, lb_try_duration_sec, lb_try_interval_ms,
+            compression_min_size_kb, forward_client_ip,
+            cors_max_age_sec, cors_allow_methods, cors_allow_headers,
+            retry_status_codes, write_timeout_sec,
+            upstream_tls_min_version, forward_proxy_url,
+            blocked_methods, forward_auth_url, forward_auth_copy_headers,
+            strip_query_string, delete_query_params,
+            request_body_read_timeout_sec, response_header_timeout_sec,
+            max_conn_duration_sec, decompress_response, color, www_redirect,
+            strip_req_headers, upstream_path_prefix,
+            compression_level, compression_prefer_gzip, sort_order,
+            allowed_methods, upstream_max_resp_header_kb, health_check_port,
+            request_id_header_name, lb_cookie_path, passive_unhealthy_latency_ms,
+            tls_handshake_timeout_sec, expect_continue_timeout_sec, response_buffers_kb,
+            upstream_max_idle_conns, upstream_keep_alive_probe_sec, forward_auth_method,
+            grpc_web_enabled, forward_auth_headers_prefix, health_check_max_size_kb,
+            strip_path_suffix, add_req_query_params, error_page_codes,
+            upstream_tls_ca_pem_file, keepalive_disabled, trailing_slash_redirect,
+            dial_fallback_delay_ms, upstream_network, dns_resolver,
+            path_matcher_type, cors_allow_private_network, robots_txt_disallow_all,
+            maintenance_retry_after_sec, upstream_resolve_timeout_sec, upstream_read_buffer_size_kb,
+            upstream_write_buffer_size_kb, req_header_replace, resp_header_replace,
+            upstream_http_versions, health_check_body, add_canonical_link_header,
+            http_basic_auth_upstream, block_ua_regexp, security_txt_body,
+            server_header_value, x_robots_tag, add_forwarded_header,
+            lb_cookie_secret, passive_unhealthy_status_codes, health_check_content_type,
+            upstream_tls_client_cert_file, upstream_tls_client_key_file, block_private_ips,
+            enable_brotli, vary_header, strip_etag,
+            http2_push_paths, deny_content_types, upstream_local_addr,
+            upstream_tls_renegotiation, upstream_tls_curves, upstream_tls_max_version,
+            upstream_tls_pins, lb_header_field, maintenance_custom_headers,
+            deny_extensions, inject_request_timestamp, add_resp_cookies,
+            strip_accept_encoding, add_upstream_timing_header, strip_server_header,
+            block_referer_regexp, add_content_type_nosniff, strip_authorization_header,
+            real_ip_from_header, health_check_host_override, add_x_forwarded_port,
+            lb_retry_on, max_buffer_size_kb, upstream_keepalive_probes,
+            upstream_flush_interval_ms, add_x_forwarded_host, maintenance_allowed_ips,
+            upstream_tls_cipher_suites, add_cache_control_no_store, deny_referer_empty,
+            lb_cookie_httponly, lb_cookie_secure, lb_cookie_same_site,
+            upstream_tls_early_data, add_via_header, req_header_rename,
+            add_expect_ct_header, force_upstream_encoding, passive_unhealthy_count,
+            strip_x_powered_by, add_timing_allow_origin, lb_cookie_max_age_sec,
+            cross_origin_opener_policy, cross_origin_resource_policy, cross_origin_embedder_policy,
+            deny_request_content_type, compression_exclude_regexp, add_cache_control_public,
+            add_x_request_start, maintenance_window_timezone, lb_random_choose_count,
+            add_x_forwarded_scheme, response_cache_ttl_sec, add_link_preload,
+            deny_path_regexp, add_request_id_to_response, health_check_tls_server_name,
+            add_x_real_ip, strip_incoming_x_forwarded_for, health_check_tls_insecure_skip_verify,
+            add_cors_vary_header, upstream_tls_alpn, add_x_powered_by,
+            block_query_params, add_document_policy, maintenance_redirect_url,
+            upstream_keepalive_max_lifetime_sec, add_origin_header, upstream_tls_ca_pem_inline,
+            add_server_timing_header, add_clear_site_data, add_x_dns_prefetch_control,
+            add_accept_ranges, add_content_disposition, upstream_tls_server_name_from_host,
+            add_x_permitted_cross_domain_policies, strip_response_headers, add_report_to,
+            add_nel_header, block_http_methods, add_service_worker_allowed,
+            add_accept_ch, add_alt_svc, add_content_language,
+            add_critical_ch, add_x_download_options, deny_user_agent_regexp,
+            add_pragma_no_cache, health_check_user_agent, add_x_request_path,
+            add_x_clacks_overhead, add_x_ua_compatible, forward_auth_skip_paths,
+            add_age_zero, add_surrogate_control, add_warning_header,
+            add_x_request_method, add_x_request_query, add_x_forwarded_user,
+            add_x_real_scheme, add_origin_agent_cluster, add_x_forwarded_groups,
+            add_x_forwarded_email, add_x_forwarded_roles, block_query_param_regexp,
+            add_x_request_referer, add_x_request_origin, add_x_forwarded_uri,
+            add_x_no_archive, add_x_request_hostname, add_x_xss_protection_disabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -603,6 +1980,95 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		nilIfZero(ownerID),
 		p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DNSRecordID,
 		boolInt(p.CompressionEnabled), boolInt(p.SecurityHeadersEnabled), p.TLSMinVersion,
+		p.CustomReqHeaders, p.CustomRespHeaders, p.URLRewrites, boolInt(p.MaintenanceMode), p.MaintenanceMsg,
+		p.MaxRequestBodyMB, boolInt(p.StickySessions), p.UpstreamTimeoutSec,
+		boolInt(p.CORSEnabled), p.CORSOrigins,
+		p.HealthCheckURI, p.HealthCheckIntervalSec, p.KeepaliveConns,
+		p.Tags, p.Notes, boolInt(p.DisableAccessLog),
+		boolInt(p.AddRequestID), p.StripRespHeaders, p.BlockedAgents, p.HealthCheckMethod,
+		p.MaintenanceStatusCode, p.ResponseCacheControl,
+		p.UpstreamSNI, boolInt(p.HSTSPreload), p.MaxConnsPerHost,
+		p.HealthCheckTimeoutSec, p.UpstreamRetries,
+		boolInt(p.ForceHTTP1), p.BasicAuthRealm, p.ErrorPageHTML,
+		p.MaintenanceWindowStart, p.MaintenanceWindowEnd, p.MaintenanceWindowDays,
+		p.IPBlocklist, p.LBPolicy, p.ProxyProtocol, p.RobotsTxt,
+		p.PassiveFailDurationSec, p.PassiveMaxFails,
+		p.HSTSMaxAgeSec, p.CSPHeader,
+		boolInt(p.H2CEnabled), p.HealthCheckHeaders,
+		boolInt(p.FlushImmediate), boolInt(p.BufferResponses), p.TrustedProxies,
+		p.UpstreamHostOverride, p.ReadTimeoutSec, boolInt(p.DenyDotfiles),
+		p.RequestBuffersKB, boolInt(p.CORSAllowCredentials), p.CORSExposeHeaders,
+		boolInt(p.SSLVerifyUpstream), p.DialTimeoutSec,
+		p.APIKeyHeader, p.APIKeyValue, boolInt(p.BlockEmptyUserAgent),
+		p.ErrorRedirectURL, p.PermissionsPolicy, p.XFrameOptions, p.ReferrerPolicy,
+		boolInt(p.HSTSIncludeSubdomains), p.CSPReportOnly, p.KeepaliveIdleTimeoutSec,
+		p.HealthCheckExpectStatus, p.HealthCheckExpectBody, boolInt(p.HealthCheckFollowRedirects),
+		p.PathMatcher, boolInt(p.StripPathPrefix),
+		p.StickyCookieName, p.LBTryDurationSec, p.LBTryIntervalMS,
+		p.CompressionMinSizeKB, boolInt(p.ForwardClientIP),
+		p.CORSMaxAgeSec, p.CORSAllowMethods, p.CORSAllowHeaders,
+		p.RetryStatusCodes, p.WriteTimeoutSec,
+		p.UpstreamTLSMinVersion, p.ForwardProxyURL,
+		p.BlockedMethods, p.ForwardAuthURL, p.ForwardAuthCopyHeaders,
+		boolInt(p.StripQueryString), p.DeleteQueryParams,
+		p.RequestBodyReadTimeoutSec, p.ResponseHeaderTimeoutSec,
+		p.MaxConnDurationSec, boolInt(p.DecompressResponse), p.Color, p.WWWRedirect,
+		p.StripReqHeaders, p.UpstreamPathPrefix,
+		p.CompressionLevel, boolInt(p.CompressionPreferGzip), p.SortOrder,
+		p.AllowedMethods, p.UpstreamMaxRespHeaderKB, p.HealthCheckPort,
+		p.RequestIDHeaderName, p.LBCookiePath, p.PassiveUnhealthyLatencyMS,
+		p.TLSHandshakeTimeoutSec, p.ExpectContinueTimeoutSec, p.ResponseBuffersKB,
+		p.UpstreamMaxIdleConns, p.UpstreamKeepAliveProbeIntervalSec, p.ForwardAuthMethod,
+		boolInt(p.GRPCWebEnabled), p.ForwardAuthHeadersPrefix, p.HealthCheckMaxSizeKB,
+		p.StripPathSuffix, p.AddReqQueryParams, p.ErrorPageCodes,
+		p.UpstreamTLSCAPEMFile, boolInt(p.KeepaliveDisabled), p.TrailingSlashRedirect,
+		p.DialFallbackDelayMS, p.UpstreamNetwork, p.DNSResolver,
+		p.PathMatcherType, boolInt(p.CORSAllowPrivateNetwork), boolInt(p.RobotsTxtDisallowAll),
+		p.MaintenanceRetryAfterSec, p.UpstreamResolveTimeoutSec, p.UpstreamReadBufferSizeKB,
+		p.UpstreamWriteBufferSizeKB, p.ReqHeaderReplace, p.RespHeaderReplace,
+		p.UpstreamHTTPVersions, p.HealthCheckBody, boolInt(p.AddCanonicalLinkHeader),
+		p.HTTPBasicAuthUpstream, p.BlockUARegexp, p.SecurityTxtBody,
+		p.ServerHeaderValue, p.XRobotsTag, boolInt(p.AddForwardedHeader),
+		p.LBCookieSecret, p.PassiveUnhealthyStatusCodes, p.HealthCheckContentType,
+		p.UpstreamTLSClientCertFile, p.UpstreamTLSClientKeyFile, boolInt(p.BlockPrivateIPs),
+		boolInt(p.EnableBrotli), p.VaryHeader, boolInt(p.StripETag),
+		p.HTTP2PushPaths, p.DenyContentTypes, p.UpstreamLocalAddr,
+		p.UpstreamTLSRenegotiation, p.UpstreamTLSCurves, p.UpstreamTLSMaxVersion,
+		p.UpstreamTLSPins, p.LBHeaderField, p.MaintenanceCustomHeaders,
+		p.DenyExtensions, boolInt(p.InjectRequestTimestamp), p.AddRespCookies,
+		boolInt(p.StripAcceptEncoding), boolInt(p.AddUpstreamTimingHeader), boolInt(p.StripServerHeader),
+		p.BlockRefererRegexp, boolInt(p.AddContentTypeNosniff), boolInt(p.StripAuthorizationHeader),
+		p.RealIPFromHeader, p.HealthCheckHostOverride, boolInt(p.AddXForwardedPort),
+		p.LBRetryOn, p.MaxBufferSizeKB, p.UpstreamKeepaliveProbes,
+		p.UpstreamFlushIntervalMS, boolInt(p.AddXForwardedHost), p.MaintenanceAllowedIPs,
+		p.UpstreamTLSCipherSuites, boolInt(p.AddCacheControlNoStore), boolInt(p.DenyRefererEmpty),
+		boolInt(p.LBCookieHTTPOnly), boolInt(p.LBCookieSecure), p.LBCookieSameSite,
+		boolInt(p.UpstreamTLSEarlyData), boolInt(p.AddViaHeader), p.ReqHeaderRename,
+		boolInt(p.AddExpectCTHeader), p.ForceUpstreamEncoding, p.PassiveUnhealthyCount,
+		boolInt(p.StripXPoweredBy), p.AddTimingAllowOrigin, p.LBCookieMaxAgeSec,
+		p.CrossOriginOpenerPolicy, p.CrossOriginResourcePolicy, p.CrossOriginEmbedderPolicy,
+		p.DenyRequestContentType, p.CompressionExcludeRegexp, boolInt(p.AddCacheControlPublic),
+		boolInt(p.AddXRequestStart), p.MaintenanceWindowTimezone, p.LBRandomChooseCount,
+		boolInt(p.AddXForwardedScheme), p.ResponseCacheTTLSec, p.AddLinkPreload,
+		p.DenyPathRegexp, boolInt(p.AddRequestIDToResponse), p.HealthCheckTLSServerName,
+		boolInt(p.AddXRealIP), boolInt(p.StripIncomingXForwardedFor), boolInt(p.HealthCheckTLSInsecureSkipVerify),
+		boolInt(p.AddCORSVaryHeader), p.UpstreamTLSALPN, p.AddXPoweredBy,
+		p.BlockQueryParams, p.AddDocumentPolicy, p.MaintenanceRedirectURL,
+		p.UpstreamKeepaliveMaxLifetimeSec, p.AddOriginHeader, p.UpstreamTLSCAPEMInline,
+		boolInt(p.AddServerTimingHeader), p.AddClearSiteData, boolInt(p.AddXDNSPrefetchControl),
+		boolInt(p.AddAcceptRanges), p.AddContentDisposition, boolInt(p.UpstreamTLSServerNameFromHost),
+		p.AddXPermittedCrossDomainPolicies, p.StripResponseHeaders, p.AddReportTo,
+		p.AddNELHeader, p.BlockHTTPMethods, p.AddServiceWorkerAllowed,
+		p.AddAcceptCH, p.AddAltSvc, p.AddContentLanguage,
+		p.AddCriticalCH, boolInt(p.AddXDownloadOptions), p.DenyUserAgentRegexp,
+		boolInt(p.AddPragmaNoCache), p.HealthCheckUserAgent, boolInt(p.AddXRequestPath),
+		p.AddXClacksOverhead, p.AddXUACompatible, p.ForwardAuthSkipPaths,
+		boolInt(p.AddAgeZero), p.AddSurrogateControl, p.AddWarningHeader,
+		boolInt(p.AddXRequestMethod), boolInt(p.AddXRequestQuery), p.AddXForwardedUser,
+		boolInt(p.AddXRealScheme), boolInt(p.AddOriginAgentCluster), p.AddXForwardedGroups,
+		p.AddXForwardedEmail, p.AddXForwardedRoles, p.BlockQueryParamRegexp,
+		boolInt(p.AddXRequestReferer), boolInt(p.AddXRequestOrigin), boolInt(p.AddXForwardedURI),
+		boolInt(p.AddXNoArchive), boolInt(p.AddXRequestHostname), boolInt(p.AddXXSSProtectionDisabled),
 	)
 	if err != nil {
 		return 0, err
@@ -620,6 +2086,15 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 	if p.ExtraUpstreams == "" {
 		p.ExtraUpstreams = "[]"
 	}
+	if p.CustomReqHeaders == "" {
+		p.CustomReqHeaders = "{}"
+	}
+	if p.CustomRespHeaders == "" {
+		p.CustomRespHeaders = "{}"
+	}
+	if p.URLRewrites == "" {
+		p.URLRewrites = "[]"
+	}
 	_, err := db.Exec(`
         UPDATE proxy_hosts SET domains=?, forward_scheme=?, forward_host=?, forward_port=?,
             websocket_support=?, block_common_exploits=?, ssl_enabled=?, ssl_forced=?,
@@ -628,6 +2103,250 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             access_list=?, extra_upstreams=?,
             dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
             compression_enabled=?, security_headers_enabled=?, tls_min_version=?,
+            custom_req_headers=?, custom_resp_headers=?, url_rewrites=?,
+            maintenance_mode=?, maintenance_msg=?, max_request_body_mb=?, sticky_sessions=?,
+            upstream_timeout_sec=?, cors_enabled=?, cors_origins=?,
+            health_check_uri=?, health_check_interval_sec=?, keepalive_conns=?,
+            tags=?, notes=?, disable_access_log=?,
+            add_request_id=?, strip_resp_headers=?, blocked_agents=?,
+            health_check_method=?,
+            maintenance_status_code=?,
+            response_cache_control=?,
+            upstream_sni=?,
+            hsts_preload=?,
+            max_conns_per_host=?,
+            health_check_timeout_sec=?,
+            upstream_retries=?,
+            force_http1=?,
+            basicauth_realm=?,
+            error_page_html=?,
+            maintenance_window_start=?, maintenance_window_end=?, maintenance_window_days=?,
+            ip_blocklist=?,
+            lb_policy=?,
+            proxy_protocol=?,
+            robots_txt=?,
+            passive_fail_duration_sec=?,
+            passive_max_fails=?,
+            hsts_max_age_sec=?,
+            csp_header=?,
+            h2c_enabled=?,
+            health_check_headers=?,
+            flush_immediate=?,
+            buffer_responses=?,
+            trusted_proxies=?,
+            upstream_host_override=?,
+            read_timeout_sec=?,
+            deny_dotfiles=?,
+            request_buffers_kb=?,
+            cors_allow_credentials=?,
+            cors_expose_headers=?,
+            ssl_verify_upstream=?,
+            dial_timeout_sec=?,
+            api_key_header=?,
+            api_key_value=?,
+            block_empty_user_agent=?,
+            error_redirect_url=?,
+            permissions_policy=?,
+            x_frame_options=?,
+            referrer_policy=?,
+            hsts_include_subdomains=?,
+            csp_report_only=?,
+            keepalive_idle_timeout_sec=?,
+            health_check_expect_status=?,
+            health_check_expect_body=?,
+            health_check_follow_redirects=?,
+            path_matcher=?,
+            strip_path_prefix=?,
+            sticky_cookie_name=?,
+            lb_try_duration_sec=?,
+            lb_try_interval_ms=?,
+            compression_min_size_kb=?,
+            forward_client_ip=?,
+            cors_max_age_sec=?,
+            cors_allow_methods=?,
+            cors_allow_headers=?,
+            retry_status_codes=?,
+            write_timeout_sec=?,
+            upstream_tls_min_version=?,
+            forward_proxy_url=?,
+            blocked_methods=?,
+            forward_auth_url=?,
+            forward_auth_copy_headers=?,
+            strip_query_string=?,
+            delete_query_params=?,
+            request_body_read_timeout_sec=?,
+            response_header_timeout_sec=?,
+            max_conn_duration_sec=?,
+            decompress_response=?,
+            color=?,
+            www_redirect=?,
+            strip_req_headers=?,
+            upstream_path_prefix=?,
+            compression_level=?,
+            compression_prefer_gzip=?,
+            sort_order=?,
+            allowed_methods=?,
+            upstream_max_resp_header_kb=?,
+            health_check_port=?,
+            request_id_header_name=?,
+            lb_cookie_path=?,
+            passive_unhealthy_latency_ms=?,
+            tls_handshake_timeout_sec=?,
+            expect_continue_timeout_sec=?,
+            response_buffers_kb=?,
+            upstream_max_idle_conns=?,
+            upstream_keep_alive_probe_sec=?,
+            forward_auth_method=?,
+            grpc_web_enabled=?,
+            forward_auth_headers_prefix=?,
+            health_check_max_size_kb=?,
+            strip_path_suffix=?,
+            add_req_query_params=?,
+            error_page_codes=?,
+            upstream_tls_ca_pem_file=?,
+            keepalive_disabled=?,
+            trailing_slash_redirect=?,
+            dial_fallback_delay_ms=?,
+            upstream_network=?,
+            dns_resolver=?,
+            path_matcher_type=?,
+            cors_allow_private_network=?,
+            robots_txt_disallow_all=?,
+            maintenance_retry_after_sec=?,
+            upstream_resolve_timeout_sec=?,
+            upstream_read_buffer_size_kb=?,
+            upstream_write_buffer_size_kb=?,
+            req_header_replace=?,
+            resp_header_replace=?,
+            upstream_http_versions=?,
+            health_check_body=?,
+            add_canonical_link_header=?,
+            http_basic_auth_upstream=?,
+            block_ua_regexp=?,
+            security_txt_body=?,
+            server_header_value=?,
+            x_robots_tag=?,
+            add_forwarded_header=?,
+            lb_cookie_secret=?,
+            passive_unhealthy_status_codes=?,
+            health_check_content_type=?,
+            upstream_tls_client_cert_file=?,
+            upstream_tls_client_key_file=?,
+            block_private_ips=?,
+            enable_brotli=?,
+            vary_header=?,
+            strip_etag=?,
+            http2_push_paths=?,
+            deny_content_types=?,
+            upstream_local_addr=?,
+            upstream_tls_renegotiation=?,
+            upstream_tls_curves=?,
+            upstream_tls_max_version=?,
+            upstream_tls_pins=?,
+            lb_header_field=?,
+            maintenance_custom_headers=?,
+            deny_extensions=?,
+            inject_request_timestamp=?,
+            add_resp_cookies=?,
+            strip_accept_encoding=?,
+            add_upstream_timing_header=?,
+            strip_server_header=?,
+            block_referer_regexp=?,
+            add_content_type_nosniff=?,
+            strip_authorization_header=?,
+            real_ip_from_header=?,
+            health_check_host_override=?,
+            add_x_forwarded_port=?,
+            lb_retry_on=?,
+            max_buffer_size_kb=?,
+            upstream_keepalive_probes=?,
+            upstream_flush_interval_ms=?,
+            add_x_forwarded_host=?,
+            maintenance_allowed_ips=?,
+            upstream_tls_cipher_suites=?,
+            add_cache_control_no_store=?,
+            deny_referer_empty=?,
+            lb_cookie_httponly=?,
+            lb_cookie_secure=?,
+            lb_cookie_same_site=?,
+            upstream_tls_early_data=?,
+            add_via_header=?,
+            req_header_rename=?,
+            add_expect_ct_header=?,
+            force_upstream_encoding=?,
+            passive_unhealthy_count=?,
+            strip_x_powered_by=?,
+            add_timing_allow_origin=?,
+            lb_cookie_max_age_sec=?,
+            cross_origin_opener_policy=?,
+            cross_origin_resource_policy=?,
+            cross_origin_embedder_policy=?,
+            deny_request_content_type=?,
+            compression_exclude_regexp=?,
+            add_cache_control_public=?,
+            add_x_request_start=?,
+            maintenance_window_timezone=?,
+            lb_random_choose_count=?,
+            add_x_forwarded_scheme=?,
+            response_cache_ttl_sec=?,
+            add_link_preload=?,
+            deny_path_regexp=?,
+            add_request_id_to_response=?,
+            health_check_tls_server_name=?,
+            add_x_real_ip=?,
+            strip_incoming_x_forwarded_for=?,
+            health_check_tls_insecure_skip_verify=?,
+            add_cors_vary_header=?,
+            upstream_tls_alpn=?,
+            add_x_powered_by=?,
+            block_query_params=?,
+            add_document_policy=?,
+            maintenance_redirect_url=?,
+            upstream_keepalive_max_lifetime_sec=?,
+            add_origin_header=?,
+            upstream_tls_ca_pem_inline=?,
+            add_server_timing_header=?,
+            add_clear_site_data=?,
+            add_x_dns_prefetch_control=?,
+            add_accept_ranges=?,
+            add_content_disposition=?,
+            upstream_tls_server_name_from_host=?,
+            add_x_permitted_cross_domain_policies=?,
+            strip_response_headers=?,
+            add_report_to=?,
+            add_nel_header=?,
+            block_http_methods=?,
+            add_service_worker_allowed=?,
+            add_accept_ch=?,
+            add_alt_svc=?,
+            add_content_language=?,
+            add_critical_ch=?,
+            add_x_download_options=?,
+            deny_user_agent_regexp=?,
+            add_pragma_no_cache=?,
+            health_check_user_agent=?,
+            add_x_request_path=?,
+            add_x_clacks_overhead=?,
+            add_x_ua_compatible=?,
+            forward_auth_skip_paths=?,
+            add_age_zero=?,
+            add_surrogate_control=?,
+            add_warning_header=?,
+            add_x_request_method=?,
+            add_x_request_query=?,
+            add_x_forwarded_user=?,
+            add_x_real_scheme=?,
+            add_origin_agent_cluster=?,
+            add_x_forwarded_groups=?,
+            add_x_forwarded_email=?,
+            add_x_forwarded_roles=?,
+            block_query_param_regexp=?,
+            add_x_request_referer=?,
+            add_x_request_origin=?,
+            add_x_forwarded_uri=?,
+            add_x_no_archive=?,
+            add_x_request_hostname=?,
+            add_x_xss_protection_disabled=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -638,6 +2357,250 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		p.AccessList, p.ExtraUpstreams,
 		p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DNSRecordID,
 		boolInt(p.CompressionEnabled), boolInt(p.SecurityHeadersEnabled), p.TLSMinVersion,
+		p.CustomReqHeaders, p.CustomRespHeaders, p.URLRewrites,
+		boolInt(p.MaintenanceMode), p.MaintenanceMsg, p.MaxRequestBodyMB, boolInt(p.StickySessions),
+		p.UpstreamTimeoutSec, boolInt(p.CORSEnabled), p.CORSOrigins,
+		p.HealthCheckURI, p.HealthCheckIntervalSec, p.KeepaliveConns,
+		p.Tags, p.Notes, boolInt(p.DisableAccessLog),
+		boolInt(p.AddRequestID), p.StripRespHeaders, p.BlockedAgents,
+		p.HealthCheckMethod,
+		p.MaintenanceStatusCode,
+		p.ResponseCacheControl,
+		p.UpstreamSNI,
+		boolInt(p.HSTSPreload),
+		p.MaxConnsPerHost,
+		p.HealthCheckTimeoutSec,
+		p.UpstreamRetries,
+		boolInt(p.ForceHTTP1),
+		p.BasicAuthRealm,
+		p.ErrorPageHTML,
+		p.MaintenanceWindowStart, p.MaintenanceWindowEnd, p.MaintenanceWindowDays,
+		p.IPBlocklist,
+		p.LBPolicy,
+		p.ProxyProtocol,
+		p.RobotsTxt,
+		p.PassiveFailDurationSec,
+		p.PassiveMaxFails,
+		p.HSTSMaxAgeSec,
+		p.CSPHeader,
+		boolInt(p.H2CEnabled),
+		p.HealthCheckHeaders,
+		boolInt(p.FlushImmediate),
+		boolInt(p.BufferResponses),
+		p.TrustedProxies,
+		p.UpstreamHostOverride,
+		p.ReadTimeoutSec,
+		boolInt(p.DenyDotfiles),
+		p.RequestBuffersKB,
+		boolInt(p.CORSAllowCredentials),
+		p.CORSExposeHeaders,
+		boolInt(p.SSLVerifyUpstream),
+		p.DialTimeoutSec,
+		p.APIKeyHeader,
+		p.APIKeyValue,
+		boolInt(p.BlockEmptyUserAgent),
+		p.ErrorRedirectURL,
+		p.PermissionsPolicy,
+		p.XFrameOptions,
+		p.ReferrerPolicy,
+		boolInt(p.HSTSIncludeSubdomains),
+		p.CSPReportOnly,
+		p.KeepaliveIdleTimeoutSec,
+		p.HealthCheckExpectStatus,
+		p.HealthCheckExpectBody,
+		boolInt(p.HealthCheckFollowRedirects),
+		p.PathMatcher,
+		boolInt(p.StripPathPrefix),
+		p.StickyCookieName,
+		p.LBTryDurationSec,
+		p.LBTryIntervalMS,
+		p.CompressionMinSizeKB,
+		boolInt(p.ForwardClientIP),
+		p.CORSMaxAgeSec,
+		p.CORSAllowMethods,
+		p.CORSAllowHeaders,
+		p.RetryStatusCodes,
+		p.WriteTimeoutSec,
+		p.UpstreamTLSMinVersion,
+		p.ForwardProxyURL,
+		p.BlockedMethods,
+		p.ForwardAuthURL,
+		p.ForwardAuthCopyHeaders,
+		boolInt(p.StripQueryString),
+		p.DeleteQueryParams,
+		p.RequestBodyReadTimeoutSec,
+		p.ResponseHeaderTimeoutSec,
+		p.MaxConnDurationSec,
+		boolInt(p.DecompressResponse),
+		p.Color,
+		p.WWWRedirect,
+		p.StripReqHeaders,
+		p.UpstreamPathPrefix,
+		p.CompressionLevel,
+		boolInt(p.CompressionPreferGzip),
+		p.SortOrder,
+		p.AllowedMethods,
+		p.UpstreamMaxRespHeaderKB,
+		p.HealthCheckPort,
+		p.RequestIDHeaderName,
+		p.LBCookiePath,
+		p.PassiveUnhealthyLatencyMS,
+		p.TLSHandshakeTimeoutSec,
+		p.ExpectContinueTimeoutSec,
+		p.ResponseBuffersKB,
+		p.UpstreamMaxIdleConns,
+		p.UpstreamKeepAliveProbeIntervalSec,
+		p.ForwardAuthMethod,
+		boolInt(p.GRPCWebEnabled),
+		p.ForwardAuthHeadersPrefix,
+		p.HealthCheckMaxSizeKB,
+		p.StripPathSuffix,
+		p.AddReqQueryParams,
+		p.ErrorPageCodes,
+		p.UpstreamTLSCAPEMFile,
+		boolInt(p.KeepaliveDisabled),
+		p.TrailingSlashRedirect,
+		p.DialFallbackDelayMS,
+		p.UpstreamNetwork,
+		p.DNSResolver,
+		p.PathMatcherType,
+		boolInt(p.CORSAllowPrivateNetwork),
+		boolInt(p.RobotsTxtDisallowAll),
+		p.MaintenanceRetryAfterSec,
+		p.UpstreamResolveTimeoutSec,
+		p.UpstreamReadBufferSizeKB,
+		p.UpstreamWriteBufferSizeKB,
+		p.ReqHeaderReplace,
+		p.RespHeaderReplace,
+		p.UpstreamHTTPVersions,
+		p.HealthCheckBody,
+		boolInt(p.AddCanonicalLinkHeader),
+		p.HTTPBasicAuthUpstream,
+		p.BlockUARegexp,
+		p.SecurityTxtBody,
+		p.ServerHeaderValue,
+		p.XRobotsTag,
+		boolInt(p.AddForwardedHeader),
+		p.LBCookieSecret,
+		p.PassiveUnhealthyStatusCodes,
+		p.HealthCheckContentType,
+		p.UpstreamTLSClientCertFile,
+		p.UpstreamTLSClientKeyFile,
+		boolInt(p.BlockPrivateIPs),
+		boolInt(p.EnableBrotli),
+		p.VaryHeader,
+		boolInt(p.StripETag),
+		p.HTTP2PushPaths,
+		p.DenyContentTypes,
+		p.UpstreamLocalAddr,
+		p.UpstreamTLSRenegotiation,
+		p.UpstreamTLSCurves,
+		p.UpstreamTLSMaxVersion,
+		p.UpstreamTLSPins,
+		p.LBHeaderField,
+		p.MaintenanceCustomHeaders,
+		p.DenyExtensions,
+		boolInt(p.InjectRequestTimestamp),
+		p.AddRespCookies,
+		boolInt(p.StripAcceptEncoding),
+		boolInt(p.AddUpstreamTimingHeader),
+		boolInt(p.StripServerHeader),
+		p.BlockRefererRegexp,
+		boolInt(p.AddContentTypeNosniff),
+		boolInt(p.StripAuthorizationHeader),
+		p.RealIPFromHeader,
+		p.HealthCheckHostOverride,
+		boolInt(p.AddXForwardedPort),
+		p.LBRetryOn,
+		p.MaxBufferSizeKB,
+		p.UpstreamKeepaliveProbes,
+		p.UpstreamFlushIntervalMS,
+		boolInt(p.AddXForwardedHost),
+		p.MaintenanceAllowedIPs,
+		p.UpstreamTLSCipherSuites,
+		boolInt(p.AddCacheControlNoStore),
+		boolInt(p.DenyRefererEmpty),
+		boolInt(p.LBCookieHTTPOnly),
+		boolInt(p.LBCookieSecure),
+		p.LBCookieSameSite,
+		boolInt(p.UpstreamTLSEarlyData),
+		boolInt(p.AddViaHeader),
+		p.ReqHeaderRename,
+		boolInt(p.AddExpectCTHeader),
+		p.ForceUpstreamEncoding,
+		p.PassiveUnhealthyCount,
+		boolInt(p.StripXPoweredBy),
+		p.AddTimingAllowOrigin,
+		p.LBCookieMaxAgeSec,
+		p.CrossOriginOpenerPolicy,
+		p.CrossOriginResourcePolicy,
+		p.CrossOriginEmbedderPolicy,
+		p.DenyRequestContentType,
+		p.CompressionExcludeRegexp,
+		boolInt(p.AddCacheControlPublic),
+		boolInt(p.AddXRequestStart),
+		p.MaintenanceWindowTimezone,
+		p.LBRandomChooseCount,
+		boolInt(p.AddXForwardedScheme),
+		p.ResponseCacheTTLSec,
+		p.AddLinkPreload,
+		p.DenyPathRegexp,
+		boolInt(p.AddRequestIDToResponse),
+		p.HealthCheckTLSServerName,
+		boolInt(p.AddXRealIP),
+		boolInt(p.StripIncomingXForwardedFor),
+		boolInt(p.HealthCheckTLSInsecureSkipVerify),
+		boolInt(p.AddCORSVaryHeader),
+		p.UpstreamTLSALPN,
+		p.AddXPoweredBy,
+		p.BlockQueryParams,
+		p.AddDocumentPolicy,
+		p.MaintenanceRedirectURL,
+		p.UpstreamKeepaliveMaxLifetimeSec,
+		p.AddOriginHeader,
+		p.UpstreamTLSCAPEMInline,
+		boolInt(p.AddServerTimingHeader),
+		p.AddClearSiteData,
+		boolInt(p.AddXDNSPrefetchControl),
+		boolInt(p.AddAcceptRanges),
+		p.AddContentDisposition,
+		boolInt(p.UpstreamTLSServerNameFromHost),
+		p.AddXPermittedCrossDomainPolicies,
+		p.StripResponseHeaders,
+		p.AddReportTo,
+		p.AddNELHeader,
+		p.BlockHTTPMethods,
+		p.AddServiceWorkerAllowed,
+		p.AddAcceptCH,
+		p.AddAltSvc,
+		p.AddContentLanguage,
+		p.AddCriticalCH,
+		boolInt(p.AddXDownloadOptions),
+		p.DenyUserAgentRegexp,
+		boolInt(p.AddPragmaNoCache),
+		p.HealthCheckUserAgent,
+		boolInt(p.AddXRequestPath),
+		p.AddXClacksOverhead,
+		p.AddXUACompatible,
+		p.ForwardAuthSkipPaths,
+		boolInt(p.AddAgeZero),
+		p.AddSurrogateControl,
+		p.AddWarningHeader,
+		boolInt(p.AddXRequestMethod),
+		boolInt(p.AddXRequestQuery),
+		p.AddXForwardedUser,
+		boolInt(p.AddXRealScheme),
+		boolInt(p.AddOriginAgentCluster),
+		p.AddXForwardedGroups,
+		p.AddXForwardedEmail,
+		p.AddXForwardedRoles,
+		p.BlockQueryParamRegexp,
+		boolInt(p.AddXRequestReferer),
+		boolInt(p.AddXRequestOrigin),
+		boolInt(p.AddXForwardedURI),
+		boolInt(p.AddXNoArchive),
+		boolInt(p.AddXRequestHostname),
+		boolInt(p.AddXXSSProtectionDisabled),
 		p.ID,
 	)
 	return err
@@ -743,10 +2706,19 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
         SELECT rh.id, rh.domains, rh.forward_scheme, rh.forward_domain, rh.forward_http_code,
                rh.preserve_path, rh.ssl_enabled, rh.ssl_forced, rh.enabled,
                COALESCE(rh.certificate_id, 0), rh.created_at, rh.updated_at,
-               COALESCE(rh.owner_id, 0), COALESCE(u.email, '')
+               COALESCE(rh.owner_id, 0), COALESCE(u.email, ''),
+               COALESCE(rh.tags,''), COALESCE(rh.notes,''),
+               COALESCE(rh.access_list,''), COALESCE(rh.maintenance_mode,0), COALESCE(rh.maintenance_msg,''),
+               COALESCE(rh.custom_resp_headers,'{}'),
+               COALESCE(rh.ip_blocklist,''),
+               COALESCE(rh.hsts_max_age_sec,0), COALESCE(rh.hsts_include_subdomains,0), COALESCE(rh.hsts_preload,0),
+               COALESCE(rh.advanced_config,''),
+               COALESCE(rh.color,''),
+               COALESCE(rh.maintenance_status_code,503),
+               COALESCE(rh.sort_order,0)
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
-        WHERE rh.server_id = ? ORDER BY rh.id DESC`, serverID)
+        WHERE rh.server_id = ? ORDER BY rh.sort_order ASC, rh.id DESC`, serverID)
 	} else {
 		inStr, inArgs := inClause(peerIDs)
 		args := append([]any{serverID, viewerID}, inArgs...)
@@ -754,12 +2726,21 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
         SELECT rh.id, rh.domains, rh.forward_scheme, rh.forward_domain, rh.forward_http_code,
                rh.preserve_path, rh.ssl_enabled, rh.ssl_forced, rh.enabled,
                COALESCE(rh.certificate_id, 0), rh.created_at, rh.updated_at,
-               COALESCE(rh.owner_id, 0), COALESCE(u.email, '')
+               COALESCE(rh.owner_id, 0), COALESCE(u.email, ''),
+               COALESCE(rh.tags,''), COALESCE(rh.notes,''),
+               COALESCE(rh.access_list,''), COALESCE(rh.maintenance_mode,0), COALESCE(rh.maintenance_msg,''),
+               COALESCE(rh.custom_resp_headers,'{}'),
+               COALESCE(rh.ip_blocklist,''),
+               COALESCE(rh.hsts_max_age_sec,0), COALESCE(rh.hsts_include_subdomains,0), COALESCE(rh.hsts_preload,0),
+               COALESCE(rh.advanced_config,''),
+               COALESCE(rh.color,''),
+               COALESCE(rh.maintenance_status_code,503),
+               COALESCE(rh.sort_order,0)
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ?
           AND (rh.owner_id = ? OR rh.owner_id IN (`+inStr+`))
-        ORDER BY rh.id DESC`, args...)
+        ORDER BY rh.sort_order ASC, rh.id DESC`, args...)
 	}
 	if err != nil {
 		return nil, err
@@ -768,17 +2749,27 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 	var out []RedirectionHost
 	for rows.Next() {
 		var r RedirectionHost
-		var pp, ssl, sslf, en int
+		var pp, ssl, sslf, en, maintMode int
 		var ownerID int64
+		var hstsSubdomains, hstsPreload int
 		if err := rows.Scan(&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain,
 			&r.ForwardHTTPCode, &pp, &ssl, &sslf, &en, &r.CertificateID,
-			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail); err != nil {
+			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail,
+			&r.Tags, &r.Notes,
+			&r.AccessList, &maintMode, &r.MaintenanceMsg,
+			&r.CustomRespHeaders, &r.IPBlocklist,
+			&r.HSTSMaxAgeSec, &hstsSubdomains, &hstsPreload,
+			&r.AdvancedConfig, &r.Color,
+			&r.MaintenanceStatusCode, &r.SortOrder); err != nil {
 			return nil, err
 		}
 		r.PreservePath = pp == 1
 		r.SSLEnabled = ssl == 1
 		r.SSLForced = sslf == 1
 		r.Enabled = en == 1
+		r.MaintenanceMode = maintMode == 1
+		r.HSTSIncludeSubdomains = hstsSubdomains == 1
+		r.HSTSPreload = hstsPreload == 1
 		if ownerID != 0 {
 			r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -789,17 +2780,32 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 
 func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 	var r RedirectionHost
-	var pp, ssl, sslf, en int
+	var pp, ssl, sslf, en, maintMode int
 	var ownerID int64
+	var hstsSubdomains, hstsPreload int
 	err := db.QueryRow(`
         SELECT id, domains, forward_scheme, forward_domain, forward_http_code,
                preserve_path, ssl_enabled, ssl_forced, enabled,
                COALESCE(certificate_id, 0), created_at, updated_at,
-               COALESCE(owner_id, 0)
+               COALESCE(owner_id, 0),
+               COALESCE(tags,''), COALESCE(notes,''),
+               COALESCE(access_list,''), COALESCE(maintenance_mode,0), COALESCE(maintenance_msg,''),
+               COALESCE(custom_resp_headers,'{}'),
+               COALESCE(ip_blocklist,''),
+               COALESCE(hsts_max_age_sec,0), COALESCE(hsts_include_subdomains,0), COALESCE(hsts_preload,0),
+               COALESCE(advanced_config,''),
+               COALESCE(color,''),
+               COALESCE(maintenance_status_code,503),
+               COALESCE(sort_order,0)
         FROM redirection_hosts WHERE id = ?`, id).Scan(
 		&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain, &r.ForwardHTTPCode,
 		&pp, &ssl, &sslf, &en, &r.CertificateID, &r.CreatedAt, &r.UpdatedAt,
-		&ownerID,
+		&ownerID, &r.Tags, &r.Notes,
+		&r.AccessList, &maintMode, &r.MaintenanceMsg,
+		&r.CustomRespHeaders, &r.IPBlocklist,
+		&r.HSTSMaxAgeSec, &hstsSubdomains, &hstsPreload,
+		&r.AdvancedConfig, &r.Color,
+		&r.MaintenanceStatusCode, &r.SortOrder,
 	)
 	if err != nil {
 		return nil, err
@@ -808,6 +2814,9 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 	r.SSLEnabled = ssl == 1
 	r.SSLForced = sslf == 1
 	r.Enabled = en == 1
+	r.MaintenanceMode = maintMode == 1
+	r.HSTSIncludeSubdomains = hstsSubdomains == 1
+	r.HSTSPreload = hstsPreload == 1
 	if ownerID != 0 {
 		r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -822,15 +2831,29 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
 	if r.ForwardHTTPCode == 0 {
 		r.ForwardHTTPCode = 301
 	}
+	if r.CustomRespHeaders == "" {
+		r.CustomRespHeaders = "{}"
+	}
+	if r.MaintenanceStatusCode == 0 {
+		r.MaintenanceStatusCode = 503
+	}
 	res, err := db.Exec(`
         INSERT INTO redirection_hosts (server_id, domains, forward_scheme, forward_domain,
-            forward_http_code, preserve_path, ssl_enabled, ssl_forced, enabled, certificate_id, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            forward_http_code, preserve_path, ssl_enabled, ssl_forced, enabled, certificate_id, owner_id,
+            tags, notes, access_list, maintenance_mode, maintenance_msg, custom_resp_headers, ip_blocklist,
+            hsts_max_age_sec, hsts_include_subdomains, hsts_preload, advanced_config, color,
+            maintenance_status_code, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
 		boolInt(r.Enabled), nilIfZero(r.CertificateID),
 		nilIfZero(ownerID),
+		r.Tags, r.Notes, r.AccessList, boolInt(r.MaintenanceMode), r.MaintenanceMsg,
+		r.CustomRespHeaders, r.IPBlocklist,
+		r.HSTSMaxAgeSec, boolInt(r.HSTSIncludeSubdomains), boolInt(r.HSTSPreload),
+		r.AdvancedConfig, r.Color,
+		r.MaintenanceStatusCode, r.SortOrder,
 	)
 	if err != nil {
 		return 0, err
@@ -842,13 +2865,31 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
 	if r.ForwardScheme == "" {
 		r.ForwardScheme = "auto"
 	}
+	if r.CustomRespHeaders == "" {
+		r.CustomRespHeaders = "{}"
+	}
+	if r.MaintenanceStatusCode == 0 {
+		r.MaintenanceStatusCode = 503
+	}
 	_, err := db.Exec(`
         UPDATE redirection_hosts SET domains=?, forward_scheme=?, forward_domain=?,
             forward_http_code=?, preserve_path=?, ssl_enabled=?, ssl_forced=?, enabled=?,
-            certificate_id=?, updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
+            certificate_id=?, tags=?, notes=?,
+            access_list=?, maintenance_mode=?, maintenance_msg=?,
+            custom_resp_headers=?, ip_blocklist=?,
+            hsts_max_age_sec=?, hsts_include_subdomains=?, hsts_preload=?,
+            advanced_config=?, color=?,
+            maintenance_status_code=?, sort_order=?,
+            updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
-		boolInt(r.Enabled), nilIfZero(r.CertificateID), r.ID,
+		boolInt(r.Enabled), nilIfZero(r.CertificateID), r.Tags, r.Notes,
+		r.AccessList, boolInt(r.MaintenanceMode), r.MaintenanceMsg,
+		r.CustomRespHeaders, r.IPBlocklist,
+		r.HSTSMaxAgeSec, boolInt(r.HSTSIncludeSubdomains), boolInt(r.HSTSPreload),
+		r.AdvancedConfig, r.Color,
+		r.MaintenanceStatusCode, r.SortOrder,
+		r.ID,
 	)
 	return err
 }
@@ -1460,6 +3501,40 @@ func ListActivity(db *sql.DB, serverID int64, limit int) ([]Activity, error) {
 	return out, rows.Err()
 }
 
+// ListActivitySearch is like ListActivity but filters rows where actor, action,
+// target, or detail contain the given search string (case-insensitive LIKE).
+// When search is empty it behaves identically to ListActivity.
+func ListActivitySearch(db *sql.DB, serverID int64, limit int, search string) ([]Activity, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if search == "" {
+		return ListActivity(db, serverID, limit)
+	}
+	like := "%" + search + "%"
+	rows, err := db.Query(`SELECT id, actor, action, target, detail, success, created_at
+        FROM activity_log
+        WHERE server_id = ?
+          AND (actor LIKE ? OR action LIKE ? OR target LIKE ? OR detail LIKE ?)
+        ORDER BY id DESC LIMIT ?`,
+		serverID, like, like, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Activity
+	for rows.Next() {
+		var a Activity
+		var ok int
+		if err := rows.Scan(&a.ID, &a.Actor, &a.Action, &a.Target, &a.Detail, &ok, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		a.Success = ok == 1
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // CertificateInUse returns the number of proxy/redirect/raw routes currently referencing this cert.
 func CertificateInUse(db *sql.DB, id int64) (int, error) {
 	var n int
@@ -1493,4 +3568,226 @@ func CertificateInUseByOthers(db *sql.DB, id int64, excludeOwnerID int64) (int, 
 		return 0, err
 	}
 	return n, nil
+}
+
+// --- API Tokens ---
+
+// API token scope values. Stored verbatim in the scopes column.
+const (
+	TokenScopeFull       = "full"        // full access as the user's role
+	TokenScopeReadOnly   = "read_only"   // GET/HEAD requests only
+	TokenScopeProxyWrite = "proxy_write" // proxy-host write + everything else read-only
+)
+
+// APIToken is a named bearer-token credential for programmatic access.
+// The raw token is shown exactly once at creation; only the SHA-256 hash
+// is persisted. Expiry == zero means the token never expires.
+type APIToken struct {
+	ID         int64
+	UserID     int64
+	UserEmail  string // populated via JOIN on list queries
+	Name       string
+	TokenHash  string
+	Scopes     string
+	LastUsedAt sql.NullTime
+	ExpiresAt  sql.NullTime
+	CreatedAt  time.Time
+}
+
+func (t *APIToken) Expired() bool {
+	return t.ExpiresAt.Valid && t.ExpiresAt.Time.Before(time.Now())
+}
+
+// CreateAPIToken inserts a new API token row and returns the inserted ID.
+// tokenHash must be hex(sha256(rawToken)).
+func CreateAPIToken(db *sql.DB, userID int64, name, tokenHash, scopes string, expiresAt *time.Time) (int64, error) {
+	var exp any
+	if expiresAt != nil {
+		exp = *expiresAt
+	}
+	res, err := db.Exec(
+		`INSERT INTO api_tokens (user_id, name, token_hash, scopes, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		userID, strings.TrimSpace(name), tokenHash, scopes, exp,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListAPITokens returns all tokens for the given user.
+// If isAdmin is true, all users' tokens are returned with user email.
+func ListAPITokens(db *sql.DB, userID int64, isAdmin bool) ([]APIToken, error) {
+	var rows *sql.Rows
+	var err error
+	if isAdmin {
+		rows, err = db.Query(`
+			SELECT t.id, t.user_id, COALESCE(u.email,''), t.name, t.token_hash, t.scopes,
+			       t.last_used_at, t.expires_at, t.created_at
+			FROM api_tokens t
+			LEFT JOIN users u ON u.id = t.user_id
+			ORDER BY t.id DESC`)
+	} else {
+		rows, err = db.Query(`
+			SELECT t.id, t.user_id, COALESCE(u.email,''), t.name, t.token_hash, t.scopes,
+			       t.last_used_at, t.expires_at, t.created_at
+			FROM api_tokens t
+			LEFT JOIN users u ON u.id = t.user_id
+			WHERE t.user_id = ?
+			ORDER BY t.id DESC`, userID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []APIToken
+	for rows.Next() {
+		var t APIToken
+		if err := rows.Scan(&t.ID, &t.UserID, &t.UserEmail, &t.Name, &t.TokenHash, &t.Scopes,
+			&t.LastUsedAt, &t.ExpiresAt, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// GetAPITokenByHash looks up a token by its SHA-256 hex hash. Returns nil if not found.
+func GetAPITokenByHash(db *sql.DB, tokenHash string) (*APIToken, error) {
+	var t APIToken
+	err := db.QueryRow(`
+		SELECT t.id, t.user_id, COALESCE(u.email,''), t.name, t.token_hash, t.scopes,
+		       t.last_used_at, t.expires_at, t.created_at
+		FROM api_tokens t
+		LEFT JOIN users u ON u.id = t.user_id
+		WHERE t.token_hash = ?`, tokenHash).
+		Scan(&t.ID, &t.UserID, &t.UserEmail, &t.Name, &t.TokenHash, &t.Scopes,
+			&t.LastUsedAt, &t.ExpiresAt, &t.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// TouchAPIToken updates last_used_at to now.
+func TouchAPIToken(db *sql.DB, id int64) {
+	_, _ = db.Exec(`UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+}
+
+// DeleteAPIToken removes a token by ID. ownerID == 0 skips the ownership check (admin path).
+func DeleteAPIToken(db *sql.DB, id int64, ownerID int64) error {
+	if ownerID == 0 {
+		_, err := db.Exec(`DELETE FROM api_tokens WHERE id = ?`, id)
+		return err
+	}
+	_, err := db.Exec(`DELETE FROM api_tokens WHERE id = ? AND user_id = ?`, id, ownerID)
+	return err
+}
+
+// --- Proxy Health ---
+
+// ProxyHealthCheck is a single health-check result for a proxy host.
+type ProxyHealthCheck struct {
+	ID          int64
+	ProxyHostID int64
+	CheckedAt   time.Time
+	OK          bool
+	StatusCode  int
+	LatencyMs   int64
+	ErrorMsg    string
+}
+
+// LatestProxyHealth returns the most recent health check for each proxy host ID
+// in the given list. Returns a map of proxyHostID → ProxyHealthCheck.
+// Hosts with no check history are absent from the map.
+func LatestProxyHealth(db *sql.DB, hostIDs []int64) (map[int64]ProxyHealthCheck, error) {
+	if len(hostIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(hostIDs))
+	args := make([]any, len(hostIDs))
+	for i, id := range hostIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := db.Query(`
+		SELECT ph.proxy_host_id, ph.checked_at, ph.ok, ph.status_code, ph.latency_ms, ph.error_msg
+		FROM proxy_health ph
+		INNER JOIN (
+			SELECT proxy_host_id, MAX(checked_at) AS max_ts
+			FROM proxy_health
+			WHERE proxy_host_id IN (`+strings.Join(placeholders, ",")+`)
+			GROUP BY proxy_host_id
+		) latest ON ph.proxy_host_id = latest.proxy_host_id AND ph.checked_at = latest.max_ts
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]ProxyHealthCheck)
+	for rows.Next() {
+		var h ProxyHealthCheck
+		var ok int
+		var ts int64
+		if err := rows.Scan(&h.ProxyHostID, &ts, &ok, &h.StatusCode, &h.LatencyMs, &h.ErrorMsg); err != nil {
+			return nil, err
+		}
+		h.OK = ok == 1
+		h.CheckedAt = time.Unix(ts, 0)
+		out[h.ProxyHostID] = h
+	}
+	return out, rows.Err()
+}
+
+// InsertProxyHealth stores a health check result and prunes old rows for that host
+// to keep at most 288 entries (24 hours at 5-min intervals).
+func InsertProxyHealth(db *sql.DB, hostID int64, ok bool, statusCode int, latencyMs int64, errMsg string) error {
+	ts := time.Now().Unix()
+	okInt := 0
+	if ok {
+		okInt = 1
+	}
+	if _, err := db.Exec(`
+		INSERT INTO proxy_health (proxy_host_id, checked_at, ok, status_code, latency_ms, error_msg)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		hostID, ts, okInt, statusCode, latencyMs, errMsg); err != nil {
+		return err
+	}
+	// Prune: keep only the newest 288 rows per host.
+	_, err := db.Exec(`
+		DELETE FROM proxy_health
+		WHERE proxy_host_id = ? AND id NOT IN (
+			SELECT id FROM proxy_health WHERE proxy_host_id = ? ORDER BY checked_at DESC LIMIT 288
+		)`, hostID, hostID)
+	return err
+}
+
+// GetProxyHealthHistory returns the last N health checks for a given proxy host,
+// ordered newest first.
+func GetProxyHealthHistory(db *sql.DB, hostID int64, limit int) ([]ProxyHealthCheck, error) {
+	rows, err := db.Query(`
+		SELECT checked_at, ok, status_code, latency_ms, error_msg
+		FROM proxy_health WHERE proxy_host_id = ?
+		ORDER BY checked_at DESC LIMIT ?`, hostID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProxyHealthCheck
+	for rows.Next() {
+		var h ProxyHealthCheck
+		var ok int
+		var ts int64
+		if err := rows.Scan(&ts, &ok, &h.StatusCode, &h.LatencyMs, &h.ErrorMsg); err != nil {
+			return nil, err
+		}
+		h.OK = ok == 1
+		h.CheckedAt = time.Unix(ts, 0)
+		h.ProxyHostID = hostID
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }

@@ -3,10 +3,17 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -76,6 +83,9 @@ type Server struct {
 	// New() arg) so the wiring order stays readable — the ingest owns a
 	// DB ref that has to exist before we hand it over.
 	analyticsIngest *analytics.Ingest
+
+	// v2.9.2: HTTP client used by the background per-proxy-host health checker.
+	healthClient *http.Client
 }
 
 // SetAnalyticsIngest plumbs the analytics ingest listener into the server
@@ -97,7 +107,7 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	// happens to be. Priority: DB value → TZ env var → UTC. See timezone.go.
 	loc := loadActiveLocation(db)
 	log.Printf("timezone: rendering timestamps in %s", loc)
-	return &Server{
+	s := &Server{
 		DB:             db,
 		Caddy:          caddyClient,
 		Templates:      tpl,
@@ -107,7 +117,22 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 		DBPath:         dbPath,
 		healthFailures: map[int64]int{},
 		appHealth:      map[int64]appHealthEntry{},
-	}, nil
+	}
+	// Initialize health check HTTP client (short timeouts, no redirect following).
+	s.healthClient = &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // don't follow redirects
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // check reachability, not cert validity
+		},
+	}
+	go s.runHealthChecker()
+	go s.runAutoSyncLoop()
+	go s.runMaintenanceWindowLoop()
+	go s.runActivityLogCleanup()
+	return s, nil
 }
 
 // healthFailThreshold is the number of consecutive failed pings required
@@ -266,6 +291,15 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 		},
 		"subInt": func(a, b int) int { return a - b },
 		"addInt": func(a, b int) int { return a + b },
+		// mulDivInt64 is the int64 analogue of mulDivInt for use with
+		// BandwidthBucket.BytesOut (int64) SVG bar-height calculations.
+		"mulDivInt64": func(a, b, c int64) int64 {
+			if c == 0 {
+				return 0
+			}
+			return (a * b) / c
+		},
+		"subInt64": func(a, b int64) int64 { return a - b },
 		// fmtBytes renders a byte count as a human-readable size string.
 		// Used in analytics cards to show bandwidth totals without overwhelming
 		// the reader with raw byte counts (e.g. "1.4 GB" instead of "1503238553").
@@ -318,6 +352,33 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 			}
 			return body + " ago"
 		},
+		// colorDotClass returns Tailwind bg-* classes for a host color label.
+		// Returns an empty string when the color is blank so the dot can be
+		// hidden entirely ({{ if .Host.Color }} guard in templates).
+		"colorDotClass": func(c string) string {
+			switch c {
+			case "red":
+				return "bg-red-400"
+			case "orange":
+				return "bg-orange-400"
+			case "yellow":
+				return "bg-yellow-400"
+			case "green":
+				return "bg-green-400"
+			case "teal":
+				return "bg-teal-400"
+			case "blue":
+				return "bg-blue-400"
+			case "purple":
+				return "bg-purple-400"
+			case "pink":
+				return "bg-pink-400"
+			case "gray":
+				return "bg-gray-400"
+			default:
+				return ""
+			}
+		},
 	}
 	entries, err := fs.ReadDir(tplFS, ".")
 	if err != nil {
@@ -339,6 +400,7 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
+	r.Use(s.adminIPGate)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
@@ -377,6 +439,12 @@ func (s *Server) Routes() http.Handler {
 	r.Post("/logout", s.postLogout)
 	r.Get("/login/totp", s.getTOTPVerify)
 	r.Post("/login/totp", s.postTOTPVerify)
+	r.Get("/forgot-password", s.getForgotPassword)
+	r.Post("/forgot-password", s.postForgotPassword)
+	r.Get("/reset-password", s.getResetPassword)
+	r.Post("/reset-password", s.postResetPassword)
+	r.Get("/accept-invite", s.getAcceptInvite)
+	r.Post("/accept-invite", s.postAcceptInvite)
 
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
@@ -389,10 +457,15 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/caddyfile-import", s.getCaddyfileImport)
 		r.Get("/snapshots", s.listSnapshots)
 		r.Get("/snapshots/{id}/download", s.downloadSnapshot)
+		r.Get("/snapshots/{id}/diff", s.getSnapshotDiff)
 		r.Get("/activity", s.listActivityLog)
+		r.Get("/activity/export.csv", s.exportActivityCSV)
 		r.Get("/certificates", s.listCertificates)
+		r.Get("/certificates/{id}/inspect", s.getCertificateInspect)
 		r.Get("/raw-routes", s.listRawRoutes)
 		r.Get("/docs", s.getDocs)
+		r.Get("/api/docs", s.getAPIDocs)
+		r.Get("/caddy-config", s.getCaddyConfig)
 
 		// Server picker — available to every authenticated role. The route
 		// only flips the caddyui_server cookie (a per-user preference) so
@@ -404,11 +477,18 @@ func (s *Server) Routes() http.Handler {
 		// Feature B: upstream health check API (authenticated, no requireWrite).
 		r.Get("/api/upstream-health", s.apiUpstreamHealth)
 
+		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
+		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
+		r.Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream)
+
 		// Feature F: notifier status API (authenticated).
 		r.Get("/api/notifier-status", s.apiNotifierStatus)
 
 		// Phase 7: system stats API (authenticated, read-only).
 		r.Get("/api/system-stats", s.apiSystemStats)
+
+		// Caddy version from the admin API root endpoint.
+		r.Get("/api/caddy-version", s.apiCaddyVersion)
 
 		// Update-check: fetches latest tag from Docker Hub (cached 1h).
 		r.Get("/api/version-check", s.apiVersionCheck)
@@ -432,6 +512,14 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/api/proxy-hosts/{id}/deploy-status", s.apiProxyHostDeployStatus)
 		r.Get("/raw-routes/{id}/deploying", s.rawRouteDeploying)
 		r.Get("/api/raw-routes/{id}/deploy-status", s.apiRawRouteDeployStatus)
+		// v2.9.2: per-host health history page (read-only, authenticated).
+		r.Get("/proxy-hosts/{id}/health", s.getProxyHostHealth)
+
+		// v2.9.5: REST JSON API for proxy hosts and redirection hosts (read endpoints).
+		r.Get("/api/v1/proxy-hosts", s.apiV1ListProxyHosts)
+		r.Get("/api/v1/proxy-hosts/{id}", s.apiV1GetProxyHost)
+		r.Get("/api/v1/redirection-hosts", s.apiV1ListRedirectionHosts)
+		r.Get("/api/v1/redirection-hosts/{id}", s.apiV1GetRedirectionHost)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -439,10 +527,29 @@ func (s *Server) Routes() http.Handler {
 
 			r.Get("/proxy-hosts/new", s.newProxyHost)
 			r.Post("/proxy-hosts", s.createProxyHost)
+			r.Get("/proxy-hosts/{id}/export.json", s.exportProxyHost)
+			r.Get("/proxy-hosts/export-all.json", s.exportAllProxyHosts)
+			r.Post("/proxy-hosts/import", s.importProxyHost)
 			r.Get("/proxy-hosts/{id}/edit", s.editProxyHost)
 			r.Post("/proxy-hosts/{id}", s.updateProxyHost)
 			r.Post("/proxy-hosts/{id}/delete", s.deleteProxyHost)
+			r.Post("/proxy-hosts/{id}/clone", s.cloneProxyHost)
 			r.Post("/proxy-hosts/{id}/toggle", s.toggleProxyHost)
+			r.Post("/proxy-hosts/{id}/maintenance", s.toggleMaintenanceMode)
+			r.Post("/proxy-hosts/bulk-toggle", s.bulkToggleProxyHosts)
+			r.Post("/proxy-hosts/bulk-maintenance", s.bulkMaintenanceProxyHosts)
+			r.Post("/proxy-hosts/bulk-delete", s.bulkDeleteProxyHosts)
+
+			// v2.9.5: REST JSON API write routes (write-scoped, honours requireWrite).
+			r.Post("/api/v1/proxy-hosts", s.apiV1CreateProxyHost)
+			r.Put("/api/v1/proxy-hosts/{id}", s.apiV1UpdateProxyHost)
+			r.Delete("/api/v1/proxy-hosts/{id}", s.apiV1DeleteProxyHost)
+			r.Post("/api/v1/proxy-hosts/{id}/toggle", s.apiV1ToggleProxyHost)
+			r.Post("/api/v1/proxy-hosts/{id}/maintenance", s.apiV1ToggleMaintenanceProxyHost)
+			r.Post("/api/v1/redirection-hosts", s.apiV1CreateRedirectionHost)
+			r.Put("/api/v1/redirection-hosts/{id}", s.apiV1UpdateRedirectionHost)
+			r.Delete("/api/v1/redirection-hosts/{id}", s.apiV1DeleteRedirectionHost)
+			r.Post("/api/v1/redirection-hosts/{id}/toggle", s.apiV1ToggleRedirectionHost)
 
 			r.Get("/redirection-hosts/new", s.newRedirectionHost)
 			r.Post("/redirection-hosts", s.createRedirectionHost)
@@ -450,6 +557,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/redirection-hosts/{id}", s.updateRedirectionHost)
 			r.Post("/redirection-hosts/{id}/delete", s.deleteRedirectionHost)
 			r.Post("/redirection-hosts/{id}/toggle", s.toggleRedirectionHost)
+			r.Post("/redirection-hosts/{id}/clone", s.cloneRedirectionHost)
 
 			r.Post("/caddy/reload", s.reloadCaddy)
 			r.Post("/import", s.postImport)
@@ -491,13 +599,17 @@ func (s *Server) Routes() http.Handler {
 		// TOTP setup — available to all authenticated users.
 		r.Get("/totp/setup", s.getTOTPSetup)
 		r.Post("/totp/setup", s.postTOTPSetup)
+		r.Post("/totp/regenerate-backup-codes", s.postRegenerateBackupCodes)
 
 		// v2.7.0: visitor analytics — read-only for every signed-in
 		// user. userAllowedHosts scopes non-admins to their owned
 		// sites so the page doesn't leak traffic for hosts they
 		// don't have Edit permission on.
 		r.Get("/analytics", s.getAnalytics)
+		r.Get("/analytics/export.csv", s.exportAnalyticsCSV)
 		r.Get("/analytics/{host}", s.getAnalyticsHost)
+		r.Get("/live-traffic", s.getLiveTraffic)
+		r.Get("/api/live-traffic/stream", s.liveTrafficStream)
 
 		// Global search — read-only, available to every authenticated role.
 		r.Get("/search", s.getSearch)
@@ -507,12 +619,23 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/sessions", s.getSessions)
 		r.Post("/sessions/{token}/revoke", s.revokeSession)
 
+		// API token manager — every authenticated user can create/revoke their
+		// own tokens; admins see all users' tokens.
+		r.Get("/api-tokens", s.listAPITokens)
+		r.Post("/api-tokens", s.createAPIToken)
+		r.Post("/api-tokens/{id}/revoke", s.revokeAPIToken)
+
+		// Profile page — every authenticated user can update their own name/password.
+		r.Get("/profile", s.getProfile)
+		r.Post("/profile", s.postProfile)
+
 		// User management and settings — admin-only (both read and write).
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAdmin)
 			r.Get("/users", s.listUsers)
 			r.Get("/users/new", s.newUser)
 			r.Post("/users", s.createUser)
+			r.Post("/users/invite", s.postInviteUser)
 			r.Get("/users/{id}/edit", s.editUser)
 			r.Post("/users/{id}", s.updateUser)
 			r.Post("/users/{id}/delete", s.deleteUser)
@@ -557,6 +680,62 @@ func (s *Server) Routes() http.Handler {
 	return r
 }
 
+// adminIPGate returns a middleware that enforces the admin_allowlist setting.
+// If the setting is empty, all IPs are allowed. Non-matching IPs get 403.
+func (s *Server) adminIPGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := models.GetSetting(s.DB, settingAdminAllowlist)
+		if raw == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Parse the allowlist.
+		var allowedNets []*net.IPNet
+		var allowedIPs []net.IP
+		for _, line := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' }) {
+			cidr := strings.TrimSpace(line)
+			if cidr == "" {
+				continue
+			}
+			if strings.Contains(cidr, "/") {
+				_, ipnet, err := net.ParseCIDR(cidr)
+				if err == nil {
+					allowedNets = append(allowedNets, ipnet)
+				}
+			} else {
+				if ip := net.ParseIP(cidr); ip != nil {
+					allowedIPs = append(allowedIPs, ip)
+				}
+			}
+		}
+		if len(allowedNets) == 0 && len(allowedIPs) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Extract client IP.
+		clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		ip := net.ParseIP(clientIP)
+		if ip == nil {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		// Check against allowlist.
+		for _, allowed := range allowedIPs {
+			if allowed.Equal(ip) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		for _, ipnet := range allowedNets {
+			if ipnet.Contains(ip) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.Error(w, "403 Forbidden — your IP is not on the admin allowlist", http.StatusForbidden)
+	})
+}
+
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n, err := models.CountUsers(s.DB)
@@ -570,23 +749,115 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		cookie, err := r.Cookie(auth.SessionCookie)
 		if err != nil {
+			// No session cookie — try bearer token before redirecting.
+			if u, tokenScopes := s.bearerTokenUser(r); u != nil {
+				// Enforce read-only scope: block mutating methods.
+				if tokenScopes == models.TokenScopeReadOnly &&
+					r.Method != http.MethodGet && r.Method != http.MethodHead {
+					http.Error(w, "token scope is read-only", http.StatusForbidden)
+					return
+				}
+				ctx := context.WithValue(r.Context(), auth.ContextUserKey, u)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 		u, err := auth.UserFromSession(s.DB, cookie.Value)
 		if err != nil || u == nil {
 			auth.ClearSessionCookie(w, r)
+			// Session invalid — try bearer token before redirecting.
+			if u, tokenScopes := s.bearerTokenUser(r); u != nil {
+				// Enforce read-only scope: block mutating methods.
+				if tokenScopes == models.TokenScopeReadOnly &&
+					r.Method != http.MethodGet && r.Method != http.MethodHead {
+					http.Error(w, "token scope is read-only", http.StatusForbidden)
+					return
+				}
+				ctx := context.WithValue(r.Context(), auth.ContextUserKey, u)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
+		}
+		// Enforce 2FA policy if enabled.
+		if !u.TOTPEnabled {
+			if v, _ := models.GetSetting(s.DB, settingRequire2FA); v == "1" {
+				// Allow the TOTP setup pages and static assets through.
+				path := r.URL.Path
+				if !strings.HasPrefix(path, "/totp/") && !strings.HasPrefix(path, "/static/") &&
+					!strings.HasPrefix(path, "/api/") && path != "/logout" {
+					http.Redirect(w, r, "/totp/setup?required=1", http.StatusSeeOther)
+					return
+				}
+			}
+		}
+		// TOTP enforcement: if the admin has enabled require_totp and this user
+		// has TOTP disabled, redirect them to TOTP setup before granting access.
+		// Skip the check for the TOTP setup page itself to avoid a redirect loop.
+		if mustGetSetting(s.DB, settingRequireTOTP) == "1" {
+			if !u.TOTPEnabled {
+				// Allow /totp/setup and /logout through so the user can complete enrollment.
+				path := r.URL.Path
+				if path != "/totp/setup" && path != "/logout" && !strings.HasPrefix(path, "/static/") {
+					http.Redirect(w, r, "/totp/setup?enforce=1", http.StatusFound)
+					return
+				}
+			}
 		}
 		ctx := context.WithValue(r.Context(), auth.ContextUserKey, u)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
+// bearerTokenUser checks for an Authorization: Bearer header and resolves
+// it to a User via the api_tokens table. Returns (nil, "") if no header is
+// present or the token is invalid/expired. Callers that already resolved a
+// session user should skip this (session wins over bearer).
+func (s *Server) bearerTokenUser(r *http.Request) (*models.User, string) {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return nil, ""
+	}
+	raw := strings.TrimPrefix(authHeader, "Bearer ")
+	if raw == "" {
+		return nil, ""
+	}
+	h := sha256.Sum256([]byte(raw))
+	hash := fmt.Sprintf("%x", h)
+	tok, err := models.GetAPITokenByHash(s.DB, hash)
+	if err != nil || tok == nil {
+		return nil, ""
+	}
+	if tok.Expired() {
+		return nil, ""
+	}
+	u, err := models.GetUserByID(s.DB, tok.UserID)
+	if err != nil {
+		return nil, ""
+	}
+	models.TouchAPIToken(s.DB, tok.ID)
+	return u, tok.Scopes
+}
+
 func (s *Server) currentUser(r *http.Request) *models.User {
 	u, _ := r.Context().Value(auth.ContextUserKey).(*models.User)
 	return u
+}
+
+// sessionTTL returns the configured session duration, defaulting to 7 days.
+func (s *Server) sessionTTL() time.Duration {
+	v, _ := models.GetSetting(s.DB, settingSessionDays)
+	if v == "" {
+		return 7 * 24 * time.Hour
+	}
+	days, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || days <= 0 || days > 365 {
+		return 7 * 24 * time.Hour
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -595,6 +866,14 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	}
 	// Always inject app version.
 	data["AppVersion"] = s.Version
+	// Inject site title for every page so layout.html can use it.
+	if _, ok := data["SiteTitle"]; !ok {
+		data["SiteTitle"] = mustGetSetting(s.DB, settingSiteTitle)
+	}
+	// Inject custom favicon URL for every page so layout.html can override the default icon.
+	if _, ok := data["FaviconURL"]; !ok {
+		data["FaviconURL"] = mustGetSetting(s.DB, settingFaviconURL)
+	}
 	// Auto-inject server picker data (best-effort; non-fatal if DB unavailable).
 	if _, ok := data["Servers"]; !ok {
 		if servers, err := models.ListCaddyServers(s.DB); err == nil {
@@ -668,7 +947,7 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "setup.html", map[string]any{"Error": err.Error()})
 		return
 	}
-	tok, exp, err := auth.CreateSession(s.DB, id)
+	tok, exp, err := auth.CreateSessionWithTTL(s.DB, id, s.sessionTTL())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -978,7 +1257,14 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, "login.html", captchaTemplateData(loadCaptchaConfig(s.DB)))
+	data := captchaTemplateData(loadCaptchaConfig(s.DB))
+	if r.URL.Query().Get("reset") == "1" {
+		data["Reset"] = true
+	}
+	if r.URL.Query().Get("invited") == "1" {
+		data["Invited"] = true
+	}
+	s.render(w, r, "login.html", data)
 }
 
 func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
@@ -1001,10 +1287,27 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// v2.9.5: brute-force protection — check recent failed login attempts from this IP.
+	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if maxStr, _ := models.GetSetting(s.DB, settingMaxLoginAttempts); maxStr != "" {
+		if maxAttempts, err := strconv.Atoi(strings.TrimSpace(maxStr)); err == nil && maxAttempts > 0 {
+			var failCount int
+			_ = s.DB.QueryRow(
+				`SELECT COUNT(*) FROM activity_log WHERE action = 'login_fail' AND detail LIKE ? AND created_at > datetime('now', '-15 minutes')`,
+				"%ip:"+clientIP+"%",
+			).Scan(&failCount)
+			if failCount >= maxAttempts {
+				renderLoginErr("Too many failed login attempts. Please wait 15 minutes and try again.")
+				return
+			}
+		}
+	}
+
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw := r.FormValue("password")
 	u, err := models.GetUserByEmail(s.DB, email)
 	if err != nil || !auth.CheckPassword(u.PasswordHash, pw) {
+		_ = models.LogActivity(s.DB, 0, email, "login_fail", "ip:"+clientIP, "invalid credentials", false)
 		renderLoginErr("Invalid email or password")
 		return
 	}
@@ -1022,7 +1325,7 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login/totp?t="+tok, http.StatusSeeOther)
 		return
 	}
-	tok, exp, err := auth.CreateSession(s.DB, u.ID)
+	tok, exp, err := auth.CreateSessionWithTTL(s.DB, u.ID, s.sessionTTL())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1097,15 +1400,23 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	valid := totplib.Validate(code, u.TOTPSecret)
-	if !valid {
+	validTOTP := totplib.Validate(code, u.TOTPSecret)
+	if !validTOTP {
+		// Try as a single-use backup code.
+		if u2, _ := models.GetUserByID(s.DB, userID); u2 != nil {
+			if ok, _ := models.ConsumeBackupCode(s.DB, userID, u2.BackupCodes, code); ok {
+				validTOTP = true
+			}
+		}
+	}
+	if !validTOTP {
 		// Put token back so user can retry.
 		s.pendingTOTP.Store(tok, userID)
 		renderTOTPErr("Invalid code. Try again.")
 		return
 	}
 
-	sessionTok, exp, err := auth.CreateSession(s.DB, userID)
+	sessionTok, exp, err := auth.CreateSessionWithTTL(s.DB, userID, s.sessionTTL())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1125,11 +1436,31 @@ func (s *Server) getTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Backup codes passed as a one-time query param after enabling/regenerating.
+	backupCodes := strings.Split(r.URL.Query().Get("backup_codes"), ",")
+	if len(backupCodes) == 1 && backupCodes[0] == "" {
+		backupCodes = nil
+	}
+
+	// Count remaining backup codes stored for this user.
+	var backupCodeCount int
+	if cu := s.currentUser(r); cu != nil && cu.BackupCodes != "" {
+		var hashes []string
+		if json.Unmarshal([]byte(cu.BackupCodes), &hashes) == nil {
+			backupCodeCount = len(hashes)
+		}
+	}
+
 	s.render(w, r, "totp_setup.html", map[string]any{
-		"User":        u,
-		"Secret":      key.Secret(),
-		"OTPAuth":     key.URL(),
-		"TOTPEnabled": u.TOTPEnabled,
+		"User":            u,
+		"Secret":          key.Secret(),
+		"OTPAuth":         key.URL(),
+		"TOTPEnabled":     u.TOTPEnabled,
+		"Required":        r.URL.Query().Get("required") == "1",
+		"Enforce":         r.URL.Query().Get("enforce") == "1",
+		"BackupCodes":     backupCodes,
+		"BackupCodeCount": backupCodeCount,
 	})
 }
 
@@ -1165,7 +1496,36 @@ func (s *Server) postTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Generate fresh backup codes when TOTP is first enabled.
+	if backupCodes, err := models.GenerateBackupCodes(10); err == nil {
+		if err := models.SaveBackupCodes(s.DB, u.ID, backupCodes); err == nil {
+			// Store codes in session flash or query param for one-time display.
+			// Encode as comma-separated for URL safety.
+			codesParam := strings.Join(backupCodes, ",")
+			http.Redirect(w, r, "/totp/setup?enabled=1&backup_codes="+url.QueryEscape(codesParam), http.StatusSeeOther)
+			return
+		}
+	}
 	http.Redirect(w, r, "/totp/setup?enabled=1", http.StatusSeeOther)
+}
+
+func (s *Server) postRegenerateBackupCodes(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil || !cu.TOTPEnabled {
+		http.Redirect(w, r, "/totp/setup", http.StatusSeeOther)
+		return
+	}
+	codes, err := models.GenerateBackupCodes(10)
+	if err != nil {
+		http.Error(w, "failed to generate codes", http.StatusInternalServerError)
+		return
+	}
+	if err := models.SaveBackupCodes(s.DB, cu.ID, codes); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	codesParam := strings.Join(codes, ",")
+	http.Redirect(w, r, "/totp/setup?regen=1&backup_codes="+url.QueryEscape(codesParam), http.StatusSeeOther)
 }
 
 // --- Dashboard ---
@@ -1213,18 +1573,71 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// v2.9.2: health summary — count hosts by latest check result.
+	var healthyCount, downCount, unknownCount int
+	if len(hosts) > 0 {
+		var hostIDs []int64
+		for _, h := range hosts {
+			hostIDs = append(hostIDs, h.ID)
+		}
+		healthMap, _ := models.LatestProxyHealth(s.DB, hostIDs)
+		for _, h := range hosts {
+			if !h.Enabled {
+				continue // only count enabled hosts
+			}
+			if chk, ok := healthMap[h.ID]; ok {
+				if chk.OK {
+					healthyCount++
+				} else {
+					downCount++
+				}
+			} else {
+				unknownCount++
+			}
+		}
+	}
+
+	// Today's analytics stats (best-effort — zero-values if analytics is not yet enabled).
+	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
+	todayViews, todayVisitors := 0, 0
+	var todayBandwidth int64
+	if totals, err := models.AccessTotalsSince(s.DB, todayStart, ""); err == nil {
+		todayViews = totals.Views
+		todayVisitors = totals.Visitors
+	}
+	todayBandwidth, _ = models.BandwidthSince(s.DB, todayStart, "")
+
+	// Count hosts in maintenance mode for the dashboard banner.
+	maintenanceCount := 0
+	for _, h := range hosts {
+		if h.MaintenanceMode {
+			maintenanceCount++
+		}
+	}
+	globalMaintenance, _ := models.GetSetting(s.DB, settingGlobalMaintenance)
+
 	s.render(w, r, "dashboard.html", map[string]any{
-		"User":             s.currentUser(r),
-		"ProxyHosts":       hosts,
-		"RedirectionHosts": redirs,
-		"RawRoutes":        raws,
-		"RawCount":         len(raws),
-		"CertCount":        len(certs),
-		"LastSync":         lastSync,
-		"EnabledHosts":     enabledHosts,
-		"DisabledHosts":    disabledHosts,
-		"ExpiringSoon":     expiringSoon,
-		"Section":          "dashboard",
+		"User":                 s.currentUser(r),
+		"ProxyHosts":           hosts,
+		"RedirectionHosts":     redirs,
+		"RawRoutes":            raws,
+		"RawCount":             len(raws),
+		"CertCount":            len(certs),
+		"LastSync":             lastSync,
+		"EnabledHosts":         enabledHosts,
+		"DisabledHosts":        disabledHosts,
+		"ExpiringSoon":         expiringSoon,
+		"HealthyCount":         healthyCount,
+		"DownCount":            downCount,
+		"UnknownCount":         unknownCount,
+		"TodayViews":           todayViews,
+		"TodayVisitors":        todayVisitors,
+		"TodayBandwidth":       todayBandwidth,
+		"MaintenanceCount":     maintenanceCount,
+		"GlobalMaintenance":    globalMaintenance,
+		"EnabledHostCount":     enabledHosts,
+		"MaintenanceHostCount": maintenanceCount,
+		"Section":              "dashboard",
 	})
 }
 
@@ -1297,6 +1710,81 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 			OwnerEmail: rr.OwnerEmail, CanEdit: canEdit, IsTeamRow: isTeam,
 		})
 	}
+	// Tag filtering: ?tag=production narrows the list to hosts bearing that tag.
+	activeTag := strings.TrimSpace(r.URL.Query().Get("tag"))
+	if activeTag != "" {
+		filtered := hosts[:0]
+		for _, h := range hosts {
+			for _, t := range h.TagList() {
+				if strings.EqualFold(t, activeTag) {
+					filtered = append(filtered, h)
+					break
+				}
+			}
+		}
+		hosts = filtered
+	}
+
+	// Status filter: ?status=enabled|disabled|maintenance|all
+	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+	if statusFilter != "" && statusFilter != "all" {
+		filtered := hosts[:0]
+		for _, h := range hosts {
+			switch statusFilter {
+			case "enabled":
+				if h.Enabled && !h.MaintenanceMode {
+					filtered = append(filtered, h)
+				}
+			case "disabled":
+				if !h.Enabled {
+					filtered = append(filtered, h)
+				}
+			case "maintenance":
+				if h.MaintenanceMode {
+					filtered = append(filtered, h)
+				}
+			}
+		}
+		hosts = filtered
+	}
+
+	// Load latest health check for each host.
+	hostIDs := make([]int64, len(hosts))
+	for i, p := range hosts {
+		hostIDs[i] = p.ID
+	}
+	healthMap, _ := models.LatestProxyHealth(s.DB, hostIDs)
+
+	// Per-host today request counts (best-effort — zero if analytics disabled).
+	hostRequestsToday := make(map[int64]int)
+	if domainCounts, err := models.DomainRequestsToday(s.DB); err == nil {
+		for _, h := range hosts {
+			total := 0
+			for _, d := range h.DomainList() {
+				total += domainCounts[strings.ToLower(d)]
+			}
+			if total > 0 {
+				hostRequestsToday[h.ID] = total
+			}
+		}
+	}
+
+	// Build a set of host IDs that have been modified since the last sync.
+	// This lets the template show a warning badge on stale hosts.
+	var lastSyncTime time.Time
+	_ = s.DB.QueryRow(
+		`SELECT created_at FROM activity_log WHERE server_id = ? AND action = 'sync_applied' ORDER BY id DESC LIMIT 1`,
+		s.currentServerID(r),
+	).Scan(&lastSyncTime)
+	needsSync := make(map[int64]bool)
+	if !lastSyncTime.IsZero() {
+		for _, h := range hosts {
+			if h.UpdatedAt.After(lastSyncTime) {
+				needsSync[h.ID] = true
+			}
+		}
+	}
+
 	s.render(w, r, "proxy_hosts.html", map[string]any{
 		"User":         s.currentUser(r),
 		"Hosts":        hosts,
@@ -1306,7 +1794,55 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		// the user is only seeing via group peer-ship, and render a
 		// "Team: <email>" chip instead. Security still enforced in the
 		// update/delete handlers — this is UX clarity, not a gate.
-		"ViewerID": viewerID,
+		"ViewerID":          viewerID,
+		"HealthMap":         healthMap,
+		"ActiveTag":         activeTag,
+		"StatusFilter":      statusFilter,
+		"NeedsSync":         needsSync,
+		"HostRequestsToday": hostRequestsToday,
+	})
+}
+
+// getProxyHostHealth renders the per-host health history page (/proxy-hosts/{id}/health).
+func (s *Server) getProxyHostHealth(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	host, err := models.GetProxyHost(s.DB, id)
+	if err != nil || host == nil {
+		http.NotFound(w, r)
+		return
+	}
+	checks, err := models.GetProxyHealthHistory(s.DB, id, 50)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Calculate uptime % for last 24 h: (ok checks / total checks) * 100.
+	var total, okCount int
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, c := range checks {
+		if c.CheckedAt.After(cutoff) {
+			total++
+			if c.OK {
+				okCount++
+			}
+		}
+	}
+	var uptime float64
+	if total > 0 {
+		uptime = float64(okCount) / float64(total) * 100
+	}
+	s.render(w, r, "proxy_host_health.html", map[string]any{
+		"User":    s.currentUser(r),
+		"Host":    host,
+		"Checks":  checks,
+		"Uptime":  uptime,
+		"Total":   total,
+		"Section": "proxy",
 	})
 }
 
@@ -1375,6 +1911,177 @@ func (s *Server) toggleProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), action, fmt.Sprintf("proxy:%d", id), "", true)
 	s.syncCaddy(s.currentServerID(r), false)
+	ref := r.Header.Get("Referer")
+	if ref == "" {
+		ref = "/proxy-hosts"
+	}
+	http.Redirect(w, r, ref, http.StatusSeeOther)
+}
+
+// bulkToggleProxyHosts enables or disables a set of proxy hosts in one shot.
+// Expects form fields: ids[]={id,...} and action=enable|disable.
+// Admin/write users only (the route is inside the requireWrite middleware block).
+func (s *Server) bulkToggleProxyHosts(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	action := r.FormValue("action") // "enable" or "disable"
+	if action != "enable" && action != "disable" {
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	enabled := action == "enable"
+
+	rawIDs := r.Form["ids[]"]
+	if len(rawIDs) == 0 {
+		http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+		return
+	}
+
+	var serverID int64
+	for _, raw := range rawIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			continue
+		}
+		ph, err := models.GetProxyHost(s.DB, id)
+		if err != nil || ph == nil {
+			continue
+		}
+		if ph.Enabled != enabled {
+			ph.Enabled = enabled
+			if err := models.UpdateProxyHost(s.DB, ph); err != nil {
+				log.Printf("bulkToggle: update %d: %v", id, err)
+				continue
+			}
+			if serverID == 0 {
+				serverID = ph.ServerID
+			}
+		}
+	}
+	if serverID != 0 {
+		if err := s.syncCaddy(serverID, false); err != nil {
+			log.Printf("bulkToggle: syncCaddy(%d): %v", serverID, err)
+		}
+	}
+	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// bulkMaintenanceProxyHosts enables or disables maintenance mode for a set of
+// proxy hosts. Expects form fields: ids[]={id,...} and action=enable|disable.
+func (s *Server) bulkMaintenanceProxyHosts(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	action := r.FormValue("action")
+	if action != "enable" && action != "disable" {
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	maint := action == "enable"
+
+	rawIDs := r.Form["ids[]"]
+	if len(rawIDs) == 0 {
+		http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+		return
+	}
+
+	var serverID int64
+	for _, raw := range rawIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			continue
+		}
+		ph, err := models.GetProxyHost(s.DB, id)
+		if err != nil || ph == nil {
+			continue
+		}
+		if ph.MaintenanceMode != maint {
+			ph.MaintenanceMode = maint
+			if err := models.UpdateProxyHost(s.DB, ph); err != nil {
+				log.Printf("bulkMaintenance: update %d: %v", id, err)
+				continue
+			}
+			if serverID == 0 {
+				serverID = ph.ServerID
+			}
+		}
+	}
+	if serverID != 0 {
+		if err := s.syncCaddy(serverID, false); err != nil {
+			log.Printf("bulkMaintenance: syncCaddy(%d): %v", serverID, err)
+		}
+	}
+	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// bulkDeleteProxyHosts deletes a set of proxy hosts in one shot.
+// Expects form field: ids[]={id,...}.
+// Admin can delete any host; non-admins can only delete their own.
+func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	_ = r.ParseForm()
+	ids := r.Form["ids[]"]
+	if len(ids) == 0 {
+		http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+		return
+	}
+	sid := s.currentServerID(r)
+	deleted := 0
+	for _, raw := range ids {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			continue
+		}
+		// Ownership check: admin can delete any, others only their own.
+		if !isAdmin {
+			ph, err := models.GetProxyHost(s.DB, id)
+			if err != nil || ph == nil || !ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID {
+				continue
+			}
+		}
+		if err := models.DeleteProxyHost(s.DB, id); err != nil {
+			log.Printf("bulk-delete proxy host %d: %v", id, err)
+			continue
+		}
+		deleted++
+		_ = models.LogActivity(s.DB, sid, cu.Email, "proxy_host_delete", "id", strconv.FormatInt(id, 10), true)
+	}
+	if deleted > 0 {
+		if err := s.syncCaddy(sid, false); err != nil {
+			log.Printf("bulk-delete: sync error: %v", err)
+		}
+	}
+	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// toggleMaintenanceMode flips the maintenance_mode flag for a proxy host.
+func (s *Server) toggleMaintenanceMode(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	ph, err := models.GetProxyHost(s.DB, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ph.MaintenanceMode = !ph.MaintenanceMode
+	if err := models.UpdateProxyHost(s.DB, ph); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.syncCaddy(ph.ServerID, false); err != nil {
+		log.Printf("toggleMaintenanceMode: syncCaddy: %v", err)
+	}
 	ref := r.Header.Get("Referer")
 	if ref == "" {
 		ref = "/proxy-hosts"
@@ -1458,7 +2165,8 @@ func parseBasicAuthUsers(r *http.Request) ([]models.BasicAuthUser, error) {
 // buildBasicAuthHandler adapts a Caddyfile basicauth block for the given users
 // via Caddy's /adapt endpoint and returns the authentication JSON handler.
 // Returns nil if the user list is empty or if adaptation fails (error is logged).
-func (s *Server) buildBasicAuthHandler(caddyCl *caddy.Client, users []models.BasicAuthUser) map[string]any {
+// realm is the HTTP Basic Auth realm string shown in the browser prompt.
+func (s *Server) buildBasicAuthHandler(caddyCl *caddy.Client, users []models.BasicAuthUser, realm string) map[string]any {
 	if len(users) == 0 {
 		return nil
 	}
@@ -1481,6 +2189,14 @@ func (s *Server) buildBasicAuthHandler(caddyCl *caddy.Client, users []models.Bas
 	handles, _ := routes[0]["handle"].([]any)
 	for _, h := range handles {
 		if m, ok := h.(map[string]any); ok && m["handler"] == "authentication" {
+			if realm != "" && realm != "Restricted" {
+				// Inject the custom realm into the http_basic provider map.
+				if providers, ok := m["providers"].(map[string]any); ok {
+					if httpBasic, ok := providers["http_basic"].(map[string]any); ok {
+						httpBasic["realm"] = realm
+					}
+				}
+			}
 			return m
 		}
 	}
@@ -1701,7 +2417,103 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	default:
 		tlsMinVersion = ""
 	}
-	return &models.ProxyHost{
+	// Parse custom request headers: parallel arrays header_req_key[] + header_req_val[]
+	reqKeys := r.Form["header_req_key"]
+	reqVals := r.Form["header_req_val"]
+	reqMap := map[string]string{}
+	for i, k := range reqKeys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		v := ""
+		if i < len(reqVals) {
+			v = strings.TrimSpace(reqVals[i])
+		}
+		reqMap[k] = v
+	}
+	customReqHeaders := "{}"
+	if len(reqMap) > 0 {
+		if b, err := json.Marshal(reqMap); err == nil {
+			customReqHeaders = string(b)
+		}
+	}
+
+	// Parse custom response headers: parallel arrays header_resp_key[] + header_resp_val[]
+	respKeys := r.Form["header_resp_key"]
+	respVals := r.Form["header_resp_val"]
+	respMap := map[string]string{}
+	for i, k := range respKeys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		v := ""
+		if i < len(respVals) {
+			v = strings.TrimSpace(respVals[i])
+		}
+		respMap[k] = v
+	}
+	customRespHeaders := "{}"
+	if len(respMap) > 0 {
+		if b, err := json.Marshal(respMap); err == nil {
+			customRespHeaders = string(b)
+		}
+	}
+	// v2.9.2: URL rewrite rules — submitted as parallel arrays:
+	// rewrite_type[], rewrite_from[], rewrite_to[]
+	rewriteTypes := r.Form["rewrite_type[]"]
+	rewriteFroms := r.Form["rewrite_from[]"]
+	rewriteTos   := r.Form["rewrite_to[]"]
+	var urlRewrites string
+	{
+		type rule struct {
+			Type string `json:"type"`
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		var rules []rule
+		for i := range rewriteTypes {
+			from := ""
+			to := ""
+			if i < len(rewriteFroms) { from = strings.TrimSpace(rewriteFroms[i]) }
+			if i < len(rewriteTos) { to = strings.TrimSpace(rewriteTos[i]) }
+			t := strings.TrimSpace(rewriteTypes[i])
+			if t == "" || from == "" { continue }
+			rules = append(rules, rule{Type: t, From: from, To: to})
+		}
+		if len(rules) == 0 {
+			urlRewrites = "[]"
+		} else {
+			b, _ := json.Marshal(rules)
+			urlRewrites = string(b)
+		}
+	}
+	var maxBodyMB int
+	if v := strings.TrimSpace(r.FormValue("max_request_body_mb")); v != "" && v != "0" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			maxBodyMB = n
+		}
+	}
+	var upstreamTimeoutSec int
+	if v := strings.TrimSpace(r.FormValue("upstream_timeout_sec")); v != "" && v != "0" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			upstreamTimeoutSec = n
+		}
+	}
+	var healthCheckIntervalSec int = 30
+	if v := strings.TrimSpace(r.FormValue("health_check_interval_sec")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			healthCheckIntervalSec = n
+		}
+	}
+	var keepaliveConns int
+	if v := strings.TrimSpace(r.FormValue("keepalive_conns")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			keepaliveConns = n
+		}
+	}
+	ph := &models.ProxyHost{
 		Domains:                strings.TrimSpace(r.FormValue("domains")),
 		ForwardScheme:          r.FormValue("forward_scheme"),
 		ForwardHost:            strings.TrimSpace(r.FormValue("forward_host")),
@@ -1720,8 +2532,386 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		DNSZoneName:            zoneName,
 		CompressionEnabled:     r.FormValue("compression_enabled") == "on",
 		SecurityHeadersEnabled: r.FormValue("security_headers_enabled") == "on",
+		MaintenanceMode:        r.FormValue("maintenance_mode") == "on",
+		MaintenanceMsg:         strings.TrimSpace(r.FormValue("maintenance_msg")),
+		MaintenanceStatusCode: func() int {
+			if sc, err := strconv.Atoi(r.FormValue("maintenance_status_code")); err == nil && sc > 0 {
+				return sc
+			}
+			return 503
+		}(),
+		StickySessions:         r.FormValue("sticky_sessions") == "on",
 		TLSMinVersion:          tlsMinVersion,
-	}, nil
+		CustomReqHeaders:       customReqHeaders,
+		CustomRespHeaders:      customRespHeaders,
+		URLRewrites:            urlRewrites,
+		MaxRequestBodyMB:       maxBodyMB,
+		UpstreamTimeoutSec:     upstreamTimeoutSec,
+		CORSEnabled:            r.FormValue("cors_enabled") == "on",
+		CORSOrigins:            strings.TrimSpace(r.FormValue("cors_origins")),
+		HealthCheckURI:         strings.TrimSpace(r.FormValue("health_check_uri")),
+		HealthCheckIntervalSec: healthCheckIntervalSec,
+		HealthCheckMethod: func() string {
+			m := r.FormValue("health_check_method")
+			if m == "" {
+				return "GET"
+			}
+			return m
+		}(),
+		KeepaliveConns:         keepaliveConns,
+		Tags:                   strings.TrimSpace(r.FormValue("tags")),
+		Notes:                  r.FormValue("notes"),
+		DisableAccessLog:       r.FormValue("disable_access_log") == "on",
+		AddRequestID:           r.FormValue("add_request_id") == "on",
+		StripRespHeaders:       strings.TrimSpace(r.FormValue("strip_resp_headers")),
+		BlockedAgents:          strings.TrimSpace(r.FormValue("blocked_agents")),
+		ResponseCacheControl:   strings.TrimSpace(r.FormValue("response_cache_control")),
+		UpstreamSNI:            strings.TrimSpace(r.FormValue("upstream_sni")),
+		HSTSPreload:            r.FormValue("hsts_preload") == "on",
+		MaxConnsPerHost: func() int {
+			n, _ := strconv.Atoi(r.FormValue("max_conns_per_host"))
+			return n
+		}(),
+	}
+	hcTimeout, _ := strconv.Atoi(r.FormValue("health_check_timeout_sec"))
+	ph.HealthCheckTimeoutSec = hcTimeout
+	retries, _ := strconv.Atoi(r.FormValue("upstream_retries"))
+	ph.UpstreamRetries = retries
+	ph.ForceHTTP1 = r.FormValue("force_http1") == "on"
+	ph.BasicAuthRealm = strings.TrimSpace(r.FormValue("basicauth_realm"))
+	if ph.BasicAuthRealm == "" {
+		ph.BasicAuthRealm = "Restricted"
+	}
+	ph.ErrorPageHTML = r.FormValue("error_page_html")
+	ph.MaintenanceWindowStart = strings.TrimSpace(r.FormValue("maintenance_window_start"))
+	ph.MaintenanceWindowEnd = strings.TrimSpace(r.FormValue("maintenance_window_end"))
+	ph.MaintenanceWindowDays = strings.Join(r.Form["maintenance_window_days"], ",")
+	ph.IPBlocklist = strings.TrimSpace(r.FormValue("ip_blocklist"))
+	ph.LBPolicy = r.FormValue("lb_policy")
+	ph.ProxyProtocol = r.FormValue("proxy_protocol")
+	ph.RobotsTxt = r.FormValue("robots_txt")
+	ph.PassiveFailDurationSec, _ = strconv.Atoi(r.FormValue("passive_fail_duration_sec"))
+	ph.PassiveMaxFails, _ = strconv.Atoi(r.FormValue("passive_max_fails"))
+	ph.HSTSMaxAgeSec, _ = strconv.Atoi(r.FormValue("hsts_max_age_sec"))
+	ph.CSPHeader = strings.TrimSpace(r.FormValue("csp_header"))
+	ph.H2CEnabled = r.FormValue("h2c_enabled") == "on"
+	if hch := strings.TrimSpace(r.FormValue("health_check_headers")); hch != "" {
+		ph.HealthCheckHeaders = hch
+	} else {
+		ph.HealthCheckHeaders = "{}"
+	}
+	ph.FlushImmediate = r.FormValue("flush_immediate") == "on"
+	ph.BufferResponses = r.FormValue("buffer_responses") == "on"
+	ph.TrustedProxies = strings.TrimSpace(r.FormValue("trusted_proxies"))
+	ph.UpstreamHostOverride = strings.TrimSpace(r.FormValue("upstream_host_override"))
+	ph.ReadTimeoutSec, _ = strconv.Atoi(r.FormValue("read_timeout_sec"))
+	ph.DenyDotfiles = r.FormValue("deny_dotfiles") == "on"
+	ph.RequestBuffersKB, _ = strconv.Atoi(r.FormValue("request_buffers_kb"))
+	ph.CORSAllowCredentials = r.FormValue("cors_allow_credentials") == "on"
+	ph.CORSExposeHeaders = strings.TrimSpace(r.FormValue("cors_expose_headers"))
+	ph.SSLVerifyUpstream = r.FormValue("ssl_verify_upstream") == "on"
+	ph.DialTimeoutSec, _ = strconv.Atoi(r.FormValue("dial_timeout_sec"))
+	ph.APIKeyHeader = strings.TrimSpace(r.FormValue("api_key_header"))
+	ph.APIKeyValue = strings.TrimSpace(r.FormValue("api_key_value"))
+	ph.BlockEmptyUserAgent = r.FormValue("block_empty_user_agent") == "on"
+	ph.ErrorRedirectURL = strings.TrimSpace(r.FormValue("error_redirect_url"))
+	ph.PermissionsPolicy = strings.TrimSpace(r.FormValue("permissions_policy"))
+	ph.XFrameOptions = strings.TrimSpace(r.FormValue("x_frame_options"))
+	ph.ReferrerPolicy = strings.TrimSpace(r.FormValue("referrer_policy"))
+	ph.HSTSIncludeSubdomains = r.FormValue("hsts_include_subdomains") == "on"
+	ph.CSPReportOnly = strings.TrimSpace(r.FormValue("csp_report_only"))
+	ph.KeepaliveIdleTimeoutSec, _ = strconv.Atoi(r.FormValue("keepalive_idle_timeout_sec"))
+	ph.HealthCheckExpectStatus, _ = strconv.Atoi(r.FormValue("health_check_expect_status"))
+	ph.HealthCheckExpectBody = strings.TrimSpace(r.FormValue("health_check_expect_body"))
+	ph.HealthCheckFollowRedirects = r.FormValue("health_check_follow_redirects") == "on"
+	ph.PathMatcher = strings.TrimSpace(r.FormValue("path_matcher"))
+	ph.StripPathPrefix = r.FormValue("strip_path_prefix") == "on"
+	ph.StickyCookieName = strings.TrimSpace(r.FormValue("sticky_cookie_name"))
+	ph.LBTryDurationSec, _ = strconv.Atoi(r.FormValue("lb_try_duration_sec"))
+	ph.LBTryIntervalMS, _ = strconv.Atoi(r.FormValue("lb_try_interval_ms"))
+	ph.CompressionMinSizeKB, _ = strconv.Atoi(r.FormValue("compression_min_size_kb"))
+	ph.ForwardClientIP = r.FormValue("forward_client_ip") == "on"
+	ph.CORSMaxAgeSec, _ = strconv.Atoi(r.FormValue("cors_max_age_sec"))
+	ph.CORSAllowMethods = strings.TrimSpace(r.FormValue("cors_allow_methods"))
+	ph.CORSAllowHeaders = strings.TrimSpace(r.FormValue("cors_allow_headers"))
+	ph.RetryStatusCodes = strings.TrimSpace(r.FormValue("retry_status_codes"))
+	ph.WriteTimeoutSec, _ = strconv.Atoi(r.FormValue("write_timeout_sec"))
+	ph.UpstreamTLSMinVersion = r.FormValue("upstream_tls_min_version")
+	ph.ForwardProxyURL = strings.TrimSpace(r.FormValue("forward_proxy_url"))
+	ph.BlockedMethods = strings.TrimSpace(r.FormValue("blocked_methods"))
+	ph.ForwardAuthURL = strings.TrimSpace(r.FormValue("forward_auth_url"))
+	ph.ForwardAuthCopyHeaders = strings.TrimSpace(r.FormValue("forward_auth_copy_headers"))
+	ph.StripQueryString = r.FormValue("strip_query_string") == "on"
+	ph.DeleteQueryParams = strings.TrimSpace(r.FormValue("delete_query_params"))
+	ph.RequestBodyReadTimeoutSec, _ = strconv.Atoi(r.FormValue("request_body_read_timeout_sec"))
+	ph.ResponseHeaderTimeoutSec, _ = strconv.Atoi(r.FormValue("response_header_timeout_sec"))
+	ph.MaxConnDurationSec, _ = strconv.Atoi(r.FormValue("max_conn_duration_sec"))
+	ph.DecompressResponse = r.FormValue("decompress_response") == "on"
+	ph.Color = strings.TrimSpace(r.FormValue("color"))
+	ph.WWWRedirect = r.FormValue("www_redirect") // "" | "to_www" | "to_bare"
+	ph.StripReqHeaders = strings.TrimSpace(r.FormValue("strip_req_headers"))
+	ph.UpstreamPathPrefix = strings.TrimSpace(r.FormValue("upstream_path_prefix"))
+	ph.CompressionLevel, _ = strconv.Atoi(r.FormValue("compression_level"))
+	ph.CompressionPreferGzip = r.FormValue("compression_prefer_gzip") == "on"
+	ph.SortOrder, _ = strconv.Atoi(r.FormValue("sort_order"))
+	ph.AllowedMethods = strings.TrimSpace(r.FormValue("allowed_methods"))
+	ph.UpstreamMaxRespHeaderKB, _ = strconv.Atoi(r.FormValue("upstream_max_resp_header_kb"))
+	ph.HealthCheckPort, _ = strconv.Atoi(r.FormValue("health_check_port"))
+	ph.RequestIDHeaderName = strings.TrimSpace(r.FormValue("request_id_header_name"))
+	ph.LBCookiePath = strings.TrimSpace(r.FormValue("lb_cookie_path"))
+	ph.PassiveUnhealthyLatencyMS, _ = strconv.Atoi(r.FormValue("passive_unhealthy_latency_ms"))
+	ph.TLSHandshakeTimeoutSec, _ = strconv.Atoi(r.FormValue("tls_handshake_timeout_sec"))
+	ph.ExpectContinueTimeoutSec, _ = strconv.Atoi(r.FormValue("expect_continue_timeout_sec"))
+	ph.ResponseBuffersKB, _ = strconv.Atoi(r.FormValue("response_buffers_kb"))
+	ph.UpstreamMaxIdleConns, _ = strconv.Atoi(r.FormValue("upstream_max_idle_conns"))
+	ph.UpstreamKeepAliveProbeIntervalSec, _ = strconv.Atoi(r.FormValue("upstream_keep_alive_probe_sec"))
+	ph.ForwardAuthMethod = strings.TrimSpace(r.FormValue("forward_auth_method"))
+	ph.GRPCWebEnabled = r.FormValue("grpc_web_enabled") == "on"
+	ph.ForwardAuthHeadersPrefix = strings.TrimSpace(r.FormValue("forward_auth_headers_prefix"))
+	ph.HealthCheckMaxSizeKB, _ = strconv.Atoi(r.FormValue("health_check_max_size_kb"))
+	ph.StripPathSuffix = strings.TrimSpace(r.FormValue("strip_path_suffix"))
+	ph.AddReqQueryParams = strings.TrimSpace(r.FormValue("add_req_query_params"))
+	ph.ErrorPageCodes = strings.TrimSpace(r.FormValue("error_page_codes"))
+	ph.UpstreamTLSCAPEMFile = strings.TrimSpace(r.FormValue("upstream_tls_ca_pem_file"))
+	ph.KeepaliveDisabled = r.FormValue("keepalive_disabled") == "on"
+	ph.TrailingSlashRedirect = r.FormValue("trailing_slash_redirect")
+	ph.DialFallbackDelayMS, _ = strconv.Atoi(r.FormValue("dial_fallback_delay_ms"))
+	ph.UpstreamNetwork = strings.TrimSpace(r.FormValue("upstream_network"))
+	ph.DNSResolver = strings.TrimSpace(r.FormValue("dns_resolver"))
+	ph.PathMatcherType = r.FormValue("path_matcher_type")
+	ph.CORSAllowPrivateNetwork = r.FormValue("cors_allow_private_network") == "on"
+	ph.RobotsTxtDisallowAll = r.FormValue("robots_txt_disallow_all") == "on"
+	ph.MaintenanceRetryAfterSec, _ = strconv.Atoi(r.FormValue("maintenance_retry_after_sec"))
+	ph.UpstreamResolveTimeoutSec, _ = strconv.Atoi(r.FormValue("upstream_resolve_timeout_sec"))
+	ph.UpstreamReadBufferSizeKB, _ = strconv.Atoi(r.FormValue("upstream_read_buffer_size_kb"))
+	ph.UpstreamWriteBufferSizeKB, _ = strconv.Atoi(r.FormValue("upstream_write_buffer_size_kb"))
+	ph.ReqHeaderReplace = strings.TrimSpace(r.FormValue("req_header_replace"))
+	ph.RespHeaderReplace = strings.TrimSpace(r.FormValue("resp_header_replace"))
+	ph.UpstreamHTTPVersions = strings.TrimSpace(r.FormValue("upstream_http_versions"))
+	ph.HealthCheckBody = strings.TrimSpace(r.FormValue("health_check_body"))
+	ph.AddCanonicalLinkHeader = r.FormValue("add_canonical_link_header") == "on"
+	ph.HTTPBasicAuthUpstream = strings.TrimSpace(r.FormValue("http_basic_auth_upstream"))
+	ph.BlockUARegexp = strings.TrimSpace(r.FormValue("block_ua_regexp"))
+	ph.SecurityTxtBody = strings.TrimSpace(r.FormValue("security_txt_body"))
+	ph.ServerHeaderValue = strings.TrimSpace(r.FormValue("server_header_value"))
+	ph.XRobotsTag = strings.TrimSpace(r.FormValue("x_robots_tag"))
+	ph.AddForwardedHeader = r.FormValue("add_forwarded_header") == "on"
+	ph.LBCookieSecret = strings.TrimSpace(r.FormValue("lb_cookie_secret"))
+	ph.PassiveUnhealthyStatusCodes = strings.TrimSpace(r.FormValue("passive_unhealthy_status_codes"))
+	ph.HealthCheckContentType = strings.TrimSpace(r.FormValue("health_check_content_type"))
+	ph.UpstreamTLSClientCertFile = strings.TrimSpace(r.FormValue("upstream_tls_client_cert_file"))
+	ph.UpstreamTLSClientKeyFile = strings.TrimSpace(r.FormValue("upstream_tls_client_key_file"))
+	ph.BlockPrivateIPs = r.FormValue("block_private_ips") == "on"
+	ph.EnableBrotli = r.FormValue("enable_brotli") == "on"
+	ph.VaryHeader = strings.TrimSpace(r.FormValue("vary_header"))
+	ph.StripETag = r.FormValue("strip_etag") == "on"
+	ph.HTTP2PushPaths = strings.TrimSpace(r.FormValue("http2_push_paths"))
+	ph.DenyContentTypes = strings.TrimSpace(r.FormValue("deny_content_types"))
+	ph.UpstreamLocalAddr = strings.TrimSpace(r.FormValue("upstream_local_addr"))
+	ph.UpstreamTLSRenegotiation = r.FormValue("upstream_tls_renegotiation")
+	ph.UpstreamTLSCurves = strings.TrimSpace(r.FormValue("upstream_tls_curves"))
+	ph.UpstreamTLSMaxVersion = r.FormValue("upstream_tls_max_version")
+	ph.UpstreamTLSPins = strings.TrimSpace(r.FormValue("upstream_tls_pins"))
+	ph.LBHeaderField = strings.TrimSpace(r.FormValue("lb_header_field"))
+	ph.MaintenanceCustomHeaders = strings.TrimSpace(r.FormValue("maintenance_custom_headers"))
+	ph.DenyExtensions = strings.TrimSpace(r.FormValue("deny_extensions"))
+	ph.InjectRequestTimestamp = r.FormValue("inject_request_timestamp") == "on"
+	ph.AddRespCookies = strings.TrimSpace(r.FormValue("add_resp_cookies"))
+	ph.StripAcceptEncoding = r.FormValue("strip_accept_encoding") == "on"
+	ph.AddUpstreamTimingHeader = r.FormValue("add_upstream_timing_header") == "on"
+	ph.StripServerHeader = r.FormValue("strip_server_header") == "on"
+	ph.BlockRefererRegexp = strings.TrimSpace(r.FormValue("block_referer_regexp"))
+	ph.AddContentTypeNosniff = r.FormValue("add_content_type_nosniff") == "on"
+	ph.StripAuthorizationHeader = r.FormValue("strip_authorization_header") == "on"
+	ph.RealIPFromHeader = strings.TrimSpace(r.FormValue("real_ip_from_header"))
+	ph.HealthCheckHostOverride = strings.TrimSpace(r.FormValue("health_check_host_override"))
+	ph.AddXForwardedPort = r.FormValue("add_x_forwarded_port") == "on"
+	ph.LBRetryOn = strings.TrimSpace(r.FormValue("lb_retry_on"))
+	if v := strings.TrimSpace(r.FormValue("max_buffer_size_kb")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ph.MaxBufferSizeKB = n
+		}
+	}
+	if v := strings.TrimSpace(r.FormValue("upstream_keepalive_probes")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ph.UpstreamKeepaliveProbes = n
+		}
+	}
+	if v := strings.TrimSpace(r.FormValue("upstream_flush_interval_ms")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			ph.UpstreamFlushIntervalMS = n
+		}
+	}
+	ph.AddXForwardedHost = r.FormValue("add_x_forwarded_host") == "on"
+	ph.MaintenanceAllowedIPs = strings.TrimSpace(r.FormValue("maintenance_allowed_ips"))
+	ph.UpstreamTLSCipherSuites = strings.TrimSpace(r.FormValue("upstream_tls_cipher_suites"))
+	ph.AddCacheControlNoStore = r.FormValue("add_cache_control_no_store") == "on"
+	ph.DenyRefererEmpty = r.FormValue("deny_referer_empty") == "on"
+	ph.LBCookieHTTPOnly = r.FormValue("lb_cookie_httponly") == "on"
+	ph.LBCookieSecure = r.FormValue("lb_cookie_secure") == "on"
+	ph.LBCookieSameSite = r.FormValue("lb_cookie_same_site")
+	ph.UpstreamTLSEarlyData = r.FormValue("upstream_tls_early_data") == "on"
+	ph.AddViaHeader = r.FormValue("add_via_header") == "on"
+	ph.ReqHeaderRename = strings.TrimSpace(r.FormValue("req_header_rename"))
+	ph.AddExpectCTHeader = r.FormValue("add_expect_ct_header") == "on"
+	ph.ForceUpstreamEncoding = strings.TrimSpace(r.FormValue("force_upstream_encoding"))
+	if v := strings.TrimSpace(r.FormValue("passive_unhealthy_count")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ph.PassiveUnhealthyCount = n
+		}
+	}
+	ph.StripXPoweredBy = r.FormValue("strip_x_powered_by") == "on"
+	ph.AddTimingAllowOrigin = strings.TrimSpace(r.FormValue("add_timing_allow_origin"))
+	if v := strings.TrimSpace(r.FormValue("lb_cookie_max_age_sec")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ph.LBCookieMaxAgeSec = n
+		}
+	}
+	ph.CrossOriginOpenerPolicy = strings.TrimSpace(r.FormValue("cross_origin_opener_policy"))
+	ph.CrossOriginResourcePolicy = strings.TrimSpace(r.FormValue("cross_origin_resource_policy"))
+	ph.CrossOriginEmbedderPolicy = strings.TrimSpace(r.FormValue("cross_origin_embedder_policy"))
+	ph.DenyRequestContentType = strings.TrimSpace(r.FormValue("deny_request_content_type"))
+	ph.CompressionExcludeRegexp = strings.TrimSpace(r.FormValue("compression_exclude_regexp"))
+	ph.AddCacheControlPublic = r.FormValue("add_cache_control_public") == "on"
+	// v2.9.140: add_x_request_start — inject X-Request-Start: t=<epoch_ms> for APM timing.
+	ph.AddXRequestStart = r.FormValue("add_x_request_start") == "on"
+	// v2.9.141: maintenance_window_timezone — IANA timezone for the scheduled maintenance window.
+	ph.MaintenanceWindowTimezone = strings.TrimSpace(r.FormValue("maintenance_window_timezone"))
+	// v2.9.142: lb_random_choose_count — "choose" count for the random_choice lb policy.
+	if v := strings.TrimSpace(r.FormValue("lb_random_choose_count")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ph.LBRandomChooseCount = n
+		}
+	}
+	// v2.9.143: add_x_forwarded_scheme — inject X-Forwarded-Scheme with the client-facing scheme.
+	ph.AddXForwardedScheme = r.FormValue("add_x_forwarded_scheme") == "on"
+	// v2.9.144: response_cache_ttl_sec — set Cache-Control: max-age=N (0 = disabled).
+	if v := strings.TrimSpace(r.FormValue("response_cache_ttl_sec")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ph.ResponseCacheTTLSec = n
+		}
+	}
+	// v2.9.145: add_link_preload — Link response header for HTTP/2 preload hints.
+	ph.AddLinkPreload = strings.TrimSpace(r.FormValue("add_link_preload"))
+	// v2.9.146: deny_path_regexp — block requests whose path matches this regex (403).
+	ph.DenyPathRegexp = strings.TrimSpace(r.FormValue("deny_path_regexp"))
+	// v2.9.147: add_request_id_to_response — echo request trace ID in response header.
+	ph.AddRequestIDToResponse = r.FormValue("add_request_id_to_response") == "on"
+	// v2.9.148: health_check_tls_server_name — TLS SNI override for health check connections.
+	ph.HealthCheckTLSServerName = strings.TrimSpace(r.FormValue("health_check_tls_server_name"))
+	// v2.9.149: add_x_real_ip — inject X-Real-IP with the direct client IP.
+	ph.AddXRealIP = r.FormValue("add_x_real_ip") == "on"
+	// v2.9.150: strip_incoming_x_forwarded_for — delete incoming X-Forwarded-For.
+	ph.StripIncomingXForwardedFor = r.FormValue("strip_incoming_x_forwarded_for") == "on"
+	// v2.9.151: health_check_tls_insecure_skip_verify — skip TLS cert verification for health check probes.
+	ph.HealthCheckTLSInsecureSkipVerify = r.FormValue("health_check_tls_insecure_skip_verify") == "on"
+	// v2.9.152: add_cors_vary_header — add Vary: Origin response header for CDN caching of CORS responses.
+	ph.AddCORSVaryHeader = r.FormValue("add_cors_vary_header") == "on"
+	// v2.9.153: upstream_tls_alpn — ALPN protocol list for upstream TLS connections.
+	ph.UpstreamTLSALPN = strings.TrimSpace(r.FormValue("upstream_tls_alpn"))
+	// v2.9.154: add_x_powered_by — custom X-Powered-By response header value.
+	ph.AddXPoweredBy = strings.TrimSpace(r.FormValue("add_x_powered_by"))
+	// v2.9.155: block_query_params — comma-separated query param names to block (403).
+	ph.BlockQueryParams = strings.TrimSpace(r.FormValue("block_query_params"))
+	// v2.9.156: add_document_policy — Document-Policy response header value.
+	ph.AddDocumentPolicy = strings.TrimSpace(r.FormValue("add_document_policy"))
+	// v2.9.157: maintenance_redirect_url — redirect to this URL during maintenance.
+	ph.MaintenanceRedirectURL = strings.TrimSpace(r.FormValue("maintenance_redirect_url"))
+	// v2.9.158: upstream_keepalive_max_lifetime_sec — max keepalive connection lifetime.
+	if v := strings.TrimSpace(r.FormValue("upstream_keepalive_max_lifetime_sec")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			ph.UpstreamKeepaliveMaxLifetimeSec = n
+		}
+	}
+	// v2.9.159: add_origin_header — inject Origin request header.
+	ph.AddOriginHeader = strings.TrimSpace(r.FormValue("add_origin_header"))
+	// v2.9.160: upstream_tls_ca_pem_inline — inline PEM CA certificate for upstream TLS.
+	ph.UpstreamTLSCAPEMInline = strings.TrimSpace(r.FormValue("upstream_tls_ca_pem_inline"))
+	// v2.9.161: add_server_timing_header — inject Server-Timing with upstream duration.
+	ph.AddServerTimingHeader = r.FormValue("add_server_timing_header") == "on"
+	// v2.9.162: add_clear_site_data — Clear-Site-Data response header value.
+	ph.AddClearSiteData = strings.TrimSpace(r.FormValue("add_clear_site_data"))
+	// v2.9.163: add_x_dns_prefetch_control — set X-DNS-Prefetch-Control: off.
+	ph.AddXDNSPrefetchControl = r.FormValue("add_x_dns_prefetch_control") == "on"
+	// v2.9.164: add_accept_ranges — signal byte-range support with Accept-Ranges: bytes.
+	ph.AddAcceptRanges = r.FormValue("add_accept_ranges") == "on"
+	// v2.9.165: add_content_disposition — set a custom Content-Disposition response header.
+	ph.AddContentDisposition = strings.TrimSpace(r.FormValue("add_content_disposition"))
+	// v2.9.166: upstream_tls_server_name_from_host — use Host header value as upstream TLS SNI.
+	ph.UpstreamTLSServerNameFromHost = r.FormValue("upstream_tls_server_name_from_host") == "on"
+	// v2.9.167: add_x_permitted_cross_domain_policies — X-Permitted-Cross-Domain-Policies response header value.
+	ph.AddXPermittedCrossDomainPolicies = strings.TrimSpace(r.FormValue("add_x_permitted_cross_domain_policies"))
+	// v2.9.168: strip_response_headers — comma-separated list of response headers to delete.
+	ph.StripResponseHeaders = strings.TrimSpace(r.FormValue("strip_response_headers"))
+	// v2.9.169: add_report_to — Report-To response header value (JSON endpoint group config).
+	ph.AddReportTo = strings.TrimSpace(r.FormValue("add_report_to"))
+	// v2.9.170: add_nel_header — NEL response header JSON config for Network Error Logging.
+	ph.AddNELHeader = strings.TrimSpace(r.FormValue("add_nel_header"))
+	// v2.9.171: block_http_methods — comma-separated HTTP methods to reject with 405.
+	ph.BlockHTTPMethods = strings.TrimSpace(r.FormValue("block_http_methods"))
+	// v2.9.172: add_service_worker_allowed — Service-Worker-Allowed response header value.
+	ph.AddServiceWorkerAllowed = strings.TrimSpace(r.FormValue("add_service_worker_allowed"))
+	// v2.9.173: add_accept_ch — Accept-CH response header to declare accepted client hints.
+	ph.AddAcceptCH = strings.TrimSpace(r.FormValue("add_accept_ch"))
+	// v2.9.174: add_alt_svc — Alt-Svc response header for alternate service advertisement.
+	ph.AddAltSvc = strings.TrimSpace(r.FormValue("add_alt_svc"))
+	// v2.9.175: add_content_language — Content-Language response header value.
+	ph.AddContentLanguage = strings.TrimSpace(r.FormValue("add_content_language"))
+	// v2.9.176: add_critical_ch — Critical-CH response header (marks client hints required before rendering).
+	ph.AddCriticalCH = strings.TrimSpace(r.FormValue("add_critical_ch"))
+	// v2.9.177: add_x_download_options — set X-Download-Options: noopen (IE file open prevention).
+	ph.AddXDownloadOptions = r.FormValue("add_x_download_options") == "on"
+	// v2.9.178: deny_user_agent_regexp — block requests whose User-Agent matches this regexp with 403.
+	ph.DenyUserAgentRegexp = strings.TrimSpace(r.FormValue("deny_user_agent_regexp"))
+	// v2.9.179: add_pragma_no_cache — set Pragma: no-cache response header.
+	ph.AddPragmaNoCache = r.FormValue("add_pragma_no_cache") == "on"
+	// v2.9.180: health_check_user_agent — custom User-Agent for active health check probes.
+	ph.HealthCheckUserAgent = strings.TrimSpace(r.FormValue("health_check_user_agent"))
+	// v2.9.181: add_x_request_path — inject X-Request-Path request header on upstream calls.
+	ph.AddXRequestPath = r.FormValue("add_x_request_path") == "on"
+	// v2.9.182: add_x_clacks_overhead — X-Clacks-Overhead response header value.
+	ph.AddXClacksOverhead = strings.TrimSpace(r.FormValue("add_x_clacks_overhead"))
+	// v2.9.183: add_x_ua_compatible — X-UA-Compatible response header value.
+	ph.AddXUACompatible = strings.TrimSpace(r.FormValue("add_x_ua_compatible"))
+	// v2.9.184: forward_auth_skip_paths — comma-separated path prefixes that bypass forward_auth.
+	ph.ForwardAuthSkipPaths = strings.TrimSpace(r.FormValue("forward_auth_skip_paths"))
+	// v2.9.185: add_age_zero — set Age: 0 response header to signal a fresh response.
+	ph.AddAgeZero = r.FormValue("add_age_zero") == "on"
+	// v2.9.186: add_surrogate_control — Surrogate-Control response header value (CDN-only cache directive).
+	ph.AddSurrogateControl = strings.TrimSpace(r.FormValue("add_surrogate_control"))
+	// v2.9.187: add_warning_header — Warning response header value.
+	ph.AddWarningHeader = strings.TrimSpace(r.FormValue("add_warning_header"))
+	// v2.9.188: add_x_request_method — forward X-Request-Method header (echoes HTTP method) to upstream.
+	ph.AddXRequestMethod = r.FormValue("add_x_request_method") == "on"
+	// v2.9.189: add_x_request_query — forward X-Request-Query header (echoes query string) to upstream.
+	ph.AddXRequestQuery = r.FormValue("add_x_request_query") == "on"
+	// v2.9.190: add_x_forwarded_user — static X-Forwarded-User request header value.
+	ph.AddXForwardedUser = strings.TrimSpace(r.FormValue("add_x_forwarded_user"))
+	// v2.9.191: add_x_real_scheme — forward X-Real-Scheme request header to upstream.
+	ph.AddXRealScheme = r.FormValue("add_x_real_scheme") == "on"
+	// v2.9.192: add_origin_agent_cluster — set Origin-Agent-Cluster: ?1 response header.
+	ph.AddOriginAgentCluster = r.FormValue("add_origin_agent_cluster") == "on"
+	// v2.9.193: add_x_forwarded_groups — static X-Forwarded-Groups request header value.
+	ph.AddXForwardedGroups = strings.TrimSpace(r.FormValue("add_x_forwarded_groups"))
+	// v2.9.194: add_x_forwarded_email — static X-Forwarded-Email request header value.
+	ph.AddXForwardedEmail = strings.TrimSpace(r.FormValue("add_x_forwarded_email"))
+	// v2.9.195: add_x_forwarded_roles — static X-Forwarded-Roles request header value.
+	ph.AddXForwardedRoles = strings.TrimSpace(r.FormValue("add_x_forwarded_roles"))
+	// v2.9.196: block_query_param_regexp — block requests whose query string matches this regexp with 403.
+	ph.BlockQueryParamRegexp = strings.TrimSpace(r.FormValue("block_query_param_regexp"))
+	// v2.9.197: add_x_request_referer — forward X-Request-Referer header to upstream.
+	ph.AddXRequestReferer = r.FormValue("add_x_request_referer") == "on"
+	// v2.9.198: add_x_request_origin — forward X-Request-Origin header to upstream.
+	ph.AddXRequestOrigin = r.FormValue("add_x_request_origin") == "on"
+	// v2.9.199: add_x_forwarded_uri — forward X-Forwarded-URI header to upstream.
+	ph.AddXForwardedURI = r.FormValue("add_x_forwarded_uri") == "on"
+	// v2.9.200: add_x_no_archive — set X-No-Archive: yes response header.
+	ph.AddXNoArchive = r.FormValue("add_x_no_archive") == "on"
+	// v2.9.201: add_x_request_hostname — forward X-Request-Hostname header to upstream.
+	ph.AddXRequestHostname = r.FormValue("add_x_request_hostname") == "on"
+	// v2.9.202: add_x_xss_protection_disabled — set X-XSS-Protection: 0 response header.
+	ph.AddXXSSProtectionDisabled = r.FormValue("add_x_xss_protection_disabled") == "on"
+	return ph, nil
 }
 
 func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
@@ -1815,6 +3005,18 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.syncCaddy(s.currentServerID(r), p.CertificateID != 0)
+	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" {
+		domains := p.Domains
+		db := s.DB
+		go func() {
+			payload, _ := json.Marshal(map[string]any{
+				"event":   "proxy_host_created",
+				"message": "Proxy host created: " + domains,
+				"domains": domains,
+			})
+			sendWebhookPayload(db, whURL, payload)
+		}()
+	}
 	if len(deployTo) > 0 {
 		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
 	}
@@ -1977,6 +3179,18 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
 	s.syncCaddy(s.currentServerID(r), forceTLS)
+	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" {
+		domains := p.Domains
+		db := s.DB
+		go func() {
+			payload, _ := json.Marshal(map[string]any{
+				"event":   "proxy_host_updated",
+				"message": "Proxy host updated: " + domains,
+				"domains": domains,
+			})
+			sendWebhookPayload(db, whURL, payload)
+		}()
+	}
 	if len(deployTo) > 0 {
 		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
 	}
@@ -2014,7 +3228,59 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
 	s.syncCaddy(s.currentServerID(r), forceTLS)
+	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" && old != nil {
+		domains := old.Domains
+		db := s.DB
+		go func() {
+			payload, _ := json.Marshal(map[string]any{
+				"event":   "proxy_host_deleted",
+				"message": "Proxy host deleted: " + domains,
+				"domains": domains,
+			})
+			sendWebhookPayload(db, whURL, payload)
+		}()
+	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// cloneProxyHost creates a copy of a proxy host with Enabled=false and
+// a "(copy)" suffix on each domain, then redirects to its edit page.
+func (s *Server) cloneProxyHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	src, err := models.GetProxyHost(s.DB, id)
+	if err != nil || src == nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Build cloned domain list — append "(copy)" to each domain.
+	domains := src.DomainList()
+	cloned := make([]string, len(domains))
+	for i, d := range domains {
+		cloned[i] = d + " (copy)"
+	}
+	clone := *src // value copy
+	clone.ID = 0
+	clone.Domains = strings.Join(cloned, ",")
+	clone.Enabled = false // always disabled so it doesn't affect live traffic
+	clone.MaintenanceMode = false
+	clone.CreatedAt = time.Time{}
+	clone.UpdatedAt = time.Time{}
+
+	cu := s.currentUser(r)
+	var ownerID int64
+	if cu != nil {
+		ownerID = cu.ID
+	}
+	newID, err := models.CreateProxyHost(s.DB, src.ServerID, ownerID, &clone)
+	if err != nil {
+		http.Error(w, "clone failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/proxy-hosts/%d/edit", newID), http.StatusSeeOther)
 }
 
 // --- Redirection Hosts ---
@@ -2067,6 +3333,40 @@ func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) 
 		SSLForced:       r.FormValue("ssl_forced") == "on",
 		Enabled:         r.FormValue("enabled") == "on",
 		CertificateID:   certID,
+		Tags:            strings.TrimSpace(r.FormValue("rh_tags")),
+		Notes:           r.FormValue("rh_notes"),
+		// v2.9.13: access control + maintenance mode
+		AccessList:      strings.TrimSpace(r.FormValue("access_list")),
+		MaintenanceMode: r.FormValue("maintenance_mode") == "on",
+		MaintenanceMsg:  strings.TrimSpace(r.FormValue("maintenance_msg")),
+		// v2.9.20: custom response headers
+		CustomRespHeaders: func() string {
+			v := strings.TrimSpace(r.FormValue("custom_resp_headers"))
+			if v == "" {
+				return "{}"
+			}
+			return v
+		}(),
+		// v2.9.21: IP blocklist
+		IPBlocklist: strings.TrimSpace(r.FormValue("ip_blocklist")),
+		// v2.9.24: HSTS
+		HSTSMaxAgeSec:         func() int { v, _ := strconv.Atoi(r.FormValue("hsts_max_age_sec")); return v }(),
+		HSTSIncludeSubdomains: r.FormValue("hsts_include_subdomains") == "on",
+		HSTSPreload:           r.FormValue("hsts_preload") == "on",
+		// v2.9.26: advanced config (raw JSON handlers)
+		AdvancedConfig: strings.TrimSpace(r.FormValue("rh_advanced_config")),
+		// v2.9.33: color label
+		Color: strings.TrimSpace(r.FormValue("color")),
+		// v2.9.38: maintenance status code
+		MaintenanceStatusCode: func() int {
+			v, _ := strconv.Atoi(r.FormValue("maintenance_status_code"))
+			if v == 0 {
+				return 503
+			}
+			return v
+		}(),
+		// v2.9.39: sort order
+		SortOrder: func() int { v, _ := strconv.Atoi(r.FormValue("sort_order")); return v }(),
 	}, nil
 }
 
@@ -2219,6 +3519,46 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	forceTLS := old != nil && old.CertificateID != 0
 	s.syncCaddy(s.currentServerID(r), forceTLS)
 	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
+}
+
+// cloneRedirectionHost creates a copy of a redirection host with Enabled=false
+// and a "(copy)" suffix on each domain, then redirects to its edit page.
+func (s *Server) cloneRedirectionHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	src, err := models.GetRedirectionHost(s.DB, id)
+	if err != nil || src == nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Append "(copy)" to each domain.
+	domains := src.DomainList()
+	cloned := make([]string, len(domains))
+	for i, d := range domains {
+		cloned[i] = d + " (copy)"
+	}
+	clone := *src
+	clone.ID = 0
+	clone.Domains = strings.Join(cloned, ",")
+	clone.Enabled = false
+	clone.MaintenanceMode = false
+	clone.CreatedAt = time.Time{}
+	clone.UpdatedAt = time.Time{}
+
+	cu := s.currentUser(r)
+	var ownerID int64
+	if cu != nil {
+		ownerID = cu.ID
+	}
+	newID, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), ownerID, &clone)
+	if err != nil {
+		http.Error(w, "clone failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/redirection-hosts/%d/edit", newID), http.StatusSeeOther)
 }
 
 func (s *Server) reloadCaddy(w http.ResponseWriter, r *http.Request) {
@@ -2683,6 +4023,59 @@ func (s *Server) pushAutomationPolicies(r *http.Request, incoming []map[string]a
 // don't want a snapshot every sync filling the DB.
 const settingAutoSnapshots = "auto_snapshots_enabled"
 
+// settingRequire2FA gates 2FA enforcement: when "1", users without TOTP enabled
+// are redirected to /totp/setup before accessing any page.
+const settingRequire2FA = "require_2fa"
+
+// settingRequireTOTP forces all users to enroll TOTP before accessing protected pages.
+const settingRequireTOTP = "require_totp"
+
+// settingSessionDays is the admin-configured session lifetime in days.
+// Default is 7 days when empty or invalid.
+const settingSessionDays = "session_duration_days"
+
+// settingCatchAll404HTML holds optional HTML for a global catch-all 404 route
+// appended last in the merged Caddy config so it fires only when no
+// proxy/redirect/raw route matched.
+const settingCatchAll404HTML = "catch_all_404_html"
+
+// settingGlobalMaintenance puts ALL proxy hosts into maintenance mode when "1".
+// A catch-all 503 route is prepended to the Caddy routes list so every request
+// gets a maintenance page regardless of individual host settings.
+const settingGlobalMaintenance = "global_maintenance"
+
+// settingAutoSyncHours is the interval (in hours) for automatic periodic Caddy
+// re-syncs. 0 or empty = disabled. The background loop checks once per hour
+// and re-syncs if the elapsed time since the last sync_applied log entry
+// exceeds this value.
+const settingAutoSyncHours = "auto_sync_hours"
+
+// settingTrustedProxies holds newline or comma-separated CIDRs/IPs of trusted
+// reverse-proxies (e.g. Cloudflare, load balancers). When non-empty, CaddyUI
+// injects trusted_proxies into the Caddy HTTP server config so that the real
+// client IP is extracted from X-Forwarded-For.
+const settingTrustedProxies = "trusted_proxies"
+
+// settingSiteTitle is the custom display name shown in the browser tab title
+// and the sidebar logo area. Falls back to "CaddyUI" when empty.
+const settingSiteTitle = "site_title"
+
+// settingFaviconURL is an optional URL for a custom favicon. When set, the
+// layout <head> will use it instead of the default inline SVG favicon.
+const settingFaviconURL = "favicon_url"
+
+// settingAdminAllowlist holds newline or comma-separated IPs/CIDRs that are
+// permitted to access the CaddyUI admin panel. When empty, all IPs are allowed.
+const settingAdminAllowlist = "admin_allowlist"
+
+// settingActivityLogDays specifies how many days to keep activity log entries.
+// 0 or empty = keep forever (default).
+const settingActivityLogDays = "activity_log_days"
+
+// settingMaxLoginAttempts limits consecutive failed login attempts per IP within
+// a 15-minute window. 0 or empty = no limit (default).
+const settingMaxLoginAttempts = "max_login_attempts"
+
 func (s *Server) autoSnapshotsEnabled() bool {
 	v, err := models.GetSetting(s.DB, settingAutoSnapshots)
 	if err != nil || v == "" {
@@ -2852,6 +4245,121 @@ func (s *Server) downloadSnapshot(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(snap.ConfigJSON))
 }
 
+// DiffLine represents a single line in a unified diff view.
+type DiffLine struct {
+	Type    string // "same", "add", "remove"
+	Content string
+	LineA   int // 1-based line number in snapshot (0 if added)
+	LineB   int // 1-based line number in live config (0 if removed)
+}
+
+// diffLines performs a simple line-by-line diff between two strings.
+// It zips the two line slices and marks each position as same/add/remove.
+// This is not a full LCS diff but is effective for JSON config comparisons.
+func diffLines(a, b string) []DiffLine {
+	aLines := strings.Split(a, "\n")
+	bLines := strings.Split(b, "\n")
+	max := len(aLines)
+	if len(bLines) > max {
+		max = len(bLines)
+	}
+	var out []DiffLine
+	for i := 0; i < max; i++ {
+		la, lb := "", ""
+		if i < len(aLines) {
+			la = aLines[i]
+		}
+		if i < len(bLines) {
+			lb = bLines[i]
+		}
+		if la == lb {
+			out = append(out, DiffLine{Type: "same", Content: la, LineA: i + 1, LineB: i + 1})
+		} else {
+			if la != "" {
+				out = append(out, DiffLine{Type: "remove", Content: la, LineA: i + 1})
+			}
+			if lb != "" {
+				out = append(out, DiffLine{Type: "add", Content: lb, LineB: i + 1})
+			}
+		}
+	}
+	return out
+}
+
+// getSnapshotDiff shows a unified diff between a stored snapshot and the
+// current live Caddy config. Admin-only: non-admin callers get 403.
+func (s *Server) getSnapshotDiff(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil || cu.Role != models.RoleAdmin {
+		http.Error(w, "admin access required", http.StatusForbidden)
+		return
+	}
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	snap, err := models.GetSnapshot(s.DB, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	// Pretty-print the snapshot JSON.
+	var snapObj any
+	if err := json.Unmarshal([]byte(snap.ConfigJSON), &snapObj); err != nil {
+		http.Error(w, "snapshot is corrupted: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	snapPretty, err := json.MarshalIndent(snapObj, "", "  ")
+	if err != nil {
+		http.Error(w, "marshal snapshot: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	snapJSON := string(snapPretty)
+
+	// Fetch and pretty-print the live config.
+	var liveJSON string
+	_, raw, fetchErr := s.caddyForRequest(r).FetchConfig()
+	if fetchErr != nil || raw == "" || raw == "null" {
+		liveJSON = ""
+	} else {
+		var liveObj any
+		if err := json.Unmarshal([]byte(raw), &liveObj); err == nil {
+			if b, err := json.MarshalIndent(liveObj, "", "  "); err == nil {
+				liveJSON = string(b)
+			} else {
+				liveJSON = raw
+			}
+		} else {
+			liveJSON = raw
+		}
+	}
+
+	hasDiff := snapJSON != liveJSON
+	var diffs []DiffLine
+	addCount, removeCount := 0, 0
+	if hasDiff {
+		diffs = diffLines(snapJSON, liveJSON)
+		for _, dl := range diffs {
+			switch dl.Type {
+			case "add":
+				addCount++
+			case "remove":
+				removeCount++
+			}
+		}
+	}
+
+	s.render(w, r, "snapshot_diff.html", map[string]any{
+		"User":        cu,
+		"Snapshot":    snap,
+		"SnapJSON":    snapJSON,
+		"LiveJSON":    liveJSON,
+		"DiffLines":   diffs,
+		"HasDiff":     hasDiff,
+		"AddCount":    addCount,
+		"RemoveCount": removeCount,
+		"Section":     "snapshots",
+	})
+}
+
 // uploadSnapshot accepts a JSON file (typically a previously-downloaded
 // snapshot, or any Caddy /config/ export) and stores it as a manual snapshot.
 // The config is validated as JSON here but not run through Caddy — users
@@ -2903,17 +4411,73 @@ func (s *Server) getDocs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// getAPIDocs renders the v1 REST API reference page.
+func (s *Server) getAPIDocs(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "api_docs.html", map[string]any{
+		"User":    s.currentUser(r),
+		"Section": "api_docs",
+	})
+}
+
 func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
-	entries, err := models.ListActivity(s.DB, s.currentServerID(r), 500)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	actionFilter := strings.TrimSpace(r.URL.Query().Get("action"))
+	entries, err := models.ListActivitySearch(s.DB, s.currentServerID(r), 500, search)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if actionFilter != "" {
+		filtered := entries[:0]
+		for _, a := range entries {
+			if strings.Contains(a.Action, actionFilter) {
+				filtered = append(filtered, a)
+			}
+		}
+		entries = filtered
+	}
 	s.render(w, r, "activity.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Entries": entries,
-		"Section": "activity",
+		"User":         s.currentUser(r),
+		"Entries":      entries,
+		"Section":      "activity",
+		"Search":       search,
+		"ActionFilter": actionFilter,
 	})
+}
+
+func (s *Server) exportActivityCSV(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	sid := s.currentServerID(r)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	entries, err := models.ListActivitySearch(s.DB, sid, 10000, search)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="activity.csv"`)
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"ID", "Actor", "Action", "Target", "Detail", "Success", "Created At"})
+	for _, a := range entries {
+		succ := "false"
+		if a.Success {
+			succ = "true"
+		}
+		_ = cw.Write([]string{
+			strconv.FormatInt(a.ID, 10),
+			a.Actor,
+			a.Action,
+			a.Target,
+			a.Detail,
+			succ,
+			a.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	cw.Flush()
 }
 
 // --- Certificates ---
@@ -3060,6 +4624,102 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		"AutoDomains": autoDomains,
 		"Section":     "certs",
 	})
+}
+
+// getCertificateInspect parses the stored PEM and renders detailed certificate
+// information (subject, issuer, SANs, validity window, key type, serial,
+// SHA-256 fingerprint). Accessible to all authenticated users, not just admins,
+// so each user can inspect certs they uploaded.
+func (s *Server) getCertificateInspect(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	cert, err := models.GetCertificate(s.DB, id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	data := map[string]any{
+		"User":    s.currentUser(r),
+		"Cert":    cert,
+		"Section": "certs",
+	}
+
+	pemData := cert.CertPEM
+	if pemData == "" && cert.Source == models.CertSourcePath {
+		// Path-based cert: try reading the file so we can still parse it.
+		if raw, readErr := os.ReadFile(cert.CertPath); readErr == nil {
+			pemData = string(raw)
+		}
+	}
+
+	if pemData == "" {
+		s.render(w, r, "certificate_inspect.html", data)
+		return
+	}
+
+	block, _ := pem.Decode([]byte(pemData))
+	if block == nil {
+		s.render(w, r, "certificate_inspect.html", data)
+		return
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		s.render(w, r, "certificate_inspect.html", data)
+		return
+	}
+
+	// Subject / Issuer
+	data["Subject"] = parsed.Subject.String()
+	data["Issuer"] = parsed.Issuer.String()
+
+	// SANs: DNS names, IPs, URIs
+	sans := make([]string, 0, len(parsed.DNSNames)+len(parsed.IPAddresses)+len(parsed.URIs))
+	sans = append(sans, parsed.DNSNames...)
+	for _, ip := range parsed.IPAddresses {
+		sans = append(sans, ip.String())
+	}
+	for _, uri := range parsed.URIs {
+		sans = append(sans, uri.String())
+	}
+	data["SANs"] = sans
+
+	// Validity window
+	data["NotBefore"] = parsed.NotBefore
+	data["NotAfter"] = parsed.NotAfter
+	data["DaysLeft"] = int(time.Until(parsed.NotAfter).Hours() / 24)
+
+	// Key type and bits
+	keyType := "Unknown"
+	keyBits := 0
+	switch k := parsed.PublicKey.(type) {
+	case *rsa.PublicKey:
+		keyType = "RSA"
+		keyBits = k.N.BitLen()
+	case *ecdsa.PublicKey:
+		keyType = "ECDSA"
+		keyBits = k.Curve.Params().BitSize
+	case ed25519.PublicKey:
+		keyType = "Ed25519"
+	}
+	data["KeyType"] = keyType
+	data["KeyBits"] = keyBits
+
+	// Serial number (hex)
+	data["SerialNumber"] = parsed.SerialNumber.Text(16)
+
+	// SHA-256 fingerprint over the raw DER bytes
+	fp := sha256.Sum256(parsed.Raw)
+	fpParts := make([]string, len(fp))
+	for i, b := range fp {
+		fpParts[i] = fmt.Sprintf("%02X", b)
+	}
+	data["Fingerprint"] = strings.Join(fpParts[:], ":")
+
+	s.render(w, r, "certificate_inspect.html", data)
 }
 
 func (s *Server) newCertificate(w http.ResponseWriter, r *http.Request) {
@@ -3493,6 +5153,8 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws))
+	applySkipRedirects(proposed, buildSkipRedirects(proxies, redirs))
+	applySkipAccessLogs(proposed, buildSkipAccessLogs(proxies))
 	// Mirror syncCaddy: preview-validation must match the config we'd push
 	// for real, otherwise a raw_route edit could validate clean here but
 	// fail with errors.routes rejection at sync time.
@@ -3781,6 +5443,128 @@ func newCaddyClient(adminURL, username, password string) *caddy.Client {
 // It syncs the currently-selected server; serverID 1 is the safe default.
 func (s *Server) SyncCaddy() error { return s.syncCaddy(1, false) }
 
+// runAutoSyncLoop fires once per hour, checks the auto_sync_hours setting, and
+// re-syncs all servers when the configured interval has elapsed since the last
+// sync_applied activity log entry. Setting value 0 or empty = disabled.
+func (s *Server) runAutoSyncLoop() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		v, _ := models.GetSetting(s.DB, settingAutoSyncHours)
+		hours, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || hours <= 0 {
+			continue // disabled
+		}
+		// Check when any server was last synced.
+		var lastSync time.Time
+		_ = s.DB.QueryRow(
+			`SELECT created_at FROM activity_log WHERE action = 'sync_applied' ORDER BY id DESC LIMIT 1`,
+		).Scan(&lastSync)
+		if time.Since(lastSync) < time.Duration(hours)*time.Hour {
+			continue // synced recently enough
+		}
+		// Re-sync all registered servers.
+		servers, err := models.ListCaddyServers(s.DB)
+		if err != nil {
+			log.Printf("auto-sync: list servers: %v", err)
+			continue
+		}
+		for _, srv := range servers {
+			if err := s.syncCaddy(srv.ID, false); err != nil {
+				log.Printf("auto-sync: server %d (%s): %v", srv.ID, srv.Name, err)
+			} else {
+				log.Printf("auto-sync: synced server %d (%s)", srv.ID, srv.Name)
+			}
+		}
+	}
+}
+
+// isMaintWindowDay reports whether t's day-of-week is in the comma-separated
+// abbreviated day list (e.g. "mon,wed,fri"). An empty days string means every day.
+func isMaintWindowDay(days string, t time.Time) bool {
+	if days == "" {
+		return true
+	}
+	abbr := strings.ToLower(t.Weekday().String()[:3])
+	for _, d := range strings.Split(strings.ToLower(days), ",") {
+		if strings.TrimSpace(d) == abbr {
+			return true
+		}
+	}
+	return false
+}
+
+// runMaintenanceWindowLoop wakes at every minute boundary and triggers a Caddy
+// sync for any server whose proxy hosts have a scheduled maintenance window
+// starting or ending at that exact minute. This keeps the scheduled state in
+// sync without requiring continuous full re-syncs.
+func (s *Server) runMaintenanceWindowLoop() {
+	for {
+		now := time.Now()
+		// Sleep until 2 seconds past the next minute boundary to avoid edge-case
+		// early fires when the goroutine starts right on the minute.
+		nextFire := now.Truncate(time.Minute).Add(time.Minute + 2*time.Second)
+		time.Sleep(time.Until(nextFire))
+
+		now = time.Now()
+		hhmm := now.Format("15:04")
+
+		hosts, err := models.ListProxyHostsWithMaintenanceWindow(s.DB)
+		if err != nil {
+			log.Printf("maintenance-window loop: list hosts: %v", err)
+			continue
+		}
+
+		serverSet := map[int64]bool{}
+		for _, h := range hosts {
+			if (h.MaintenanceWindowStart == hhmm || h.MaintenanceWindowEnd == hhmm) &&
+				isMaintWindowDay(h.MaintenanceWindowDays, now) {
+				serverSet[h.ServerID] = true
+			}
+		}
+		for srvID := range serverSet {
+			if err := s.syncCaddy(srvID, false); err != nil {
+				log.Printf("maintenance-window sync: server %d: %v", srvID, err)
+			} else {
+				log.Printf("maintenance-window sync: server %d at window boundary %s", srvID, hhmm)
+			}
+		}
+	}
+}
+
+// runActivityLogCleanup wakes once every 24 hours and purges activity_log rows
+// older than the configured retention window (settingActivityLogDays). Disabled
+// when the setting is 0 or empty.
+func (s *Server) runActivityLogCleanup() {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	// Run once on startup, then every 24 h.
+	s.pruneActivityLog()
+	for range ticker.C {
+		s.pruneActivityLog()
+	}
+}
+
+func (s *Server) pruneActivityLog() {
+	v, _ := models.GetSetting(s.DB, settingActivityLogDays)
+	days, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || days <= 0 {
+		return // disabled
+	}
+	res, err := s.DB.Exec(
+		`DELETE FROM activity_log WHERE created_at < datetime('now', ?)`,
+		fmt.Sprintf("-%d days", days),
+	)
+	if err != nil {
+		log.Printf("activity log cleanup: %v", err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("activity log cleanup: deleted %d entries older than %d days", n, days)
+	}
+}
+
 // syncCaddy applies CaddyUI's managed state to Caddy:
 //
 //  1. Reads the current live config and builds a "proposed" config with our routes,
@@ -3841,6 +5625,10 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	routes := s.buildMergedRoutes(proxies, redirs, raws)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws)
+	// SSLForced=false + SSLEnabled=true → add to skip_redirects so Caddy
+	// doesn't force HTTP→HTTPS for hosts that explicitly allow plain HTTP.
+	skipRedirects := buildSkipRedirects(proxies, redirs)
+	skipAccessLogs := buildSkipAccessLogs(proxies)
 	// v2.9.0: per-SNI TLS minimum-version connection policies. nil when no
 	// host has a min version configured — writeTLSConnectionPoliciesSubtree
 	// handles the nil case by clearing stale policies that may exist.
@@ -3860,7 +5648,10 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	applyListen(proposed)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, skipList)
+	applySkipRedirects(proposed, skipRedirects)
+	applySkipAccessLogs(proposed, skipAccessLogs)
 	applyTLSConnectionPolicies(proposed, tlsConnPolicies)
+	applyTrustedProxies(proposed, s.DB, serverID)
 	// v2.4.12: branded 404/502/503/504 pages with error ID + timestamp so
 	// users hitting a restart window see something nicer than Caddy's
 	// plaintext fallback and ops can correlate to access logs via {err.id}.
@@ -3895,7 +5686,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_tls_failed", "", err.Error(), false)
 		return err
 	}
-	if err := s.writeAutomaticHTTPSSubtree(skipList, forceTLS); err != nil {
+	if err := s.writeAutomaticHTTPSSubtree(skipList, skipRedirects, forceTLS); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_autohttps_failed", "", err.Error(), false)
 		return err
 	}
@@ -3905,6 +5696,11 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		// failure here shouldn't roll back the primary route push.
 		log.Printf("caddy sync: tls_connection_policies write failed (non-fatal): %v", err)
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_tls_policies_failed", "", err.Error(), false)
+	}
+	if err := s.writeAccessLogsSubtree(skipAccessLogs); err != nil {
+		// Non-fatal: access log skip is a UX feature; a failure here
+		// shouldn't roll back the primary sync.
+		log.Printf("caddy sync: access_logs write failed (non-fatal): %v", err)
 	}
 
 	detail := fmt.Sprintf("proxies=%d redirects=%d passthrough=%d certs=%d",
@@ -4044,7 +5840,11 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		var preHandlers []any
 		if p.BasicAuthEnabled {
 			if baUsers := p.BasicAuthUserList(); len(baUsers) > 0 {
-				if h := s.buildBasicAuthHandler(s.Caddy, baUsers); h != nil {
+				realm := p.BasicAuthRealm
+				if realm == "" {
+					realm = "Restricted"
+				}
+				if h := s.buildBasicAuthHandler(s.Caddy, baUsers, realm); h != nil {
 					preHandlers = []any{h}
 				}
 			}
@@ -4102,6 +5902,44 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 			log.Printf("caddy sync: skipping raw_route id=%d label=%q: unexpected JSON shape %T", rr.ID, rr.Label, decoded)
 		}
 	}
+
+	// Append a catch-all 404 route when the admin has configured custom HTML.
+	// This appears last so it only fires for requests that didn't match any
+	// proxy/redirect/raw route above.
+	if html, _ := models.GetSetting(s.DB, settingCatchAll404HTML); strings.TrimSpace(html) != "" {
+		routes = append(routes, map[string]any{
+			"handle": []any{map[string]any{
+				"handler":     "static_response",
+				"status_code": 404,
+				"headers": map[string]any{
+					"Content-Type": []any{"text/html; charset=utf-8"},
+				},
+				"body": html,
+			}},
+			"terminal": true,
+		})
+	}
+
+	// Global maintenance mode: prepend a catch-all 503 before all routes so
+	// every incoming request receives the maintenance page regardless of which
+	// virtual host it targets. The route has no host matcher (catches all),
+	// and it's prepended so it fires before any per-host route.
+	if gm, _ := models.GetSetting(s.DB, settingGlobalMaintenance); gm == "1" {
+		globalMaintenanceBody := `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Maintenance</title><style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;border-radius:16px;padding:40px 48px;text-align:center;box-shadow:0 4px 32px rgba(0,0,0,.08);max-width:480px}h1{font-size:1.5rem;color:#1e293b;margin:16px 0 8px}p{color:#64748b;font-size:.95rem;line-height:1.6;margin:0}</style></head><body><div class="card"><svg width="48" height="48" fill="none" stroke="#f59e0b" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg><h1>Down for Maintenance</h1><p>We're making improvements and will be back shortly. Thank you for your patience.</p></div></body></html>`
+		routes = append([]any{map[string]any{
+			"handle": []any{map[string]any{
+				"handler":     "static_response",
+				"status_code": 503,
+				"headers": map[string]any{
+					"Content-Type": []any{"text/html; charset=utf-8"},
+					"Retry-After":  []any{"3600"},
+				},
+				"body": globalMaintenanceBody,
+			}},
+			"terminal": true,
+		}}, routes...)
+	}
+
 	return routes
 }
 
@@ -4239,6 +6077,47 @@ func applyListen(cfg map[string]any) {
 	srv["listen"] = []any{":443"}
 }
 
+// applyTrustedProxies injects the trusted_proxies list into the Caddy HTTP
+// server config. This allows Caddy to extract the real client IP from
+// X-Forwarded-For when requests arrive via a trusted load balancer or CDN.
+// No-op when the setting is empty.
+func applyTrustedProxies(cfg map[string]any, db *sql.DB, serverID int64) {
+	raw, _ := models.GetSetting(db, settingTrustedProxies)
+	if raw == "" {
+		return
+	}
+	var ranges []any
+	for _, line := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' }) {
+		if cidr := strings.TrimSpace(line); cidr != "" {
+			ranges = append(ranges, cidr)
+		}
+	}
+	if len(ranges) == 0 {
+		return
+	}
+	// Navigate to apps.http.servers.srv0 and set trusted_proxies.
+	apps, _ := cfg["apps"].(map[string]any)
+	if apps == nil {
+		return
+	}
+	httpApp, _ := apps["http"].(map[string]any)
+	if httpApp == nil {
+		return
+	}
+	servers, _ := httpApp["servers"].(map[string]any)
+	if servers == nil {
+		return
+	}
+	srv, _ := servers["srv0"].(map[string]any)
+	if srv == nil {
+		return
+	}
+	srv["trusted_proxies"] = map[string]any{
+		"source": "static",
+		"ranges": ranges,
+	}
+}
+
 func applyCertLoaders(cfg map[string]any, loadPEM, loadFiles []any) {
 	apps := ensureMap(cfg, "apps")
 	tlsBlock := ensureMap(apps, "tls")
@@ -4280,6 +6159,90 @@ func applySkipCertificates(cfg map[string]any, skipList []any) {
 	}
 	if len(auto) == 0 {
 		delete(srv, "automatic_https")
+	}
+}
+
+// buildSkipRedirects collects domains from hosts where SSL is enabled but
+// Force SSL is OFF. Those domains get added to automatic_https.skip_redirects
+// in Caddy, meaning HTTP traffic is not automatically redirected to HTTPS.
+// Hosts with SSL fully disabled don't need an entry here — they're already
+// in skip_certificates which also suppresses redirects.
+func buildSkipRedirects(proxies []models.ProxyHost, redirs []models.RedirectionHost) []any {
+	set := map[string]struct{}{}
+	for _, p := range proxies {
+		if !p.SSLEnabled || p.SSLForced {
+			continue // SSL off or force-redirect on — default Caddy behavior
+		}
+		for _, d := range p.DomainList() {
+			set[d] = struct{}{}
+		}
+	}
+	for _, rd := range redirs {
+		if !rd.SSLEnabled || rd.SSLForced {
+			continue
+		}
+		for _, d := range rd.DomainList() {
+			set[d] = struct{}{}
+		}
+	}
+	out := make([]any, 0, len(set))
+	for d := range set {
+		out = append(out, d)
+	}
+	return out
+}
+
+func applySkipRedirects(cfg map[string]any, skipList []any) {
+	apps := ensureMap(cfg, "apps")
+	httpApp := ensureMap(apps, "http")
+	servers := ensureMap(httpApp, "servers")
+	srv := ensureMap(servers, "srv0")
+	auto := ensureMap(srv, "automatic_https")
+	if len(skipList) > 0 {
+		auto["skip_redirects"] = skipList
+	} else {
+		delete(auto, "skip_redirects")
+	}
+	if len(auto) == 0 {
+		delete(srv, "automatic_https")
+	}
+}
+
+// buildSkipAccessLogs collects domains from enabled proxy hosts where
+// DisableAccessLog=true. These are written to srv0.logs.skip_hosts so Caddy
+// omits access-log entries for those virtual hosts.
+func buildSkipAccessLogs(proxies []models.ProxyHost) []any {
+	set := map[string]struct{}{}
+	for _, p := range proxies {
+		if !p.Enabled || !p.DisableAccessLog {
+			continue
+		}
+		for _, d := range p.DomainList() {
+			set[d] = struct{}{}
+		}
+	}
+	out := make([]any, 0, len(set))
+	for d := range set {
+		out = append(out, d)
+	}
+	return out
+}
+
+func applySkipAccessLogs(cfg map[string]any, skipHosts []any) {
+	apps := ensureMap(cfg, "apps")
+	httpApp := ensureMap(apps, "http")
+	servers := ensureMap(httpApp, "servers")
+	srv := ensureMap(servers, "srv0")
+	if len(skipHosts) > 0 {
+		logsM := ensureMap(srv, "logs")
+		logsM["skip_hosts"] = skipHosts
+	} else {
+		if logsM, ok := srv["logs"].(map[string]any); ok {
+			delete(logsM, "skip_hosts")
+			if len(logsM) == 0 {
+				delete(srv, "logs")
+			}
+		}
 	}
 }
 
@@ -4412,7 +6375,7 @@ func (s *Server) writeTLSSubtree(loadPEM, loadFiles []any, force bool) error {
 	return s.Caddy.PutPath("/config/apps/tls", tlsMap)
 }
 
-func (s *Server) writeAutomaticHTTPSSubtree(skipList []any, force bool) error {
+func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, skipRedirects []any, force bool) error {
 	raw, err := s.Caddy.FetchPath("/config/apps/http/servers/srv0/automatic_https")
 	if err != nil {
 		return err
@@ -4422,17 +6385,22 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipList []any, force bool) error {
 	if autoMap == nil {
 		autoMap = map[string]any{}
 	}
-	existingSkip, _ := autoMap["skip_certificates"].([]any)
-	// Skip the write when the effective skip list is unchanged. Writing it otherwise
-	// reprovisions the server module and can interrupt in-flight ACME work. Caller
-	// can force the write when a cert-touching mutation demands Caddy re-evaluate.
-	if !force && stringListsEqual(existingSkip, skipList) {
+	existingSkipCerts, _ := autoMap["skip_certificates"].([]any)
+	existingSkipRedir, _ := autoMap["skip_redirects"].([]any)
+	// Skip the write when the effective lists are unchanged. Writing otherwise
+	// reprovisions the server module and can interrupt in-flight ACME work.
+	if !force && stringListsEqual(existingSkipCerts, skipCerts) && stringListsEqual(existingSkipRedir, skipRedirects) {
 		return nil
 	}
-	if len(skipList) > 0 {
-		autoMap["skip_certificates"] = skipList
+	if len(skipCerts) > 0 {
+		autoMap["skip_certificates"] = skipCerts
 	} else {
 		delete(autoMap, "skip_certificates")
+	}
+	if len(skipRedirects) > 0 {
+		autoMap["skip_redirects"] = skipRedirects
+	} else {
+		delete(autoMap, "skip_redirects")
 	}
 	if !existed && len(autoMap) == 0 {
 		return nil
@@ -4462,6 +6430,34 @@ func (s *Server) writeTLSConnectionPoliciesSubtree(policies []any) error {
 		return s.Caddy.PutPath(path, policies)
 	}
 	return s.Caddy.PatchPath(path, policies)
+}
+
+// writeAccessLogsSubtree updates srv0.logs.skip_hosts to suppress access-log
+// entries for proxy hosts with DisableAccessLog=true.
+func (s *Server) writeAccessLogsSubtree(skipHosts []any) error {
+	path := "/config/apps/http/servers/srv0/logs"
+	raw, err := s.Caddy.FetchPath(path)
+	if err != nil {
+		return err
+	}
+	logsMap, _ := raw.(map[string]any)
+	existed := logsMap != nil
+	if logsMap == nil {
+		logsMap = map[string]any{}
+	}
+	existingSkip, _ := logsMap["skip_hosts"].([]any)
+	if stringListsEqual(existingSkip, skipHosts) {
+		return nil
+	}
+	if len(skipHosts) > 0 {
+		logsMap["skip_hosts"] = skipHosts
+	} else {
+		delete(logsMap, "skip_hosts")
+	}
+	if !existed && len(logsMap) == 0 {
+		return nil
+	}
+	return s.Caddy.PutPath(path, logsMap)
 }
 
 // certsEqual compares two cert-loader arrays for semantic equality via JSON normalization.
@@ -4526,11 +6522,18 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, r, "users.html", map[string]any{
+	data := map[string]any{
 		"User":    s.currentUser(r),
 		"Users":   users,
 		"Section": "users",
-	})
+	}
+	if r.URL.Query().Get("invited") == "1" {
+		data["Invited"] = true
+	}
+	if e := r.URL.Query().Get("error"); e != "" {
+		data["Error"] = e
+	}
+	s.render(w, r, "users.html", data)
 }
 
 func (s *Server) newUser(w http.ResponseWriter, r *http.Request) {
@@ -5061,10 +7064,82 @@ func fetchCaddyUpstreams(adminURL string) map[string]caddyUpstreamInfo {
 	return out
 }
 
+// apiCaddyUpstreams proxies Caddy's /reverse_proxy/upstreams endpoint, returning
+// raw upstream health data from Caddy's admin API.
+// Returns JSON: {"upstreams": [...], "error": "..."}
+func (s *Server) apiCaddyUpstreams(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	sid := s.currentServerID(r)
+	srv, err := models.GetCaddyServer(s.DB, sid)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"upstreams": nil, "error": err.Error()})
+		return
+	}
+	cl := caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
+	upstreams, err := cl.GetUpstreamHealth(ctx)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"upstreams": nil, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"upstreams": upstreams})
+}
+
+// apiTestUpstream checks whether a given upstream host:port is reachable.
+// Accepts POST with form fields: host, port, scheme (http/https).
+// Returns JSON: {ok: bool, status: int, latency_ms: int, error: string}.
+func (s *Server) apiTestUpstream(w http.ResponseWriter, r *http.Request) {
+	if s.currentUser(r) == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	_ = r.ParseForm()
+	host := strings.TrimSpace(r.FormValue("host"))
+	port := strings.TrimSpace(r.FormValue("port"))
+	scheme := strings.TrimSpace(r.FormValue("scheme"))
+	if host == "" || port == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "host and port are required"})
+		return
+	}
+	if scheme != "https" {
+		scheme = "http"
+	}
+	targetURL := fmt.Sprintf("%s://%s:%s/", scheme, host, port)
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	start := time.Now()
+	resp, err := client.Get(targetURL)
+	latencyMs := time.Since(start).Milliseconds()
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":         false,
+			"latency_ms": latencyMs,
+			"error":      err.Error(),
+		})
+		return
+	}
+	resp.Body.Close()
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":         resp.StatusCode < 500,
+		"status":     resp.StatusCode,
+		"latency_ms": latencyMs,
+		"error":      "",
+	})
+}
+
 // --- Feature F: Notifications (webhook + SMTP email) ---
 
 const (
 	settingNotifyWebhookURL    = "notify_webhook_url"
+	settingNotifyWebhookSecret = "notify_webhook_secret" // v2.9.12: HMAC-SHA256 signing secret
 	settingNotifyDaysBefore    = "notify_days_before"
 	defaultNotifyDaysBefore    = 14
 
@@ -5233,6 +7308,416 @@ func sendEmail(db *sql.DB, subject, body string) error {
 	}
 }
 
+// sendEmailTo is like sendEmail but sends to a specific address rather than
+// the configured notification recipients.
+func sendEmailTo(db *sql.DB, to, subject, body string) error {
+	host, _ := models.GetSetting(db, settingSMTPHost)
+	if host == "" {
+		return fmt.Errorf("SMTP not configured (no host)")
+	}
+	portStr, _ := models.GetSetting(db, settingSMTPPort)
+	port := 587
+	if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+		port = p
+	}
+	username, _ := models.GetSetting(db, settingSMTPUsername)
+	password, _ := models.GetSetting(db, settingSMTPPassword)
+	from, _ := models.GetSetting(db, settingSMTPFrom)
+	security, _ := models.GetSetting(db, settingSMTPSecurity)
+	skipVerifyStr, _ := models.GetSetting(db, settingSMTPSkipVerify)
+	skipVerify := skipVerifyStr == "1"
+
+	if from == "" {
+		from = "caddyui@localhost"
+	}
+
+	serverAddr := fmt.Sprintf("%s:%d", host, port)
+	msg := []byte(
+		"From: CaddyUI <" + from + ">\r\n" +
+			"To: " + to + "\r\n" +
+			"Subject: " + subject + "\r\n" +
+			"MIME-Version: 1.0\r\n" +
+			"Content-Type: text/plain; charset=utf-8\r\n" +
+			"\r\n" +
+			body,
+	)
+
+	tlsCfg := &tls.Config{ServerName: host, InsecureSkipVerify: skipVerify} //nolint:gosec
+
+	var authCfg smtp.Auth
+	if username != "" {
+		authCfg = smtp.PlainAuth("", username, password, host)
+	}
+
+	switch security {
+	case "tls":
+		conn, err := tls.Dial("tcp", serverAddr, tlsCfg)
+		if err != nil {
+			return fmt.Errorf("SMTP TLS dial: %w", err)
+		}
+		c, err := smtp.NewClient(conn, host)
+		if err != nil {
+			return fmt.Errorf("SMTP client: %w", err)
+		}
+		defer c.Quit()
+		if authCfg != nil {
+			if err = c.Auth(authCfg); err != nil {
+				return fmt.Errorf("SMTP auth: %w", err)
+			}
+		}
+		if err = c.Mail(from); err != nil {
+			return fmt.Errorf("SMTP MAIL FROM: %w", err)
+		}
+		if err = c.Rcpt(to); err != nil {
+			return fmt.Errorf("SMTP RCPT TO: %w", err)
+		}
+		wc, err := c.Data()
+		if err != nil {
+			return fmt.Errorf("SMTP DATA: %w", err)
+		}
+		_, _ = wc.Write(msg)
+		_ = wc.Close()
+	default: // "none" or "starttls"
+		if err := smtp.SendMail(serverAddr, authCfg, from, []string{to}, msg); err != nil {
+			return fmt.Errorf("SMTP SendMail: %w", err)
+		}
+	}
+	return nil
+}
+
+// --- Password reset ---
+
+// getForgotPassword renders the "forgot password" form.
+func (s *Server) getForgotPassword(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "forgot_password.html", map[string]any{
+		"Section": "",
+		"Sent":    r.URL.Query().Get("sent") == "1",
+		"Error":   r.URL.Query().Get("error"),
+	})
+}
+
+// postForgotPassword processes the forgot-password form submission.
+// Always shows the "check your email" message even if the address doesn't
+// exist (prevents email enumeration).
+func (s *Server) postForgotPassword(w http.ResponseWriter, r *http.Request) {
+	email := strings.TrimSpace(strings.ToLower(r.FormValue("email")))
+	if email == "" {
+		http.Redirect(w, r, "/forgot-password?error=Enter+your+email+address", http.StatusSeeOther)
+		return
+	}
+	// Look up user — don't reveal if email exists.
+	u, _ := models.GetUserByEmail(s.DB, email)
+	if u != nil {
+		// Generate token.
+		raw := make([]byte, 32)
+		_, _ = rand.Read(raw)
+		token := hex.EncodeToString(raw)
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+		expires := time.Now().Add(time.Hour).Unix()
+		// Store token hash in settings: key=pw_reset_<hash>, value=<userID>:<expires>
+		_ = models.SetSetting(s.DB, "pw_reset_"+hash, fmt.Sprintf("%d:%d", u.ID, expires))
+		// Determine base URL for the reset link.
+		scheme := "https"
+		if r.TLS == nil {
+			scheme = "http"
+		}
+		resetURL := fmt.Sprintf("%s://%s/reset-password?token=%s", scheme, r.Host, token)
+		body := fmt.Sprintf(
+			"Hello %s,\n\nA password reset was requested for your CaddyUI account.\n\n"+
+				"Click the link below to set a new password (expires in 1 hour):\n\n"+
+				"%s\n\n"+
+				"If you did not request this, you can safely ignore this email.\n\n"+
+				"— CaddyUI", u.Name, resetURL)
+		if err := sendEmailTo(s.DB, email, "CaddyUI password reset", body); err != nil {
+			log.Printf("forgot-password: sendEmail to %s: %v", email, err)
+		}
+	}
+	http.Redirect(w, r, "/forgot-password?sent=1", http.StatusSeeOther)
+}
+
+// getResetPassword renders the new-password form for a valid reset token.
+func (s *Server) getResetPassword(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		http.Redirect(w, r, "/forgot-password?error=Invalid+reset+link", http.StatusSeeOther)
+		return
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	val, _ := models.GetSetting(s.DB, "pw_reset_"+hash)
+	if val == "" || !validResetToken(val) {
+		s.render(w, r, "reset_password.html", map[string]any{"Section": "", "Invalid": true})
+		return
+	}
+	s.render(w, r, "reset_password.html", map[string]any{
+		"Section": "",
+		"Token":   token,
+		"Error":   r.URL.Query().Get("error"),
+	})
+}
+
+// postResetPassword validates the token and sets the new password.
+func (s *Server) postResetPassword(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.FormValue("token"))
+	newPwd := r.FormValue("password")
+	confirmPwd := r.FormValue("confirm_password")
+
+	if token == "" {
+		http.Redirect(w, r, "/forgot-password?error=Invalid+token", http.StatusSeeOther)
+		return
+	}
+	if len(newPwd) < 8 {
+		http.Redirect(w, r, "/reset-password?token="+url.QueryEscape(token)+"&error=Password+must+be+at+least+8+characters", http.StatusSeeOther)
+		return
+	}
+	if newPwd != confirmPwd {
+		http.Redirect(w, r, "/reset-password?token="+url.QueryEscape(token)+"&error=Passwords+do+not+match", http.StatusSeeOther)
+		return
+	}
+
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	val, _ := models.GetSetting(s.DB, "pw_reset_"+hash)
+	if val == "" || !validResetToken(val) {
+		s.render(w, r, "reset_password.html", map[string]any{"Section": "", "Invalid": true})
+		return
+	}
+
+	// Parse userID from stored value.
+	parts := strings.SplitN(val, ":", 2)
+	userID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		s.render(w, r, "reset_password.html", map[string]any{"Section": "", "Invalid": true})
+		return
+	}
+
+	// Hash new password.
+	pwHash, err := auth.HashPassword(newPwd)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := models.UpdateUserPassword(s.DB, userID, pwHash); err != nil {
+		http.Error(w, "failed to update password", http.StatusInternalServerError)
+		return
+	}
+	// Consume the token.
+	_ = models.SetSetting(s.DB, "pw_reset_"+hash, "")
+	http.Redirect(w, r, "/login?reset=1", http.StatusSeeOther)
+}
+
+// postInviteUser creates a stub user account and sends an invite email.
+func (s *Server) postInviteUser(w http.ResponseWriter, r *http.Request) {
+	email := strings.TrimSpace(strings.ToLower(r.FormValue("invite_email")))
+	role := r.FormValue("invite_role")
+	if email == "" {
+		http.Redirect(w, r, "/users?error=Email+required", http.StatusSeeOther)
+		return
+	}
+	if role != models.RoleAdmin && role != models.RoleUser && role != models.RoleView {
+		role = models.RoleUser
+	}
+	// Check not already registered.
+	if u, _ := models.GetUserByEmail(s.DB, email); u != nil {
+		http.Redirect(w, r, "/users?error=User+already+exists", http.StatusSeeOther)
+		return
+	}
+	// Create disabled stub user with empty password hash.
+	userID, err := models.CreateUser(s.DB, email, "", email, role)
+	if err != nil {
+		http.Error(w, "create user: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Generate invite token.
+	raw := make([]byte, 32)
+	_, _ = rand.Read(raw)
+	token := hex.EncodeToString(raw)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	expires := time.Now().Add(7 * 24 * time.Hour).Unix()
+	_ = models.SetSetting(s.DB, "invite_"+hash, fmt.Sprintf("%d:%d", userID, expires))
+
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	acceptURL := fmt.Sprintf("%s://%s/accept-invite?token=%s", scheme, r.Host, token)
+	body := fmt.Sprintf(
+		"You've been invited to CaddyUI.\n\n"+
+			"Click the link below to set your password and activate your account (link expires in 7 days):\n\n"+
+			"%s\n\n"+
+			"— CaddyUI", acceptURL)
+	if err := sendEmailTo(s.DB, email, "You're invited to CaddyUI", body); err != nil {
+		log.Printf("invite: sendEmail to %s: %v", email, err)
+	}
+	http.Redirect(w, r, "/users?invited=1", http.StatusSeeOther)
+}
+
+// getAcceptInvite renders the accept-invite form.
+func (s *Server) getAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	val, _ := models.GetSetting(s.DB, "invite_"+hash)
+	if val == "" || !validResetToken(val) {
+		s.render(w, r, "accept_invite.html", map[string]any{"Section": "", "Invalid": true})
+		return
+	}
+	s.render(w, r, "accept_invite.html", map[string]any{
+		"Section": "",
+		"Token":   token,
+		"Error":   r.URL.Query().Get("error"),
+	})
+}
+
+// postAcceptInvite validates the invite token and activates the account.
+func (s *Server) postAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.FormValue("token"))
+	newPwd := r.FormValue("password")
+	confirmPwd := r.FormValue("confirm_password")
+	if token == "" {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if len(newPwd) < 8 {
+		http.Redirect(w, r, "/accept-invite?token="+url.QueryEscape(token)+"&error=Password+must+be+at+least+8+characters", http.StatusSeeOther)
+		return
+	}
+	if newPwd != confirmPwd {
+		http.Redirect(w, r, "/accept-invite?token="+url.QueryEscape(token)+"&error=Passwords+do+not+match", http.StatusSeeOther)
+		return
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	val, _ := models.GetSetting(s.DB, "invite_"+hash)
+	if val == "" || !validResetToken(val) {
+		s.render(w, r, "accept_invite.html", map[string]any{"Section": "", "Invalid": true})
+		return
+	}
+	parts := strings.SplitN(val, ":", 2)
+	userID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusBadRequest)
+		return
+	}
+	pwHash, err := auth.HashPassword(newPwd)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := models.UpdateUserPassword(s.DB, userID, pwHash); err != nil {
+		http.Error(w, "update password: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = models.SetSetting(s.DB, "invite_"+hash, "")
+	http.Redirect(w, r, "/login?invited=1", http.StatusSeeOther)
+}
+
+// exportProxyHost returns a proxy host's configuration as a JSON file download.
+func (s *Server) exportProxyHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	ph, err := models.GetProxyHost(s.DB, id)
+	if err != nil || ph == nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Strip runtime fields before export.
+	ph.ID = 0
+	ph.OwnerID = sql.NullInt64{}
+	ph.OwnerEmail = ""
+	ph.DNSRecordID = ""
+	ph.CreatedAt = time.Time{}
+	ph.UpdatedAt = time.Time{}
+
+	data, err := json.MarshalIndent(ph, "", "  ")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fname := strings.ReplaceAll(strings.SplitN(ph.Domains, ",", 2)[0], "*", "_")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.json"`, strings.TrimSpace(fname)))
+	_, _ = w.Write(data)
+}
+
+// exportAllProxyHosts downloads all proxy hosts for the current server as a JSON array.
+// Admin exports the full list; non-admin exports only their own hosts.
+func (s *Server) exportAllProxyHosts(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	var viewerID int64
+	if !isAdmin {
+		viewerID = cu.ID
+	}
+	sid := s.currentServerID(r)
+	hosts, err := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin, s.groupPeerIDs(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ts := time.Now().Format("20060102-150405")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="proxy-hosts-%s.json"`, ts))
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(hosts)
+}
+
+// importProxyHost creates a new proxy host from an uploaded JSON file.
+func (s *Server) importProxyHost(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(1 << 20) // 1 MiB
+	f, _, err := r.FormFile("config_file")
+	if err != nil {
+		http.Error(w, "no file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	if err != nil {
+		http.Error(w, "read: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var ph models.ProxyHost
+	if err := json.Unmarshal(data, &ph); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Force safe defaults.
+	ph.ID = 0
+	ph.Enabled = false
+	cu := s.currentUser(r)
+	var ownerID int64
+	if cu != nil {
+		ownerID = cu.ID
+	}
+	newID, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph)
+	if err != nil {
+		http.Error(w, "create: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/proxy-hosts/%d/edit", newID), http.StatusSeeOther)
+}
+
+// validResetToken checks the token value (format: "userID:expiresUnix") is still valid.
+func validResetToken(val string) bool {
+	parts := strings.SplitN(val, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	exp, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return false
+	}
+	return time.Now().Unix() < exp
+}
+
 // --- Upstream health notifier ---
 
 // upstreamAlertEntry records a single upstream state-change notification.
@@ -5250,6 +7735,70 @@ var upstreamNotifyState struct {
 	prevFails map[string]bool // key "serverID:address" → was failing on last check?
 	lastCheck time.Time
 	recent    []upstreamAlertEntry
+}
+
+// runHealthChecker polls each enabled proxy host every 5 minutes and records
+// the result in proxy_health. It checks the first domain of each host via HTTPS
+// (falling back to HTTP if ssl_enabled is false). Runs until the process exits.
+func (s *Server) runHealthChecker() {
+	// Stagger the first check by 30 seconds so startup load doesn't spike.
+	time.Sleep(30 * time.Second)
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	s.checkAllProxyHosts()
+	for range ticker.C {
+		s.checkAllProxyHosts()
+	}
+}
+
+func (s *Server) checkAllProxyHosts() {
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		log.Printf("health checker: list servers: %v", err)
+		return
+	}
+	for _, srv := range servers {
+		hosts, err := models.ListProxyHosts(s.DB, srv.ID, 0, true, nil)
+		if err != nil {
+			log.Printf("health checker: list hosts for server %d: %v", srv.ID, err)
+			continue
+		}
+		for _, h := range hosts {
+			if !h.Enabled {
+				continue
+			}
+			domains := h.DomainList()
+			if len(domains) == 0 {
+				continue
+			}
+			domain := domains[0]
+			scheme := "https"
+			if !h.SSLEnabled {
+				scheme = "http"
+			}
+			targetURL := scheme + "://" + domain + "/"
+			s.checkProxyHost(h.ID, targetURL)
+		}
+	}
+}
+
+func (s *Server) checkProxyHost(hostID int64, targetURL string) {
+	start := time.Now()
+	resp, err := s.healthClient.Get(targetURL)
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		errMsg := err.Error()
+		if len(errMsg) > 200 {
+			errMsg = errMsg[:200]
+		}
+		_ = models.InsertProxyHealth(s.DB, hostID, false, 0, latencyMs, errMsg)
+		return
+	}
+	defer resp.Body.Close()
+	// Drain body to free connection.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	ok := resp.StatusCode < 400 || resp.StatusCode == 401 || resp.StatusCode == 403
+	_ = models.InsertProxyHealth(s.DB, hostID, ok, resp.StatusCode, latencyMs, "")
 }
 
 // StartUpstreamNotifier launches a goroutine that checks upstream health every 5 minutes.
@@ -5325,9 +7874,7 @@ func runUpstreamCheck(db *sql.DB) {
 					"server":   srv.Name,
 					"upstream": addr,
 				})
-				if resp, err := http.Post(webhookURL, "application/json", bytes.NewReader(payload)); err == nil {
-					_ = resp.Body.Close()
-				}
+				sendWebhookPayload(db, webhookURL, payload)
 			}
 			// Send email.
 			if emailOK {
@@ -5454,13 +8001,8 @@ func runNotifierCheck(db *sql.DB) {
 				"domain":    domain,
 				"days_left": daysLeft,
 			})
-			resp, err := http.Post(webhookURL, "application/json", bytes.NewReader(payload))
-			if err != nil {
-				log.Printf("notifier: webhook POST failed: %v", err)
-			} else {
-				_ = resp.Body.Close()
-				sent = true
-			}
+			sendWebhookPayload(db, webhookURL, payload)
+			sent = true
 		}
 
 		// Email notification.
@@ -5486,6 +8028,30 @@ func runNotifierCheck(db *sql.DB) {
 			log.Printf("notifier: sent cert-expiry notification for %q (%d days left)", domain, daysLeft)
 		}
 	}
+}
+
+// sendWebhookPayload POSTs a JSON payload to webhookURL. If a secret is configured
+// in the DB (settingNotifyWebhookSecret), it adds an X-Signature-256 header
+// containing the HMAC-SHA256 of the payload body in hex, prefixed "sha256=".
+// The format is compatible with GitHub's webhook delivery signature.
+func sendWebhookPayload(db *sql.DB, webhookURL string, payload []byte) {
+	req, err := http.NewRequest(http.MethodPost, webhookURL, bytes.NewReader(payload))
+	if err != nil {
+		log.Printf("sendWebhook: create request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if secret, _ := models.GetSetting(db, settingNotifyWebhookSecret); secret != "" {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(payload)
+		req.Header.Set("X-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("sendWebhook: POST %s: %v", webhookURL, err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 func (s *Server) apiNotifierStatus(w http.ResponseWriter, r *http.Request) {
@@ -5596,6 +8162,19 @@ func (s *Server) apiSystemStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// apiCaddyVersion returns the running Caddy version from the admin API.
+func (s *Server) apiCaddyVersion(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	version, err := s.Caddy.GetVersion(ctx)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]any{"version": "unknown", "error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"version": version})
 }
 
 // apiVersionCheck returns the running version and the latest Docker Hub tag,
@@ -6762,6 +9341,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "settings.html", map[string]any{
 		"User":               s.currentUser(r),
 		"WebhookURL":         webhookURL,
+		"WebhookSecret":      mustGetSetting(s.DB, settingNotifyWebhookSecret),
 		"DaysBefore":         daysBefore,
 		"SMTPHost":           smtpHost,
 		"SMTPPort":           smtpPort,
@@ -6804,13 +9384,30 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AnalyticsTargetPlaceholder": defaultAnalyticsIngestTarget,
 		"AnalyticsExcludeRaw":   analyticsCfg.ExcludeRaw,
 		"AnalyticsIngestStats":  analyticsIngestSnap,
-		"Section":     "settings",
+		// v2.9.5: 2FA enforcement policy
+		"Require2FA":      mustGetSetting(s.DB, settingRequire2FA),
+		"RequireTOTP":     mustGetSetting(s.DB, settingRequireTOTP),
+		// v2.10.0: trusted proxies + custom site title
+		"TrustedProxies":  mustGetSetting(s.DB, settingTrustedProxies),
+		"SiteTitle":       mustGetSetting(s.DB, settingSiteTitle),
+		// v2.11.0: custom favicon + admin IP allowlist
+		"FaviconURL":      mustGetSetting(s.DB, settingFaviconURL),
+		"AdminAllowlist":  mustGetSetting(s.DB, settingAdminAllowlist),
+		// v2.12.0: configurable session duration + global catch-all 404
+		"SessionDays":        mustGetSetting(s.DB, settingSessionDays),
+		"CatchAll404HTML":    mustGetSetting(s.DB, settingCatchAll404HTML),
+		"GlobalMaintenance":    mustGetSetting(s.DB, settingGlobalMaintenance),
+		"AutoSyncHours":        mustGetSetting(s.DB, settingAutoSyncHours),
+		"ActivityLogDays":      mustGetSetting(s.DB, settingActivityLogDays),
+		"MaxLoginAttempts":     mustGetSetting(s.DB, settingMaxLoginAttempts),
+		"Section":              "settings",
 	})
 }
 
 func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	webhookURL := strings.TrimSpace(r.FormValue("webhook_url"))
+	webhookSecret := strings.TrimSpace(r.FormValue("webhook_secret"))
 	daysBeforeStr := strings.TrimSpace(r.FormValue("days_before"))
 	daysBefore := defaultNotifyDaysBefore
 	if d, err := strconv.Atoi(daysBeforeStr); err == nil && d > 0 {
@@ -6925,9 +9522,24 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	oldServerIP := s.serverIP()
 
 	kv := map[string]string{
-		settingNotifyWebhookURL:   webhookURL,
-		settingNotifyDaysBefore:   strconv.Itoa(daysBefore),
+		settingNotifyWebhookURL:    webhookURL,
+		settingNotifyWebhookSecret: webhookSecret,
+		settingNotifyDaysBefore:    strconv.Itoa(daysBefore),
 		settingSMTPHost:           smtpHost,
+		// v2.9.5: 2FA enforcement policy (checkbox → "on" when checked).
+		settingRequire2FA: func() string {
+			if r.FormValue("require_2fa") == "on" {
+				return "1"
+			}
+			return "0"
+		}(),
+		// require_totp toggle uses value="1" checkbox pattern.
+		settingRequireTOTP: func() string {
+			if r.FormValue("require_totp") == "1" {
+				return "1"
+			}
+			return "0"
+		}(),
 		settingSMTPPort:           smtpPort,
 		settingSMTPUsername:       smtpUsername,
 		settingSMTPFrom:           smtpFrom,
@@ -6947,6 +9559,48 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingAnalyticsEnabled:      analyticsEnabled,
 		settingAnalyticsIngestTarget: analyticsTarget,
 		settingAnalyticsExcludeIPs:   analyticsExclude,
+		// v2.10.0: trusted proxies + custom site title
+		settingTrustedProxies: strings.TrimSpace(r.FormValue("trusted_proxies")),
+		settingSiteTitle:      strings.TrimSpace(r.FormValue("site_title")),
+		// v2.11.0: custom favicon + admin IP allowlist
+		settingFaviconURL:     strings.TrimSpace(r.FormValue("favicon_url")),
+		settingAdminAllowlist: strings.TrimSpace(r.FormValue("admin_allowlist")),
+		// v2.12.0: configurable session duration + global catch-all 404
+		settingCatchAll404HTML: strings.TrimSpace(r.FormValue("catch_all_404_html")),
+		// Global maintenance mode: checkbox → "1"/"0"
+		settingGlobalMaintenance: func() string {
+			if r.FormValue("global_maintenance") == "1" {
+				return "1"
+			}
+			return "0"
+		}(),
+	}
+	if sessionDays := strings.TrimSpace(r.FormValue("session_duration_days")); sessionDays != "" {
+		kv[settingSessionDays] = sessionDays
+	}
+	// Auto-sync hours: "0" or empty = disabled.
+	if autoSyncHours := strings.TrimSpace(r.FormValue("auto_sync_hours")); autoSyncHours != "" {
+		if h, err := strconv.Atoi(autoSyncHours); err == nil && h >= 0 {
+			kv[settingAutoSyncHours] = strconv.Itoa(h)
+		}
+	} else {
+		kv[settingAutoSyncHours] = "0"
+	}
+	// Activity log retention days: 0 = keep forever.
+	if aldStr := strings.TrimSpace(r.FormValue("activity_log_days")); aldStr != "" {
+		if d, err := strconv.Atoi(aldStr); err == nil && d >= 0 {
+			kv[settingActivityLogDays] = strconv.Itoa(d)
+		}
+	} else {
+		kv[settingActivityLogDays] = "0"
+	}
+	// Max login attempts per IP: 0 = no limit.
+	if mlaStr := strings.TrimSpace(r.FormValue("max_login_attempts")); mlaStr != "" {
+		if n, err := strconv.Atoi(mlaStr); err == nil && n >= 0 {
+			kv[settingMaxLoginAttempts] = strconv.Itoa(n)
+		}
+	} else {
+		kv[settingMaxLoginAttempts] = "0"
 	}
 
 	// Walk every registered DNS provider and pick up credential fields
@@ -7140,3 +9794,841 @@ func (s *Server) postTestEmail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
+
+// --- API Tokens ---
+
+func (s *Server) listAPITokens(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	tokens, err := models.ListAPITokens(s.DB, cu.ID, isAdmin)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	createdToken := r.URL.Query().Get("created")
+	s.render(w, r, "api_tokens.html", map[string]any{
+		"User":         cu,
+		"Tokens":       tokens,
+		"IsAdmin":      isAdmin,
+		"Section":      "api_tokens",
+		"CreatedToken": createdToken,
+	})
+}
+
+func (s *Server) createAPIToken(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	_ = r.ParseForm()
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		name = "My token"
+	}
+	// Generate 32 random bytes → base64url → prefix "cadu_"
+	rawBytes := make([]byte, 32)
+	if _, err := rand.Read(rawBytes); err != nil {
+		http.Error(w, "could not generate token", http.StatusInternalServerError)
+		return
+	}
+	rawToken := "cadu_" + base64.RawURLEncoding.EncodeToString(rawBytes)
+	h := sha256.Sum256([]byte(rawToken))
+	hash := fmt.Sprintf("%x", h)
+	// Optional expiry
+	var expiresAt *time.Time
+	if exp := strings.TrimSpace(r.FormValue("expires_at")); exp != "" {
+		t, err := time.ParseInLocation("2006-01-02", exp, time.UTC)
+		if err == nil {
+			expiresAt = &t
+		}
+	}
+	scopes := strings.TrimSpace(r.FormValue("scopes"))
+	switch scopes {
+	case models.TokenScopeReadOnly, models.TokenScopeProxyWrite:
+		// valid
+	default:
+		scopes = models.TokenScopeFull
+	}
+	_, err := models.CreateAPIToken(s.DB, cu.ID, name, hash, scopes, expiresAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), cu.Email, "api_token_create", "token", name, true)
+	// Show the token once via a query param on redirect to the list page
+	// (only used once, HTTPS only).
+	http.Redirect(w, r, "/api-tokens?created="+url.QueryEscape(rawToken), http.StatusSeeOther)
+}
+
+func (s *Server) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	// Admin can revoke any token; user can only revoke their own.
+	ownerID := cu.ID
+	if cu.Role == models.RoleAdmin {
+		ownerID = 0 // skip ownership check
+	}
+	if err := models.DeleteAPIToken(s.DB, id, ownerID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), cu.Email, "api_token_revoke", fmt.Sprintf("token:%d", id), "", true)
+	http.Redirect(w, r, "/api-tokens", http.StatusSeeOther)
+}
+
+// getLiveTraffic renders the live traffic feed page.
+func (s *Server) getLiveTraffic(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	// Seed with last 50 events for initial load.
+	events, err := models.RecentAccessEvents(s.DB, 0, 50)
+	if err != nil {
+		log.Printf("live-traffic: query: %v", err)
+	}
+	s.render(w, r, "live_traffic.html", map[string]any{
+		"User":    u,
+		"Events":  events,
+		"Section": "live_traffic",
+	})
+}
+
+// liveTrafficStream is an SSE endpoint that pushes new access events as they
+// arrive. The client sends a ?since=<id> query param (the highest ID it has
+// seen); the server polls every 2s and emits any rows with id > since as a
+// JSON array in the SSE "data" field. The client advances its cursor.
+func (s *Server) liveTrafficStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	var cursor int64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			cursor = n
+		}
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			events, err := models.RecentAccessEvents(s.DB, cursor, 100)
+			if err != nil {
+				log.Printf("live-traffic SSE: %v", err)
+				continue
+			}
+			if len(events) == 0 {
+				// heartbeat
+				fmt.Fprintf(w, ": ping\n\n")
+				flusher.Flush()
+				continue
+			}
+			// Advance cursor to highest ID seen.
+			for _, e := range events {
+				if e.ID > cursor {
+					cursor = e.ID
+				}
+			}
+			// Events come newest-first; reverse so the client appends in order.
+			for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+				events[i], events[j] = events[j], events[i]
+			}
+			type wireEvent struct {
+				ID         int64  `json:"id"`
+				TS         string `json:"ts"`
+				Host       string `json:"host"`
+				Path       string `json:"path"`
+				Method     string `json:"method"`
+				Status     int    `json:"status"`
+				ClientIP   string `json:"client_ip"`
+				DurationMs int64  `json:"duration_ms"`
+				BytesOut   int64  `json:"bytes_out"`
+			}
+			wire := make([]wireEvent, len(events))
+			for i, e := range events {
+				wire[i] = wireEvent{
+					ID:         e.ID,
+					TS:         e.TS.Format(time.RFC3339),
+					Host:       e.Host,
+					Path:       e.Path,
+					Method:     e.Method,
+					Status:     e.Status,
+					ClientIP:   e.ClientIP,
+					DurationMs: e.DurationMs,
+					BytesOut:   e.BytesOut,
+				}
+			}
+			data, _ := json.Marshal(wire)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
+// getProfile renders the logged-in user's profile page (name + password change).
+func (s *Server) getProfile(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	s.render(w, r, "profile.html", map[string]any{
+		"User":  cu,
+		"Flash": r.URL.Query().Get("flash"),
+		"Error": r.URL.Query().Get("error"),
+	})
+}
+
+// postProfile handles name update and password change on the profile page.
+func (s *Server) postProfile(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	action := r.FormValue("action")
+	switch action {
+	case "update_name":
+		name := strings.TrimSpace(r.FormValue("name"))
+		if name == "" {
+			http.Redirect(w, r, "/profile?error=Name+cannot+be+empty", http.StatusFound)
+			return
+		}
+		if _, err := s.DB.Exec(`UPDATE users SET name=? WHERE id=?`, name, cu.ID); err != nil {
+			log.Printf("profile update_name: %v", err)
+			http.Redirect(w, r, "/profile?error=Failed+to+update+name", http.StatusFound)
+			return
+		}
+		_ = models.LogActivity(s.DB, s.currentServerID(r), cu.Email, "profile_update_name", "", "", true)
+		http.Redirect(w, r, "/profile?flash=Name+updated+successfully", http.StatusFound)
+	case "change_password":
+		currentPw := r.FormValue("current_password")
+		newPw := r.FormValue("new_password")
+		confirmPw := r.FormValue("confirm_password")
+		if newPw != confirmPw {
+			http.Redirect(w, r, "/profile?error=New+passwords+do+not+match", http.StatusFound)
+			return
+		}
+		if len(newPw) < 8 {
+			http.Redirect(w, r, "/profile?error=Password+must+be+at+least+8+characters", http.StatusFound)
+			return
+		}
+		u, err := models.GetUserByEmail(s.DB, cu.Email)
+		if err != nil || !auth.CheckPassword(u.PasswordHash, currentPw) {
+			http.Redirect(w, r, "/profile?error=Current+password+is+incorrect", http.StatusFound)
+			return
+		}
+		hash, err := auth.HashPassword(newPw)
+		if err != nil {
+			http.Redirect(w, r, "/profile?error=Failed+to+hash+password", http.StatusFound)
+			return
+		}
+		if _, err := s.DB.Exec(`UPDATE users SET password_hash=? WHERE id=?`, hash, cu.ID); err != nil {
+			log.Printf("profile change_password: %v", err)
+			http.Redirect(w, r, "/profile?error=Failed+to+update+password", http.StatusFound)
+			return
+		}
+		_ = models.LogActivity(s.DB, s.currentServerID(r), cu.Email, "profile_change_password", "", "", true)
+		http.Redirect(w, r, "/profile?flash=Password+changed+successfully", http.StatusFound)
+	default:
+		http.Redirect(w, r, "/profile", http.StatusFound)
+	}
+}
+
+// getCaddyConfig fetches the live Caddy JSON config and renders it in a
+// read-only prettified code block. Available to all authenticated users.
+func (s *Server) getCaddyConfig(w http.ResponseWriter, r *http.Request) {
+	_, rawJSON, err := s.caddyForRequest(r).FetchConfig()
+	if err != nil {
+		s.render(w, r, "caddy_config.html", map[string]any{
+			"User":    s.currentUser(r),
+			"Section": "caddy_config",
+			"Error":   "Could not fetch Caddy config: " + err.Error(),
+		})
+		return
+	}
+	// Pretty-print the JSON for readability.
+	var v any
+	if err := json.Unmarshal([]byte(rawJSON), &v); err == nil {
+		if b, err := json.MarshalIndent(v, "", "  "); err == nil {
+			rawJSON = string(b)
+		}
+	}
+	s.render(w, r, "caddy_config.html", map[string]any{
+		"User":       s.currentUser(r),
+		"Section":    "caddy_config",
+		"ConfigJSON": rawJSON,
+	})
+}
+
+// ─── REST JSON API v1 ─────────────────────────────────────────────────────────
+//
+// All endpoints are under /api/v1/ and live inside the requireAuth middleware
+// group, so both session cookies and Bearer API tokens are accepted.
+// Write endpoints (POST/PUT/DELETE) additionally require a write-scoped token
+// or an admin/write role — the requireWrite middleware enforces that at the
+// chi group level.
+
+// apiProxyHostInput is the JSON request body for create / update.
+type apiProxyHostInput struct {
+	Domains                string `json:"domains"`
+	ForwardScheme          string `json:"forward_scheme"`
+	ForwardHost            string `json:"forward_host"`
+	ForwardPort            int    `json:"forward_port"`
+	WebsocketSupport       bool   `json:"websocket_support"`
+	BlockCommonExploits    bool   `json:"block_common_exploits"`
+	SSLEnabled             bool   `json:"ssl_enabled"`
+	SSLForced              bool   `json:"ssl_forced"`
+	HTTP2Support           bool   `json:"http2_support"`
+	Enabled                bool   `json:"enabled"`
+	CertificateID          int64  `json:"certificate_id"`
+	BasicAuthEnabled       bool   `json:"basicauth_enabled"`
+	AccessList             string `json:"access_list"`
+	IPBlocklist            string `json:"ip_blocklist"`
+	ExtraUpstreams         string `json:"extra_upstreams"`
+	CompressionEnabled     bool   `json:"compression_enabled"`
+	SecurityHeadersEnabled bool   `json:"security_headers_enabled"`
+	TLSMinVersion          string `json:"tls_min_version"`
+	MaintenanceMode        bool   `json:"maintenance_mode"`
+	MaintenanceMsg         string `json:"maintenance_msg"`
+	MaxRequestBodyMB       int    `json:"max_request_body_mb"`
+	StickySessions         bool   `json:"sticky_sessions"`
+	LBPolicy               string `json:"lb_policy"`
+	UpstreamTimeoutSec     int    `json:"upstream_timeout_sec"`
+	CORSEnabled            bool   `json:"cors_enabled"`
+	CORSOrigins            string `json:"cors_origins"`
+	HealthCheckURI         string `json:"health_check_uri"`
+	HealthCheckIntervalSec int    `json:"health_check_interval_sec"`
+	HealthCheckMethod      string `json:"health_check_method"`
+	KeepaliveConns         int    `json:"keepalive_conns"`
+	Tags                   string `json:"tags"`
+	Notes                  string `json:"notes"`
+	DisableAccessLog       bool   `json:"disable_access_log"`
+	AddRequestID           bool   `json:"add_request_id"`
+	StripRespHeaders       string `json:"strip_resp_headers"`
+	BlockedAgents          string `json:"blocked_agents"`
+	UpstreamSNI            string `json:"upstream_sni"`
+	HSTSPreload            bool   `json:"hsts_preload"`
+	MaxConnsPerHost        int    `json:"max_conns_per_host"`
+	UpstreamRetries        int    `json:"upstream_retries"`
+	ForceHTTP1             bool   `json:"force_http1"`
+	ProxyProtocol          string `json:"proxy_protocol"`
+}
+
+// proxyHostToAPIMap converts a ProxyHost to a JSON-serialisable map.
+func proxyHostToAPIMap(p *models.ProxyHost) map[string]any {
+	return map[string]any{
+		"id":                       p.ID,
+		"server_id":                p.ServerID,
+		"domains":                  p.Domains,
+		"forward_scheme":           p.ForwardScheme,
+		"forward_host":             p.ForwardHost,
+		"forward_port":             p.ForwardPort,
+		"websocket_support":        p.WebsocketSupport,
+		"block_common_exploits":    p.BlockCommonExploits,
+		"ssl_enabled":              p.SSLEnabled,
+		"ssl_forced":               p.SSLForced,
+		"http2_support":            p.HTTP2Support,
+		"enabled":                  p.Enabled,
+		"certificate_id":           p.CertificateID,
+		"basicauth_enabled":        p.BasicAuthEnabled,
+		"access_list":              p.AccessList,
+		"ip_blocklist":             p.IPBlocklist,
+		"extra_upstreams":          p.ExtraUpstreams,
+		"compression_enabled":      p.CompressionEnabled,
+		"security_headers_enabled": p.SecurityHeadersEnabled,
+		"tls_min_version":          p.TLSMinVersion,
+		"maintenance_mode":         p.MaintenanceMode,
+		"maintenance_msg":          p.MaintenanceMsg,
+		"max_request_body_mb":      p.MaxRequestBodyMB,
+		"sticky_sessions":          p.StickySessions,
+		"lb_policy":                p.LBPolicy,
+		"upstream_timeout_sec":     p.UpstreamTimeoutSec,
+		"cors_enabled":             p.CORSEnabled,
+		"cors_origins":             p.CORSOrigins,
+		"health_check_uri":         p.HealthCheckURI,
+		"health_check_interval_sec": p.HealthCheckIntervalSec,
+		"health_check_method":      p.HealthCheckMethod,
+		"keepalive_conns":          p.KeepaliveConns,
+		"tags":                     p.Tags,
+		"notes":                    p.Notes,
+		"disable_access_log":       p.DisableAccessLog,
+		"add_request_id":           p.AddRequestID,
+		"strip_resp_headers":       p.StripRespHeaders,
+		"blocked_agents":           p.BlockedAgents,
+		"upstream_sni":             p.UpstreamSNI,
+		"hsts_preload":             p.HSTSPreload,
+		"max_conns_per_host":       p.MaxConnsPerHost,
+		"upstream_retries":         p.UpstreamRetries,
+		"force_http1":              p.ForceHTTP1,
+		"proxy_protocol":           p.ProxyProtocol,
+		"owner_email":              p.OwnerEmail,
+		"created_at":               p.CreatedAt,
+		"updated_at":               p.UpdatedAt,
+	}
+}
+
+// writeJSON is a convenience wrapper that sets Content-Type and encodes v as JSON.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// GET /api/v1/proxy-hosts
+func (s *Server) apiV1ListProxyHosts(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	serverID := s.currentServerID(r)
+	hosts, err := models.ListProxyHosts(s.DB, serverID, cu.ID, cu.IsAdmin, nil)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(hosts))
+	for i := range hosts {
+		out = append(out, proxyHostToAPIMap(&hosts[i]))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/v1/proxy-hosts/{id}
+func (s *Server) apiV1GetProxyHost(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ph, err := models.GetProxyHost(s.DB, id)
+	if err != nil || ph == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if cu == nil || (!cu.IsAdmin && ph.OwnerID.Valid && ph.OwnerID.Int64 != cu.ID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	writeJSON(w, http.StatusOK, proxyHostToAPIMap(ph))
+}
+
+// POST /api/v1/proxy-hosts
+func (s *Server) apiV1CreateProxyHost(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var inp apiProxyHostInput
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if inp.Domains == "" || inp.ForwardHost == "" || inp.ForwardPort == 0 {
+		writeJSONError(w, http.StatusBadRequest, "domains, forward_host, and forward_port are required")
+		return
+	}
+	if inp.ForwardScheme == "" {
+		inp.ForwardScheme = "http"
+	}
+	if inp.HealthCheckMethod == "" {
+		inp.HealthCheckMethod = "GET"
+	}
+	ph := &models.ProxyHost{
+		Domains: inp.Domains, ForwardScheme: inp.ForwardScheme,
+		ForwardHost: inp.ForwardHost, ForwardPort: inp.ForwardPort,
+		WebsocketSupport: inp.WebsocketSupport, BlockCommonExploits: inp.BlockCommonExploits,
+		SSLEnabled: inp.SSLEnabled, SSLForced: inp.SSLForced, HTTP2Support: inp.HTTP2Support,
+		Enabled: inp.Enabled, CertificateID: inp.CertificateID,
+		BasicAuthEnabled: inp.BasicAuthEnabled, BasicAuthUsers: "[]",
+		AccessList: inp.AccessList, IPBlocklist: inp.IPBlocklist,
+		ExtraUpstreams: func() string {
+			if inp.ExtraUpstreams == "" {
+				return "[]"
+			}
+			return inp.ExtraUpstreams
+		}(),
+		CompressionEnabled: inp.CompressionEnabled, SecurityHeadersEnabled: inp.SecurityHeadersEnabled,
+		TLSMinVersion: inp.TLSMinVersion,
+		MaintenanceMode: inp.MaintenanceMode, MaintenanceMsg: inp.MaintenanceMsg,
+		MaxRequestBodyMB: inp.MaxRequestBodyMB, StickySessions: inp.StickySessions,
+		LBPolicy: inp.LBPolicy, UpstreamTimeoutSec: inp.UpstreamTimeoutSec,
+		CORSEnabled: inp.CORSEnabled, CORSOrigins: func() string {
+			if inp.CORSOrigins == "" { return "*" }; return inp.CORSOrigins
+		}(),
+		HealthCheckURI: inp.HealthCheckURI, HealthCheckIntervalSec: func() int {
+			if inp.HealthCheckIntervalSec <= 0 { return 30 }; return inp.HealthCheckIntervalSec
+		}(),
+		HealthCheckMethod: inp.HealthCheckMethod, KeepaliveConns: inp.KeepaliveConns,
+		Tags: inp.Tags, Notes: inp.Notes,
+		DisableAccessLog: inp.DisableAccessLog, AddRequestID: inp.AddRequestID,
+		StripRespHeaders: inp.StripRespHeaders, BlockedAgents: inp.BlockedAgents,
+		UpstreamSNI: inp.UpstreamSNI, HSTSPreload: inp.HSTSPreload,
+		MaxConnsPerHost: inp.MaxConnsPerHost, UpstreamRetries: inp.UpstreamRetries,
+		ForceHTTP1: inp.ForceHTTP1, ProxyProtocol: inp.ProxyProtocol,
+		BasicAuthRealm: "Restricted", CustomReqHeaders: "{}", CustomRespHeaders: "{}",
+		URLRewrites: "[]",
+	}
+	serverID := s.currentServerID(r)
+	ownerID := cu.ID
+	if cu.IsAdmin {
+		ownerID = 0
+	}
+	newID, err := models.CreateProxyHost(s.DB, serverID, ownerID, ph)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ph.ID = newID
+	ph.ServerID = serverID
+	_ = models.LogActivity(s.DB, serverID, cu.Email, "proxy_create", fmt.Sprintf("proxy:%d", newID), ph.Domains, true)
+	s.syncCaddy(serverID, false)
+	created, _ := models.GetProxyHost(s.DB, newID)
+	if created == nil {
+		created = ph
+	}
+	writeJSON(w, http.StatusCreated, proxyHostToAPIMap(created))
+}
+
+// PUT /api/v1/proxy-hosts/{id}
+func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	existing, err := models.GetProxyHost(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if cu != nil && !cu.IsAdmin && existing.OwnerID.Valid && existing.OwnerID.Int64 != cu.ID {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	var inp apiProxyHostInput
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	// Merge: any field not supplied keeps the existing value.
+	if inp.Domains != "" { existing.Domains = inp.Domains }
+	if inp.ForwardScheme != "" { existing.ForwardScheme = inp.ForwardScheme }
+	if inp.ForwardHost != "" { existing.ForwardHost = inp.ForwardHost }
+	if inp.ForwardPort != 0 { existing.ForwardPort = inp.ForwardPort }
+	existing.WebsocketSupport = inp.WebsocketSupport
+	existing.BlockCommonExploits = inp.BlockCommonExploits
+	existing.SSLEnabled = inp.SSLEnabled
+	existing.SSLForced = inp.SSLForced
+	existing.HTTP2Support = inp.HTTP2Support
+	existing.Enabled = inp.Enabled
+	existing.MaintenanceMode = inp.MaintenanceMode
+	if inp.Tags != "" { existing.Tags = inp.Tags }
+	if inp.Notes != "" { existing.Notes = inp.Notes }
+	if inp.AccessList != "" { existing.AccessList = inp.AccessList }
+	if inp.IPBlocklist != "" { existing.IPBlocklist = inp.IPBlocklist }
+	if inp.LBPolicy != "" { existing.LBPolicy = inp.LBPolicy }
+	if err := models.UpdateProxyHost(s.DB, existing); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, existing.ServerID, s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), existing.Domains, true)
+	s.syncCaddy(existing.ServerID, existing.CertificateID != 0)
+	updated, _ := models.GetProxyHost(s.DB, id)
+	if updated == nil { updated = existing }
+	writeJSON(w, http.StatusOK, proxyHostToAPIMap(updated))
+}
+
+// DELETE /api/v1/proxy-hosts/{id}
+func (s *Server) apiV1DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ph, err := models.GetProxyHost(s.DB, id)
+	if err != nil || ph == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if cu != nil && !cu.IsAdmin && ph.OwnerID.Valid && ph.OwnerID.Int64 != cu.ID {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if ph.DNSRecordID != "" {
+		s.dnsDeleteRecord(ph.DNSProvider, ph.DNSZoneID, ph.DNSZoneName, ph.DNSRecordID)
+	}
+	if err := models.DeleteProxyHost(s.DB, id); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, ph.ServerID, s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), ph.Domains, true)
+	s.syncCaddy(ph.ServerID, false)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+// POST /api/v1/proxy-hosts/{id}/toggle
+func (s *Server) apiV1ToggleProxyHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ph, err := models.GetProxyHost(s.DB, id)
+	if err != nil || ph == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	ph.Enabled = !ph.Enabled
+	if err := models.UpdateProxyHost(s.DB, ph); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.syncCaddy(ph.ServerID, false)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "enabled": ph.Enabled})
+}
+
+// POST /api/v1/proxy-hosts/{id}/maintenance
+func (s *Server) apiV1ToggleMaintenanceProxyHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ph, err := models.GetProxyHost(s.DB, id)
+	if err != nil || ph == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	// Accept optional JSON body {"maintenance": true/false}; default = toggle.
+	var body struct {
+		Maintenance *bool `json:"maintenance"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Maintenance != nil {
+		ph.MaintenanceMode = *body.Maintenance
+	} else {
+		ph.MaintenanceMode = !ph.MaintenanceMode
+	}
+	if err := models.UpdateProxyHost(s.DB, ph); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.syncCaddy(ph.ServerID, false)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "maintenance_mode": ph.MaintenanceMode})
+}
+
+// ─── Redirection Host REST API ────────────────────────────────────────────────
+
+func redirectionHostToAPIMap(r *models.RedirectionHost) map[string]any {
+	return map[string]any{
+		"id":                r.ID,
+		"domains":           r.Domains,
+		"forward_scheme":    r.ForwardScheme,
+		"forward_domain":    r.ForwardDomain,
+		"forward_http_code": r.ForwardHTTPCode,
+		"preserve_path":     r.PreservePath,
+		"ssl_enabled":       r.SSLEnabled,
+		"ssl_forced":        r.SSLForced,
+		"enabled":           r.Enabled,
+		"certificate_id":    r.CertificateID,
+		"tags":              r.Tags,
+		"notes":             r.Notes,
+		"owner_email":       r.OwnerEmail,
+		"created_at":        r.CreatedAt,
+		"updated_at":        r.UpdatedAt,
+	}
+}
+
+// GET /api/v1/redirection-hosts
+func (s *Server) apiV1ListRedirectionHosts(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	hosts, err := models.ListRedirectionHosts(s.DB, s.currentServerID(r), cu.ID, cu.IsAdmin, nil)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(hosts))
+	for i := range hosts {
+		out = append(out, redirectionHostToAPIMap(&hosts[i]))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/v1/redirection-hosts/{id}
+func (s *Server) apiV1GetRedirectionHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	rh, err := models.GetRedirectionHost(s.DB, id)
+	if err != nil || rh == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, redirectionHostToAPIMap(rh))
+}
+
+// POST /api/v1/redirection-hosts
+func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var inp struct {
+		Domains         string `json:"domains"`
+		ForwardScheme   string `json:"forward_scheme"`
+		ForwardDomain   string `json:"forward_domain"`
+		ForwardHTTPCode int    `json:"forward_http_code"`
+		PreservePath    bool   `json:"preserve_path"`
+		SSLEnabled      bool   `json:"ssl_enabled"`
+		SSLForced       bool   `json:"ssl_forced"`
+		Enabled         bool   `json:"enabled"`
+		CertificateID   int64  `json:"certificate_id"`
+		Tags            string `json:"tags"`
+		Notes           string `json:"notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if inp.Domains == "" || inp.ForwardDomain == "" {
+		writeJSONError(w, http.StatusBadRequest, "domains and forward_domain are required")
+		return
+	}
+	if inp.ForwardScheme == "" { inp.ForwardScheme = "auto" }
+	if inp.ForwardHTTPCode == 0 { inp.ForwardHTTPCode = 301 }
+	rh := &models.RedirectionHost{
+		Domains: inp.Domains, ForwardScheme: inp.ForwardScheme,
+		ForwardDomain: inp.ForwardDomain, ForwardHTTPCode: inp.ForwardHTTPCode,
+		PreservePath: inp.PreservePath, SSLEnabled: inp.SSLEnabled, SSLForced: inp.SSLForced,
+		Enabled: inp.Enabled, CertificateID: inp.CertificateID,
+		Tags: inp.Tags, Notes: inp.Notes,
+	}
+	serverID := s.currentServerID(r)
+	ownerID := int64(0)
+	if !cu.IsAdmin { ownerID = cu.ID }
+	newID, err := models.CreateRedirectionHost(s.DB, serverID, ownerID, rh)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, serverID, cu.Email, "redirect_create", fmt.Sprintf("redir:%d", newID), rh.Domains, true)
+	s.syncCaddy(serverID, false)
+	created, _ := models.GetRedirectionHost(s.DB, newID)
+	if created == nil { created = rh; created.ID = newID }
+	writeJSON(w, http.StatusCreated, redirectionHostToAPIMap(created))
+}
+
+// PUT /api/v1/redirection-hosts/{id}
+func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	existing, err := models.GetRedirectionHost(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var inp struct {
+		Domains         string `json:"domains"`
+		ForwardScheme   string `json:"forward_scheme"`
+		ForwardDomain   string `json:"forward_domain"`
+		ForwardHTTPCode int    `json:"forward_http_code"`
+		PreservePath    bool   `json:"preserve_path"`
+		SSLEnabled      bool   `json:"ssl_enabled"`
+		SSLForced       bool   `json:"ssl_forced"`
+		Enabled         bool   `json:"enabled"`
+		Tags            string `json:"tags"`
+		Notes           string `json:"notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if inp.Domains != "" { existing.Domains = inp.Domains }
+	if inp.ForwardScheme != "" { existing.ForwardScheme = inp.ForwardScheme }
+	if inp.ForwardDomain != "" { existing.ForwardDomain = inp.ForwardDomain }
+	if inp.ForwardHTTPCode != 0 { existing.ForwardHTTPCode = inp.ForwardHTTPCode }
+	existing.PreservePath = inp.PreservePath
+	existing.SSLEnabled = inp.SSLEnabled
+	existing.SSLForced = inp.SSLForced
+	existing.Enabled = inp.Enabled
+	if inp.Tags != "" { existing.Tags = inp.Tags }
+	if inp.Notes != "" { existing.Notes = inp.Notes }
+	if err := models.UpdateRedirectionHost(s.DB, existing); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_update", fmt.Sprintf("redir:%d", id), existing.Domains, true)
+	s.syncCaddy(s.currentServerID(r), false)
+	updated, _ := models.GetRedirectionHost(s.DB, id)
+	if updated == nil { updated = existing }
+	writeJSON(w, http.StatusOK, redirectionHostToAPIMap(updated))
+}
+
+// DELETE /api/v1/redirection-hosts/{id}
+func (s *Server) apiV1DeleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := models.DeleteRedirectionHost(s.DB, id); err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redir:%d", id), "", true)
+	s.syncCaddy(s.currentServerID(r), false)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+// POST /api/v1/redirection-hosts/{id}/toggle
+func (s *Server) apiV1ToggleRedirectionHost(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	enabled, err := models.ToggleRedirectionHost(s.DB, id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found or error: "+err.Error())
+		return
+	}
+	rh, _ := models.GetRedirectionHost(s.DB, id)
+	if rh != nil { s.syncCaddy(s.currentServerID(r), false) }
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "enabled": enabled})
+}
+
+

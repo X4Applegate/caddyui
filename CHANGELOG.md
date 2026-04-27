@@ -5,6 +5,87 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.9.202] — 2026-04-27 · Preview · Per-host options expansion (v2.9.1 → v2.9.202)
+
+> **Preview release.** Published as `applegater/caddyui:v2.9.202` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`). The `:latest` tag is intentionally **not** updated — pull `:preview` to test, then a follow-up release will promote to `:latest` once verified in the field.
+
+### Added
+
+This batch is a sustained expansion of the **per-host configuration surface** introduced in v2.9.0. Every option below is a column on `proxy_hosts`, a field on the proxy-host edit form, and a Caddy-JSON builder branch in `internal/caddy/client.go`. Defaults are off / empty so existing rows behave identically until you opt in. Grouped by category for readability.
+
+#### Request headers forwarded to upstream
+- **`add_x_real_ip`** (v2.9.149) — `X-Real-IP: {http.request.remote.host}`.
+- **`add_x_real_scheme`** (v2.9.191) — `X-Real-Scheme: {http.request.scheme}`.
+- **`add_x_forwarded_scheme`** (v2.9.143) — `X-Forwarded-Scheme: {http.request.scheme}`.
+- **`add_x_forwarded_uri`** (v2.9.199) — `X-Forwarded-URI: {http.request.uri}`.
+- **`strip_incoming_x_forwarded_for`** (v2.9.150) — drop client-supplied `X-Forwarded-For` before Caddy adds its own.
+- **`add_x_request_path` / `add_x_request_method` / `add_x_request_query` / `add_x_request_hostname` / `add_x_request_referer` / `add_x_request_origin`** (v2.9.181, .188, .189, .201, .197, .198) — toggle individual `X-Request-*` debug/trace headers populated from `{http.request.*}` placeholders.
+- **`add_x_request_start`** (v2.9.140) — `X-Request-Start: t={time.now.unix_ms}` for upstream latency tracing.
+- **`add_origin_header`** (v2.9.159) — set a static `Origin` request header.
+- **`add_x_forwarded_user` / `add_x_forwarded_email` / `add_x_forwarded_groups` / `add_x_forwarded_roles`** (v2.9.190, .194, .193, .195) — static identity headers for trusted-network impersonation patterns.
+
+#### Response headers (security & cache)
+- **`add_x_permitted_cross_domain_policies` / `add_document_policy` / `add_origin_agent_cluster`** (v2.9.167, .156, .192) — modern cross-origin / isolation hints.
+- **`add_x_xss_protection_disabled` / `add_x_download_options` / `add_x_no_archive` / `add_x_dns_prefetch_control`** (v2.9.202, .177, .200, .163) — security-hardening toggles.
+- **`add_x_powered_by` / `add_x_clacks_overhead` / `add_x_ua_compatible`** (v2.9.154, .182, .183) — custom branding / legacy-IE / GNU-tradition headers.
+- **`add_cors_vary_header`** (v2.9.152) — `Vary: Origin` on every response (CDN-correctness for CORS).
+- **`add_link_preload`** (v2.9.145) — `Link: …` resource hints.
+- **`add_accept_ranges`** (v2.9.164) — `Accept-Ranges: bytes` to advertise byte-range support.
+- **`add_content_disposition` / `add_content_language`** (v2.9.165, .175) — content metadata headers.
+- **`response_cache_ttl_sec`** (v2.9.144) — emits `Cache-Control: max-age=N`.
+- **`add_age_zero` / `add_pragma_no_cache` / `add_surrogate_control` / `add_warning_header`** (v2.9.185, .179, .186, .187) — cache-bypass / CDN-only / RFC-7234 advisory directives.
+- **`add_server_timing_header`** (v2.9.161) — `Server-Timing: upstream;dur=…` for browser DevTools timing.
+- **`add_clear_site_data`** (v2.9.162) — `Clear-Site-Data` value for logout / data-purge endpoints.
+- **`add_request_id_to_response`** (v2.9.147) — copy the request trace ID into the response.
+- **`add_accept_ch` / `add_critical_ch`** (v2.9.173, .176) — Client Hints negotiation.
+- **`add_alt_svc`** (v2.9.174) — advertise alternative services (HTTP/3 upgrade, etc.).
+- **`add_service_worker_allowed`** (v2.9.172) — expand SW scope beyond script URL.
+- **`add_report_to` / `add_nel_header`** (v2.9.169, .170) — Reporting API + Network Error Logging.
+- **`strip_response_headers`** (v2.9.168) — comma-separated list of response headers to delete from upstream replies.
+
+#### Request blocking (returns 403 / 405)
+- **`deny_path_regexp`** (v2.9.146) — 403 when path matches a regexp.
+- **`block_query_params`** (v2.9.155) — 403 when any of the named query parameters are present.
+- **`block_query_param_regexp`** (v2.9.196) — 403 when the raw query string matches a regexp.
+- **`deny_user_agent_regexp`** (v2.9.178) — 403 when User-Agent matches a regexp.
+- **`block_http_methods`** (v2.9.171) — 405 with `Allow:` header for listed methods.
+
+#### Active health checks
+- **`health_check_tls_server_name`** (v2.9.148) — SNI override for probe connections.
+- **`health_check_tls_insecure_skip_verify`** (v2.9.151) — skip cert verification on probes.
+- **`health_check_user_agent`** (v2.9.180) — custom User-Agent for probe requests.
+
+#### Upstream TLS
+- **`upstream_tls_alpn`** (v2.9.153) — ALPN protocol list for upstream TLS.
+- **`upstream_tls_ca_pem_inline`** (v2.9.160) — inline PEM CA bundle for upstream verification.
+- **`upstream_tls_server_name_from_host`** (v2.9.166) — derive upstream SNI from the incoming `Host` header (dynamic).
+
+#### Forward auth
+- **`forward_auth_skip_paths`** (v2.9.184) — comma-separated path prefixes that bypass `forward_auth` (health, metrics, public assets) by wrapping the auth handler in a `not { path … }` subroute.
+
+#### Load balancing & connections
+- **`lb_random_choose_count`** (v2.9.142) — number of upstreams sampled by the `random_choice` LB policy.
+- **`upstream_keepalive_max_lifetime_sec`** (v2.9.158) — `transport.keep_alive.maximum_connection_lifetime`.
+
+#### Maintenance window
+- **`maintenance_window_timezone`** (v2.9.141) — evaluate the configured maintenance window in a specific IANA tz instead of the host clock.
+- **`maintenance_redirect_url`** (v2.9.157) — when set, the maintenance handler returns a 302 redirect instead of the default 503 HTML page.
+
+### Internal
+- **DB migrations are additive only.** Each v2.9.x option lands as an `ALTER TABLE proxy_hosts ADD COLUMN <name> … DEFAULT <off>` guarded by `columnExists2`, so upgrading is a no-op for existing rows. Downgrade is supported (older builds simply ignore the new columns).
+- **`scanProxyHost` / `proxyHostBaseCols` / `CreateProxyHost` / `UpdateProxyHost` extended uniformly.** No schema fan-out or feature-table indirection — every option is a flat column read by the same scan path. Cuts query overhead for list views to a single `SELECT`.
+
+### Docker
+- Published as `applegater/caddyui:v2.9.202` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`).
+- **`:latest` is intentionally not bumped.** A follow-up release will promote `:preview` once tested in the field.
+
+### Upgrade note
+- Pull `:preview` (not `:latest`) to test: `docker pull applegater/caddyui:preview`.
+- DB schema migration runs automatically on first start; no manual SQL needed.
+- All new options default to off / empty — existing rows behave identically until you edit them and opt in.
+
+---
+
 ## [2.7.9] — 2026-04-26 · Source column on /raw-routes + Recent advanced routes on dashboard
 
 ### Added
