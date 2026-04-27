@@ -3055,6 +3055,22 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.AddXRequestByteCount = r.FormValue("add_x_request_byte_count") == "on"
 	// v2.9.249: add_x_request_received_at — forward server-side timestamp.
 	ph.AddXRequestReceivedAt = r.FormValue("add_x_request_received_at") == "on"
+	// v2.9.250: strip_request_headers — comma-separated list of request headers to delete.
+	ph.StripRequestHeaders = strings.TrimSpace(r.FormValue("strip_request_headers"))
+	// v2.9.251: add_x_forwarded_method — forward HTTP method header.
+	ph.AddXForwardedMethod = r.FormValue("add_x_forwarded_method") == "on"
+	// v2.9.252: add_x_request_original_host — preserve original Host header.
+	ph.AddXRequestOriginalHost = r.FormValue("add_x_request_original_host") == "on"
+	// v2.9.253: add_x_request_dnt — forward DNT header.
+	ph.AddXRequestDNT = r.FormValue("add_x_request_dnt") == "on"
+	// v2.9.254: add_x_geo_region — static X-Geo-Region request header.
+	ph.AddXGeoRegion = strings.TrimSpace(r.FormValue("add_x_geo_region"))
+	// v2.9.255: add_x_request_secure — X-Request-Secure header based on TLS state.
+	ph.AddXRequestSecure = r.FormValue("add_x_request_secure") == "on"
+	// v2.9.256: add_x_request_query_count — debug header for query parameters.
+	ph.AddXRequestQueryCount = r.FormValue("add_x_request_query_count") == "on"
+	// v2.9.257: add_x_request_id_header_response — echo trace UUID to response header.
+	ph.AddXRequestIDHeaderResponse = r.FormValue("add_x_request_id_header_response") == "on"
 	return ph, nil
 }
 
