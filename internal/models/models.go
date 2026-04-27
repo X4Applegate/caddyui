@@ -762,6 +762,23 @@ func (r RedirectionHost) DomainList() []string {
 	return out
 }
 
+// TagList returns Tags split into individual trimmed strings, filtering empties.
+// Mirrors ProxyHost.TagList so redirection_hosts.html can iterate tag pills.
+func (r RedirectionHost) TagList() []string {
+	if r.Tags == "" {
+		return nil
+	}
+	parts := strings.Split(r.Tags, ",")
+	out := make([]string, 0, len(parts))
+	for _, t := range parts {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // CustomRespHeaderMap parses CustomRespHeaders into a map. Returns nil if empty.
 func (r RedirectionHost) CustomRespHeaderMap() map[string]string {
 	if r.CustomRespHeaders == "" || r.CustomRespHeaders == "{}" {

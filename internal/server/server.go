@@ -132,7 +132,30 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	go s.runAutoSyncLoop()
 	go s.runMaintenanceWindowLoop()
 	go s.runActivityLogCleanup()
+	go s.runAccessDailyAggregator()
 	return s, nil
+}
+
+// runAccessDailyAggregator backfills the access_daily rollup table once at
+// startup (so a freshly-upgraded install picks up historical days) and then
+// every hour to catch the previous day shortly after UTC midnight rolls over.
+// All access_events older than today (UTC) are summarised into per-(day, host)
+// rows that AccessTotalsSince consults for long windows. v2.9.206.
+func (s *Server) runAccessDailyAggregator() {
+	if n, err := models.AggregateAccessDaily(s.DB); err != nil {
+		log.Printf("access_daily: initial backfill failed: %v", err)
+	} else if n > 0 {
+		log.Printf("access_daily: initial backfill aggregated %d day(s)", n)
+	}
+	t := time.NewTicker(1 * time.Hour)
+	defer t.Stop()
+	for range t.C {
+		if n, err := models.AggregateAccessDaily(s.DB); err != nil {
+			log.Printf("access_daily: hourly backfill failed: %v", err)
+		} else if n > 0 {
+			log.Printf("access_daily: aggregated %d new day(s)", n)
+		}
+	}
 }
 
 // healthFailThreshold is the number of consecutive failed pings required
@@ -3793,6 +3816,34 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build a set of every hostname already in the DB so re-pasting the same
+	// Caddyfile is a no-op instead of silently creating duplicate raw_routes.
+	// Mirrors the dedup logic in postImport — proxies, redirects, raw routes
+	// all contribute. Admin view (isAdmin=true) so user-scoped rows are also
+	// counted; Caddy resolves routes by host globally regardless of owner.
+	taken := map[string]struct{}{}
+	if existing, err := models.ListProxyHosts(s.DB, s.currentServerID(r), 0, true, nil); err == nil {
+		for _, h := range existing {
+			for _, d := range h.DomainList() {
+				taken[strings.ToLower(d)] = struct{}{}
+			}
+		}
+	}
+	if existing, err := models.ListRedirectionHosts(s.DB, s.currentServerID(r), 0, true, nil); err == nil {
+		for _, h := range existing {
+			for _, d := range h.DomainList() {
+				taken[strings.ToLower(d)] = struct{}{}
+			}
+		}
+	}
+	if existing, err := models.ListRawRoutes(s.DB, s.currentServerID(r), 0, true, nil); err == nil {
+		for _, rr := range existing {
+			for _, d := range rawRouteHosts(rr) {
+				taken[strings.ToLower(d)] = struct{}{}
+			}
+		}
+	}
+
 	var results []caddyfileImportResult
 	created := 0
 
@@ -3808,6 +3859,24 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		label := strings.Join(hosts, ",")
 		if label == "" {
 			label = fmt.Sprintf("route[%d] (no host match)", idx)
+		}
+		// Skip if any host on this route is already claimed elsewhere (proxy,
+		// redirect, or another raw route). Report as "skipped" so the user can
+		// see in the result table which blocks were no-ops vs. created.
+		var conflict string
+		for _, h := range hosts {
+			if _, ok := taken[strings.ToLower(h)]; ok {
+				conflict = h
+				break
+			}
+		}
+		if conflict != "" {
+			results = append(results, caddyfileImportResult{
+				Head: label, Snippet: blockText, RouteIdx: idx,
+				Status:  "skipped",
+				Message: fmt.Sprintf("hostname %q already claimed by an existing proxy, redirect, or raw route", conflict),
+			})
+			continue
 		}
 		blob, err := json.Marshal(route)
 		if err != nil {
@@ -3829,6 +3898,11 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 				Status: "error", Message: err.Error(),
 			})
 			continue
+		}
+		// Reserve hosts of this newly-created route so a later block in the
+		// same paste can't shadow it.
+		for _, h := range hosts {
+			taken[strings.ToLower(h)] = struct{}{}
 		}
 		created++
 		results = append(results, caddyfileImportResult{
@@ -7094,7 +7168,10 @@ func (s *Server) apiTestUpstream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	_ = r.ParseForm()
+	// Accept both multipart/form-data (FormData from JS) and
+	// application/x-www-form-urlencoded. r.FormValue auto-detects when
+	// r.Form is still nil — calling r.ParseForm() first would short-circuit
+	// the multipart path and leave the fields empty.
 	host := strings.TrimSpace(r.FormValue("host"))
 	port := strings.TrimSpace(r.FormValue("port"))
 	scheme := strings.TrimSpace(r.FormValue("scheme"))
@@ -7191,9 +7268,22 @@ func sendEmail(db *sql.DB, subject, body string) error {
 	}
 
 	serverAddr := fmt.Sprintf("%s:%d", host, port)
+	// v2.9.209: strip CR/LF from any value that lands in a header line.
+	// Without this, a user-controlled Subject of `hi\r\nBcc: attacker@evil`
+	// would smuggle an extra header into the message envelope. Body is left
+	// alone — newlines in body are just content, not header boundaries.
+	stripCRLF := func(s string) string {
+		return strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	}
+	from = stripCRLF(from)
+	subject = stripCRLF(subject)
+	safeRecipients := make([]string, len(recipients))
+	for i, r := range recipients {
+		safeRecipients[i] = stripCRLF(r)
+	}
 	msg := []byte(
 		"From: CaddyUI <" + from + ">\r\n" +
-			"To: " + strings.Join(recipients, ", ") + "\r\n" +
+			"To: " + strings.Join(safeRecipients, ", ") + "\r\n" +
 			"Subject: " + subject + "\r\n" +
 			"MIME-Version: 1.0\r\n" +
 			"Content-Type: text/plain; charset=utf-8\r\n" +

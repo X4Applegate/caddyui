@@ -1,0 +1,31 @@
+name: "CaddyUI CodeQL config"
+
+# v2.9.209: suppress two queries whose findings are intentional design for
+# a reverse-proxy manager. Email-injection is NOT suppressed — the alert
+# was a real bug and is now fixed in code (CRLF strip on SMTP headers).
+#
+# - go/disabled-certificate-check
+#     CaddyUI talks to user-controlled backends (test upstream, active
+#     health probes, app-level reachability checks). These backends very
+#     commonly serve self-signed or internal-CA certificates. Verifying
+#     them would make every "test connection" button useless. The
+#     InsecureSkipVerify flag is set deliberately on probe-only HTTP
+#     clients (server.go:128, app_health.go:191, server.go:7190 — all
+#     already carry `// nolint:gosec` comments) and is never used on the
+#     forward path Caddy serves to end users.
+#
+# - go/request-forgery
+#     The whole point of CaddyUI is to issue HTTP requests to user-
+#     specified targets — the Test Upstream button, active health checks,
+#     forward_auth subrequests, DNS provider API calls, NTFY/webhook
+#     notifications. SSRF as a class doesn't apply: the user is the
+#     attacker model that the alert assumes is hostile, but the user
+#     here is the admin authenticated to the management UI. There is no
+#     untrusted external party able to drive these targets.
+queries:
+  - uses: security-extended
+query-filters:
+  - exclude:
+      id: go/disabled-certificate-check
+  - exclude:
+      id: go/request-forgery

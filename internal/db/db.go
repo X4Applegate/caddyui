@@ -139,6 +139,12 @@ CREATE TABLE IF NOT EXISTS access_events (
 );
 CREATE INDEX IF NOT EXISTS idx_access_events_ts      ON access_events(ts);
 CREATE INDEX IF NOT EXISTS idx_access_events_host_ts ON access_events(host, ts);
+-- v2.9.206: indexes for status-code breakdown card and unique-visitor count.
+-- (path, ts) intentionally omitted — path values are high-cardinality and the
+-- index would be larger than the table itself; top-paths queries already use
+-- the (host, ts) range scan + GROUP BY which is fast enough.
+CREATE INDEX IF NOT EXISTS idx_access_events_status_ts    ON access_events(status, ts);
+CREATE INDEX IF NOT EXISTS idx_access_events_client_ip_ts ON access_events(client_ip, ts);
 
 -- v2.7.0: long-term rollup keyed by (day, host). Populated by a nightly
 -- aggregator once per UTC midnight so the /analytics page can show 30/90/365-day
@@ -151,6 +157,17 @@ CREATE TABLE IF NOT EXISTS access_daily (
     host TEXT NOT NULL DEFAULT '',
     views INTEGER NOT NULL DEFAULT 0,
     unique_visitors INTEGER NOT NULL DEFAULT 0,
+    -- v2.9.207: per-day status-class buckets so StatusBucketsSince can read
+    -- the rollup for long windows instead of scanning access_events. Five
+    -- nullable-defaulted columns mirror the StatusBuckets struct so the
+    -- aggregator just SUMs them. Older rollup rows pre-2.9.207 will report
+    -- zero for these classes — first hourly aggregator pass repopulates the
+    -- last 365 days, see AggregateAccessDaily.
+    s2xx INTEGER NOT NULL DEFAULT 0,
+    s3xx INTEGER NOT NULL DEFAULT 0,
+    s4xx INTEGER NOT NULL DEFAULT 0,
+    s5xx INTEGER NOT NULL DEFAULT 0,
+    s_other INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, host)
 );
 
@@ -207,7 +224,18 @@ CREATE INDEX IF NOT EXISTS idx_proxy_health_host_ts ON proxy_health(proxy_host_i
 `
 
 func Open(path string) (*sql.DB, error) {
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)"
+	// v2.9.206: tune SQLite for analytics workloads.
+	//   cache_size=-262144  → 256 MiB page cache (default ~2 MiB)
+	//   mmap_size=268435456 → 256 MiB mmap window for index scans
+	//   synchronous=NORMAL  → safe with WAL, faster writes during analytics reads
+	//   temp_store=MEMORY   → keep GROUP BY / DISTINCT temp tables in RAM
+	dsn := path + "?_pragma=journal_mode(WAL)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=busy_timeout(10000)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=cache_size(-262144)" +
+		"&_pragma=mmap_size(268435456)" +
+		"&_pragma=temp_store(MEMORY)"
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -1790,6 +1818,13 @@ func migrate(db *sql.DB) error {
 	// v2.9.202: add_x_xss_protection_disabled — set X-XSS-Protection: 0 response header (disable legacy XSS filter)
 	if !columnExists2(db, "proxy_hosts", "add_x_xss_protection_disabled") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_xss_protection_disabled INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.207: status-class buckets on the daily rollup. Existing installs
+	// running v2.7.0+ already have access_daily; they need these columns.
+	for _, col := range []string{"s2xx", "s3xx", "s4xx", "s5xx", "s_other"} {
+		if !columnExists2(db, "access_daily", col) {
+			_, _ = db.Exec(`ALTER TABLE access_daily ADD COLUMN ` + col + ` INTEGER NOT NULL DEFAULT 0`)
+		}
 	}
 
 	return nil
