@@ -365,7 +365,12 @@ if ('serviceWorker' in navigator) {
   function navigate(e) {
     var row = e.currentTarget;
     var href = row.getAttribute('data-edit-href');
-    if (!href) return;
+    // v2.9.226: validate href is a same-origin relative path before
+    // navigating. The attribute is server-rendered with trusted values,
+    // but defense-in-depth + satisfies CodeQL "DOM text reinterpreted as
+    // HTML/URL" by ensuring an attacker who somehow sets the attribute
+    // can't redirect to javascript:, data:, //evil.com, etc.
+    if (!href || href[0] !== '/' || href[1] === '/') return;
     if (e.target.closest('a, button, form, input, select, textarea, label, details, summary, pre')) return;
     if (e.metaKey || e.ctrlKey || e.button === 1) {
       window.open(href, '_blank', 'noopener');
