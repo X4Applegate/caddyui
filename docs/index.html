@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.7.8 — Enforce zone ↔ hostname match on the DNS picker</title>
+<title>CaddyUI v2.7.9 — Source column on Advanced routes + Recent advanced on dashboard</title>
 <meta name="description" content="A tour of everything shipped in CaddyUI since v2.5.0 — Groups, visitor analytics, per-user ownership, admin reassignment, the Deploying page, the multi-provider Managed DNS expansion, plus today's multi-server analytics fix. Cadence moves to twice a month.">
-<meta property="og:title" content="CaddyUI v2.7.8 — Enforce zone ↔ hostname match on the DNS picker">
+<meta property="og:title" content="CaddyUI v2.7.9 — Source column on Advanced routes + Recent advanced on dashboard">
 <meta property="og:description" content="Groups let you share visibility across teammates. Per-user ownership on every resource. Admins can reassign. Visitor analytics. Deploying page. Plus today's multi-server analytics fix and the backup fix. Then a two-week quiet window as we move to twice-a-month releases.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-04-24">
@@ -275,11 +275,11 @@
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.7.8 — Enforce zone ↔ hostname match on the DNS picker</h1>
-  <p class="lead">Twenty-three releases since v2.5.0. v2.7.8 closes another real gotcha: the DNS picker would let you save a hostname into the wrong zone. The amber "isn't a subdomain of…" warning was advisory only; now it's enforced both client- and server-side.</p>
+  <h1>CaddyUI v2.7.9 — Source column on Advanced routes + Recent advanced on dashboard</h1>
+  <p class="lead">Twenty-four releases since v2.5.0. Two small UX wins: <code>/raw-routes</code> now has a Source column matching <code>/proxy-hosts</code>, and the dashboard surfaces a "Recent advanced routes" block alongside the existing proxy-host one.</p>
   <div class="meta">
     <time datetime="2026-04-24">April 24, 2026</time>
-    <span class="tag">v2.7.8</span>
+    <span class="tag">v2.7.9</span>
     <span>☕ ~10 min read</span>
   </div>
 </header>
@@ -301,7 +301,7 @@
     <li><a href="#ux">UX polish</a></li>
     <li><a href="#mobile">Dark mode, mobile &amp; keyboard-friendly</a></li>
     <li><a href="#reliability">Reliability &amp; bug fixes</a></li>
-    <li><a href="#v278">Today's release — v2.7.8 zone/hostname enforcement</a></li>
+    <li><a href="#v279">Today's release — v2.7.9 Source column + dashboard surfacing</a></li>
     <li><a href="#upgrade">Upgrade &amp; roadmap</a></li>
     <li><a href="#quiet">Why the quiet window</a></li>
   </ul>
@@ -588,7 +588,29 @@
 
 <hr class="divider">
 
-<h2 id="v278">🐛 Today's fix — v2.7.8</h2>
+<h2 id="v279">✨ Today's release — v2.7.9</h2>
+
+<h3>v2.7.9 — Advanced routes get parity with proxy hosts</h3>
+
+<p>
+  Two small UX wins requested live:
+</p>
+
+<p>
+  <strong>1. Source column on <code>/raw-routes</code>.</strong> Mirrors what <code>/proxy-hosts</code> has had forever — leftmost column shows the route's <code>match.host[]</code> entries as clickable domain pills, each opening the hostname in a new tab. Path-only / port-only routes (no host matcher) render <em>— no host matcher</em> in muted italic instead of an empty cell. Existing columns (Label, Config, Owner, Status, Actions) shift right one slot. The mobile card variant gets the same treatment — host pills above the label so the card has the same identifying anchor as the desktop row.
+</p>
+
+<p>
+  <strong>2. "Recent advanced routes" block on the dashboard.</strong> Renders below the existing "Recent proxy hosts" block — same mobile-card / desktop-table split, same Source-style domain pills, same Edit-on-click behaviour. Only shows when there's at least one raw route in the DB so fresh installs stay uncluttered. The tile counters at the top already linked to <code>/raw-routes</code>; the new block surfaces the actual route list inline so users with mostly-advanced setups don't need to click through.
+</p>
+
+<p>
+  Under the hood: a tiny new <code>rawRouteSourceHosts</code> template helper wraps the existing internal <code>rawRouteHosts(models.RawRoute)</code> Go function so templates can extract <code>match.host[]</code> from a JSON string with <code>{{range rawRouteSourceHosts .JSONData}}</code>. Returns <code>nil</code> for path-only routes — templates fall back to the route label so the Source column never renders empty.
+</p>
+
+<hr class="divider">
+
+<h2 id="v278">🐛 Previous fix — v2.7.8</h2>
 
 <h3>v2.7.8 — DNS picker let you save a hostname into the wrong zone</h3>
 
@@ -723,13 +745,13 @@ unable to open database: /tmp/caddyui-backup-YYYYMMDD-HHMMSS.db (14)</code></pre
   Multi-arch on Docker Hub (<code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001):
 </p>
 
-<pre><code>docker pull applegater/caddyui:v2.7.8
+<pre><code>docker pull applegater/caddyui:v2.7.9
 # or
 docker pull applegater/caddyui:latest</code></pre>
 
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.8" class="btn primary">
-    📦 View v2.7.8 release
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.7.9" class="btn primary">
+    📦 View v2.7.9 release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub
@@ -760,7 +782,7 @@ docker pull applegater/caddyui:latest</code></pre>
 <h2 id="quiet">⏸️ Why the next two weeks are quiet</h2>
 
 <p>
-  Twenty-three releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between. (v2.7.6, v2.7.7, and v2.7.8 are exactly that — three live-reported bugs, three quiet-window patches, three fixes shipped same-day. Same rule going forward.)
+  Twenty-four releases in three weeks is great for iteration and rough on anyone running this in production. So starting today, <strong>CaddyUI moves to a twice-a-month cadence</strong> — roughly the 1st and the 15th — with emergency fixes only in between. (v2.7.6 through v2.7.9 are all quiet-window patches — live-reported bugs and small UX requests, shipped same-day each time. Same rule going forward.)
 </p>
 
 <p>

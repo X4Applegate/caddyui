@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.7.9] — 2026-04-26 · Source column on /raw-routes + Recent advanced routes on dashboard
+
+### Added
+- **Source column on `/raw-routes`.** Mirrors `/proxy-hosts` so the table reads the same way at a glance — leftmost column shows the route's `match.host[]` entries as clickable domain pills (each opens the hostname in a new tab). Path-only / port-only routes (no host matcher) render `— no host matcher` in italic ink-300 instead of an empty cell. Existing columns (Label, Config, Owner, Status, Actions) shift right one slot; empty-state colspan bumped from 4/5 to 5/6 to match. Mobile-card variant promotes the host pills above the label so the card has the same identifying anchor as the desktop row.
+- **"Recent advanced routes" block on the dashboard.** Renders below the existing "Recent proxy hosts" block — same mobile-card / desktop-table split, same Source-style domain pills, same Edit-on-click behaviour. Only shows when there's at least one raw route in the DB so fresh installs stay uncluttered. Tile counters at the top of the dashboard already linked to `/raw-routes`; the new block surfaces the actual route list inline so users with mostly-advanced setups don't need to click through.
+- **`rawRouteSourceHosts` template helper** (`internal/server/server.go` parseTemplates). Wraps the existing internal `rawRouteHosts(models.RawRoute)` so templates can extract `match.host[]` from a JSON string with `{{range rawRouteSourceHosts .JSONData}}`. Returns `nil` for path-only / port-only routes — templates fall back to the route label so the Source column never renders empty.
+
+### Changed
+- **Dashboard handler now passes the full `RawRoutes` slice** (in addition to the existing `RawCount`) so the new block can render. Same pattern as `ProxyHosts` / `RedirectionHosts` — no slicing or limit here, mirroring the existing "Recent proxy hosts" behaviour. If you have hundreds of advanced routes the block will render all of them; same caveat already applies to the proxy-hosts block.
+
+### Docker
+- Published as `applegater/caddyui:v2.7.9` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+
+---
+
 ## [2.7.8] — 2026-04-25 · Enforce zone ↔ hostname match on proxy hosts and raw routes
 
 ### Fixed

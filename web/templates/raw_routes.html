@@ -25,6 +25,10 @@
   <table class="hidden md:table w-full text-sm">
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
+        {{/* v2.7.9: Source column mirrors /proxy-hosts so the table at a
+             glance shows the same "what hostname does this serve" anchor
+             on both pages. Pulls from match.host[] in the route JSON. */}}
+        <th class="px-5 py-3 font-medium">Source</th>
         <th class="px-5 py-3 font-medium">Label</th>
         <th class="px-5 py-3 font-medium">Config</th>
         {{if eq .User.Role "admin"}}<th class="px-5 py-3 font-medium">Owner</th>{{end}}
@@ -37,6 +41,20 @@
       {{$canEdit := or (eq $.User.Role "admin") (and .OwnerID.Valid (eq .OwnerID.Int64 $.ViewerID))}}
       {{$isTeam := and (ne $.User.Role "admin") .OwnerID.Valid (ne .OwnerID.Int64 $.ViewerID)}}
       <tr class="bg-white align-top hover:bg-brand-50/30 transition">
+        {{/* v2.7.9: Source = match.host[] entries pulled from JSONData.
+             Path-only / port-only routes have no host matcher — show an
+             em-dash hint instead of an empty cell so the table reads
+             cleanly. Same domain-pill styling as /proxy-hosts. */}}
+        <td class="px-5 py-3">
+          {{$srcHosts := rawRouteSourceHosts .JSONData}}
+          {{if $srcHosts}}
+          <div class="flex flex-wrap items-center gap-1">
+            {{range $srcHosts}}<a href="https://{{.}}" target="_blank" rel="noopener noreferrer" class="domain-pill">{{.}}</a>{{end}}
+          </div>
+          {{else}}
+          <span class="text-ink-300 text-xs italic">— no host matcher</span>
+          {{end}}
+        </td>
         <td class="px-5 py-3">
           <span class="inline-flex items-center gap-1">
             <span class="font-mono text-xs text-ink-800">{{.Label}}</span>
@@ -108,7 +126,7 @@
       </tr>
       {{else}}
       <tr class="bg-white">
-        <td colspan="{{if eq .User.Role "admin"}}5{{else}}4{{end}}" class="px-5 py-16 text-center">
+        <td colspan="{{if eq .User.Role "admin"}}6{{else}}5{{end}}" class="px-5 py-16 text-center">
           <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           </div>
@@ -131,7 +149,19 @@
     {{$isTeam := and (ne $.User.Role "admin") .OwnerID.Valid (ne .OwnerID.Int64 $.ViewerID)}}
     <div class="p-4 space-y-3{{if $canEdit}} cursor-pointer hover:bg-brand-50/30 transition{{end}}"{{if $canEdit}} data-edit-href="/raw-routes/{{.ID}}/edit"{{end}}>
       <div class="flex items-start justify-between gap-3">
-        <div class="font-mono text-xs text-ink-800 break-all min-w-0">{{.Label}}</div>
+        <div class="min-w-0 flex-1">
+          {{/* v2.7.9: surface match.host[] above the label so the mobile
+               card mirrors the desktop Source column. Label stays as the
+               secondary line — useful for path-only routes that have no
+               hosts and rely on the label for identification. */}}
+          {{$srcHosts := rawRouteSourceHosts .JSONData}}
+          {{if $srcHosts}}
+          <div class="flex flex-wrap gap-1 mb-1">
+            {{range $srcHosts}}<span class="domain-pill break-all">{{.}}</span>{{end}}
+          </div>
+          {{end}}
+          <div class="font-mono text-xs text-ink-500 break-all">{{.Label}}</div>
+        </div>
         {{if .Enabled}}
           <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
         {{else}}

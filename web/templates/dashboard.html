@@ -231,6 +231,84 @@
   </table>
 </div>
 
+{{/* v2.7.9: Recent advanced routes block. Only renders when there's at
+     least one raw route — for fresh installs the dashboard stays
+     uncluttered. Mirrors the proxy-hosts mobile-card / desktop-table
+     split above so the page reads consistently top-to-bottom. */}}
+{{if .RawRoutes}}
+<div class="flex items-center justify-between mb-3 mt-8">
+  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recent advanced routes</h2>
+  <a href="/raw-routes" class="text-xs text-ink-500 hover:text-ink-900 transition">View all &rarr;</a>
+</div>
+
+{{/* Mobile cards */}}
+<div class="lg:hidden space-y-2">
+  {{range .RawRoutes}}
+  <a href="/raw-routes/{{.ID}}/edit" class="block bg-white border border-ink-200 rounded-xl shadow-card p-4 hover:border-purple-300 transition">
+    <div class="flex items-start justify-between gap-2 mb-1">
+      <div class="min-w-0 flex-1">
+        {{$srcHosts := rawRouteSourceHosts .JSONData}}
+        {{if $srcHosts}}
+        <div class="flex flex-wrap gap-1 mb-1">
+          {{range $srcHosts}}<span class="domain-pill break-all">{{.}}</span>{{end}}
+        </div>
+        {{end}}
+        <div class="font-mono text-xs text-ink-500 break-all">{{.Label}}</div>
+      </div>
+      {{if .Enabled}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>on</span>
+      {{else}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</span>
+      {{end}}
+    </div>
+  </a>
+  {{end}}
+</div>
+
+{{/* Desktop table */}}
+<div class="hidden lg:block bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-3 font-medium">Source</th>
+        <th class="px-5 py-3 font-medium">Label</th>
+        <th class="px-5 py-3 font-medium">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .RawRoutes}}
+      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+        <td class="px-5 py-3">
+          {{$srcHosts := rawRouteSourceHosts .JSONData}}
+          {{if $srcHosts}}
+          <div class="flex flex-wrap items-center gap-1">
+            {{$rid := .ID}}
+            {{range $srcHosts}}<span class="inline-flex items-center gap-0.5">
+              <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
+              <a href="/raw-routes/{{$rid}}/edit" title="Edit advanced route" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-purple-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </a>
+            </span>{{end}}
+          </div>
+          {{else}}
+          <span class="text-ink-300 text-xs italic">— no host matcher</span>
+          {{end}}
+        </td>
+        <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.Label}}</td>
+        <td class="px-5 py-3">
+          {{if .Enabled}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
+          {{else}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>disabled</span>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
 <script>
 {{if eq .User.Role "admin"}}
 // System-stats poller. Gated on role server-side — the #sys-stats element
