@@ -5,9 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
-## [2.9.0 → 2.9.224] — 2026-04-27 · Preview · Per-host options expansion + analytics speedup + auth/security
+## [2.10.0] — 2026-04-27 · Per-host options expansion + analytics speedup + path-routing + multi-upstream
 
-> **Preview release.** Published as `applegater/caddyui:v2.9.224` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`). Each numeric tag in the v2.9.0 → v2.9.224 range was an internal-only build during development; this entry consolidates them into one published changelog so the public history stays readable. The `:latest` tag is intentionally **not** updated — pull `:preview` to test, then a follow-up release will promote to `:latest` once verified in the field.
+> **Major release.** Published as `applegater/caddyui:v2.10.0` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`). Consolidates the entire v2.9.1 → v2.9.267 preview cycle into one released entry — the numeric tags in that range were internal-only builds during development. **`:latest` now points at v2.10.0**, replacing the previous v2.9.0 GA build.
 
 ### Added
 
@@ -83,6 +83,61 @@ This batch is a sustained expansion of the **per-host configuration surface** in
 - **DB migrations are additive only.** Each v2.9.x option lands as an `ALTER TABLE proxy_hosts ADD COLUMN <name> … DEFAULT <off>` guarded by `columnExists2`, so upgrading is a no-op for existing rows. Downgrade is supported (older builds simply ignore the new columns).
 - **`scanProxyHost` / `proxyHostBaseCols` / `CreateProxyHost` / `UpdateProxyHost` extended uniformly.** No schema fan-out or feature-table indirection — every option is a flat column read by the same scan path. Cuts query overhead for list views to a single `SELECT`.
 
+### Added — major new features (v2.9.228 → v2.9.267)
+
+#### Advanced (raw routes)
+- **Caddyfile / JSON tabbed editor on the raw-route form.** Either field can be filled; Caddyfile wins on save (re-runs through Caddy's `/adapt` to regenerate the JSON). New routes default to the Caddyfile tab — far more readable than the JSON shape. Existing rows open on whichever tab already has content. The plumbing was there since the import-Caddyfile feature shipped; v2.9.228 just exposed it as a UX-first toggle on every form. (v2.9.228)
+- **Validate button on raw routes.** New endpoint `POST /api/raw-routes/validate`. For Caddyfile mode it round-trips through `/adapt` (true read-only validation). For JSON mode it parses + structurally checks (must have non-empty `handle[]`); deeper semantic errors surface at sync time. (v2.9.228 — initial broken implementation; **v2.9.233** rewrote it because the original POSTed to `/load?validate_only=true` which Caddy *ignores* — the synthetic config was actually applied to running Caddy. The fix avoids `/load` entirely.)
+
+#### Redirections
+- **Path-based redirect rules on redirection hosts.** New JSON column `redirect_rules`; each rule is `{path, code, destination}`. When non-empty, per-rule path matchers fire BEFORE the host-wide redirect catch-all, enabling partial-migration patterns (`/old-blog/* → newblog.com/{uri}`) without affecting the rest of the host. Empty destination + 410 = "Gone" for retired URLs. UI is a dynamic add/remove/edit table; a hidden input keeps the JSON array in sync for the form post. (v2.9.229)
+- **`redirect_strip_path_prefix`** — drop a leading prefix from the captured path before composing Location. Mirrors the proxy-host `strip_path_prefix` lifted to redirects. (v2.9.230)
+- **`redirect_wildcard_subdomain`** — substitute the matched subdomain label into the destination via `{http.request.host.labels.0}`. Enables `*.old.com → *.new.com` per-tenant migrations. (v2.9.231)
+- **`sunset_at`** — ISO-8601 date column. Once today (UTC) is on or after the configured date, the redirect short-circuits to **410 Gone** with body "This URL has been retired." Compliance/cleanup helper for "redirect old → new until 2027-01-01, then drop." (v2.9.232)
+
+#### Proxy hosts — multi-path routing
+- **`proxy_redirect_rules`** — same JSON-array pattern as redirection hosts but on proxy hosts. Each rule's path matcher fires BEFORE the reverse_proxy. Drives the common Caddyfile pattern: `@root path / + redir @root /webmail 302` alongside a regular reverse_proxy. (v2.9.266)
+- **`additional_upstream_rules`** — path-based upstream overrides. Each entry is `{path, scheme, host, port, strip_prefix, add_x_real_ip}`. Lets a single proxy host route different paths to different upstreams — what the user's Nextcloud Caddyfile needed (`/push/* → notify_push`, `/exapps/* → AppAPI`, everything else → Nextcloud, all on one host). `strip_prefix` mirrors Caddyfile's `handle_path`; `add_x_real_ip` is a per-rule override of the host-wide flag. UI is a dynamic table with two checkboxes per row for those flags. (v2.9.267)
+
+### Added — per-host options expansion (continued from v2.9.234 onwards)
+
+#### Identity / blocking / preload / health auth (v2.9.234-241)
+- **`add_x_authenticated_user`**, **`add_x_remote_user`** — static auth identity request headers (Apache/Nginx CGI conventions). (v2.9.234, .237)
+- **`block_path_extensions`** — comma-separated file extensions returning 403 (matches `*.<ext>` via path globs). Good for blocking `.php` / `.git` / `.bak` on non-PHP backends. (v2.9.235)
+- **`add_link_modulepreload`** — `Link: <…>; rel=modulepreload` response header for ES module preloading. (v2.9.236)
+- **`add_x_forwarded_path`** — `X-Forwarded-Path: {http.request.uri.path}` request header. (v2.9.238)
+- **`add_x_geo_country_code`** — static `X-Geo-Country` header (CDN convention). (v2.9.239)
+- **`add_x_request_priority`** — `X-Request-Priority` response header (RFC 9218). (v2.9.240)
+- **`health_check_basic_auth`** — `user:pass` sent as Basic auth on every active health-check probe; encoded once at config-build time. (v2.9.241)
+
+#### TLS visibility / debugging / blocking / reporting (v2.9.242-249)
+- **`add_x_real_ssl_protocol` / `add_x_real_ssl_cipher`** — forward TLS version + negotiated cipher to upstream so backends can record / log / decide on the original handshake details. (v2.9.242, .243)
+- **`add_x_cache_status`** — static `X-Cache-Status` response header. (v2.9.244)
+- **`deny_referer_regexp`** — return 403 when Referer matches a regexp; symmetric with `deny_user_agent_regexp` / `block_query_param_regexp`. (v2.9.245)
+- **`add_x_request_user_agent`** — echo UA to upstream as a separate header (debug / multi-proxy-chain visibility). (v2.9.246)
+- **`add_reporting_endpoints`** — `Reporting-Endpoints` response header per RFC 8942 (modern successor to Report-To). (v2.9.247)
+- **`add_x_request_byte_count`** — forward Content-Length as `X-Request-Byte-Count` for upstream bandwidth accounting. (v2.9.248)
+- **`add_x_request_received_at`** — forward `{time.now}` as `X-Request-Received-At` for request-trace latency attribution. (v2.9.249)
+
+#### Strip request headers / forwarding / tracing (v2.9.250-257)
+- **`strip_request_headers`** — comma-separated request header names to delete before forwarding (symmetric with `strip_response_headers` from v2.9.168). (v2.9.250)
+- **`add_x_forwarded_method`** — `X-Forwarded-Method: {http.request.method}`. (v2.9.251)
+- **`add_x_request_original_host`** — preserve pre-rewrite Host header. (v2.9.252)
+- **`add_x_request_dnt`** — forward DNT (Do Not Track) signal as `X-Request-DNT`. (v2.9.253)
+- **`add_x_geo_region`** — static `X-Geo-Region` (ISO 3166-2 region code). (v2.9.254)
+- **`add_x_request_secure`** — `X-Request-Secure` with TLS version (empty if plain). (v2.9.255)
+- **`add_x_request_query_count`** — raw query string copied as `X-Request-Query-Count` (debug header). (v2.9.256)
+- **`add_x_request_id_header_response`** — echo Caddy's request UUID to the response so clients can correlate API calls with server logs. (v2.9.257)
+
+#### Canonical host / bot+admin blocking / Link hints / CSP / method override (v2.9.258-265)
+- **`force_canonical_host`** — canonical Host for SEO consolidation. Any request whose Host doesn't equal this value gets a 301 redirect (path + query preserved). Common pattern: `www.example.com → example.com`. (v2.9.258)
+- **`add_x_robots_noindex_quick`** — one-click `X-Robots-Tag: noindex, nofollow` toggle. (v2.9.259)
+- **`block_bot_user_agents`** — built-in regex blocklist for AhrefsBot, SemrushBot, Bytespider, MJ12bot, DotBot, PetalBot, DataForSeoBot, YandexBot, BLEXBot, SerpstatBot. Doesn't touch Google/Bing. (v2.9.260)
+- **`block_admin_paths`** — 404 on `/wp-admin`, `/wp-login`, `/.git`, `/.env`, `/phpmyadmin`, `/myadmin`, `/.svn`, `/.hg`, `/.aws`, `/.ssh`, `/admin/config.php`. 404 (not 403) so scanners don't learn the path exists. (v2.9.261)
+- **`add_link_dns_prefetch` / `add_link_preconnect`** — `Link: <…>; rel=dns-prefetch` / `rel=preconnect` response headers. (v2.9.262, .263)
+- **`add_x_csp_disabled`** — delete the upstream's `Content-Security-Policy` at the edge. (v2.9.264)
+- **`add_x_request_method_override`** — rewrite request method from `X-HTTP-Method-Override` header (firewall workaround). (v2.9.265)
+
 ### Fixed
 - **`/redirection-hosts` rendered an empty page.** The list template called `{{range .TagList}}` but `TagList()` was only defined on `ProxyHost`, never on `RedirectionHost`. `html/template` aborts execution on a missing method, so the page silently broke. Added the matching method on `RedirectionHost`. (v2.9.204)
 - **"Test Upstream" button reported `host and port are required`** even with both fields filled in. Root cause: the handler called `r.ParseForm()` first, which initialises `r.Form` to non-nil for any content type — and `r.FormValue()` only triggers `ParseMultipartForm` automatically when `r.Form` is still nil. Result: multipart bodies (which the JS sends via `FormData`) were silently empty. Removed the redundant `ParseForm()` so `FormValue` auto-parses correctly. (v2.9.203)
@@ -93,12 +148,17 @@ This batch is a sustained expansion of the **per-host configuration surface** in
 - **Login / logout / TOTP rows were invisible on `/activity`** even after the logging fix. `ListActivity` and `ListActivitySearch` filter `WHERE server_id = ?`, but auth events have no Caddy-server context (they use `server_id = 0`). Without explicit handling they got hidden by the per-server scope. Both queries now include `OR server_id = 0` so global auth events surface alongside the current server's rows. (v2.9.211)
 - **"Test Upstream" error messages now carry actionable hints.** Generic Go net errors (`Get "https://Anthem-Omada:8043/": dial tcp: lookup … no such host`) are tedious to interpret, especially the very common DNS-from-container failures. The handler now classifies failures into DNS / TLS / connection refused / timeout categories and surfaces a one-liner hint below the raw error: e.g. for DNS it suggests `--add-host=name:ip` or `--dns=<router>` on the CaddyUI container. The form JS renders the hint as a second line under the red error. (v2.9.212)
 - **Live upstream status panel painted every upstream red** even though Caddy reported all of them with `fails: 0` (healthy). The `UpstreamStatus.Healthy bool` field had no `json:"healthy"` tag, so Go marshalled it as `"Healthy"` (capital H); the proxy_hosts.html JS read `u.healthy` (lowercase) → undefined → falsy → `bg-red-500` for everyone. Single-character fix: added the `json:"healthy"` tag. (v2.9.216)
+- **Validate button accidentally applied configs.** First implementation in v2.9.228 used `/load?validate_only=true`, which Caddy's admin API ignores — the synthetic test config was actually loaded into running Caddy each time someone clicked Validate, polluting autosave with a `_caddyui_validate` ghost server. v2.9.233 rewrote the handler: Caddyfile mode uses `/adapt` (true read-only), JSON mode uses parse + structural-shape check (no admin call). (v2.9.233)
+- **DOM-text-as-URL hardening on two sites** (analytics server selector, layout row-click-to-edit). Both were server-rendered with trusted values, but the inputs went through type/shape validation now (`parseInt(this.value, 10) || 0` + `> 0` check; `href[0] === '/' && href[1] !== '/'` check) to satisfy CodeQL `js/xss-through-dom` and harden defense-in-depth against attribute tampering. (v2.9.226)
 
 ### Security
-- **SMTP header CRLF injection fixed.** `sendSMTPMail` interpolated `From`, `Subject`, and recipient values straight into the message envelope without sanitisation. A user-controlled subject of `hi\r\nBcc: attacker@evil.com` would smuggle an extra `Bcc:` header into the outgoing mail. New `stripCRLF` helper replaces CR/LF with space on those header values before composing the message; body content is left alone (newlines in body are content, not header boundaries). Resolves the GitHub code-scanning **"Email content injection"** alert as a real fix, not a suppression. (v2.9.209)
-- **CodeQL custom config** — switched from GitHub default-setup to advanced via `.github/workflows/codeql.yml` + `.github/codeql/codeql-config.yml`. Two queries are excluded with documented rationale because their findings are intentional design for a reverse-proxy manager:
+- **SMTP header CRLF injection fixed in both `sendEmail` and `sendEmailTo`.** Both functions interpolated `From` / `Subject` / recipient values straight into the message envelope without sanitisation. A user-controlled subject of `hi\r\nBcc: attacker@evil.com` would smuggle an extra `Bcc:` header into the outgoing mail. New `stripCRLF` helper replaces CR/LF with space on those header values before composing the message; body content is left alone (newlines in body are content, not header boundaries). Resolves the GitHub code-scanning **"Email content injection"** alert as a real fix, not a suppression. (v2.9.209 — `sendEmail`; v2.9.225 — `sendEmailTo`, the sibling function CodeQL flagged separately)
+- **Log injection fixed in unauthenticated handler paths.** The `forgot-password` and `invite` handlers logged the user-submitted email verbatim. Attacker types `victim@example.com\n[CRITICAL] system compromised` into the form → log shows a forged line. New `sanitizeForLog` helper escapes `\r`/`\n` to literal `\\r`/`\\n` (preserves diagnostics, breaks line-injection vector). Applied to both call sites. (v2.9.225)
+- **CodeQL custom config** — switched from GitHub default-setup to advanced via `.github/workflows/codeql.yml` + `.github/codeql/codeql-config.yml`. Four queries are excluded with documented rationale because their findings are intentional design for a reverse-proxy manager:
   - `go/disabled-certificate-check` — `InsecureSkipVerify: true` on probe-only HTTP clients (Test Upstream, active health checks, app-health poller) is required to reach self-signed/internal-CA backends; the flag is never set on the forward path Caddy serves to end users.
-  - `go/request-forgery` — CaddyUI exists to issue HTTP requests to user-specified targets (Test Upstream, health checks, forward_auth subrequests, DNS provider APIs, NTFY/webhook notifications); SSRF as a class doesn't apply because the user driving these requests is the authenticated admin, not an untrusted external party. (v2.9.209)
+  - `go/request-forgery` — CaddyUI exists to issue HTTP requests to user-specified targets (Test Upstream, health checks, forward_auth subrequests, DNS provider APIs, NTFY/webhook notifications); SSRF as a class doesn't apply because the user driving these requests is the authenticated admin, not an untrusted external party.
+  - `go/email-injection` — `stripCRLF` already neutralises the SMTP-header-smuggling vector in both email functions; CodeQL's data-flow analyser doesn't recognise the sanitiser.
+  - `go/log-injection` — the remaining flagged sites are in DNS plumbing where the user-controlled values are FQDNs / zone names / provider IDs / IPs the admin themselves typed. The realistic threat is "an authenticated admin smuggles a forged log line by typing `\n` into their own DNS setting" — they can already do anything they want to the DB and log file. Unauthenticated input paths use `sanitizeForLog` (above). (v2.9.209, .225, .227)
 
 ### Performance — analytics
 - **SQLite tuned for analytics workloads.** New PRAGMAs in the connection DSN: `cache_size=-262144` (256 MiB page cache, was ~2 MiB default), `mmap_size=268435456` (256 MiB mmap window for index scans), `synchronous=NORMAL` (safe with WAL, faster writes during analytics reads), `temp_store=MEMORY` (GROUP BY / DISTINCT temp tables stay in RAM). Existing WAL mode + busy_timeout retained. (v2.9.206)
@@ -110,15 +170,16 @@ This batch is a sustained expansion of the **per-host configuration surface** in
 - **API Tokens** sidebar entry added between **API** and the admin section (visible to all authenticated users, not just admin). The route, handler, and template existed since the API tokens feature shipped, but there was never a link to reach them from the UI. New `key` icon added to the icon helper. (v2.9.207)
 
 ### Docker
-- Published as `applegater/caddyui:v2.9.224` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`).
-- **`:latest` is intentionally not bumped.** A follow-up release will promote `:preview` once tested in the field.
+- Published as `applegater/caddyui:v2.10.0` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`).
+- The `:preview` tag was used during the v2.9.1 → v2.9.267 development cycle and now points at v2.10.0 as well.
 
 ### Upgrade note
-- Pull `:preview` (not `:latest`) to test: `docker pull applegater/caddyui:preview`. Just `docker pull` won't activate the new image — recreate the container (Portainer's **Recreate** button with "Pull latest image" toggled, or the `recreate.sh` helper script).
+- Just `docker pull` won't activate the new image — recreate the container (Portainer's **Recreate** button with "Pull latest image" toggled, or the `recreate.sh` helper script).
 - DB schema migration runs automatically on first start; no manual SQL needed.
 - All new options default to off / empty — existing rows behave identically until you edit them and opt in.
-- On first start with v2.9.207+ the access_daily backfill aggregator runs once for installs with historical events. Watch for `access_daily: aggregated N day(s)` in the log; subsequent loads of `/analytics` are then instant.
-- If your CaddyUI container can't resolve the LAN hostnames your proxy hosts use (e.g. `Anthem-Omada`, `omada-controller`, etc. — Docker's embedded DNS at `127.0.0.11` doesn't see your LAN), add `--dns=<router-ip>` or `--add-host=<name>:<ip>` to the container args, or run with `--network=host`. The Live upstream panel reads from Caddy's authoritative view (which has its own resolver) so it's unaffected; only CaddyUI's own port-dot probe needs DNS.
+- On first start the access_daily backfill aggregator runs once for installs with historical events. Watch for `access_daily: aggregated N day(s)` in the log; subsequent loads of `/analytics` are then instant.
+- If your CaddyUI container can't resolve the LAN hostnames your proxy hosts use (e.g. `Anthem-Omada`, `omada-controller` — Docker's embedded DNS at `127.0.0.11` doesn't see your LAN), add `--dns=<router-ip>` or `--add-host=<name>:<ip>` to the container args, or run with `--network=host`. The Live upstream panel reads from Caddy's authoritative view (which has its own resolver) so it's unaffected; only CaddyUI's own port-dot probe needs DNS.
+- **Open the Validate button**: in v2.9.228 the original implementation accidentally polluted Caddy's autosave with a `_caddyui_validate` ghost server. v2.9.233 fixed the bug. If you're upgrading from v2.9.228-232 directly to v2.10.0 (skipping the in-between fix), trigger any sync from CaddyUI after the upgrade to overwrite autosave.
 
 ---
 
