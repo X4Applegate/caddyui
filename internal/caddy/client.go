@@ -3586,6 +3586,51 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			})
 		}
 	}
+	// v2.9.266: proxy_redirect_rules — when present, emit a subroute BEFORE
+	// the reverse_proxy that catches matching paths and redirects. The
+	// reverse_proxy still handles every path that doesn't match any rule
+	// (Caddy falls through after the subroute completes for unmatched
+	// paths). Each rule: {path, code, destination}. Empty destination +
+	// non-2xx code = static response with no Location header (e.g. 410
+	// Gone for retired endpoints).
+	if rules := p.ProxyRedirectRuleList(); len(rules) > 0 {
+		ruleRoutes := []any{}
+		for _, rule := range rules {
+			if rule.Path == "" {
+				continue
+			}
+			code := rule.Code
+			if code == 0 {
+				code = 301
+			}
+			var ruleHandle map[string]any
+			if rule.Destination == "" {
+				ruleHandle = map[string]any{
+					"handler":     "static_response",
+					"status_code": code,
+				}
+			} else {
+				ruleHandle = map[string]any{
+					"handler": "static_response",
+					"headers": map[string]any{
+						"Location": []any{rule.Destination},
+					},
+					"status_code": code,
+				}
+			}
+			ruleRoutes = append(ruleRoutes, map[string]any{
+				"match":    []any{map[string]any{"path": []any{rule.Path}}},
+				"handle":   []any{ruleHandle},
+				"terminal": true,
+			})
+		}
+		if len(ruleRoutes) > 0 {
+			handlers = append(handlers, map[string]any{
+				"handler": "subroute",
+				"routes":  ruleRoutes,
+			})
+		}
+	}
 	handlers = append(handlers, reverseProxy)
 
 	// v2.9.16: path-based routing — narrow the match to a specific path prefix.
