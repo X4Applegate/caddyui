@@ -146,6 +146,15 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 			}
 			return out
 		},
+		// rawRouteSourceHosts extracts the match.host[] entries from a raw
+		// route's JSON blob so the /raw-routes table and the dashboard's
+		// "Recent advanced routes" block can render hostname pills the same
+		// way proxy hosts do. v2.7.9. Returns nil for path-only / port-only
+		// routes (no host matcher) — templates fall back to the route label
+		// in that case so the Source column never renders empty.
+		"rawRouteSourceHosts": func(jsonData string) []string {
+			return rawRouteHosts(models.RawRoute{JSONData: jsonData})
+		},
 		"prettyJSON": func(s string) string {
 			var v any
 			if err := json.Unmarshal([]byte(s), &v); err != nil {
@@ -1177,6 +1186,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		"User":             s.currentUser(r),
 		"ProxyHosts":       hosts,
 		"RedirectionHosts": redirs,
+		"RawRoutes":        raws,
 		"RawCount":         len(raws),
 		"CertCount":        len(certs),
 		"LastSync":         lastSync,
