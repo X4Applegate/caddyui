@@ -5,9 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
-## [2.9.202] — 2026-04-27 · Preview · Per-host options expansion (v2.9.1 → v2.9.202)
+## [2.9.0 → 2.9.207] — 2026-04-27 · Preview · Per-host options expansion + analytics speedup
 
-> **Preview release.** Published as `applegater/caddyui:v2.9.202` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`). The `:latest` tag is intentionally **not** updated — pull `:preview` to test, then a follow-up release will promote to `:latest` once verified in the field.
+> **Preview release.** Published as `applegater/caddyui:v2.9.207` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`). Each numeric tag in the v2.9.0 → v2.9.207 range was an internal-only build during development; this entry consolidates them into one published changelog so the public history stays readable. The `:latest` tag is intentionally **not** updated — pull `:preview` to test, then a follow-up release will promote to `:latest` once verified in the field.
 
 ### Added
 
@@ -75,14 +75,29 @@ This batch is a sustained expansion of the **per-host configuration surface** in
 - **DB migrations are additive only.** Each v2.9.x option lands as an `ALTER TABLE proxy_hosts ADD COLUMN <name> … DEFAULT <off>` guarded by `columnExists2`, so upgrading is a no-op for existing rows. Downgrade is supported (older builds simply ignore the new columns).
 - **`scanProxyHost` / `proxyHostBaseCols` / `CreateProxyHost` / `UpdateProxyHost` extended uniformly.** No schema fan-out or feature-table indirection — every option is a flat column read by the same scan path. Cuts query overhead for list views to a single `SELECT`.
 
+### Fixed
+- **`/redirection-hosts` rendered an empty page.** The list template called `{{range .TagList}}` but `TagList()` was only defined on `ProxyHost`, never on `RedirectionHost`. `html/template` aborts execution on a missing method, so the page silently broke. Added the matching method on `RedirectionHost`. (v2.9.204)
+- **"Test Upstream" button reported `host and port are required`** even with both fields filled in. Root cause: the handler called `r.ParseForm()` first, which initialises `r.Form` to non-nil for any content type — and `r.FormValue()` only triggers `ParseMultipartForm` automatically when `r.Form` is still nil. Result: multipart bodies (which the JS sends via `FormData`) were silently empty. Removed the redundant `ParseForm()` so `FormValue` auto-parses correctly. (v2.9.203)
+- **Pasting the same Caddyfile twice silently created duplicate raw routes.** `postCaddyfileImport` blindly created a new row per adapted route while the parallel `postImport` path (sync from Caddy admin API) properly deduped against existing proxies, redirects, and raw routes. Brought `postCaddyfileImport` to parity — duplicates now report as `skipped` in the result table instead of being created. (v2.9.205)
+
+### Performance — analytics
+- **SQLite tuned for analytics workloads.** New PRAGMAs in the connection DSN: `cache_size=-262144` (256 MiB page cache, was ~2 MiB default), `mmap_size=268435456` (256 MiB mmap window for index scans), `synchronous=NORMAL` (safe with WAL, faster writes during analytics reads), `temp_store=MEMORY` (GROUP BY / DISTINCT temp tables stay in RAM). Existing WAL mode + busy_timeout retained. (v2.9.206)
+- **`access_daily` rollup is now actually used.** The schema for it was added in v2.7.0 but never populated and never queried — every analytics card scanned `access_events` directly even for 30/90/365-day windows. v2.9.206 adds a startup + hourly aggregator (`AggregateAccessDaily`) that backfills missing UTC days. v2.9.207 extends the rollup with per-status-class buckets (`s2xx`/`s3xx`/`s4xx`/`s5xx`/`s_other`) and an idempotent column migration for existing tables. The aggregator detects pre-status-bucket rows and re-aggregates them.
+- **`AccessTotalsSince` and `StatusBucketsSince` rollup-aware.** Long windows (≥ today's UTC midnight in the past) now read past-day totals from `access_daily` and only scan `access_events` for today, dropping the cost of "Last 30 days" / "Last 90 days" / status-pie cards from `O(rows-in-window)` to `O(rows-today + days-in-window)`. Multi-second scans become ~10ms lookups on installs with millions of events. Visitor counts from the rollup are best-effort approximate (same IP across multiple days counted multiple times) — schema comment already noted this. (v2.9.206 — totals; v2.9.207 — status)
+- **Two missing indexes on `access_events`** for the status-code breakdown card and unique-visitor count: `idx_access_events_status_ts(status, ts)` and `idx_access_events_client_ip_ts(client_ip, ts)`. `path` was deliberately *not* indexed — high-cardinality and the index would be larger than the table; top-paths queries already use the `(host, ts)` range scan + GROUP BY which is fast enough. (v2.9.206)
+
+### UI
+- **API Tokens** sidebar entry added between **API** and the admin section (visible to all authenticated users, not just admin). The route, handler, and template existed since the API tokens feature shipped, but there was never a link to reach them from the UI. New `key` icon added to the icon helper. (v2.9.207)
+
 ### Docker
-- Published as `applegater/caddyui:v2.9.202` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`).
+- Published as `applegater/caddyui:v2.9.207` and `:preview` (multi-arch `linux/amd64` + `linux/arm64`).
 - **`:latest` is intentionally not bumped.** A follow-up release will promote `:preview` once tested in the field.
 
 ### Upgrade note
 - Pull `:preview` (not `:latest`) to test: `docker pull applegater/caddyui:preview`.
 - DB schema migration runs automatically on first start; no manual SQL needed.
 - All new options default to off / empty — existing rows behave identically until you edit them and opt in.
+- On first start with v2.9.207 the access_daily backfill aggregator runs once for installs with historical events. Watch for `access_daily: aggregated N day(s)` in the log; subsequent loads of `/analytics` are then instant.
 
 ---
 
