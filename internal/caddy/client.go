@@ -1392,10 +1392,12 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		})
 	} else if p.PermissionsPolicy != "" {
 		// Even without the full security bundle, still inject Permissions-Policy alone.
+		// v2.10.5: delete+set so an upstream-set value doesn't pile up alongside ours.
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
-				"set": map[string]any{"Permissions-Policy": []any{p.PermissionsPolicy}},
+				"delete": []any{"Permissions-Policy"},
+				"set":    map[string]any{"Permissions-Policy": []any{p.PermissionsPolicy}},
 			},
 		})
 	}
@@ -1968,10 +1970,13 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		})
 	}
 	// v2.9.259: add_x_robots_noindex_quick — quick X-Robots-Tag noindex toggle.
+	// v2.10.5: delete+set so a stacked upstream / bundle / XRobotsTag-text value
+	// doesn't end up alongside ours.
 	if p.AddXRobotsNoindexQuick {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
+				"delete": []any{"X-Robots-Tag"},
 				"set": map[string]any{
 					"X-Robots-Tag": []any{"noindex, nofollow"},
 				},
@@ -2401,10 +2406,13 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		})
 	}
 	// v2.9.202: add_x_xss_protection_disabled — set X-XSS-Protection: 0 response header (disable legacy XSS filter).
+	// v2.10.5: delete+set so the bundle's "1; mode=block" doesn't end up
+	// alongside our "0" when both are enabled.
 	if p.AddXXSSProtectionDisabled {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
+				"delete": []any{"X-Xss-Protection"},
 				"set": map[string]any{
 					"X-Xss-Protection": []any{"0"},
 				},
@@ -2693,10 +2701,12 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		})
 	}
 	// v2.9.81: x_robots_tag — X-Robots-Tag response header for search-engine control.
+	// v2.10.5: delete+set so this overrides any upstream value cleanly.
 	if p.XRobotsTag != "" {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
+				"delete": []any{"X-Robots-Tag"},
 				"set": map[string]any{
 					"X-Robots-Tag": []any{p.XRobotsTag},
 				},
@@ -3317,10 +3327,13 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		})
 	}
 	// v2.9.108: add_content_type_nosniff — add X-Content-Type-Options: nosniff response header.
+	// v2.10.5: delete+set so this doesn't stack alongside the bundle's nosniff
+	// when both `security_headers_enabled` and this individual toggle are on.
 	if p.AddContentTypeNosniff {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
+				"delete": []any{"X-Content-Type-Options"},
 				"set": map[string]any{
 					"X-Content-Type-Options": []any{"nosniff"},
 				},
