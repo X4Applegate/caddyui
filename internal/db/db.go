@@ -1870,6 +1870,70 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "add_x_request_path_info") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_path_info INTEGER NOT NULL DEFAULT 0`)
 	}
+	// v2.9.234: add_x_authenticated_user — static X-Authenticated-User request header
+	if !columnExists2(db, "proxy_hosts", "add_x_authenticated_user") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_authenticated_user TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.235: block_path_extensions — comma-separated file extensions to block with 403 (.php, .git, etc.)
+	if !columnExists2(db, "proxy_hosts", "block_path_extensions") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN block_path_extensions TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.236: add_link_modulepreload — Link: <…>; rel=modulepreload response header
+	if !columnExists2(db, "proxy_hosts", "add_link_modulepreload") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_link_modulepreload TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.237: add_x_remote_user — static X-Remote-User request header (Nginx-style auth identity)
+	if !columnExists2(db, "proxy_hosts", "add_x_remote_user") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_remote_user TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.238: add_x_forwarded_path — forward X-Forwarded-Path header (request URI path) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_forwarded_path") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_forwarded_path INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.239: add_x_geo_country_code — static X-Geo-Country header (CDN convention, e.g. "US")
+	if !columnExists2(db, "proxy_hosts", "add_x_geo_country_code") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_geo_country_code TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.240: add_x_request_priority — X-Request-Priority response header (RFC 9218 priority hints)
+	if !columnExists2(db, "proxy_hosts", "add_x_request_priority") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_priority TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.241: health_check_basic_auth — "user:pass" credentials for active health check probes
+	if !columnExists2(db, "proxy_hosts", "health_check_basic_auth") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN health_check_basic_auth TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.242: add_x_real_ssl_protocol — forward X-Real-SSL-Protocol header (TLS version) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_real_ssl_protocol") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_real_ssl_protocol INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.243: add_x_real_ssl_cipher — forward X-Real-SSL-Cipher header (negotiated cipher) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_real_ssl_cipher") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_real_ssl_cipher INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.244: add_x_cache_status — static X-Cache-Status response header value (e.g. "MISS")
+	if !columnExists2(db, "proxy_hosts", "add_x_cache_status") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_cache_status TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.245: deny_referer_regexp — block requests whose Referer matches regexp with 403
+	if !columnExists2(db, "proxy_hosts", "deny_referer_regexp") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN deny_referer_regexp TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.246: add_x_request_user_agent — forward X-Request-User-Agent header (echoes UA) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_user_agent") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_user_agent INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.247: add_reporting_endpoints — Reporting-Endpoints response header (RFC 8942)
+	if !columnExists2(db, "proxy_hosts", "add_reporting_endpoints") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_reporting_endpoints TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.248: add_x_request_byte_count — forward X-Request-Byte-Count header (Content-Length) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_byte_count") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_byte_count INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.249: add_x_request_received_at — forward X-Request-Received-At header (timestamp) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_received_at") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_received_at INTEGER NOT NULL DEFAULT 0`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

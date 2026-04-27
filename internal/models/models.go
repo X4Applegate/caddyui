@@ -555,6 +555,38 @@ type ProxyHost struct {
 	AddXRequestLocalPort bool
 	// v2.9.224: add_x_request_path_info — forward X-PathInfo header (CGI-style PATH_INFO) to upstream
 	AddXRequestPathInfo bool
+	// v2.9.234: add_x_authenticated_user — static X-Authenticated-User request header
+	AddXAuthenticatedUser string
+	// v2.9.235: block_path_extensions — comma-separated file extensions (.php,.git,.cgi) blocked with 403
+	BlockPathExtensions string
+	// v2.9.236: add_link_modulepreload — Link: <…>; rel=modulepreload response header value
+	AddLinkModulePreload string
+	// v2.9.237: add_x_remote_user — static X-Remote-User request header (Nginx-style)
+	AddXRemoteUser string
+	// v2.9.238: add_x_forwarded_path — forward X-Forwarded-Path request header
+	AddXForwardedPath bool
+	// v2.9.239: add_x_geo_country_code — static X-Geo-Country header (CDN convention)
+	AddXGeoCountryCode string
+	// v2.9.240: add_x_request_priority — X-Request-Priority response header (RFC 9218)
+	AddXRequestPriority string
+	// v2.9.241: health_check_basic_auth — "user:pass" basic auth for health check probes
+	HealthCheckBasicAuth string
+	// v2.9.242: add_x_real_ssl_protocol — forward X-Real-SSL-Protocol header (TLS version)
+	AddXRealSSLProtocol bool
+	// v2.9.243: add_x_real_ssl_cipher — forward X-Real-SSL-Cipher header (negotiated cipher)
+	AddXRealSSLCipher bool
+	// v2.9.244: add_x_cache_status — static X-Cache-Status response header value
+	AddXCacheStatus string
+	// v2.9.245: deny_referer_regexp — block requests by Referer regexp with 403
+	DenyRefererRegexp string
+	// v2.9.246: add_x_request_user_agent — forward X-Request-User-Agent (echoes UA) header
+	AddXRequestUserAgent bool
+	// v2.9.247: add_reporting_endpoints — Reporting-Endpoints response header (RFC 8942)
+	AddReportingEndpoints string
+	// v2.9.248: add_x_request_byte_count — forward X-Request-Byte-Count (Content-Length) header
+	AddXRequestByteCount bool
+	// v2.9.249: add_x_request_received_at — forward X-Request-Received-At (timestamp) header
+	AddXRequestReceivedAt bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -1488,7 +1520,23 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.add_x_response_trace_id,0),
     COALESCE(ph.add_x_request_local_addr,0),
     COALESCE(ph.add_x_request_local_port,0),
-    COALESCE(ph.add_x_request_path_info,0)`
+    COALESCE(ph.add_x_request_path_info,0),
+    COALESCE(ph.add_x_authenticated_user,''),
+    COALESCE(ph.block_path_extensions,''),
+    COALESCE(ph.add_link_modulepreload,''),
+    COALESCE(ph.add_x_remote_user,''),
+    COALESCE(ph.add_x_forwarded_path,0),
+    COALESCE(ph.add_x_geo_country_code,''),
+    COALESCE(ph.add_x_request_priority,''),
+    COALESCE(ph.health_check_basic_auth,''),
+    COALESCE(ph.add_x_real_ssl_protocol,0),
+    COALESCE(ph.add_x_real_ssl_cipher,0),
+    COALESCE(ph.add_x_cache_status,''),
+    COALESCE(ph.deny_referer_regexp,''),
+    COALESCE(ph.add_x_request_user_agent,0),
+    COALESCE(ph.add_reporting_endpoints,''),
+    COALESCE(ph.add_x_request_byte_count,0),
+    COALESCE(ph.add_x_request_received_at,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -1497,7 +1545,7 @@ func scanProxyHost(s interface {
 }, p *ProxyHost, ownerEmail *string) error {
 	var ws, bce, ssl, sslf, h2, en, bae int
 	var ownerID int64
-	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo int
+	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt int
 	dst := []any{
 		&p.ID, &p.ServerID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
@@ -1771,6 +1819,22 @@ func scanProxyHost(s interface {
 		&addXReqLocalAddr,
 		&addXReqLocalPort,
 		&addXReqPathInfo,
+		&p.AddXAuthenticatedUser,
+		&p.BlockPathExtensions,
+		&p.AddLinkModulePreload,
+		&p.AddXRemoteUser,
+		&addXFwdPath,
+		&p.AddXGeoCountryCode,
+		&p.AddXRequestPriority,
+		&p.HealthCheckBasicAuth,
+		&addXRealSSLProto,
+		&addXRealSSLCipher,
+		&p.AddXCacheStatus,
+		&p.DenyRefererRegexp,
+		&addXReqUA,
+		&p.AddReportingEndpoints,
+		&addXReqByteCount,
+		&addXReqReceivedAt,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -1868,6 +1932,12 @@ func scanProxyHost(s interface {
 	p.AddXRequestLocalAddr = addXReqLocalAddr == 1
 	p.AddXRequestLocalPort = addXReqLocalPort == 1
 	p.AddXRequestPathInfo = addXReqPathInfo == 1
+	p.AddXForwardedPath = addXFwdPath == 1
+	p.AddXRealSSLProtocol = addXRealSSLProto == 1
+	p.AddXRealSSLCipher = addXRealSSLCipher == 1
+	p.AddXRequestUserAgent = addXReqUA == 1
+	p.AddXRequestByteCount = addXReqByteCount == 1
+	p.AddXRequestReceivedAt = addXReqReceivedAt == 1
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -2084,8 +2154,14 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             add_x_request_remote_port, add_x_request_protocol, add_save_data_vary,
             add_x_environment, add_x_trace_id, health_check_query_params,
             add_x_session_id, add_x_response_trace_id, add_x_request_local_addr,
-            add_x_request_local_port, add_x_request_path_info)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            add_x_request_local_port, add_x_request_path_info,
+            add_x_authenticated_user, block_path_extensions, add_link_modulepreload,
+            add_x_remote_user, add_x_forwarded_path, add_x_geo_country_code,
+            add_x_request_priority, health_check_basic_auth,
+            add_x_real_ssl_protocol, add_x_real_ssl_cipher, add_x_cache_status,
+            deny_referer_regexp, add_x_request_user_agent, add_reporting_endpoints,
+            add_x_request_byte_count, add_x_request_received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -2189,6 +2265,12 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		p.AddXEnvironment, boolInt(p.AddXTraceID), p.HealthCheckQueryParams,
 		boolInt(p.AddXSessionID), boolInt(p.AddXResponseTraceID), boolInt(p.AddXRequestLocalAddr),
 		boolInt(p.AddXRequestLocalPort), boolInt(p.AddXRequestPathInfo),
+		p.AddXAuthenticatedUser, p.BlockPathExtensions, p.AddLinkModulePreload,
+		p.AddXRemoteUser, boolInt(p.AddXForwardedPath), p.AddXGeoCountryCode,
+		p.AddXRequestPriority, p.HealthCheckBasicAuth,
+		boolInt(p.AddXRealSSLProtocol), boolInt(p.AddXRealSSLCipher), p.AddXCacheStatus,
+		p.DenyRefererRegexp, boolInt(p.AddXRequestUserAgent), p.AddReportingEndpoints,
+		boolInt(p.AddXRequestByteCount), boolInt(p.AddXRequestReceivedAt),
 	)
 	if err != nil {
 		return 0, err
@@ -2478,6 +2560,22 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             add_x_request_local_addr=?,
             add_x_request_local_port=?,
             add_x_request_path_info=?,
+            add_x_authenticated_user=?,
+            block_path_extensions=?,
+            add_link_modulepreload=?,
+            add_x_remote_user=?,
+            add_x_forwarded_path=?,
+            add_x_geo_country_code=?,
+            add_x_request_priority=?,
+            health_check_basic_auth=?,
+            add_x_real_ssl_protocol=?,
+            add_x_real_ssl_cipher=?,
+            add_x_cache_status=?,
+            deny_referer_regexp=?,
+            add_x_request_user_agent=?,
+            add_reporting_endpoints=?,
+            add_x_request_byte_count=?,
+            add_x_request_received_at=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -2743,6 +2841,22 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		boolInt(p.AddXRequestLocalAddr),
 		boolInt(p.AddXRequestLocalPort),
 		boolInt(p.AddXRequestPathInfo),
+		p.AddXAuthenticatedUser,
+		p.BlockPathExtensions,
+		p.AddLinkModulePreload,
+		p.AddXRemoteUser,
+		boolInt(p.AddXForwardedPath),
+		p.AddXGeoCountryCode,
+		p.AddXRequestPriority,
+		p.HealthCheckBasicAuth,
+		boolInt(p.AddXRealSSLProtocol),
+		boolInt(p.AddXRealSSLCipher),
+		p.AddXCacheStatus,
+		p.DenyRefererRegexp,
+		boolInt(p.AddXRequestUserAgent),
+		p.AddReportingEndpoints,
+		boolInt(p.AddXRequestByteCount),
+		boolInt(p.AddXRequestReceivedAt),
 		p.ID,
 	)
 	return err

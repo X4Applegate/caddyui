@@ -201,8 +201,18 @@
           result.textContent = '✓ Reachable' + (d.status ? ' · HTTP '+d.status : '') + ' · '+d.latency_ms+'ms';
           result.className = 'text-xs text-green-600 font-medium';
         } else {
-          result.textContent = '✗ ' + (d.error || 'Unreachable' + (d.status ? ' ('+d.status+')' : ''));
-          result.className = 'text-xs text-red-600 font-medium';
+          // v2.9.212: render multi-line failure with the actionable hint
+          // below the raw error so DNS / TLS / refused get a one-liner the
+          // user can act on instead of "Get \"https://...\": ... no such host".
+          var line1 = '✗ ' + (d.error || 'Unreachable' + (d.status ? ' ('+d.status+')' : ''));
+          if (d.hint) {
+            result.innerHTML = '<div class="text-red-600 font-medium">' + line1.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</div>' +
+              '<div class="text-ink-600 mt-1 text-[11px] leading-snug">' + d.hint.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</div>';
+            result.className = 'text-xs';
+          } else {
+            result.textContent = line1;
+            result.className = 'text-xs text-red-600 font-medium';
+          }
         }
       })
       .catch(function(e){ result.textContent = '✗ Request failed'; result.className = 'text-xs text-red-600'; })
@@ -505,6 +515,69 @@
         </label>
         <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Origin</code> request header containing the original Origin header value when forwarding to the upstream.</p>
       </div>
+      <!-- v2.9.212: add_x_request_remote_port -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_remote_port" {{if .Host.AddXRequestRemotePort}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Remote-Port Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Remote-Port</code> request header containing the client's TCP port when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.213: add_x_request_protocol -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_protocol" {{if .Host.AddXRequestProtocol}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Protocol Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Protocol</code> request header containing the HTTP version (HTTP/1.1, HTTP/2) used by the client.</p>
+      </div>
+      <!-- v2.9.218: add_x_trace_id -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_trace_id" {{if .Host.AddXTraceID}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Trace-ID Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Trace-ID</code> containing Caddy's per-request UUID to upstream requests for distributed tracing.</p>
+      </div>
+      <!-- v2.9.220: add_x_session_id -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_session_id" {{if .Host.AddXSessionID}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Session-ID Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Session-ID</code> containing Caddy's per-request UUID to upstream requests.</p>
+      </div>
+      <!-- v2.9.222: add_x_request_local_addr -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_local_addr" {{if .Host.AddXRequestLocalAddr}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Local-Addr Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Local-Addr</code> containing Caddy's listening interface IP to upstream requests.</p>
+      </div>
+      <!-- v2.9.223: add_x_request_local_port -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_local_port" {{if .Host.AddXRequestLocalPort}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Local-Port Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Local-Port</code> containing Caddy's listening port to upstream requests.</p>
+      </div>
+      <!-- v2.9.224: add_x_request_path_info -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_path_info" {{if .Host.AddXRequestPathInfo}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-PathInfo Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-PathInfo</code> containing the request URI path (CGI-style PATH_INFO) to upstream requests.</p>
+      </div>
       <!-- v2.9.190: add_x_forwarded_user -->
       <div class="mb-4 sm:col-span-2">
         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-User Header</label>
@@ -512,6 +585,39 @@
           placeholder="e.g. service-account-name"
           class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-User</code> request header value forwarded to the upstream (useful for impersonation in trusted networks).</p>
+      </div>
+      <!-- v2.9.234: add_x_authenticated_user -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Authenticated-User Header</label>
+        <input type="text" name="add_x_authenticated_user" value="{{.Host.AddXAuthenticatedUser}}"
+          placeholder="e.g. service-account@example.com"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Authenticated-User</code> request header forwarded to the upstream.</p>
+      </div>
+      <!-- v2.9.237: add_x_remote_user -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Remote-User Header</label>
+        <input type="text" name="add_x_remote_user" value="{{.Host.AddXRemoteUser}}"
+          placeholder="e.g. alice"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Remote-User</code> request header (Nginx/Apache CGI convention).</p>
+      </div>
+      <!-- v2.9.238: add_x_forwarded_path -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_path" {{if .Host.AddXForwardedPath}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-Path Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Forwarded-Path</code> containing the request URI path to upstream calls.</p>
+      </div>
+      <!-- v2.9.239: add_x_geo_country_code -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Geo-Country Header</label>
+        <input type="text" name="add_x_geo_country_code" value="{{.Host.AddXGeoCountryCode}}"
+          placeholder="e.g. US"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Geo-Country</code> request header (CDN convention; useful for geo-restricted upstream behavior testing).</p>
       </div>
       <!-- v2.9.193: add_x_forwarded_groups -->
       <div class="mb-4 sm:col-span-2">
@@ -536,6 +642,14 @@
           placeholder="e.g. admin,editor"
           class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-Roles</code> request header value forwarded to the upstream.</p>
+      </div>
+      <!-- v2.9.217: add_x_environment -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Environment Header</label>
+        <input type="text" name="add_x_environment" value="{{.Host.AddXEnvironment}}"
+          placeholder="e.g. production, staging, dev"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Environment</code> request header value forwarded to the upstream.</p>
       </div>
       <!-- v2.9.159: add_origin_header -->
       <div class="mb-4 sm:col-span-2">
@@ -1468,6 +1582,16 @@
         <p class="text-xs text-gray-500 dark:text-gray-400">Sets the <code>X-No-Archive: yes</code> response header to discourage search engines from caching archived copies.</p>
       </div>
 
+      <!-- v2.9.221: add_x_response_trace_id -->
+      <div class="mb-4 flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_response_trace_id" {{if .Host.AddXResponseTraceID}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Response-Trace-ID Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Sets the <code>X-Response-Trace-ID</code> response header to Caddy's request UUID so clients can correlate responses with server-side traces.</p>
+      </div>
+
       <div class="flex items-center gap-3">
         <label class="text-sm text-gray-700 dark:text-gray-300 w-48 shrink-0">Response Body Read Timeout (s)</label>
         <div class="flex items-center gap-2">
@@ -1618,6 +1742,14 @@
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-none">{{.Host.HealthCheckHeaders}}</textarea>
           <p class="text-xs text-ink-500 mt-1">JSON object of extra headers sent with each health-check probe (e.g. <code class="font-mono bg-ink-100 px-1 rounded">{"X-Health":"1"}</code>)</p>
         </div>
+        <!-- v2.9.219: health_check_query_params -->
+        <div>
+          <label class="block text-xs font-medium text-ink-700 mb-1">Health Check Query String</label>
+          <input type="text" name="health_check_query_params" value="{{.Host.HealthCheckQueryParams}}"
+            placeholder="e.g. token=abc&deep=1"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <p class="text-xs text-ink-500 mt-1">Query string appended to the active health check probe URL. The leading <code>?</code> is added automatically.</p>
+        </div>
         <div>
           <label class="block text-xs font-medium text-ink-700 mb-1">Expected status code <span class="text-ink-400 font-normal">(0 = any 2xx)</span></label>
           <input type="number" name="health_check_expect_status" min="0" max="599" value="{{.Host.HealthCheckExpectStatus}}"
@@ -1662,6 +1794,14 @@
             class="w-64 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
             placeholder="e.g. CaddyHealthCheck/1.0">
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Custom <code>User-Agent</code> header sent with active health check probes.</p>
+        </div>
+        <!-- v2.9.241: health_check_basic_auth -->
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Health Check Basic Auth</label>
+          <input type="text" name="health_check_basic_auth" value="{{.Host.HealthCheckBasicAuth}}"
+            class="w-64 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+            placeholder="user:pass">
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Basic-auth credentials sent with every active health check probe (for endpoints behind login).</p>
         </div>
         <!-- v2.9.148: health_check_tls_server_name -->
         <div class="mb-4">
@@ -2348,6 +2488,16 @@
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Set the <code>Vary</code> response header to instruct CDNs and caches which request headers affect the response. Empty = omit.</p>
       </div>
 
+      <!-- v2.9.214: add_save_data_vary -->
+      <div class="mb-4 flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_save_data_vary" {{if .Host.AddSaveDataVary}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add Save-Data to Vary Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Appends <code>Save-Data</code> to the <code>Vary</code> response header so caches keep separate copies for clients with the <code>Save-Data: on</code> client hint.</p>
+      </div>
+
       <!-- v2.9.91: strip_etag -->
       <div class="mb-4 flex items-center gap-3">
         <label class="flex items-center gap-2 cursor-pointer">
@@ -2498,6 +2648,24 @@
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Value for the <code>Link</code> response header, used for HTTP/2 server push hints or resource preloading.</p>
       </div>
 
+      <!-- v2.9.236: add_link_modulepreload -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link rel=modulepreload</label>
+        <input type="text" name="add_link_modulepreload" value="{{.Host.AddLinkModulePreload}}"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="e.g. /js/app.module.js">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a <code>Link: &lt;…&gt;; rel=modulepreload</code> response header for ES module preloading.</p>
+      </div>
+
+      <!-- v2.9.240: add_x_request_priority -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Request-Priority Header</label>
+        <input type="text" name="add_x_request_priority" value="{{.Host.AddXRequestPriority}}"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="e.g. u=1, i">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets the <code>X-Request-Priority</code> response header per RFC 9218 priority hints.</p>
+      </div>
+
       <!-- v2.9.173: add_accept_ch -->
       <div class="mb-4">
         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Accept-CH Header</label>
@@ -2632,6 +2800,15 @@
           class="w-full max-w-md rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
           placeholder="e.g. __proto__,constructor,debug">
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated list of query parameter names. Requests containing any of these parameters are rejected with 403.</p>
+      </div>
+
+      <!-- v2.9.235: block_path_extensions -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Block Path Extensions</label>
+        <input type="text" name="block_path_extensions" value="{{.Host.BlockPathExtensions}}"
+          class="w-full max-w-md rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="e.g. .php,.git,.cgi,.bak">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated file extensions; requests whose path ends in any of these return 403.</p>
       </div>
 
       <!-- v2.9.196: block_query_param_regexp -->
