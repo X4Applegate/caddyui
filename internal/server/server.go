@@ -3023,6 +3023,38 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.AddXRequestLocalPort = r.FormValue("add_x_request_local_port") == "on"
 	// v2.9.224: add_x_request_path_info — forward X-PathInfo header to upstream.
 	ph.AddXRequestPathInfo = r.FormValue("add_x_request_path_info") == "on"
+	// v2.9.234: add_x_authenticated_user — static X-Authenticated-User request header.
+	ph.AddXAuthenticatedUser = strings.TrimSpace(r.FormValue("add_x_authenticated_user"))
+	// v2.9.235: block_path_extensions — comma-separated extensions to 403.
+	ph.BlockPathExtensions = strings.TrimSpace(r.FormValue("block_path_extensions"))
+	// v2.9.236: add_link_modulepreload — Link rel=modulepreload value.
+	ph.AddLinkModulePreload = strings.TrimSpace(r.FormValue("add_link_modulepreload"))
+	// v2.9.237: add_x_remote_user — static X-Remote-User request header.
+	ph.AddXRemoteUser = strings.TrimSpace(r.FormValue("add_x_remote_user"))
+	// v2.9.238: add_x_forwarded_path — forward X-Forwarded-Path header.
+	ph.AddXForwardedPath = r.FormValue("add_x_forwarded_path") == "on"
+	// v2.9.239: add_x_geo_country_code — static X-Geo-Country header.
+	ph.AddXGeoCountryCode = strings.TrimSpace(r.FormValue("add_x_geo_country_code"))
+	// v2.9.240: add_x_request_priority — X-Request-Priority response header (RFC 9218).
+	ph.AddXRequestPriority = strings.TrimSpace(r.FormValue("add_x_request_priority"))
+	// v2.9.241: health_check_basic_auth — "user:pass" credentials for health check probes.
+	ph.HealthCheckBasicAuth = strings.TrimSpace(r.FormValue("health_check_basic_auth"))
+	// v2.9.242: add_x_real_ssl_protocol — forward TLS version header.
+	ph.AddXRealSSLProtocol = r.FormValue("add_x_real_ssl_protocol") == "on"
+	// v2.9.243: add_x_real_ssl_cipher — forward negotiated cipher header.
+	ph.AddXRealSSLCipher = r.FormValue("add_x_real_ssl_cipher") == "on"
+	// v2.9.244: add_x_cache_status — static X-Cache-Status response header.
+	ph.AddXCacheStatus = strings.TrimSpace(r.FormValue("add_x_cache_status"))
+	// v2.9.245: deny_referer_regexp — block by Referer regexp with 403.
+	ph.DenyRefererRegexp = strings.TrimSpace(r.FormValue("deny_referer_regexp"))
+	// v2.9.246: add_x_request_user_agent — echo UA to upstream (debug).
+	ph.AddXRequestUserAgent = r.FormValue("add_x_request_user_agent") == "on"
+	// v2.9.247: add_reporting_endpoints — Reporting-Endpoints response header (RFC 8942).
+	ph.AddReportingEndpoints = strings.TrimSpace(r.FormValue("add_reporting_endpoints"))
+	// v2.9.248: add_x_request_byte_count — forward Content-Length as X-Request-Byte-Count.
+	ph.AddXRequestByteCount = r.FormValue("add_x_request_byte_count") == "on"
+	// v2.9.249: add_x_request_received_at — forward server-side timestamp.
+	ph.AddXRequestReceivedAt = r.FormValue("add_x_request_received_at") == "on"
 	return ph, nil
 }
 

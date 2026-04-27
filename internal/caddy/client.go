@@ -677,6 +677,19 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			existing["User-Agent"] = []string{p.HealthCheckUserAgent}
 			activeCheck["headers"] = existing
 		}
+		// v2.9.241: health_check_basic_auth — "user:pass" credentials sent as
+		// Basic Auth on every probe so endpoints behind auth (e.g. an admin
+		// /healthz that requires login) can still be checked. Encoded once
+		// here at config-build time; Caddy doesn't re-encode per probe.
+		if p.HealthCheckBasicAuth != "" {
+			existing, _ := activeCheck["headers"].(map[string][]string)
+			if existing == nil {
+				existing = map[string][]string{}
+			}
+			encoded := base64.StdEncoding.EncodeToString([]byte(p.HealthCheckBasicAuth))
+			existing["Authorization"] = []string{"Basic " + encoded}
+			activeCheck["headers"] = existing
+		}
 		// v2.9.148: health_check_tls_server_name — TLS SNI override for health check connections.
 		if p.HealthCheckTLSServerName != "" {
 			activeCheck["tls_server_name"] = p.HealthCheckTLSServerName
@@ -1907,6 +1920,194 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			"request": map[string]any{
 				"set": map[string]any{
 					"X-Pathinfo": []any{"{http.request.uri.path}"},
+				},
+			},
+		})
+	}
+	// v2.9.242: add_x_real_ssl_protocol — forward TLS version as X-Real-SSL-Protocol to upstream.
+	if p.AddXRealSSLProtocol {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Real-SSL-Protocol": []any{"{http.request.tls.version}"},
+				},
+			},
+		})
+	}
+	// v2.9.243: add_x_real_ssl_cipher — forward negotiated cipher as X-Real-SSL-Cipher to upstream.
+	if p.AddXRealSSLCipher {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Real-SSL-Cipher": []any{"{http.request.tls.cipher_suite}"},
+				},
+			},
+		})
+	}
+	// v2.9.244: add_x_cache_status — set static X-Cache-Status response header.
+	if p.AddXCacheStatus != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"set": map[string]any{
+					"X-Cache-Status": []any{p.AddXCacheStatus},
+				},
+			},
+		})
+	}
+	// v2.9.245: deny_referer_regexp — return 403 when Referer header matches the regexp.
+	if p.DenyRefererRegexp != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "subroute",
+			"routes": []any{
+				map[string]any{
+					"match": []any{
+						map[string]any{
+							"header_regexp": map[string]any{
+								"Referer": map[string]any{"pattern": p.DenyRefererRegexp},
+							},
+						},
+					},
+					"handle": []any{map[string]any{"handler": "static_response", "status_code": 403}},
+				},
+			},
+		})
+	}
+	// v2.9.246: add_x_request_user_agent — forward UA as X-Request-User-Agent to upstream (debug).
+	if p.AddXRequestUserAgent {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-User-Agent": []any{"{http.request.header.User-Agent}"},
+				},
+			},
+		})
+	}
+	// v2.9.247: add_reporting_endpoints — Reporting-Endpoints response header (RFC 8942).
+	if p.AddReportingEndpoints != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"set": map[string]any{
+					"Reporting-Endpoints": []any{p.AddReportingEndpoints},
+				},
+			},
+		})
+	}
+	// v2.9.248: add_x_request_byte_count — forward Content-Length as X-Request-Byte-Count.
+	if p.AddXRequestByteCount {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-Byte-Count": []any{"{http.request.header.Content-Length}"},
+				},
+			},
+		})
+	}
+	// v2.9.249: add_x_request_received_at — forward server-side timestamp as X-Request-Received-At.
+	if p.AddXRequestReceivedAt {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-Received-At": []any{"{time.now}"},
+				},
+			},
+		})
+	}
+	// v2.9.234: add_x_authenticated_user — set static X-Authenticated-User request header.
+	if p.AddXAuthenticatedUser != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Authenticated-User": []any{p.AddXAuthenticatedUser},
+				},
+			},
+		})
+	}
+	// v2.9.235: block_path_extensions — return 403 for paths ending in any
+	// of the listed extensions (e.g. ".php,.git,.cgi"). Each extension is
+	// matched as a glob `*<ext>` so the matcher catches every path level.
+	if p.BlockPathExtensions != "" {
+		var globs []any
+		for _, ext := range strings.Split(p.BlockPathExtensions, ",") {
+			ext = strings.TrimSpace(ext)
+			if ext == "" {
+				continue
+			}
+			if !strings.HasPrefix(ext, ".") {
+				ext = "." + ext
+			}
+			globs = append(globs, "*"+ext)
+		}
+		if len(globs) > 0 {
+			handlers = append(handlers, map[string]any{
+				"handler": "subroute",
+				"routes": []any{
+					map[string]any{
+						"match":  []any{map[string]any{"path": globs}},
+						"handle": []any{map[string]any{"handler": "static_response", "status_code": 403}},
+					},
+				},
+			})
+		}
+	}
+	// v2.9.236: add_link_modulepreload — Link: <…>; rel=modulepreload response header.
+	if p.AddLinkModulePreload != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"add": map[string]any{
+					"Link": []any{p.AddLinkModulePreload + "; rel=modulepreload"},
+				},
+			},
+		})
+	}
+	// v2.9.237: add_x_remote_user — set static X-Remote-User request header (Nginx-style).
+	if p.AddXRemoteUser != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Remote-User": []any{p.AddXRemoteUser},
+				},
+			},
+		})
+	}
+	// v2.9.238: add_x_forwarded_path — forward X-Forwarded-Path request header (URI path) to upstream.
+	if p.AddXForwardedPath {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Forwarded-Path": []any{"{http.request.uri.path}"},
+				},
+			},
+		})
+	}
+	// v2.9.239: add_x_geo_country_code — set static X-Geo-Country header (CDN convention).
+	if p.AddXGeoCountryCode != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Geo-Country": []any{p.AddXGeoCountryCode},
+				},
+			},
+		})
+	}
+	// v2.9.240: add_x_request_priority — RFC 9218 Priority hints in X-Request-Priority response header.
+	if p.AddXRequestPriority != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"set": map[string]any{
+					"X-Request-Priority": []any{p.AddXRequestPriority},
 				},
 			},
 		})
