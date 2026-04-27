@@ -1,0 +1,68 @@
+{{define "title"}}Snapshot Diff · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex items-center gap-2 mb-6 text-sm text-ink-500">
+  <a href="/snapshots" class="hover:text-ink-900 transition flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="15 18 9 12 15 6"/></svg>
+    Snapshots
+  </a>
+  <span>/</span>
+  <span class="text-ink-700">Diff</span>
+</div>
+
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Config diff</h1>
+  <p class="text-sm text-ink-500 mt-1">
+    Snapshot #{{.Snapshot.ID}}
+    {{if .Snapshot.Note}} &mdash; {{.Snapshot.Note}}{{end}}
+    &middot; taken {{fmtIn .Snapshot.CreatedAt "2006-01-02 15:04:05"}}
+    &middot;
+    {{if eq .Snapshot.Source "manual"}}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">manual</span>
+    {{else}}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">auto</span>
+    {{end}}
+  </p>
+</div>
+
+{{if not .HasDiff}}
+<div class="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-5 py-4">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-green-600 shrink-0"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+  <div>
+    <div class="text-sm font-medium text-green-800">No differences</div>
+    <div class="text-xs text-green-700 mt-0.5">This snapshot matches the current live Caddy config exactly.</div>
+  </div>
+</div>
+{{else}}
+
+<div class="flex items-center justify-between gap-4 mb-4 flex-wrap">
+  <div class="flex items-center gap-4 text-sm">
+    <span class="inline-flex items-center gap-1.5 text-green-700 font-medium">
+      <span class="w-3 h-3 rounded-sm bg-green-100 border border-green-300 inline-block"></span>
+      +{{.AddCount}} added in live
+    </span>
+    <span class="inline-flex items-center gap-1.5 text-red-700 font-medium">
+      <span class="w-3 h-3 rounded-sm bg-red-100 border border-red-300 inline-block"></span>
+      -{{.RemoveCount}} removed in live
+    </span>
+  </div>
+  <div class="text-xs text-ink-500">
+    Comparing snapshot (left) vs. live config (right)
+  </div>
+</div>
+
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+  <div class="flex items-center justify-between px-4 py-2.5 bg-ink-50 border-b border-ink-200 text-xs text-ink-500 font-medium">
+    <span>Unified diff — snapshot #{{.Snapshot.ID}} vs. live config</span>
+    <span class="tabular-nums">{{.AddCount}} added, {{.RemoveCount}} removed</span>
+  </div>
+  <pre class="text-xs font-mono overflow-x-auto max-h-[70vh] overflow-y-auto leading-5 select-text">{{range .DiffLines}}{{if eq .Type "remove"}}<span class="block bg-red-50 text-red-800 px-4 whitespace-pre">- {{.Content}}</span>{{else if eq .Type "add"}}<span class="block bg-green-50 text-green-800 px-4 whitespace-pre">+ {{.Content}}</span>{{else}}<span class="block text-ink-700 px-4 whitespace-pre">  {{.Content}}</span>{{end}}{{end}}</pre>
+</div>
+
+<div class="mt-4 flex items-center gap-3 text-sm text-ink-500">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  Lines prefixed with <code class="font-mono bg-red-50 text-red-700 px-1 rounded text-xs">-</code> exist in the snapshot but not the live config.
+  Lines prefixed with <code class="font-mono bg-green-50 text-green-700 px-1 rounded text-xs">+</code> exist in the live config but not the snapshot.
+</div>
+
+{{end}}
+{{end}}

@@ -47,3 +47,6 @@ caddy_config/
 # Build artifacts
 dist/
 bin/
+
+# Claude Code session state — local-only, never commit
+.claude/

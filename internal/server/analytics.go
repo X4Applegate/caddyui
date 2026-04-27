@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
@@ -419,6 +420,40 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	sparkline := fillBuckets(rawBuckets, twentyFourHoursAgo, now, bucketSec)
 
+	// Bandwidth (bytes_out) sparkline — same window and bucket as request sparkline.
+	var bwBuckets []models.BandwidthBucket
+	if !scoped {
+		bwBuckets, _ = models.BandwidthBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "")
+	} else {
+		bwMap := make(map[int64]models.BandwidthBucket)
+		for _, h := range allowedHosts {
+			bs, _ := models.BandwidthBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, h)
+			for _, b := range bs {
+				key := b.Hour.Unix()
+				m := bwMap[key]
+				m.Hour = b.Hour
+				m.BytesOut += b.BytesOut
+				bwMap[key] = m
+			}
+		}
+		for _, b := range bwMap {
+			bwBuckets = append(bwBuckets, b)
+		}
+	}
+	// Fill zero-gaps.
+	bwSparkline := fillBandwidthBuckets(bwBuckets, twentyFourHoursAgo, now, bucketSec)
+	// Compute total and max bandwidth for the template.
+	var bwTotal, bwMax int64
+	for _, b := range bwSparkline {
+		bwTotal += b.BytesOut
+		if b.BytesOut > bwMax {
+			bwMax = b.BytesOut
+		}
+	}
+	if bwMax == 0 {
+		bwMax = 1
+	}
+
 	// Status-class pie.
 	var statusBuckets models.StatusBuckets
 	if !scoped {
@@ -465,8 +500,11 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		"SevenDay":         sevenTotals,
 		"LiveVisitors":     liveVisitors,
 		"Hosts":            hostRows,
-		"Sparkline":        sparkline,
-		"Status":           statusBuckets,
+		"Sparkline":           sparkline,
+		"BandwidthSparkline": bwSparkline,
+		"BandwidthTotal":     bwTotal,
+		"BandwidthMax":       bwMax,
+		"Status":              statusBuckets,
 		"IngestStats":      ingestStats,
 		"AnalyticsEnabled": cfg.Enabled,
 		// Server-switcher data. AllServers feeds the <select>; the template
@@ -526,11 +564,52 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	since := now.Add(-window)
+	prevSince := since.Add(-window) // start of previous period
+	prevTo := since                 // = start of current period
 
-	totals, _ := models.AccessTotalsSince(s.DB, since, host)
+	totals, _ := models.AccessTotalsBetween(s.DB, since, now, host)
+	prevTotals, _ := models.AccessTotalsBetween(s.DB, prevSince, prevTo, host)
+
+	var viewsChange, visitorsChange int
+	var viewsUp, visitorsUp bool
+	if prevTotals.Views > 0 {
+		viewsChange = (totals.Views - prevTotals.Views) * 100 / prevTotals.Views
+		viewsUp = totals.Views >= prevTotals.Views
+	} else if totals.Views > 0 {
+		viewsChange = 100
+		viewsUp = true
+	}
+	if prevTotals.Visitors > 0 {
+		visitorsChange = (totals.Visitors - prevTotals.Visitors) * 100 / prevTotals.Visitors
+		visitorsUp = totals.Visitors >= prevTotals.Visitors
+	} else if totals.Visitors > 0 {
+		visitorsChange = 100
+		visitorsUp = true
+	}
+	viewsChangeAbs := viewsChange
+	if viewsChangeAbs < 0 {
+		viewsChangeAbs = -viewsChangeAbs
+	}
+	visitorsChangeAbs := visitorsChange
+	if visitorsChangeAbs < 0 {
+		visitorsChangeAbs = -visitorsChangeAbs
+	}
 	paths, _ := models.TopPaths(s.DB, since, host, 20)
 	clients, _ := models.TopClientIPs(s.DB, since, host, 20)
 	status, _ := models.StatusBucketsSince(s.DB, since, host)
+	rtStats, err2 := models.ResponseTimeSince(s.DB, since, host)
+	if err2 != nil {
+		log.Printf("analytics: ResponseTimeSince(%s): %v", host, err2)
+	}
+	bandwidth, err3 := models.BandwidthSince(s.DB, since, host)
+	if err3 != nil {
+		log.Printf("analytics: BandwidthSince(%s): %v", host, err3)
+	}
+	errorPaths, err4 := models.TopErrorPaths(s.DB, since, host, 15)
+	if err4 != nil {
+		log.Printf("analytics: TopErrorPaths(%s): %v", host, err4)
+	}
+	browsers, _ := models.TopBrowsers(s.DB, since, host, 8)
 
 	bucketSec := int64(3600) // 1h buckets regardless of window — keeps the
 	if window >= 30*24*time.Hour {
@@ -540,18 +619,29 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 	buckets := fillBuckets(rawBuckets, since, now, bucketSec)
 
 	s.render(w, r, "analytics_host.html", map[string]any{
-		"User":          u,
-		"IsAdmin":       isAdmin,
-		"Host":          host,
-		"Window":        window,
-		"WindowLabel":   formatWindow(window),
-		"Totals":        totals,
-		"Paths":         paths,
-		"Clients":       clients,
-		"Status":        status,
-		"Buckets":       buckets,
-		"BucketSeconds": bucketSec,
-		"Section":       "analytics",
+		"User":               u,
+		"IsAdmin":            isAdmin,
+		"Host":               host,
+		"Window":             window,
+		"WindowLabel":        formatWindow(window),
+		"Totals":             totals,
+		"Paths":              paths,
+		"Clients":            clients,
+		"Status":             status,
+		"Buckets":            buckets,
+		"BucketSeconds":      bucketSec,
+		"ResponseTime":       rtStats,
+		"Bandwidth":          bandwidth,
+		"ErrorPaths":         errorPaths,
+		"Browsers":           browsers,
+		"Section":            "analytics",
+		"ViewsChange":        viewsChange,
+		"ViewsUp":            viewsUp,
+		"ViewsChangeAbs":     viewsChangeAbs,
+		"VisitorsChange":     visitorsChange,
+		"VisitorsUp":         visitorsUp,
+		"VisitorsChangeAbs":  visitorsChangeAbs,
+		"PrevPeriod":         fmt.Sprintf("prev %s", formatWindow(window)),
 	})
 }
 
@@ -610,6 +700,26 @@ func fillBuckets(sparse []models.HourlyBucket, from, to time.Time, bucketSec int
 	return out
 }
 
+// fillBandwidthBuckets is the bandwidth analogue of fillBuckets — fills in
+// zero-BytesOut buckets for each expected slot between from and to.
+func fillBandwidthBuckets(raw []models.BandwidthBucket, from, to time.Time, bucketSeconds int64) []models.BandwidthBucket {
+	if bucketSeconds <= 0 {
+		bucketSeconds = 3600
+	}
+	start := (from.Unix() / bucketSeconds) * bucketSeconds
+	end := (to.Unix() / bucketSeconds) * bucketSeconds
+	byKey := make(map[int64]int64, len(raw))
+	for _, b := range raw {
+		byKey[(b.Hour.Unix()/bucketSeconds)*bucketSeconds] = b.BytesOut
+	}
+	var out []models.BandwidthBucket
+	for t := start; t <= end; t += bucketSeconds {
+		out = append(out, models.BandwidthBucket{Hour: time.Unix(t, 0), BytesOut: byKey[t]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Hour.Before(out[j].Hour) })
+	return out
+}
+
 // formatWindow turns a duration into a label for the page headline. Used
 // by both the overview page (7d default, no override) and the per-host
 // page (1d / 7d / 30d selectable).
@@ -652,4 +762,228 @@ func (s *Server) pruneAccessLoop() {
 		}
 		timer.Reset(24 * time.Hour)
 	}
+}
+
+// --- Global search ---
+
+// getSearch handles GET /search — full-text search across proxy hosts,
+// redirection hosts, raw routes, and certificates.
+func (s *Server) getSearch(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	isAdmin := u != nil && u.Role == models.RoleAdmin
+
+	var proxyHosts []models.ProxyHost
+	var redirects []models.RedirectionHost
+	var rawRoutes []models.RawRoute
+	var certs []models.Certificate
+
+	if q != "" {
+		sid := s.currentServerID(r)
+		viewerID := int64(0)
+		if u != nil && !isAdmin {
+			viewerID = u.ID
+		}
+		var peers []int64
+		if u != nil && !isAdmin {
+			peers, _ = models.GroupPeerIDs(s.DB, u.ID)
+		}
+		qLower := strings.ToLower(q)
+
+		// Search proxy hosts by domain or forward host.
+		all, _ := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin, peers)
+		for _, p := range all {
+			if strings.Contains(strings.ToLower(p.Domains), qLower) ||
+				strings.Contains(strings.ToLower(p.ForwardHost), qLower) {
+				proxyHosts = append(proxyHosts, p)
+			}
+		}
+
+		// Search redirection hosts.
+		allR, _ := models.ListRedirectionHosts(s.DB, sid, viewerID, isAdmin, peers)
+		for _, rh := range allR {
+			if strings.Contains(strings.ToLower(rh.Domains), qLower) ||
+				strings.Contains(strings.ToLower(rh.ForwardDomain), qLower) {
+				redirects = append(redirects, rh)
+			}
+		}
+
+		// Search raw routes by label.
+		allRaw, _ := models.ListRawRoutes(s.DB, sid, viewerID, isAdmin, peers)
+		for _, rr := range allRaw {
+			if strings.Contains(strings.ToLower(rr.Label), qLower) {
+				rawRoutes = append(rawRoutes, rr)
+			}
+		}
+
+		// Search certificates by name or domains.
+		allCerts, _ := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin, peers)
+		for _, c := range allCerts {
+			if strings.Contains(strings.ToLower(c.Name), qLower) ||
+				strings.Contains(strings.ToLower(c.Domains), qLower) {
+				certs = append(certs, c)
+			}
+		}
+	}
+
+	s.render(w, r, "search.html", map[string]any{
+		"User":       u,
+		"IsAdmin":    isAdmin,
+		"Query":      q,
+		"ProxyHosts": proxyHosts,
+		"Redirects":  redirects,
+		"RawRoutes":  rawRoutes,
+		"Certs":      certs,
+		"Section":    "",
+	})
+}
+
+// --- Session manager ---
+
+// SessionRow is one row in the sessions table view.
+type SessionRow struct {
+	Token     string
+	UserEmail string
+	ExpiresAt time.Time
+	IsCurrent bool
+}
+
+// getSessions handles GET /sessions.
+func (s *Server) getSessions(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	if u == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	isAdmin := u.Role == models.RoleAdmin
+
+	// Get current token to mark it.
+	currentToken := ""
+	if c, err := r.Cookie("caddyui_session"); err == nil {
+		currentToken = c.Value
+	}
+
+	var rows []SessionRow
+	var dbRows *sql.Rows
+	var err error
+	if isAdmin {
+		dbRows, err = s.DB.Query(
+			`SELECT s.token, u.email, s.expires_at FROM sessions s
+			   JOIN users u ON u.id = s.user_id
+			  WHERE s.expires_at > datetime('now')
+			  ORDER BY s.expires_at DESC`)
+	} else {
+		dbRows, err = s.DB.Query(
+			`SELECT token, ?, expires_at FROM sessions
+			  WHERE user_id = ? AND expires_at > datetime('now')
+			  ORDER BY expires_at DESC`, u.Email, u.ID)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer dbRows.Close()
+	for dbRows.Next() {
+		var row SessionRow
+		var expStr string
+		if err := dbRows.Scan(&row.Token, &row.UserEmail, &expStr); err != nil {
+			continue
+		}
+		row.ExpiresAt, _ = time.Parse("2006-01-02 15:04:05", expStr)
+		row.IsCurrent = row.Token == currentToken
+		rows = append(rows, row)
+	}
+
+	s.render(w, r, "sessions.html", map[string]any{
+		"User":     u,
+		"IsAdmin":  isAdmin,
+		"Sessions": rows,
+		"Section":  "",
+	})
+}
+
+// revokeSession handles POST /sessions/{token}/revoke.
+func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	if u == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	token := chi.URLParam(r, "token")
+	isAdmin := u.Role == models.RoleAdmin
+
+	if isAdmin {
+		s.DB.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	} else {
+		// Non-admin can only revoke their own sessions.
+		s.DB.Exec(`DELETE FROM sessions WHERE token = ? AND user_id = ?`, token, u.ID)
+	}
+	http.Redirect(w, r, "/sessions", http.StatusSeeOther)
+}
+
+// exportAnalyticsCSV exports access_events as a downloadable CSV file.
+// Query params: ?host= (filter to one host), ?days=7 (lookback window, max 90).
+func (s *Server) exportAnalyticsCSV(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	isAdmin := u != nil && u.Role == models.RoleAdmin
+
+	host := strings.TrimSpace(r.URL.Query().Get("host"))
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 90 {
+			days = n
+		}
+	}
+
+	// Non-admins: verify they own the requested host.
+	if !isAdmin && host != "" {
+		allowed, err := s.userAllowedHosts(u)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		ok := false
+		for _, h := range allowed {
+			if h == host {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+	} else if !isAdmin && host == "" {
+		// Non-admin without host filter: require a host param for non-admins.
+		http.Error(w, "specify ?host= for non-admin export", http.StatusForbidden)
+		return
+	}
+
+	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	rows, err := models.ExportAccessEvents(s.DB, since, host, 50000)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	fname := "analytics"
+	if host != "" {
+		fname = strings.ReplaceAll(host, ".", "_")
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s_%dd.csv"`, fname, days))
+
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"timestamp", "host", "path", "method", "status", "client_ip", "user_agent", "duration_ms", "bytes_out"})
+	for _, e := range rows {
+		_ = cw.Write([]string{
+			e.TS.UTC().Format(time.RFC3339),
+			e.Host, e.Path, e.Method,
+			strconv.Itoa(e.Status),
+			e.ClientIP, e.UserAgent,
+			strconv.FormatInt(e.DurationMs, 10),
+			strconv.FormatInt(e.BytesOut, 10),
+		})
+	}
+	cw.Flush()
 }

@@ -8,6 +8,34 @@
   </p>
 </div>
 
+<div class="flex items-center gap-3 mb-4 flex-wrap">
+  <form method="get" action="/activity" class="flex items-center gap-2 flex-wrap">
+    <input type="text" name="search" value="{{.Search}}" placeholder="Search actions, actors, targets…"
+      class="text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-72">
+    <select name="action"
+      class="rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <option value="" {{if eq .ActionFilter ""}}selected{{end}}>All actions</option>
+      <option value="proxy_host" {{if eq .ActionFilter "proxy_host"}}selected{{end}}>Proxy hosts</option>
+      <option value="sync" {{if eq .ActionFilter "sync"}}selected{{end}}>Sync</option>
+      <option value="cert" {{if eq .ActionFilter "cert"}}selected{{end}}>Certificates</option>
+      <option value="user" {{if eq .ActionFilter "user"}}selected{{end}}>Users</option>
+      <option value="settings" {{if eq .ActionFilter "settings"}}selected{{end}}>Settings</option>
+      <option value="login" {{if eq .ActionFilter "login"}}selected{{end}}>Login</option>
+      <option value="snapshot" {{if eq .ActionFilter "snapshot"}}selected{{end}}>Snapshots</option>
+      <option value="api_token" {{if eq .ActionFilter "api_token"}}selected{{end}}>API tokens</option>
+    </select>
+    <button type="submit" class="px-3 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition">Search</button>
+    {{if or .Search .ActionFilter}}<a href="/activity" class="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Clear</a>{{end}}
+  </form>
+  <a href="/activity/export.csv{{if .Search}}?search={{.Search}}{{end}}" download
+     class="inline-flex items-center gap-1.5 text-sm text-ink-600 hover:text-ink-800 border border-ink-200 hover:border-ink-300 px-3 py-1.5 rounded-lg transition">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+    </svg>
+    Export CSV
+  </a>
+</div>
+
 <div class="mb-3">
   <input id="activity-search" type="search" placeholder="Filter by actor, action, target, or detail…" autocomplete="off"
     class="w-full max-w-sm rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />

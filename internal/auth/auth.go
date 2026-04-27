@@ -53,6 +53,27 @@ func CreateSession(db *sql.DB, userID int64) (string, time.Time, error) {
 	return tok, expires, nil
 }
 
+// CreateSessionWithTTL works like CreateSession but uses a caller-supplied TTL.
+// Use this when the admin has configured a custom session duration.
+func CreateSessionWithTTL(db *sql.DB, userID int64, ttl time.Duration) (string, time.Time, error) {
+	if ttl <= 0 {
+		ttl = SessionTTL
+	}
+	tok, err := newToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expires := time.Now().Add(ttl)
+	_, err = db.Exec(
+		`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`,
+		tok, userID, expires,
+	)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return tok, expires, nil
+}
+
 func DeleteSession(db *sql.DB, token string) error {
 	_, err := db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
 	return err

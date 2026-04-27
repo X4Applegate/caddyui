@@ -1,0 +1,235 @@
+{{template "layout" dict "Title" "Live Traffic" "Section" .Section "User" .User "Content" ""}}
+
+{{define "content"}}
+<div class="p-6 space-y-4">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900 dark:text-white">Live Traffic Feed</h1>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Real-time access log stream — updates every 2 seconds</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="status-dot" class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400 font-medium">
+        <span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+        Live
+      </span>
+      <button id="pause-btn" class="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+        Pause
+      </button>
+      <button id="clear-btn" class="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+        Clear
+      </button>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="flex items-center gap-3">
+    <input id="filter-host" type="text" placeholder="Filter by host…"
+      class="text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white w-48 focus:outline-none focus:ring-2 focus:ring-blue-500">
+    <select id="filter-status" class="text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <option value="">All statuses</option>
+      <option value="2">2xx</option>
+      <option value="3">3xx</option>
+      <option value="4">4xx</option>
+      <option value="5">5xx</option>
+    </select>
+    <span id="row-count" class="text-xs text-gray-500 dark:text-gray-400 ml-auto">0 rows</span>
+  </div>
+
+  <!-- Table -->
+  <div class="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm">
+    <table class="w-full text-sm">
+      <thead class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+        <tr class="text-left text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+          <th class="px-4 py-3 font-medium">Time</th>
+          <th class="px-4 py-3 font-medium">Method</th>
+          <th class="px-4 py-3 font-medium">Host</th>
+          <th class="px-4 py-3 font-medium">Path</th>
+          <th class="px-4 py-3 font-medium">Status</th>
+          <th class="px-4 py-3 font-medium">Client IP</th>
+          <th class="px-4 py-3 font-medium">Duration</th>
+          <th class="px-4 py-3 font-medium">Bytes Out</th>
+        </tr>
+      </thead>
+      <tbody id="traffic-tbody" class="divide-y divide-gray-100 dark:divide-gray-800 font-mono text-xs">
+        {{range .Events}}
+        <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors event-row"
+            data-host="{{.Host}}" data-status="{{.Status}}">
+          <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap">{{.TS.Format "15:04:05"}}</td>
+          <td class="px-4 py-2.5">
+            <span class="px-1.5 py-0.5 rounded font-medium text-[11px] {{if eq .Method "GET"}}bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400{{else if eq .Method "POST"}}bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400{{else if eq .Method "DELETE"}}bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400{{else}}bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300{{end}}">
+              {{.Method}}
+            </span>
+          </td>
+          <td class="px-4 py-2.5 text-gray-800 dark:text-gray-200 max-w-[180px] truncate">{{.Host}}</td>
+          <td class="px-4 py-2.5 text-gray-600 dark:text-gray-300 max-w-[260px] truncate">{{.Path}}</td>
+          <td class="px-4 py-2.5">
+            <span class="font-bold {{if lt .Status 300}}text-green-600 dark:text-green-400{{else if lt .Status 400}}text-blue-500 dark:text-blue-400{{else if lt .Status 500}}text-yellow-600 dark:text-yellow-400{{else}}text-red-600 dark:text-red-400{{end}}">{{.Status}}</span>
+          </td>
+          <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">{{.ClientIP}}</td>
+          <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">{{.DurationMs}}ms</td>
+          <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">{{.BytesOut}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{if not .Events}}
+    <div id="empty-state" class="py-16 text-center text-gray-400 dark:text-gray-500">
+      <svg class="w-10 h-10 mx-auto mb-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+      </svg>
+      <p class="text-sm">No traffic yet — waiting for requests…</p>
+    </div>
+    {{end}}
+  </div>
+  <p class="text-xs text-gray-400 dark:text-gray-600 text-right">Showing up to 500 most recent rows · older rows pruned automatically</p>
+</div>
+
+<script>
+(function() {
+  const MAX_ROWS = 500;
+  const tbody   = document.getElementById('traffic-tbody');
+  const countEl = document.getElementById('row-count');
+  const pauseBtn = document.getElementById('pause-btn');
+  const clearBtn = document.getElementById('clear-btn');
+  const filterHost = document.getElementById('filter-host');
+  const filterStatus = document.getElementById('filter-status');
+  const emptyState = document.getElementById('empty-state');
+
+  let paused = false;
+  let cursor = 0;
+  let es = null;
+
+  // Seed cursor from pre-rendered rows.
+  tbody.querySelectorAll('tr.event-row').forEach(tr => {
+    const id = parseInt(tr.dataset.id || '0', 10);
+    if (id > cursor) cursor = id;
+  });
+  updateCount();
+
+  function updateCount() {
+    const rows = tbody.querySelectorAll('tr.event-row');
+    const total = rows.length;
+    countEl.textContent = total + ' row' + (total !== 1 ? 's' : '');
+    if (emptyState) emptyState.style.display = total > 0 ? 'none' : '';
+  }
+
+  function methodClass(m) {
+    if (m === 'GET') return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400';
+    if (m === 'POST') return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400';
+    if (m === 'DELETE') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
+    return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+  }
+
+  function statusClass(s) {
+    if (s < 300) return 'text-green-600 dark:text-green-400';
+    if (s < 400) return 'text-blue-500 dark:text-blue-400';
+    if (s < 500) return 'text-yellow-600 dark:text-yellow-400';
+    return 'text-red-600 dark:text-red-400';
+  }
+
+  function fmtTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  }
+
+  function fmtBytes(n) {
+    if (n >= 1073741824) return (n/1073741824).toFixed(1)+' GB';
+    if (n >= 1048576) return (n/1048576).toFixed(1)+' MB';
+    if (n >= 1024) return (n/1024).toFixed(1)+' KB';
+    return n+' B';
+  }
+
+  function buildRow(e) {
+    const tr = document.createElement('tr');
+    tr.className = 'hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors event-row new-row';
+    tr.dataset.host = e.host;
+    tr.dataset.status = String(e.status);
+    tr.dataset.id = String(e.id);
+    tr.innerHTML = `
+      <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap">${fmtTime(e.ts)}</td>
+      <td class="px-4 py-2.5"><span class="px-1.5 py-0.5 rounded font-medium text-[11px] ${methodClass(e.method)}">${e.method}</span></td>
+      <td class="px-4 py-2.5 text-gray-800 dark:text-gray-200 max-w-[180px] truncate">${e.host}</td>
+      <td class="px-4 py-2.5 text-gray-600 dark:text-gray-300 max-w-[260px] truncate">${e.path}</td>
+      <td class="px-4 py-2.5"><span class="font-bold ${statusClass(e.status)}">${e.status}</span></td>
+      <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">${e.client_ip}</td>
+      <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">${e.duration_ms}ms</td>
+      <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">${fmtBytes(e.bytes_out)}</td>
+    `;
+    applyFilter(tr);
+    return tr;
+  }
+
+  function applyFilter(tr) {
+    const hostFilter = filterHost.value.trim().toLowerCase();
+    const statusFilter = filterStatus.value;
+    const host = (tr.dataset.host || '').toLowerCase();
+    const status = parseInt(tr.dataset.status || '0', 10);
+    let show = true;
+    if (hostFilter && !host.includes(hostFilter)) show = false;
+    if (statusFilter && Math.floor(status / 100) !== parseInt(statusFilter, 10)) show = false;
+    tr.style.display = show ? '' : 'none';
+  }
+
+  function applyFilters() {
+    tbody.querySelectorAll('tr.event-row').forEach(applyFilter);
+  }
+
+  filterHost.addEventListener('input', applyFilters);
+  filterStatus.addEventListener('change', applyFilters);
+
+  function connect() {
+    if (es) es.close();
+    es = new EventSource('/api/live-traffic/stream?since=' + cursor);
+    const dot = document.querySelector('#status-dot span.rounded-full');
+    const label = document.getElementById('status-dot');
+
+    es.onopen = () => {
+      if (dot) { dot.className = 'w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse'; }
+      label.className = 'inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400 font-medium';
+      label.childNodes[1].textContent = ' Live';
+    };
+
+    es.onmessage = (ev) => {
+      if (paused) return;
+      let events;
+      try { events = JSON.parse(ev.data); } catch { return; }
+      if (!Array.isArray(events)) return;
+      events.forEach(e => {
+        if (e.id > cursor) cursor = e.id;
+        const tr = buildRow(e);
+        tbody.insertBefore(tr, tbody.firstChild);
+        setTimeout(() => tr.classList.remove('new-row'), 600);
+      });
+      // Trim old rows.
+      const rows = tbody.querySelectorAll('tr.event-row');
+      for (let i = MAX_ROWS; i < rows.length; i++) rows[i].remove();
+      updateCount();
+    };
+
+    es.onerror = () => {
+      if (dot) { dot.className = 'w-1.5 h-1.5 rounded-full bg-red-500'; }
+      label.className = 'inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400 font-medium';
+      label.childNodes[1].textContent = ' Disconnected';
+      // Auto-reconnect is built into EventSource.
+    };
+  }
+
+  connect();
+
+  pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+    if (!paused) connect(); // re-subscribe with current cursor
+  });
+
+  clearBtn.addEventListener('click', () => {
+    tbody.querySelectorAll('tr.event-row').forEach(tr => tr.remove());
+    updateCount();
+  });
+})();
+</script>
+<style>
+.new-row { animation: fadeIn 0.4s ease; }
+@keyframes fadeIn { from { background-color: rgba(59,130,246,0.15); } to { background-color: transparent; } }
+</style>
+{{end}}

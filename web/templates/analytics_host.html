@@ -16,25 +16,46 @@
   </div>
   {{/* Window selector — keeps the query-string approach honest; server only
        accepts 1d/7d/30d, anything else falls back to 7d. */}}
-  <div class="inline-flex rounded-lg border border-ink-200 bg-white p-0.5 text-xs shadow-card">
-    {{$cur := .WindowLabel}}
-    <a href="/analytics/{{.Host}}?window=1d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 24 hours"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">24 hours</a>
-    <a href="/analytics/{{.Host}}?window=7d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 7 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">7 days</a>
-    <a href="/analytics/{{.Host}}?window=30d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 30 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">30 days</a>
+  <div class="flex items-center gap-2 flex-wrap">
+    <div class="inline-flex rounded-lg border border-ink-200 bg-white p-0.5 text-xs shadow-card">
+      {{$cur := .WindowLabel}}
+      <a href="/analytics/{{.Host}}?window=1d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 24 hours"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">24 hours</a>
+      <a href="/analytics/{{.Host}}?window=7d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 7 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">7 days</a>
+      <a href="/analytics/{{.Host}}?window=30d" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 30 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">30 days</a>
+    </div>
+    <a href="/analytics/export.csv?host={{.Host}}&days=7" download
+       class="inline-flex items-center gap-1.5 text-sm text-ink-600 hover:text-ink-800 border border-ink-200 hover:border-ink-300 px-3 py-1.5 rounded-lg transition">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+      </svg>
+      Export CSV
+    </a>
   </div>
 </div>
 
 {{/* ── Summary cards ── */}}
-<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+<div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
   <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Visitors</div>
     <div class="mt-1 text-2xl font-semibold text-ink-900">{{.Totals.Visitors}}</div>
+    {{if .VisitorsChangeAbs}}
+    <div class="text-xs mt-0.5 {{if .VisitorsUp}}text-emerald-600{{else}}text-red-600{{end}}">
+      {{if .VisitorsUp}}↑{{else}}↓{{end}}{{.VisitorsChangeAbs}}% vs prev
+    </div>
+    {{else}}
     <div class="text-xs text-ink-400 mt-0.5">unique IPs</div>
+    {{end}}
   </div>
   <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Views</div>
     <div class="mt-1 text-2xl font-semibold text-ink-900">{{.Totals.Views}}</div>
+    {{if .ViewsChangeAbs}}
+    <div class="text-xs mt-0.5 {{if .ViewsUp}}text-emerald-600{{else}}text-red-600{{end}}">
+      {{if .ViewsUp}}↑{{else}}↓{{end}}{{.ViewsChangeAbs}}% vs prev
+    </div>
+    {{else}}
     <div class="text-xs text-ink-400 mt-0.5">total requests</div>
+    {{end}}
   </div>
   <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Success rate</div>
@@ -54,6 +75,16 @@
       <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span>{{.Status.S5xx}}</span>
     </div>
     <div class="mt-1 text-[10px] text-ink-400">2xx · 3xx · 4xx · 5xx</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Avg response</div>
+    <div class="mt-1 text-2xl font-semibold text-ink-900">{{.ResponseTime.AvgMs}}<span class="text-base font-normal text-ink-400">ms</span></div>
+    <div class="text-xs text-ink-400 mt-0.5">p95 {{.ResponseTime.P95Ms}}ms · max {{.ResponseTime.MaxMs}}ms</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Bandwidth out</div>
+    <div class="mt-1 text-2xl font-semibold text-ink-900">{{fmtBytes .Bandwidth}}</div>
+    <div class="text-xs text-ink-400 mt-0.5">total bytes sent</div>
   </div>
 </div>
 
@@ -161,6 +192,68 @@
     </table>
   </div>
 </div>
+
+{{/* ── Top browsers ── */}}
+{{if .Browsers}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden mb-6">
+  <div class="flex items-baseline justify-between px-5 pt-4 pb-3">
+    <div class="text-sm font-medium text-ink-800">Browser / client breakdown</div>
+    <div class="text-xs text-ink-400">{{.WindowLabel}}</div>
+  </div>
+  <div class="px-5 pb-4 grid grid-cols-1 sm:grid-cols-2 gap-y-3 gap-x-8">
+    {{$topBrowser := 0}}
+    {{range .Browsers}}{{if gt .Count $topBrowser}}{{$topBrowser = .Count}}{{end}}{{end}}
+    {{if eq $topBrowser 0}}{{$topBrowser = 1}}{{end}}
+    {{range .Browsers}}
+    <div class="flex items-center gap-3">
+      <div class="w-28 shrink-0 text-xs text-ink-700 font-medium truncate" title="{{.Browser}}">{{.Browser}}</div>
+      <div class="flex-1 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+        <div class="h-full bg-violet-400 rounded-full" style="width: {{mulDivInt .Count 100 $topBrowser}}%"></div>
+      </div>
+      <div class="w-12 text-right text-xs text-ink-500 font-mono tabular-nums shrink-0">{{.Count}}</div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{/* ── Top error paths ── */}}
+{{if .ErrorPaths}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden mb-6">
+  <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+    <div class="text-sm font-medium text-ink-800">Top error paths</div>
+    <div class="text-xs text-ink-400">4xx + 5xx · {{.WindowLabel}}</div>
+  </div>
+  <table class="w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-2.5 font-medium w-14">Method</th>
+        <th class="px-5 py-2.5 font-medium">Path</th>
+        <th class="px-5 py-2.5 font-medium text-right">Errors</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{$topErr := 0}}
+      {{range .ErrorPaths}}{{if gt .Count $topErr}}{{$topErr = .Count}}{{end}}{{end}}
+      {{if eq $topErr 0}}{{$topErr = 1}}{{end}}
+      {{range .ErrorPaths}}
+      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+        <td class="px-5 py-2 text-xs font-mono text-ink-500 uppercase">{{.Method}}</td>
+        <td class="px-5 py-2 text-ink-700 font-mono text-xs truncate max-w-[260px]" title="{{.Path}}">{{if .Path}}{{.Path}}{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+        <td class="px-5 py-2 text-right">
+          <div class="inline-flex items-center gap-2">
+            <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+              <div class="h-full bg-red-400" style="width: {{mulDivInt .Count 100 $topErr}}%"></div>
+            </div>
+            <span class="text-ink-700 font-mono tabular-nums">{{.Count}}</span>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
 
 {{/* ── Status breakdown (detailed bar) ── */}}
 <div class="bg-white border border-ink-200 rounded-xl p-5 shadow-card mb-6">

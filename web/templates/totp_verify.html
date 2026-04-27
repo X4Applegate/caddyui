@@ -18,6 +18,7 @@
           <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autofocus autocomplete="one-time-code"
             class="w-full border border-ink-200 rounded-lg px-3 py-2.5 text-sm text-center tracking-widest text-lg font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 outline-none transition"
             placeholder="000000">
+          <p class="text-xs text-ink-400 mt-2 text-center">No device? Enter a backup code instead.</p>
         </div>
         {{template "captchaWidget" (dict "CaptchaEnabled" .CaptchaEnabled "CaptchaProvider" .CaptchaProvider "CaptchaSiteKey" .CaptchaSiteKey "FormID" "totp-form")}}
         <button class="w-full bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium py-2.5 rounded-lg transition mt-3">Verify</button>

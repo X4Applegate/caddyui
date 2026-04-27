@@ -1,5 +1,17 @@
 {{define "title"}}Dashboard · CaddyUI{{end}}
 {{define "content"}}
+{{if eq .GlobalMaintenance "1"}}
+<div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 mb-5 text-sm text-amber-800">
+  <svg class="w-4 h-4 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+  <span><strong>Global maintenance mode is active.</strong> All proxy hosts are currently serving a 503 page. <a href="/settings#settings-general" class="underline hover:text-amber-900">Turn it off in Settings</a> and sync Caddy to restore service.</span>
+</div>
+{{else if .MaintenanceCount}}
+<div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 mb-5 text-sm text-amber-700">
+  <svg class="w-4 h-4 shrink-0 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+  <span><strong>{{.MaintenanceCount}} proxy {{if eq .MaintenanceCount 1}}host is{{else}}hosts are{{end}} in maintenance mode.</strong> <a href="/proxy-hosts?status=maintenance" class="underline hover:text-amber-900">View affected hosts →</a></span>
+</div>
+{{end}}
+
 <div class="flex items-start justify-between mb-8 gap-6">
   <div>
     <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Dashboard</h1>
@@ -13,11 +25,38 @@
   </form>
 </div>
 
+{{/* ── Today's analytics stats ── */}}
+{{if or .TodayViews .TodayVisitors}}
+<div class="grid grid-cols-3 gap-3 mb-6">
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-400 font-medium">Requests today</div>
+    <div class="mt-1 text-2xl font-semibold text-ink-900">{{.TodayViews}}</div>
+    <div class="text-xs text-ink-400 mt-1"><a href="/analytics" class="hover:text-brand-600 transition">View analytics →</a></div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-400 font-medium">Visitors today</div>
+    <div class="mt-1 text-2xl font-semibold text-ink-900">{{.TodayVisitors}}</div>
+    <div class="text-xs text-ink-400 mt-1">unique IPs</div>
+  </div>
+  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
+    <div class="text-xs uppercase tracking-wider text-ink-400 font-medium">Bandwidth today</div>
+    <div class="mt-1 text-2xl font-semibold text-ink-900">{{fmtBytes .TodayBandwidth}}</div>
+    <div class="text-xs text-ink-400 mt-1">bytes sent out</div>
+  </div>
+</div>
+{{end}}
+
 {{if .ExpiringSoon}}
 <div class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">
   ⚠️ {{.ExpiringSoon}} certificate(s) expiring within 30 days — <a href="/certificates" class="underline">view certificates</a>
 </div>
 {{end}}
+
+<div id="update-notice" class="hidden bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm flex items-center gap-2">
+  <svg class="w-4 h-4 shrink-0 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+  <span id="update-notice-text"></span>
+  <a href="https://github.com/X4Applegate/caddyui/releases" target="_blank" rel="noopener" class="ml-auto text-brand-600 hover:text-brand-800 font-medium underline text-xs">View release →</a>
+</div>
 
 {{/* ── System stats ──
      Admin-only. These cards surface host-level numbers (uptime, load avg,
@@ -112,6 +151,10 @@
         <span class="font-medium text-ink-700">{{fmtIn .LastSync "Jan 2, 3:04 PM"}}</span>
         {{else}}<span class="text-ink-400 italic">never</span>{{end}}
       </div>
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Caddy version</div>
+        <span class="font-medium text-ink-700 font-mono text-xs" id="caddy-version">…</span>
+      </div>
       {{if eq .User.Role "admin"}}
       <a href="/servers/{{.CurrentServer.ID}}/config" class="text-ink-400 hover:text-brand-600 transition text-[11px] font-medium">View live config →</a>
       {{end}}
@@ -144,6 +187,46 @@
       <span class="text-xs text-ink-500 group-hover:text-amber-600 leading-tight">Certifi-<br>cates</span>
     </a>
   </div>
+
+    <!-- Health summary row -->
+    {{if or .HealthyCount .DownCount}}
+    <div class="mt-3 flex items-center gap-3 text-xs flex-wrap">
+      <span class="text-ink-500 font-medium uppercase tracking-wider text-[10px]">Host health</span>
+      {{if .HealthyCount}}
+      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition font-medium">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+        {{.HealthyCount}} healthy
+      </a>
+      {{end}}
+      {{if .DownCount}}
+      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 text-red-700 hover:bg-red-100 transition font-medium">
+        <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+        {{.DownCount}} down
+      </a>
+      {{end}}
+      {{if .UnknownCount}}
+      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-ink-100 text-ink-500 font-medium">
+        <span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>
+        {{.UnknownCount}} unchecked
+      </span>
+      {{end}}
+      <a href="/proxy-hosts" class="text-ink-400 hover:text-brand-600 transition ml-auto text-[11px]">view all →</a>
+    </div>
+    {{end}}
+
+    {{/* Quick stats badges */}}
+    <div class="mt-4 flex flex-wrap gap-2">
+      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-xs text-ink-600 hover:border-brand-300 hover:text-brand-700 transition">
+        <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+        <span class="font-medium">{{.EnabledHostCount}}</span> enabled hosts
+      </a>
+      {{if .MaintenanceHostCount}}
+      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-xs text-ink-600 hover:border-amber-300 hover:text-amber-700 transition">
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+        <span class="font-medium">{{.MaintenanceHostCount}}</span> in maintenance
+      </a>
+      {{end}}
+    </div>
 </div>
 {{end}}
 
@@ -405,5 +488,31 @@
     .then(function(data) { if (data) applyHealth(data); })
     .catch(function() {});
 })();
+
+// Fetch and display Caddy version.
+(function() {
+  fetch('/api/caddy-version')
+    .then(r => r.json())
+    .then(data => {
+      var el = document.getElementById('caddy-version');
+      if (el) el.textContent = data.version || 'unknown';
+    })
+    .catch(() => {
+      var el = document.getElementById('caddy-version');
+      if (el) el.textContent = 'unavailable';
+    });
+})();
+
+// Check for CaddyUI updates
+fetch('/api/version-check').then(function(r){ return r.json(); }).then(function(d){
+  if(d.has_update){
+    var el=document.getElementById('update-notice');
+    var textEl=document.getElementById('update-notice-text');
+    if(el && textEl){
+      textEl.textContent='CaddyUI '+d.latest+' is available (running '+d.current+').';
+      el.classList.remove('hidden');
+    }
+  }
+}).catch(function(){});
 </script>
 {{end}}

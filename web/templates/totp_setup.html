@@ -6,7 +6,50 @@
     <p class="text-sm text-ink-500 mt-1">Secure your account with an authenticator app.</p>
   </div>
 
+  {{if .Required}}
+  <div class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">
+    Two-factor authentication is required for all users. Please set it up to continue.
+  </div>
+  {{end}}
+
+  {{if .Enforce}}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 mb-5 text-sm text-amber-800">
+    <strong>Two-factor authentication required.</strong> Your administrator requires all users to enroll TOTP before accessing CaddyUI. Please set it up now.
+  </div>
+  {{end}}
+
+  {{if .BackupCodes}}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-5 mb-6">
+    <h2 class="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-2">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+      Backup codes — copy now, shown once
+    </h2>
+    <p class="text-xs text-amber-700 mb-3">These 10 single-use codes let you sign in if you lose your authenticator app. Store them somewhere safe.</p>
+    <div id="backup-codes-grid" class="grid grid-cols-2 gap-2 mb-3">
+      {{range .BackupCodes}}
+      <code class="font-mono text-sm bg-white border border-amber-200 rounded px-2 py-1 text-center select-all">{{.}}</code>
+      {{end}}
+    </div>
+    <button type="button" onclick="(function(){var codes=[];document.querySelectorAll('#backup-codes-grid code').forEach(function(el){codes.push(el.textContent)});navigator.clipboard&&navigator.clipboard.writeText(codes.join('\n')).then(function(){this.textContent='Copied!';setTimeout(function(){this.textContent='Copy all'},2000)}.bind(this))}.call(this))"
+      class="text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium px-3 py-1.5 rounded-lg transition">Copy all</button>
+  </div>
+  {{end}}
+
   {{if .TOTPEnabled}}
+  {{if and .BackupCodeCount (not .BackupCodes)}}
+  <div class="bg-white border border-ink-200 rounded-xl p-4 mb-4 text-sm">
+    <div class="flex items-center justify-between">
+      <div>
+        <span class="font-medium text-ink-800">Backup codes</span>
+        <span class="ml-2 text-ink-500">{{.BackupCodeCount}} remaining</span>
+      </div>
+      <form method="post" action="/totp/regenerate-backup-codes"
+            onsubmit="return confirm('Regenerate backup codes? Your existing codes will be invalidated.')">
+        <button type="submit" class="text-xs text-brand-600 hover:text-brand-800 font-medium transition">Regenerate</button>
+      </form>
+    </div>
+  </div>
+  {{end}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-4">
     <div class="flex items-center gap-3 mb-4">
       <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>Enabled</span>

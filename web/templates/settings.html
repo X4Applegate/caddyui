@@ -13,12 +13,14 @@
      under the nav bar. Smooth-scroll comes from html { scroll-behavior }
      in app.css (auto-disabled for prefers-reduced-motion). */}}
 <nav aria-label="Settings sections" class="mb-6 max-w-2xl flex flex-wrap gap-1.5">
+  <a href="#settings-general"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">General</a>
   <a href="#settings-smtp"        class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Email</a>
   <a href="#settings-notifications" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifications</a>
   <a href="#settings-timezone"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Timezone</a>
   <a href="#settings-dns-ips"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">DNS IPs</a>
   <a href="#settings-dns-providers" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">DNS Providers</a>
   <a href="#settings-captcha"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CAPTCHA</a>
+  <a href="#settings-security"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Security</a>
   <a href="#analytics"            class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Analytics</a>
   <a href="#settings-notifier"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifier</a>
   <a href="#settings-backup"      class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Backup</a>
@@ -35,6 +37,70 @@
 {{end}}
 
 <form method="post" action="/settings" class="max-w-2xl space-y-6">
+
+  {{/* ── General ── */}}
+  <div id="settings-general" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">General</div>
+      <p class="text-xs text-ink-500">Branding and display settings.</p>
+    </div>
+    <div class="py-4 border-b border-gray-100 dark:border-gray-800">
+      <label class="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-1.5">Site title</label>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">Shown in the browser tab title and sidebar. Leave blank to use "CaddyUI".</p>
+      <input type="text" name="site_title" value="{{.SiteTitle}}"
+        placeholder="CaddyUI"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition max-w-sm">
+    </div>
+    <div class="flex items-center gap-3 py-3 border-b border-gray-100 dark:border-gray-800">
+      <label class="text-sm text-gray-700 dark:text-gray-300 w-32 shrink-0">Favicon URL</label>
+      <input type="url" name="favicon_url" value="{{.FaviconURL}}"
+        placeholder="https://example.com/favicon.ico"
+        class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1">Custom 404 page HTML <span class="text-ink-400 font-normal">(optional — shown for requests matching no proxy or redirect)</span></label>
+      <textarea name="catch_all_404_html" rows="4" placeholder="&lt;!DOCTYPE html&gt;&lt;html&gt;…"
+        class="w-full font-mono text-xs rounded-lg border border-ink-200 px-3 py-2 bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.CatchAll404HTML}}</textarea>
+      <p class="text-xs text-ink-400 mt-1">Leave blank to use Caddy's default. Applied on next sync.</p>
+    </div>
+    {{/* Global maintenance mode */}}
+    <div class="pt-4 border-t border-ink-100">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <label class="block text-sm font-medium text-ink-800">Global maintenance mode</label>
+          <p class="text-xs text-ink-500 mt-0.5">When enabled, ALL proxy hosts immediately serve a 503 maintenance page regardless of individual host settings. Use for emergency maintenance windows. Applied on next sync.</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+          <input type="checkbox" name="global_maintenance" value="1" {{if eq .GlobalMaintenance "1"}}checked{{end}} class="sr-only peer">
+          <div class="w-10 h-5 bg-ink-200 rounded-full peer peer-checked:bg-amber-500 peer-focus:ring-2 peer-focus:ring-amber-500/30 transition-all after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+      {{if eq .GlobalMaintenance "1"}}
+      <div class="mt-2 flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        Global maintenance is <strong>active</strong> — all proxy hosts are serving 503. Sync Caddy to apply.
+      </div>
+      {{end}}
+    </div>
+    {{/* Auto-sync interval */}}
+    <div class="pt-4 border-t border-ink-100">
+      <label class="block text-sm font-medium text-ink-800 mb-1">Periodic auto-sync interval <span class="font-normal text-ink-400">(hours, 0 = disabled)</span></label>
+      <p class="text-xs text-ink-500 mb-2">CaddyUI re-syncs all Caddy servers automatically when this many hours have passed since the last sync. Useful as a failsafe when cert renewals or external config changes need to be reapplied.</p>
+      <input type="number" name="auto_sync_hours" min="0" max="168"
+        value="{{if .AutoSyncHours}}{{.AutoSyncHours}}{{else}}0{{end}}"
+        placeholder="0"
+        class="w-28 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    </div>
+    {{/* Activity log retention */}}
+    <div class="pt-4 border-t border-ink-100">
+      <label class="block text-sm font-medium text-ink-800 mb-1">Activity Log Retention (days)</label>
+      <p class="text-xs text-ink-500 mb-2">Auto-delete activity log entries older than this many days. 0 keeps all entries.</p>
+      <input type="number" name="activity_log_days" min="0"
+        value="{{.ActivityLogDays}}"
+        placeholder="0 = keep forever"
+        class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    </div>
+  </div>
 
   {{/* ── SMTP ── */}}
   <div id="settings-smtp" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
@@ -152,6 +218,13 @@
       <input name="webhook_url" value="{{.WebhookURL}}" type="url" placeholder="https://hooks.example.com/notify"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       <p class="text-xs text-ink-500 mt-1.5">Optional. CaddyUI will POST JSON payloads here in addition to email. Upstream checks run every 5 minutes; cert checks run every 24 hours.</p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Webhook Secret <span class="text-ink-400 font-normal">(optional)</span></label>
+      <input name="webhook_secret" value="{{.WebhookSecret}}" type="password" placeholder=""
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1.5">If set, each webhook POST includes an X-Signature-256 header with HMAC-SHA256 of the payload (compatible with GitHub's webhook format)</p>
     </div>
 
     {{/* Save + Test webhook buttons — same pattern as the SMTP card. */}}
@@ -478,6 +551,67 @@
     sync();
   })();
   </script>
+
+  {{/* ── Security policy (v2.9.5) ── 2FA enforcement and future auth settings */}}
+  <div id="settings-security" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">Security policy</div>
+      <p class="text-xs text-ink-500">Authentication requirements applied to all users.</p>
+    </div>
+    <div class="flex items-center justify-between py-3 border-b border-gray-100 dark:border-gray-800">
+      <div>
+        <div class="text-sm font-medium text-gray-900 dark:text-gray-100">Require 2FA for all users</div>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">When enabled, users without TOTP set up are redirected to the setup page before accessing any page.</p>
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer">
+        <input type="checkbox" name="require_2fa" {{if eq .Require2FA "1"}}checked{{end}}
+          class="sr-only peer" onchange="this.form.submit()">
+        <div class="w-11 h-6 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-blue-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+      </label>
+    </div>
+    <div class="py-4 border-b border-gray-100 dark:border-gray-800">
+      <label class="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-1.5">Trusted proxy IPs/CIDRs</label>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">One per line or comma-separated. Used to extract real client IPs from X-Forwarded-For headers (e.g. Cloudflare, load balancers).</p>
+      <textarea name="trusted_proxies" rows="3"
+        placeholder="103.21.244.0/22&#10;103.22.200.0/22&#10;10.0.0.0/8"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.TrustedProxies}}</textarea>
+    </div>
+    <div class="py-4 border-b border-gray-100 dark:border-gray-800">
+      <label class="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-1.5">Admin panel IP allowlist</label>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">⚠️ One IP or CIDR per line. When set, only listed IPs can access CaddyUI. <strong>Make sure your own IP is included before saving!</strong></p>
+      <textarea name="admin_allowlist" rows="4"
+        placeholder="Leave blank to allow all IPs&#10;192.168.1.0/24&#10;10.0.0.1"
+        class="w-full text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono">{{.AdminAllowlist}}</textarea>
+    </div>
+    <div class="py-4 border-b border-ink-100">
+      <label class="block text-xs font-medium text-ink-700 mb-1">Session duration (days)</label>
+      <div class="flex items-center gap-2">
+        <input type="number" name="session_duration_days" min="1" max="365"
+          value="{{if .SessionDays}}{{.SessionDays}}{{else}}7{{end}}"
+          class="w-24 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <span class="text-xs text-ink-500">days · Default: 7</span>
+      </div>
+      <p class="text-xs text-ink-400 mt-1">New sessions will use this duration. Existing sessions are not affected.</p>
+    </div>
+    <div class="py-4 border-b border-gray-100 dark:border-gray-800">
+      <label class="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-1.5">Max Login Attempts (per IP)</label>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">Blocks an IP after this many failed login attempts in a 15-minute window. 0 disables brute-force protection.</p>
+      <input type="number" name="max_login_attempts" min="0"
+        value="{{.MaxLoginAttempts}}"
+        placeholder="0 = no limit"
+        class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    </div>
+    <div class="flex items-start justify-between gap-4 mt-4 pt-4 border-t border-ink-100">
+      <div>
+        <label class="block text-sm font-medium text-ink-800">Require TOTP for all users</label>
+        <p class="text-xs text-ink-500 mt-0.5">When enabled, all users must enroll two-factor authentication before they can access the dashboard.</p>
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+        <input type="checkbox" name="require_totp" value="1" {{if eq .RequireTOTP "1"}}checked{{end}} class="sr-only peer">
+        <div class="w-10 h-5 bg-ink-200 rounded-full peer peer-checked:bg-brand-500 peer-focus:ring-2 peer-focus:ring-brand-500/30 transition-all after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5"></div>
+      </label>
+    </div>
+  </div>
 
   {{/* ── Visitor Analytics (v2.7.0) ──
        Privacy-light traffic stats built from Caddy's access logs. When the
