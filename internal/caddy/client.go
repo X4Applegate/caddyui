@@ -1372,9 +1372,23 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		if p.PermissionsPolicy != "" {
 			secHdrs["Permissions-Policy"] = []any{p.PermissionsPolicy}
 		}
+		// v2.10.4: delete-then-set semantics. Caddy's response.set on an
+		// already-present header (when the upstream sets the same header
+		// itself, e.g. CaddyUI's own middleware as of v2.10.3) appends a
+		// second value rather than replacing it, leaving the client with
+		// duplicate X-Frame-Options / X-Content-Type-Options lines. Adding
+		// `delete` first guarantees the upstream's value is cleared before
+		// we set our own, so the bundle ships exactly one of each header.
+		delHdrs := []any{}
+		for k := range secHdrs {
+			delHdrs = append(delHdrs, k)
+		}
 		handlers = append(handlers, map[string]any{
-			"handler":  "headers",
-			"response": map[string]any{"set": secHdrs},
+			"handler": "headers",
+			"response": map[string]any{
+				"delete": delHdrs,
+				"set":    secHdrs,
+			},
 		})
 	} else if p.PermissionsPolicy != "" {
 		// Even without the full security bundle, still inject Permissions-Policy alone.
