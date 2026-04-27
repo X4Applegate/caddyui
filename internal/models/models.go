@@ -533,6 +533,28 @@ type ProxyHost struct {
 	AddXRequestHostname bool
 	// v2.9.202: add_x_xss_protection_disabled — set X-XSS-Protection: 0 response header
 	AddXXSSProtectionDisabled bool
+	// v2.9.212: add_x_request_remote_port — forward X-Request-Remote-Port header to upstream
+	AddXRequestRemotePort bool
+	// v2.9.213: add_x_request_protocol — forward X-Request-Protocol header (HTTP version) to upstream
+	AddXRequestProtocol bool
+	// v2.9.214: add_save_data_vary — set Vary: Save-Data response header (client hint aware caching)
+	AddSaveDataVary bool
+	// v2.9.217: add_x_environment — static X-Environment request header value
+	AddXEnvironment string
+	// v2.9.218: add_x_trace_id — forward X-Trace-ID header (Caddy UUID per request) to upstream
+	AddXTraceID bool
+	// v2.9.219: health_check_query_params — query string appended to active health check probe URL
+	HealthCheckQueryParams string
+	// v2.9.220: add_x_session_id — forward X-Session-ID header (Caddy UUID per request) to upstream
+	AddXSessionID bool
+	// v2.9.221: add_x_response_trace_id — set X-Response-Trace-ID response header (echoes the trace UUID)
+	AddXResponseTraceID bool
+	// v2.9.222: add_x_request_local_addr — forward X-Local-Addr header (Caddy's listening IP) to upstream
+	AddXRequestLocalAddr bool
+	// v2.9.223: add_x_request_local_port — forward X-Local-Port header (Caddy's listening port) to upstream
+	AddXRequestLocalPort bool
+	// v2.9.224: add_x_request_path_info — forward X-PathInfo header (CGI-style PATH_INFO) to upstream
+	AddXRequestPathInfo bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -746,8 +768,50 @@ type RedirectionHost struct {
 	MaintenanceStatusCode int // 503 (default), 429, 502, 520
 	// v2.9.39: sort order — manual ordering weight in the list view (0 = default, lower = first)
 	SortOrder int
+	// v2.9.229: redirect_rules — JSON array of path-based redirect rules.
+	// When non-empty, takes precedence over ForwardDomain/PreservePath/etc.
+	// for matched paths. Each rule entry shape:
+	//   {"path":"/old-blog/*", "code":301, "destination":"https://newblog.com{uri}"}
+	// Caddy's `{uri}` placeholder in the destination preserves the original
+	// path + query; "{path}" preserves only the path. Rules are evaluated
+	// in order; the host-wide redirect is the catch-all fallback for
+	// requests that don't match any rule.
+	RedirectRules string
+	// v2.9.230: redirect_strip_path_prefix — drop a leading prefix from
+	// the path before composing the Location header on the host-wide
+	// redirect. e.g. prefix /old-blog and PreservePath on:
+	//   /old-blog/post/123 → ForwardDomain/post/123 instead of /old-blog/post/123
+	RedirectStripPathPrefix string
+	// v2.9.231: redirect_wildcard_subdomain — substitute the subdomain
+	// label into the destination ({labels.0} for first label).
+	// Enables `*.old.com → *.new.com` style migrations.
+	RedirectWildcardSubdomain bool
+	// v2.9.232: sunset_at — ISO-8601 date (YYYY-MM-DD) after which this
+	// redirect returns 410 Gone instead of redirecting. Empty = no sunset.
+	SunsetAt string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// RedirectRule is one entry in the JSON stored on RedirectionHost.RedirectRules.
+type RedirectRule struct {
+	Path        string `json:"path"`
+	Code        int    `json:"code"`
+	Destination string `json:"destination"`
+}
+
+// RedirectRuleList parses the JSON-encoded RedirectRules column into typed
+// rules. Returns nil for empty / malformed values so callers can range over
+// it safely.
+func (r *RedirectionHost) RedirectRuleList() []RedirectRule {
+	if r.RedirectRules == "" {
+		return nil
+	}
+	var out []RedirectRule
+	if err := json.Unmarshal([]byte(r.RedirectRules), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func (r RedirectionHost) DomainList() []string {
@@ -1413,7 +1477,18 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.add_x_forwarded_uri,0),
     COALESCE(ph.add_x_no_archive,0),
     COALESCE(ph.add_x_request_hostname,0),
-    COALESCE(ph.add_x_xss_protection_disabled,0)`
+    COALESCE(ph.add_x_xss_protection_disabled,0),
+    COALESCE(ph.add_x_request_remote_port,0),
+    COALESCE(ph.add_x_request_protocol,0),
+    COALESCE(ph.add_save_data_vary,0),
+    COALESCE(ph.add_x_environment,''),
+    COALESCE(ph.add_x_trace_id,0),
+    COALESCE(ph.health_check_query_params,''),
+    COALESCE(ph.add_x_session_id,0),
+    COALESCE(ph.add_x_response_trace_id,0),
+    COALESCE(ph.add_x_request_local_addr,0),
+    COALESCE(ph.add_x_request_local_port,0),
+    COALESCE(ph.add_x_request_path_info,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -1422,7 +1497,7 @@ func scanProxyHost(s interface {
 }, p *ProxyHost, ownerEmail *string) error {
 	var ws, bce, ssl, sslf, h2, en, bae int
 	var ownerID int64
-	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis int
+	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo int
 	dst := []any{
 		&p.ID, &p.ServerID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
@@ -1685,6 +1760,17 @@ func scanProxyHost(s interface {
 		&addXNoArch,
 		&addXReqHost,
 		&addXXSSDis,
+		&addXReqRemotePort,
+		&addXReqProto,
+		&addSaveDataVary,
+		&p.AddXEnvironment,
+		&addXTraceID,
+		&p.HealthCheckQueryParams,
+		&addXSessionID,
+		&addXRespTraceID,
+		&addXReqLocalAddr,
+		&addXReqLocalPort,
+		&addXReqPathInfo,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -1773,6 +1859,15 @@ func scanProxyHost(s interface {
 	p.AddXNoArchive = addXNoArch == 1
 	p.AddXRequestHostname = addXReqHost == 1
 	p.AddXXSSProtectionDisabled = addXXSSDis == 1
+	p.AddXRequestRemotePort = addXReqRemotePort == 1
+	p.AddXRequestProtocol = addXReqProto == 1
+	p.AddSaveDataVary = addSaveDataVary == 1
+	p.AddXTraceID = addXTraceID == 1
+	p.AddXSessionID = addXSessionID == 1
+	p.AddXResponseTraceID = addXRespTraceID == 1
+	p.AddXRequestLocalAddr = addXReqLocalAddr == 1
+	p.AddXRequestLocalPort = addXReqLocalPort == 1
+	p.AddXRequestPathInfo = addXReqPathInfo == 1
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -1985,8 +2080,12 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             add_x_real_scheme, add_origin_agent_cluster, add_x_forwarded_groups,
             add_x_forwarded_email, add_x_forwarded_roles, block_query_param_regexp,
             add_x_request_referer, add_x_request_origin, add_x_forwarded_uri,
-            add_x_no_archive, add_x_request_hostname, add_x_xss_protection_disabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            add_x_no_archive, add_x_request_hostname, add_x_xss_protection_disabled,
+            add_x_request_remote_port, add_x_request_protocol, add_save_data_vary,
+            add_x_environment, add_x_trace_id, health_check_query_params,
+            add_x_session_id, add_x_response_trace_id, add_x_request_local_addr,
+            add_x_request_local_port, add_x_request_path_info)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -2086,6 +2185,10 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		p.AddXForwardedEmail, p.AddXForwardedRoles, p.BlockQueryParamRegexp,
 		boolInt(p.AddXRequestReferer), boolInt(p.AddXRequestOrigin), boolInt(p.AddXForwardedURI),
 		boolInt(p.AddXNoArchive), boolInt(p.AddXRequestHostname), boolInt(p.AddXXSSProtectionDisabled),
+		boolInt(p.AddXRequestRemotePort), boolInt(p.AddXRequestProtocol), boolInt(p.AddSaveDataVary),
+		p.AddXEnvironment, boolInt(p.AddXTraceID), p.HealthCheckQueryParams,
+		boolInt(p.AddXSessionID), boolInt(p.AddXResponseTraceID), boolInt(p.AddXRequestLocalAddr),
+		boolInt(p.AddXRequestLocalPort), boolInt(p.AddXRequestPathInfo),
 	)
 	if err != nil {
 		return 0, err
@@ -2364,6 +2467,17 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             add_x_no_archive=?,
             add_x_request_hostname=?,
             add_x_xss_protection_disabled=?,
+            add_x_request_remote_port=?,
+            add_x_request_protocol=?,
+            add_save_data_vary=?,
+            add_x_environment=?,
+            add_x_trace_id=?,
+            health_check_query_params=?,
+            add_x_session_id=?,
+            add_x_response_trace_id=?,
+            add_x_request_local_addr=?,
+            add_x_request_local_port=?,
+            add_x_request_path_info=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -2618,6 +2732,17 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		boolInt(p.AddXNoArchive),
 		boolInt(p.AddXRequestHostname),
 		boolInt(p.AddXXSSProtectionDisabled),
+		boolInt(p.AddXRequestRemotePort),
+		boolInt(p.AddXRequestProtocol),
+		boolInt(p.AddSaveDataVary),
+		p.AddXEnvironment,
+		boolInt(p.AddXTraceID),
+		p.HealthCheckQueryParams,
+		boolInt(p.AddXSessionID),
+		boolInt(p.AddXResponseTraceID),
+		boolInt(p.AddXRequestLocalAddr),
+		boolInt(p.AddXRequestLocalPort),
+		boolInt(p.AddXRequestPathInfo),
 		p.ID,
 	)
 	return err
@@ -2732,7 +2857,11 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.advanced_config,''),
                COALESCE(rh.color,''),
                COALESCE(rh.maintenance_status_code,503),
-               COALESCE(rh.sort_order,0)
+               COALESCE(rh.sort_order,0),
+               COALESCE(rh.redirect_rules,''),
+               COALESCE(rh.redirect_strip_path_prefix,''),
+               COALESCE(rh.redirect_wildcard_subdomain,0),
+               COALESCE(rh.sunset_at,'')
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ? ORDER BY rh.sort_order ASC, rh.id DESC`, serverID)
@@ -2752,7 +2881,11 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.advanced_config,''),
                COALESCE(rh.color,''),
                COALESCE(rh.maintenance_status_code,503),
-               COALESCE(rh.sort_order,0)
+               COALESCE(rh.sort_order,0),
+               COALESCE(rh.redirect_rules,''),
+               COALESCE(rh.redirect_strip_path_prefix,''),
+               COALESCE(rh.redirect_wildcard_subdomain,0),
+               COALESCE(rh.sunset_at,'')
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ?
@@ -2768,7 +2901,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 		var r RedirectionHost
 		var pp, ssl, sslf, en, maintMode int
 		var ownerID int64
-		var hstsSubdomains, hstsPreload int
+		var hstsSubdomains, hstsPreload, wildcardSub int
 		if err := rows.Scan(&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain,
 			&r.ForwardHTTPCode, &pp, &ssl, &sslf, &en, &r.CertificateID,
 			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail,
@@ -2777,7 +2910,8 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 			&r.CustomRespHeaders, &r.IPBlocklist,
 			&r.HSTSMaxAgeSec, &hstsSubdomains, &hstsPreload,
 			&r.AdvancedConfig, &r.Color,
-			&r.MaintenanceStatusCode, &r.SortOrder); err != nil {
+			&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
+			&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt); err != nil {
 			return nil, err
 		}
 		r.PreservePath = pp == 1
@@ -2787,6 +2921,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 		r.MaintenanceMode = maintMode == 1
 		r.HSTSIncludeSubdomains = hstsSubdomains == 1
 		r.HSTSPreload = hstsPreload == 1
+		r.RedirectWildcardSubdomain = wildcardSub == 1
 		if ownerID != 0 {
 			r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -2799,7 +2934,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 	var r RedirectionHost
 	var pp, ssl, sslf, en, maintMode int
 	var ownerID int64
-	var hstsSubdomains, hstsPreload int
+	var hstsSubdomains, hstsPreload, wildcardSub int
 	err := db.QueryRow(`
         SELECT id, domains, forward_scheme, forward_domain, forward_http_code,
                preserve_path, ssl_enabled, ssl_forced, enabled,
@@ -2813,7 +2948,11 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
                COALESCE(advanced_config,''),
                COALESCE(color,''),
                COALESCE(maintenance_status_code,503),
-               COALESCE(sort_order,0)
+               COALESCE(sort_order,0),
+               COALESCE(redirect_rules,''),
+               COALESCE(redirect_strip_path_prefix,''),
+               COALESCE(redirect_wildcard_subdomain,0),
+               COALESCE(sunset_at,'')
         FROM redirection_hosts WHERE id = ?`, id).Scan(
 		&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain, &r.ForwardHTTPCode,
 		&pp, &ssl, &sslf, &en, &r.CertificateID, &r.CreatedAt, &r.UpdatedAt,
@@ -2822,7 +2961,8 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 		&r.CustomRespHeaders, &r.IPBlocklist,
 		&r.HSTSMaxAgeSec, &hstsSubdomains, &hstsPreload,
 		&r.AdvancedConfig, &r.Color,
-		&r.MaintenanceStatusCode, &r.SortOrder,
+		&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
+		&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt,
 	)
 	if err != nil {
 		return nil, err
@@ -2834,6 +2974,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 	r.MaintenanceMode = maintMode == 1
 	r.HSTSIncludeSubdomains = hstsSubdomains == 1
 	r.HSTSPreload = hstsPreload == 1
+	r.RedirectWildcardSubdomain = wildcardSub == 1
 	if ownerID != 0 {
 		r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -2859,8 +3000,9 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
             forward_http_code, preserve_path, ssl_enabled, ssl_forced, enabled, certificate_id, owner_id,
             tags, notes, access_list, maintenance_mode, maintenance_msg, custom_resp_headers, ip_blocklist,
             hsts_max_age_sec, hsts_include_subdomains, hsts_preload, advanced_config, color,
-            maintenance_status_code, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            maintenance_status_code, sort_order, redirect_rules,
+            redirect_strip_path_prefix, redirect_wildcard_subdomain, sunset_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -2870,7 +3012,8 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
 		r.CustomRespHeaders, r.IPBlocklist,
 		r.HSTSMaxAgeSec, boolInt(r.HSTSIncludeSubdomains), boolInt(r.HSTSPreload),
 		r.AdvancedConfig, r.Color,
-		r.MaintenanceStatusCode, r.SortOrder,
+		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
+		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
 	)
 	if err != nil {
 		return 0, err
@@ -2896,7 +3039,8 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
             custom_resp_headers=?, ip_blocklist=?,
             hsts_max_age_sec=?, hsts_include_subdomains=?, hsts_preload=?,
             advanced_config=?, color=?,
-            maintenance_status_code=?, sort_order=?,
+            maintenance_status_code=?, sort_order=?, redirect_rules=?,
+            redirect_strip_path_prefix=?, redirect_wildcard_subdomain=?, sunset_at=?,
             updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -2905,7 +3049,8 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
 		r.CustomRespHeaders, r.IPBlocklist,
 		r.HSTSMaxAgeSec, boolInt(r.HSTSIncludeSubdomains), boolInt(r.HSTSPreload),
 		r.AdvancedConfig, r.Color,
-		r.MaintenanceStatusCode, r.SortOrder,
+		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
+		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
 		r.ID,
 	)
 	return err
@@ -3499,8 +3644,12 @@ func ListActivity(db *sql.DB, serverID int64, limit int) ([]Activity, error) {
 	if limit <= 0 {
 		limit = 200
 	}
+	// v2.9.211: also surface server_id=0 rows (auth/login/logout events have
+	// no Caddy-server context). Without this, /activity hides login_success,
+	// login_fail, login_totp_*, and logout entries when the page is scoped
+	// to a specific server — i.e. always.
 	rows, err := db.Query(`SELECT id, actor, action, target, detail, success, created_at
-        FROM activity_log WHERE server_id = ? ORDER BY id DESC LIMIT ?`, serverID, limit)
+        FROM activity_log WHERE server_id = ? OR server_id = 0 ORDER BY id DESC LIMIT ?`, serverID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -3529,9 +3678,10 @@ func ListActivitySearch(db *sql.DB, serverID int64, limit int, search string) ([
 		return ListActivity(db, serverID, limit)
 	}
 	like := "%" + search + "%"
+	// v2.9.211: include server_id=0 (global auth events) — see ListActivity.
 	rows, err := db.Query(`SELECT id, actor, action, target, detail, success, created_at
         FROM activity_log
-        WHERE server_id = ?
+        WHERE (server_id = ? OR server_id = 0)
           AND (actor LIKE ? OR action LIKE ? OR target LIKE ? OR detail LIKE ?)
         ORDER BY id DESC LIMIT ?`,
 		serverID, like, like, like, like, limit)

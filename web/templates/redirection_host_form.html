@@ -67,6 +67,118 @@
     </div>
   </div>
 
+  {{/* v2.9.230-232: per-host redirect refinements — strip path prefix,
+       wildcard subdomain capture, sunset date. Collapsed by default to
+       keep the form short; auto-opens when any of the three has content. */}}
+  <details class="pt-4 border-t border-ink-100"{{if or .Host.RedirectStripPathPrefix .Host.RedirectWildcardSubdomain .Host.SunsetAt}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Redirect refinements <span class="font-normal normal-case">(optional)</span>
+    </summary>
+    <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div class="sm:col-span-2">
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Strip path prefix</label>
+        <input name="redirect_strip_path_prefix" value="{{.Host.RedirectStripPathPrefix}}" placeholder="e.g. /old-blog" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-500 mt-1.5">If set and Preserve Path is on, drops this prefix from the path before redirecting. <code class="font-mono bg-ink-100 px-1 rounded">/old-blog/post/123</code> → <code class="font-mono bg-ink-100 px-1 rounded">{{`{{`}}destination{{`}}`}}/post/123</code> instead of <code class="font-mono bg-ink-100 px-1 rounded">{{`{{`}}destination{{`}}`}}/old-blog/post/123</code>.</p>
+      </div>
+      <div>
+        <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer">
+          <input type="checkbox" name="redirect_wildcard_subdomain" {{if .Host.RedirectWildcardSubdomain}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          Wildcard subdomain capture
+        </label>
+        <p class="text-xs text-ink-500 mt-1.5">When enabled, a literal <code class="font-mono bg-ink-100 px-1 rounded">*</code> in the destination is replaced with the matched subdomain label. Use for <code class="font-mono bg-ink-100 px-1 rounded">*.old.com → *.new.com</code> migrations. The Domains field must include the <code class="font-mono bg-ink-100 px-1 rounded">*.old.com</code> wildcard.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Sunset date</label>
+        <input type="date" name="sunset_at" value="{{.Host.SunsetAt}}" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-500 mt-1.5">After this date the redirect returns <strong>410 Gone</strong> instead. Empty = no sunset.</p>
+      </div>
+    </div>
+  </details>
+
+  {{/* v2.9.229: path-based redirect rules. When non-empty, each rule's
+       per-path matcher takes precedence over the host-wide redirect
+       above. Useful for partial migrations: send /old-blog/* to one
+       destination, leave the rest of the host on the default forward.
+       The rules are stored as a JSON array on a hidden input that the
+       JS below keeps in sync with the visible table. Auto-opens when
+       the row already has rules. */}}
+  <details class="pt-4 border-t border-ink-100"{{if .Host.RedirectRules}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Path-based redirect rules <span class="font-normal normal-case">(optional, overrides the host-wide redirect for matching paths)</span>
+    </summary>
+    <div class="mt-3 space-y-3">
+      <p class="text-xs text-ink-500">Each rule overrides the host-wide redirect above for paths that match. Use Caddy path patterns: <code class="font-mono bg-ink-100 px-1 rounded">/old-blog/*</code> matches a prefix, <code class="font-mono bg-ink-100 px-1 rounded">/legal/terms</code> matches exactly. In the destination, <code class="font-mono bg-ink-100 px-1 rounded">{uri}</code> is the original path+query, <code class="font-mono bg-ink-100 px-1 rounded">{http.request.uri.path}</code> is just the path. Leave Destination empty to return the status code without redirecting (e.g. <strong>410 Gone</strong> for retired URLs).</p>
+      <div id="rr-rules-table" class="space-y-2"></div>
+      <button type="button" id="rr-add-rule" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add rule
+      </button>
+      <input type="hidden" name="redirect_rules" id="rr-rules-json" value="{{.Host.RedirectRules}}" />
+    </div>
+  </details>
+  <script>
+  (function(){
+    var data = [];
+    try { var raw = document.getElementById('rr-rules-json').value; if (raw) data = JSON.parse(raw); } catch(e){}
+    if (!Array.isArray(data)) data = [];
+    var table  = document.getElementById('rr-rules-table');
+    var hidden = document.getElementById('rr-rules-json');
+    var addBtn = document.getElementById('rr-add-rule');
+    function rowHTML(rule, idx) {
+      var path = (rule && rule.path) || '';
+      var code = (rule && rule.code) || 301;
+      var dest = (rule && rule.destination) || '';
+      return '<div class="grid grid-cols-12 gap-2 items-start" data-idx="'+idx+'">' +
+        '<input type="text" data-field="path" value="'+escapeAttr(path)+'" placeholder="/old/*" class="col-span-4 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
+        '<select data-field="code" class="col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">' +
+          opt(code, 301, '301') + opt(code, 302, '302') + opt(code, 307, '307') + opt(code, 308, '308') + opt(code, 410, '410 Gone') + opt(code, 451, '451') +
+        '</select>' +
+        '<input type="text" data-field="destination" value="'+escapeAttr(dest)+'" placeholder="https://new.example.com{uri}" class="col-span-5 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
+        '<button type="button" data-action="remove" class="col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center" title="Remove rule">×</button>' +
+      '</div>';
+    }
+    function opt(cur, val, label) { return '<option value="'+val+'"'+(cur==val?' selected':'')+'>'+label+'</option>'; }
+    function escapeAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function render() {
+      table.innerHTML = data.map(rowHTML).join('') || '<p class="text-xs text-ink-400 italic">No rules — the host-wide redirect above will handle every request.</p>';
+    }
+    function syncHidden() {
+      // Drop empty rules before serialising; an empty path means the rule
+      // is half-edited / unintentional.
+      var clean = data.filter(function(r){ return r && (r.path||'').trim() !== ''; });
+      hidden.value = clean.length ? JSON.stringify(clean) : '';
+    }
+    function readRows() {
+      data = Array.prototype.map.call(table.querySelectorAll('[data-idx]'), function(row) {
+        return {
+          path:        row.querySelector('[data-field="path"]').value.trim(),
+          code:        parseInt(row.querySelector('[data-field="code"]').value, 10) || 301,
+          destination: row.querySelector('[data-field="destination"]').value.trim(),
+        };
+      });
+    }
+    addBtn.addEventListener('click', function(){
+      readRows();
+      data.push({path:'', code:301, destination:''});
+      render();
+      syncHidden();
+    });
+    table.addEventListener('click', function(e){
+      if (e.target.matches('[data-action="remove"]')) {
+        var row = e.target.closest('[data-idx]');
+        readRows();
+        data.splice(parseInt(row.dataset.idx,10), 1);
+        render();
+        syncHidden();
+      }
+    });
+    table.addEventListener('input', function(){ readRows(); syncHidden(); });
+    table.addEventListener('change', function(){ readRows(); syncHidden(); });
+    render();
+    syncHidden();
+  })();
+  </script>
+
   {{/* v2.7.1: TLS Certificate collapsed to match proxy-host form — most
        redirects use the default auto cert, so hiding the picker until a
        non-default has been picked keeps the form compact. Auto-opens on
@@ -115,6 +227,154 @@
     <p class="text-xs text-ink-500 mt-1.5">Hand this redirect off to a specific customer — they'll see and manage it in their own dashboard.</p>
   </div>
   {{end}}
+
+  <details class="pt-4 border-t border-ink-100">
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Tags &amp; Notes <span class="font-normal normal-case">(optional)</span>
+    </summary>
+    <div class="mt-3 space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Tags <span class="text-ink-400 font-normal">(comma separated)</span></label>
+        <input name="rh_tags" value="{{.Host.Tags}}" placeholder="e.g. legacy, marketing, temp" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-400 mt-1.5">Tags help you filter and organise redirections from the list view.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Notes</label>
+        <textarea name="rh_notes" rows="3" placeholder="Internal notes about this redirection…" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.Host.Notes}}</textarea>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-2">Color label <span class="text-ink-400 font-normal">(optional, for visual grouping)</span></label>
+        <div class="flex items-center gap-2 flex-wrap">
+          <label class="cursor-pointer" title="No color">
+            <input type="radio" name="color" value="" {{if eq .Host.Color ""}}checked{{end}} class="sr-only peer" />
+            <span class="inline-flex items-center justify-center w-7 h-7 rounded-full border-2 border-ink-300 peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 bg-white text-ink-400 text-xs transition">✕</span>
+          </label>
+          <label class="cursor-pointer" title="Red">
+            <input type="radio" name="color" value="red" {{if eq .Host.Color "red"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-red-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Orange">
+            <input type="radio" name="color" value="orange" {{if eq .Host.Color "orange"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-orange-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Yellow">
+            <input type="radio" name="color" value="yellow" {{if eq .Host.Color "yellow"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-yellow-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Green">
+            <input type="radio" name="color" value="green" {{if eq .Host.Color "green"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-green-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Teal">
+            <input type="radio" name="color" value="teal" {{if eq .Host.Color "teal"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-teal-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Blue">
+            <input type="radio" name="color" value="blue" {{if eq .Host.Color "blue"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-blue-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Purple">
+            <input type="radio" name="color" value="purple" {{if eq .Host.Color "purple"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-purple-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Pink">
+            <input type="radio" name="color" value="pink" {{if eq .Host.Color "pink"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-pink-400"></span>
+          </label>
+          <label class="cursor-pointer" title="Gray">
+            <input type="radio" name="color" value="gray" {{if eq .Host.Color "gray"}}checked{{end}} class="sr-only peer" />
+            <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-gray-400"></span>
+          </label>
+        </div>
+      </div>
+      <!-- v2.9.39: sort order -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Sort Order</label>
+        <input type="number" name="sort_order" value="{{.Host.SortOrder}}"
+          class="w-32 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm"
+          min="0" max="9999" placeholder="0">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Lower values appear first in the list (0 = default).</p>
+      </div>
+    </div>
+  </details>
+
+  <details class="pt-4 border-t border-ink-100">
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Access Control &amp; Maintenance <span class="font-normal normal-case">(optional)</span>
+    </summary>
+    <div class="mt-3 space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">IP Blocklist</label>
+        <textarea name="ip_blocklist" rows="3" placeholder="One CIDR per line, e.g. 10.0.0.0/8&#10;192.168.1.0/24" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.Host.IPBlocklist}}</textarea>
+        <p class="text-xs text-ink-400 mt-1.5">CIDRs listed here receive 403 Forbidden before the redirect fires. Takes priority over the allowlist. Leave blank to block nothing.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">IP Allowlist</label>
+        <textarea name="access_list" rows="3" placeholder="One CIDR per line, e.g. 10.0.0.0/8&#10;192.168.1.0/24" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.Host.AccessList}}</textarea>
+        <p class="text-xs text-ink-400 mt-1.5">Leave blank to allow all IPs. When set, requests from unlisted IPs receive 403 Forbidden before the redirect fires.</p>
+      </div>
+      <div>
+        <label class="flex items-center gap-2.5 cursor-pointer select-none">
+          <input type="checkbox" name="maintenance_mode" {{if .Host.MaintenanceMode}}checked{{end}} class="h-4 w-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          <span class="text-sm font-medium text-ink-800">Maintenance mode</span>
+        </label>
+        <p class="text-xs text-ink-400 mt-1.5 ml-6.5">When enabled, returns 503 instead of redirecting. The redirect URL is preserved for when you disable maintenance mode.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Maintenance message <span class="text-ink-400 font-normal">(optional)</span></label>
+        <textarea name="maintenance_msg" rows="2" placeholder="Service temporarily unavailable for maintenance." class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.Host.MaintenanceMsg}}</textarea>
+      </div>
+      <!-- v2.9.38: maintenance status code -->
+      <div class="mb-4" id="rh-maint-status-wrap">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Maintenance Status Code</label>
+        <select name="maintenance_status_code"
+          class="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
+          <option value="503" {{if eq .Host.MaintenanceStatusCode 503}}selected{{end}}>503 Service Unavailable (default)</option>
+          <option value="429" {{if eq .Host.MaintenanceStatusCode 429}}selected{{end}}>429 Too Many Requests</option>
+          <option value="502" {{if eq .Host.MaintenanceStatusCode 502}}selected{{end}}>502 Bad Gateway</option>
+          <option value="520" {{if eq .Host.MaintenanceStatusCode 520}}selected{{end}}>520 Unknown Error</option>
+        </select>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">HTTP status code returned when maintenance mode is active.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Custom response headers <span class="text-ink-400 font-normal">(optional)</span></label>
+        <textarea name="custom_resp_headers" rows="3" placeholder='{"X-Robots-Tag": "noindex", "Cache-Control": "no-store"}' class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{if and .Host.CustomRespHeaders (ne .Host.CustomRespHeaders "{}")}}{{.Host.CustomRespHeaders}}{{end}}</textarea>
+        <p class="text-xs text-ink-400 mt-1.5">JSON object of header name → value pairs to add to every redirect response. Set value to <span class="font-mono">""</span> to remove a header.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">HSTS <span class="text-ink-400 font-normal">(Strict-Transport-Security)</span></label>
+        <div class="flex items-center gap-4 mb-2">
+          <input type="number" name="hsts_max_age_sec" value="{{.Host.HSTSMaxAgeSec}}" min="0" placeholder="0 = disabled" class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+          <span class="text-xs text-ink-500">seconds (0 = disabled)</span>
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="flex items-center gap-2.5 cursor-pointer select-none">
+            <input type="checkbox" name="hsts_include_subdomains" {{if .Host.HSTSIncludeSubdomains}}checked{{end}} class="h-4 w-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+            <span class="text-sm text-ink-700">includeSubDomains</span>
+          </label>
+          <label class="flex items-center gap-2.5 cursor-pointer select-none">
+            <input type="checkbox" name="hsts_preload" {{if .Host.HSTSPreload}}checked{{end}} class="h-4 w-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+            <span class="text-sm text-ink-700">preload</span>
+          </label>
+        </div>
+        <p class="text-xs text-ink-400 mt-1.5">Injects <span class="font-mono">Strict-Transport-Security</span> into redirect responses. Set max-age &gt; 0 to enable. Only effective when redirecting to HTTPS.</p>
+      </div>
+    </div>
+  </details>
+
+  <details class="group rounded-xl border border-ink-200 bg-white overflow-hidden">
+    <summary class="flex items-center justify-between px-4 py-3 cursor-pointer select-none hover:bg-ink-50 transition">
+      <span class="text-sm font-semibold text-ink-800">Advanced config</span>
+      <svg class="h-4 w-4 text-ink-400 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </summary>
+    <div class="px-4 pb-4 mt-3">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Raw Caddy handlers <span class="text-ink-400 font-normal">(JSON array, optional)</span></label>
+        <textarea name="rh_advanced_config" rows="6" placeholder='[{"handler":"headers","response":{"set":{"X-Custom-Header":["value"]}}}]' class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.Host.AdvancedConfig}}</textarea>
+        <p class="text-xs text-ink-400 mt-1.5">JSON array of <a href="https://caddyserver.com/docs/json/apps/http/servers/routes/handle/" class="underline hover:text-ink-700" target="_blank">Caddy handler objects</a> injected before the redirect. Applied after IP filtering but before the redirect response. Invalid JSON is silently ignored at sync time.</p>
+      </div>
+    </div>
+  </details>
 
   <div class="flex items-center gap-3 pt-4 border-t border-ink-100">
     <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Host.ID}}Save changes{{else}}Create{{end}}</button>

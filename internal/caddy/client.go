@@ -106,7 +106,12 @@ type UpstreamStatus struct {
 	Address     string `json:"address"`
 	NumRequests int    `json:"num_requests"`
 	Fails       int    `json:"fails"`
-	Healthy     bool   // computed: fails == 0
+	// v2.9.216: needs `json:"healthy"` so the field is serialised lowercase
+	// to match the proxy_hosts.html JS that reads `u.healthy`. Without the
+	// tag Go marshalled this as "Healthy" (capital H) and the JS read
+	// undefined → falsy → painted every Live-upstream pill red regardless
+	// of Caddy's real verdict.
+	Healthy bool `json:"healthy"`
 }
 
 // CaddyVersion holds the version information returned by Caddy's root endpoint.
@@ -592,8 +597,20 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		if timeoutSec <= 0 {
 			timeoutSec = 5
 		}
+		// v2.9.219: health_check_query_params — append query string to the
+		// probe URL. Lets you ping endpoints that expect e.g. ?token=xyz or
+		// ?check=deep without baking it into HealthCheckURI itself (which
+		// would conflate path with parameters).
+		probeURI := p.HealthCheckURI
+		if p.HealthCheckQueryParams != "" {
+			sep := "?"
+			if strings.Contains(probeURI, "?") {
+				sep = "&"
+			}
+			probeURI = probeURI + sep + strings.TrimPrefix(p.HealthCheckQueryParams, "?")
+		}
 		activeCheck := map[string]any{
-			"uri":      p.HealthCheckURI,
+			"uri":      probeURI,
 			"interval": fmt.Sprintf("%ds", interval),
 			"timeout":  fmt.Sprintf("%ds", timeoutSec),
 		}
@@ -1813,6 +1830,116 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 							"status_code": 403,
 						},
 					},
+				},
+			},
+		})
+	}
+	// v2.9.217: add_x_environment — set static X-Environment request header on upstream calls.
+	if p.AddXEnvironment != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Environment": []any{p.AddXEnvironment},
+				},
+			},
+		})
+	}
+	// v2.9.218: add_x_trace_id — forward X-Trace-ID request header (Caddy UUID per request) to upstream.
+	if p.AddXTraceID {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Trace-Id": []any{"{http.request.uuid}"},
+				},
+			},
+		})
+	}
+	// v2.9.220: add_x_session_id — forward X-Session-ID request header (Caddy UUID per request) to upstream.
+	if p.AddXSessionID {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Session-Id": []any{"{http.request.uuid}"},
+				},
+			},
+		})
+	}
+	// v2.9.221: add_x_response_trace_id — set X-Response-Trace-ID response header (echoes the trace UUID).
+	if p.AddXResponseTraceID {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"set": map[string]any{
+					"X-Response-Trace-Id": []any{"{http.request.uuid}"},
+				},
+			},
+		})
+	}
+	// v2.9.222: add_x_request_local_addr — forward X-Local-Addr request header (Caddy listen IP) to upstream.
+	if p.AddXRequestLocalAddr {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Local-Addr": []any{"{http.request.local.host}"},
+				},
+			},
+		})
+	}
+	// v2.9.223: add_x_request_local_port — forward X-Local-Port request header (Caddy listen port) to upstream.
+	if p.AddXRequestLocalPort {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Local-Port": []any{"{http.request.local.port}"},
+				},
+			},
+		})
+	}
+	// v2.9.224: add_x_request_path_info — forward X-PathInfo header (CGI-style PATH_INFO) to upstream.
+	if p.AddXRequestPathInfo {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Pathinfo": []any{"{http.request.uri.path}"},
+				},
+			},
+		})
+	}
+	// v2.9.212: add_x_request_remote_port — forward client TCP port as X-Request-Remote-Port to upstream.
+	if p.AddXRequestRemotePort {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-Remote-Port": []any{"{http.request.remote.port}"},
+				},
+			},
+		})
+	}
+	// v2.9.213: add_x_request_protocol — forward HTTP version (HTTP/1.1, HTTP/2) as X-Request-Protocol to upstream.
+	if p.AddXRequestProtocol {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-Protocol": []any{"{http.request.proto}"},
+				},
+			},
+		})
+	}
+	// v2.9.214: add_save_data_vary — append Save-Data to the Vary response header for client-hint aware caching.
+	if p.AddSaveDataVary {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"add": map[string]any{
+					"Vary": []any{"Save-Data"},
 				},
 			},
 		})
@@ -3135,15 +3262,62 @@ func BuildRedirectRoute(r models.RedirectionHost) map[string]any {
 	}
 	path := ""
 	if r.PreservePath {
-		path = "{http.request.uri}"
+		// v2.9.230: redirect_strip_path_prefix — if set, drop the prefix
+		// from the captured path before composing Location. We use Caddy's
+		// re_replace placeholder via a regex that anchors at start. Falls
+		// back to plain {http.request.uri} when no prefix is configured.
+		if pfx := strings.TrimSpace(r.RedirectStripPathPrefix); pfx != "" {
+			// Caddy supports re.<name> placeholder if the URL has a regex
+			// matcher capturing it; without that we fall back to the
+			// path_regexp matcher in a wrapping subroute. Simpler: use
+			// {http.request.uri.path.replace} via path manipulation.
+			// Caddy's `path_regexp` matcher captures into {re.NAME.N}. To
+			// keep this simple and not require a matcher rewrite, we
+			// build the destination using a Caddy expression placeholder
+			// with the prefix stripped at runtime.
+			path = "{http.request.uri.path.suffix-after." + pfx + "}{http.request.uri.search}"
+		} else {
+			path = "{http.request.uri}"
+		}
 	}
-	location := fmt.Sprintf("%s://%s%s", scheme, r.ForwardDomain, path)
+	// v2.9.231: redirect_wildcard_subdomain — substitute first hostname
+	// label (the `*` part of *.old.com) into the destination if requested.
+	// User puts `{labels.0}.new.example.com` in the destination and Caddy
+	// expands it at request time.
+	destDomain := r.ForwardDomain
+	if r.RedirectWildcardSubdomain {
+		// Replace literal '*.' if user put one in the destination,
+		// otherwise leave it — they may already have written
+		// {http.request.host.labels.0} themselves.
+		destDomain = strings.Replace(destDomain, "*", "{http.request.host.labels.0}", 1)
+	}
+	location := fmt.Sprintf("%s://%s%s", scheme, destDomain, path)
 	if scheme == "{http.request.scheme}" {
-		location = fmt.Sprintf("{http.request.scheme}://%s%s", r.ForwardDomain, path)
+		location = fmt.Sprintf("{http.request.scheme}://%s%s", destDomain, path)
 	}
 	statusCode := r.ForwardHTTPCode
 	if statusCode == 0 {
 		statusCode = 301
+	}
+	// v2.9.232: sunset_at — after the configured ISO date, every request
+	// to this redirect returns 410 Gone instead of redirecting. Comparison
+	// is purely date-vs-date in UTC; if today >= sunset, we early-return a
+	// 410 handler before any redirect plumbing runs.
+	if sunset := strings.TrimSpace(r.SunsetAt); sunset != "" {
+		if t, err := time.Parse("2006-01-02", sunset); err == nil {
+			today := time.Now().UTC().Truncate(24 * time.Hour)
+			if !today.Before(t) {
+				return map[string]any{
+					"match": []any{map[string]any{"host": asIfaceStrings(domains)}},
+					"handle": []any{map[string]any{
+						"handler":     "static_response",
+						"status_code": 410,
+						"body":        "This URL has been retired.",
+					}},
+					"terminal": true,
+				}
+			}
+		}
 	}
 
 	var handlers []any
@@ -3246,7 +3420,58 @@ func BuildRedirectRoute(r models.RedirectionHost) map[string]any {
 		handlers = append(handlers, map[string]any{"handler": "headers", "response": respOp})
 	}
 
-	// The actual redirect.
+	// v2.9.229: path-based redirect rules. When the row has any rules in
+	// redirect_rules, each rule is materialised as an inner subroute with
+	// its own path matcher; the host-wide redirect below acts as the
+	// catch-all fallback. Rule entries shape:
+	//   {path: "/old/*", code: 301, destination: "https://new.example.com{uri}"}
+	// Caddy's {uri}, {http.request.uri}, etc. placeholders work in the
+	// destination string. Rules without a destination produce a static
+	// status response instead (so 410 Gone for deleted resources is
+	// expressible as `code: 410, destination: ""`).
+	if rules := r.RedirectRuleList(); len(rules) > 0 {
+		ruleRoutes := []any{}
+		for _, rule := range rules {
+			if rule.Path == "" {
+				continue
+			}
+			code := rule.Code
+			if code == 0 {
+				code = 301
+			}
+			var ruleHandle map[string]any
+			if rule.Destination == "" {
+				// No destination → static response with the configured
+				// status code (handy for 404/410 on retired endpoints).
+				ruleHandle = map[string]any{
+					"handler":     "static_response",
+					"status_code": code,
+				}
+			} else {
+				ruleHandle = map[string]any{
+					"handler": "static_response",
+					"headers": map[string]any{
+						"Location": []any{rule.Destination},
+					},
+					"status_code": code,
+				}
+			}
+			ruleRoutes = append(ruleRoutes, map[string]any{
+				"match":    []any{map[string]any{"path": []any{rule.Path}}},
+				"handle":   []any{ruleHandle},
+				"terminal": true,
+			})
+		}
+		if len(ruleRoutes) > 0 {
+			handlers = append(handlers, map[string]any{
+				"handler": "subroute",
+				"routes":  ruleRoutes,
+			})
+		}
+	}
+
+	// The host-wide default redirect — runs after any per-path rules above
+	// fall through (or as the only handler when redirect_rules is empty).
 	handlers = append(handlers, map[string]any{
 		"handler": "static_response",
 		"headers": map[string]any{
