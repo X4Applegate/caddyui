@@ -227,6 +227,14 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 			return t.In(activeLocation()).Format(layout)
 		},
 		"tzName": func() string { return activeLocation().String() },
+		// truncate returns the first n bytes of s, or s itself if shorter.
+		// Used in sessions.html to display a shortened token prefix.
+		"truncate": func(s string, n int) string {
+			if len(s) <= n {
+				return s
+			}
+			return s[:n]
+		},
 		// httpCodeDesc returns a plain-English one-liner explaining what a
 		// redirect status code means in practice. Used in tooltips.
 		"httpCodeDesc": func(code int) string {
@@ -258,6 +266,21 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 		},
 		"subInt": func(a, b int) int { return a - b },
 		"addInt": func(a, b int) int { return a + b },
+		// fmtBytes renders a byte count as a human-readable size string.
+		// Used in analytics cards to show bandwidth totals without overwhelming
+		// the reader with raw byte counts (e.g. "1.4 GB" instead of "1503238553").
+		"fmtBytes": func(b int64) string {
+			switch {
+			case b >= 1<<30:
+				return fmt.Sprintf("%.1f GB", float64(b)/(1<<30))
+			case b >= 1<<20:
+				return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
+			case b >= 1<<10:
+				return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
+			default:
+				return fmt.Sprintf("%d B", b)
+			}
+		},
 		// fmtRel renders a time as a short human-readable interval from now
 		// ("3m", "2h", "4d"). Used in analytics tables where an absolute
 		// timestamp would eat column width and the admin only cares how
@@ -475,6 +498,14 @@ func (s *Server) Routes() http.Handler {
 		// don't have Edit permission on.
 		r.Get("/analytics", s.getAnalytics)
 		r.Get("/analytics/{host}", s.getAnalyticsHost)
+
+		// Global search — read-only, available to every authenticated role.
+		r.Get("/search", s.getSearch)
+
+		// Session manager — every user can view and revoke their own sessions;
+		// admins see all sessions across all users.
+		r.Get("/sessions", s.getSessions)
+		r.Post("/sessions/{token}/revoke", s.revokeSession)
 
 		// User management and settings — admin-only (both read and write).
 		r.Group(func(r chi.Router) {
@@ -1662,23 +1693,34 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 			}
 		}
 	}
+	// v2.9.0: validate TLS min version — only accept known values.
+	tlsMinVersion := strings.TrimSpace(r.FormValue("tls_min_version"))
+	switch tlsMinVersion {
+	case "", "1.0", "1.1", "1.2", "1.3":
+		// valid
+	default:
+		tlsMinVersion = ""
+	}
 	return &models.ProxyHost{
-		Domains:             strings.TrimSpace(r.FormValue("domains")),
-		ForwardScheme:       r.FormValue("forward_scheme"),
-		ForwardHost:         strings.TrimSpace(r.FormValue("forward_host")),
-		ForwardPort:         port,
-		WebsocketSupport:    r.FormValue("websocket_support") == "on",
-		BlockCommonExploits: r.FormValue("block_common_exploits") == "on",
-		SSLEnabled:          r.FormValue("ssl_enabled") == "on",
-		SSLForced:           r.FormValue("ssl_forced") == "on",
-		HTTP2Support:        r.FormValue("http2_support") == "on",
-		AdvancedConfig:      r.FormValue("advanced_config"),
-		Enabled:             r.FormValue("enabled") == "on",
-		CertificateID:       certID,
-		AccessList:          strings.TrimSpace(r.FormValue("access_list")),
-		DNSProvider:         provider,
-		DNSZoneID:           zoneID,
-		DNSZoneName:         zoneName,
+		Domains:                strings.TrimSpace(r.FormValue("domains")),
+		ForwardScheme:          r.FormValue("forward_scheme"),
+		ForwardHost:            strings.TrimSpace(r.FormValue("forward_host")),
+		ForwardPort:            port,
+		WebsocketSupport:       r.FormValue("websocket_support") == "on",
+		BlockCommonExploits:    r.FormValue("block_common_exploits") == "on",
+		SSLEnabled:             r.FormValue("ssl_enabled") == "on",
+		SSLForced:              r.FormValue("ssl_forced") == "on",
+		HTTP2Support:           r.FormValue("http2_support") == "on",
+		AdvancedConfig:         r.FormValue("advanced_config"),
+		Enabled:                r.FormValue("enabled") == "on",
+		CertificateID:          certID,
+		AccessList:             strings.TrimSpace(r.FormValue("access_list")),
+		DNSProvider:            provider,
+		DNSZoneID:              zoneID,
+		DNSZoneName:            zoneName,
+		CompressionEnabled:     r.FormValue("compression_enabled") == "on",
+		SecurityHeadersEnabled: r.FormValue("security_headers_enabled") == "on",
+		TLSMinVersion:          tlsMinVersion,
 	}, nil
 }
 
@@ -3799,6 +3841,10 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	routes := s.buildMergedRoutes(proxies, redirs, raws)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws)
+	// v2.9.0: per-SNI TLS minimum-version connection policies. nil when no
+	// host has a min version configured — writeTLSConnectionPoliciesSubtree
+	// handles the nil case by clearing stale policies that may exist.
+	tlsConnPolicies := caddy.BuildTLSConnectionPolicies(proxies)
 
 	current, currentJSON, err := s.Caddy.FetchConfig()
 	if err != nil {
@@ -3814,6 +3860,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	applyListen(proposed)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, skipList)
+	applyTLSConnectionPolicies(proposed, tlsConnPolicies)
 	// v2.4.12: branded 404/502/503/504 pages with error ID + timestamp so
 	// users hitting a restart window see something nicer than Caddy's
 	// plaintext fallback and ops can correlate to access logs via {err.id}.
@@ -3851,6 +3898,13 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	if err := s.writeAutomaticHTTPSSubtree(skipList, forceTLS); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_autohttps_failed", "", err.Error(), false)
 		return err
+	}
+	if err := s.writeTLSConnectionPoliciesSubtree(tlsConnPolicies); err != nil {
+		// Non-fatal: log but don't abort — routes and certs are already applied.
+		// TLS version policy is a best-effort security enhancement; a sync
+		// failure here shouldn't roll back the primary route push.
+		log.Printf("caddy sync: tls_connection_policies write failed (non-fatal): %v", err)
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_tls_policies_failed", "", err.Error(), false)
 	}
 
 	detail := fmt.Sprintf("proxies=%d redirects=%d passthrough=%d certs=%d",
@@ -4229,6 +4283,21 @@ func applySkipCertificates(cfg map[string]any, skipList []any) {
 	}
 }
 
+// applyTLSConnectionPolicies merges per-SNI TLS connection policies into the
+// proposed config map used for pre-load validation. Mirrors the subtree-write
+// helpers — changes here must match writeTLSConnectionPoliciesSubtree.
+func applyTLSConnectionPolicies(cfg map[string]any, policies []any) {
+	apps := ensureMap(cfg, "apps")
+	httpApp := ensureMap(apps, "http")
+	servers := ensureMap(httpApp, "servers")
+	srv := ensureMap(servers, "srv0")
+	if len(policies) > 0 {
+		srv["tls_connection_policies"] = policies
+	} else {
+		delete(srv, "tls_connection_policies")
+	}
+}
+
 // filterNonCaddyUICerts returns the subset of cert loader entries that DON'T carry
 // a caddyui ownership tag ("caddyui-*"). Used on sync to preserve TLS certs that
 // were loaded from the user's Caddyfile or placed via direct /config edits, so
@@ -4369,6 +4438,30 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipList []any, force bool) error {
 		return nil
 	}
 	return s.Caddy.PutPath("/config/apps/http/servers/srv0/automatic_https", autoMap)
+}
+
+// writeTLSConnectionPoliciesSubtree replaces srv0.tls_connection_policies.
+// When policies is nil/empty and no existing policies are set this is a no-op.
+// When policies is nil/empty but existing policies exist, the key is cleared
+// (replaced with an empty array) so stale per-SNI min-version settings don't
+// linger after the last host that used them is updated.
+func (s *Server) writeTLSConnectionPoliciesSubtree(policies []any) error {
+	path := "/config/apps/http/servers/srv0/tls_connection_policies"
+	existing, err := s.Caddy.FetchPath(path)
+	if err != nil {
+		return err
+	}
+	if len(policies) == 0 {
+		if existing == nil {
+			return nil // nothing to write or clear
+		}
+		// Clear stale policies with an empty array (Caddy treats [] as "no policies").
+		return s.Caddy.PatchPath(path, []any{})
+	}
+	if existing == nil {
+		return s.Caddy.PutPath(path, policies)
+	}
+	return s.Caddy.PatchPath(path, policies)
 }
 
 // certsEqual compares two cert-loader arrays for semantic equality via JSON normalization.

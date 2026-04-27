@@ -464,6 +464,25 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v2.9.0: per-host security settings — response compression, security
+	// headers bundle, and TLS minimum version. All default to off / empty so
+	// existing hosts are unaffected after upgrade.
+	for _, col := range []struct{ name, def string }{
+		{"compression_enabled", "INTEGER NOT NULL DEFAULT 0"},
+		{"security_headers_enabled", "INTEGER NOT NULL DEFAULT 0"},
+		{"tls_min_version", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := columnExists(db, "proxy_hosts", col.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE proxy_hosts ADD COLUMN %s %s`, col.name, col.def)); err != nil {
+				return fmt.Errorf("add %s to proxy_hosts: %w", col.name, err)
+			}
+		}
+	}
+
 	return nil
 }
 

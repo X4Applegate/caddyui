@@ -229,6 +229,31 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			handlers = append(handlers, ipAllowlistSubroute(cidrList))
 		}
 	}
+	// v2.9.0: response compression — gzip/zstd encode handler. Must precede
+	// the reverse_proxy handler so it can wrap the ResponseWriter.
+	if p.CompressionEnabled {
+		handlers = append(handlers, map[string]any{
+			"handler":   "encode",
+			"encodings": map[string]any{"gzip": map[string]any{}, "zstd": map[string]any{}},
+			"prefer":    []any{"zstd", "gzip"},
+		})
+	}
+	// v2.9.0: security response headers bundle. Added as a headers handler
+	// before reverse_proxy so the headers appear on every upstream response.
+	if p.SecurityHeadersEnabled {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"set": map[string]any{
+					"Strict-Transport-Security": []any{"max-age=31536000; includeSubDomains"},
+					"X-Frame-Options":           []any{"SAMEORIGIN"},
+					"X-Content-Type-Options":    []any{"nosniff"},
+					"Referrer-Policy":           []any{"strict-origin-when-cross-origin"},
+					"X-XSS-Protection":          []any{"1; mode=block"},
+				},
+			},
+		})
+	}
 	handlers = append(handlers, advancedHandlers...)
 	handlers = append(handlers, reverseProxy)
 
@@ -355,6 +380,39 @@ func ExploitBlockerSubroute() map[string]any {
 			},
 		},
 	}
+}
+
+// BuildTLSConnectionPolicies returns per-SNI TLS connection policies for proxy
+// hosts that have TLSMinVersion set. Returns nil when no enabled host specifies
+// a minimum version (caller skips writing the key to Caddy). When non-empty, the
+// last element is always an empty catch-all {} so Caddy applies its default TLS
+// settings to every other hostname — without it Caddy would only serve TLS for
+// explicitly matched SNIs.
+func BuildTLSConnectionPolicies(proxies []models.ProxyHost) []any {
+	var policies []any
+	for _, p := range proxies {
+		if !p.Enabled || p.TLSMinVersion == "" {
+			continue
+		}
+		domains := p.DomainList()
+		if len(domains) == 0 {
+			continue
+		}
+		snis := make([]any, len(domains))
+		for i, d := range domains {
+			snis[i] = d
+		}
+		policies = append(policies, map[string]any{
+			"match":        map[string]any{"sni": snis},
+			"protocol_min": "tls" + p.TLSMinVersion, // e.g. "tls1.2"
+		})
+	}
+	if len(policies) == 0 {
+		return nil
+	}
+	// Catch-all: without this Caddy would refuse TLS for unmatched SNIs.
+	policies = append(policies, map[string]any{})
+	return policies
 }
 
 func asIfaceStrings(in []string) []any {
