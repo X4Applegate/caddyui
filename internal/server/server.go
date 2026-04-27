@@ -503,6 +503,10 @@ func (s *Server) Routes() http.Handler {
 		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
 		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
 		r.Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream)
+		// v2.9.228: validate a raw-route's Caddyfile/JSON via /load?validate_only=true
+		// before saving the row. Lets the form catch syntax/schema errors at edit
+		// time instead of waiting for the next sync to surface them.
+		r.Post("/api/raw-routes/validate", s.apiValidateRawRoute)
 
 		// Feature F: notifier status API (authenticated).
 		r.Get("/api/notifier-status", s.apiNotifierStatus)
@@ -3475,6 +3479,30 @@ func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) 
 		}(),
 		// v2.9.39: sort order
 		SortOrder: func() int { v, _ := strconv.Atoi(r.FormValue("sort_order")); return v }(),
+		// v2.9.229: path-based redirect rules. Form posts a JSON array via
+		// a hidden input populated by the JS in redirection_host_form.html;
+		// the dynamic table UI is the user-facing surface. Empty / invalid
+		// JSON collapses to "" so the row keeps the legacy whole-host
+		// redirect behaviour.
+		RedirectRules: func() string {
+			v := strings.TrimSpace(r.FormValue("redirect_rules"))
+			if v == "" || v == "[]" {
+				return ""
+			}
+			// Probe-parse so we don't store garbage that
+			// RedirectRuleList would silently drop on read.
+			var probe []models.RedirectRule
+			if err := json.Unmarshal([]byte(v), &probe); err != nil {
+				return ""
+			}
+			return v
+		}(),
+		// v2.9.230: redirect_strip_path_prefix
+		RedirectStripPathPrefix: strings.TrimSpace(r.FormValue("redirect_strip_path_prefix")),
+		// v2.9.231: redirect_wildcard_subdomain
+		RedirectWildcardSubdomain: r.FormValue("redirect_wildcard_subdomain") == "on",
+		// v2.9.232: sunset_at — accept ISO date YYYY-MM-DD; empty disables.
+		SunsetAt: strings.TrimSpace(r.FormValue("sunset_at")),
 	}, nil
 }
 
@@ -7317,6 +7345,82 @@ func (s *Server) apiTestUpstream(w http.ResponseWriter, r *http.Request) {
 		"latency_ms": latencyMs,
 		"error":      "",
 	})
+}
+
+// apiValidateRawRoute checks whether a draft raw route would be accepted by
+// Caddy without committing it. Accepts either form field:
+//   - caddyfile_src: a Caddyfile block to /adapt first, then validate
+//   - json_data:     raw JSON to validate directly
+// Returns {"ok": bool, "error": string}. Does NOT mutate Caddy state — uses
+// /load?validate_only=true on a synthetic config that wraps the route in the
+// minimal apps.http.servers shape Caddy expects. v2.9.228.
+func (s *Server) apiValidateRawRoute(w http.ResponseWriter, r *http.Request) {
+	if s.currentUser(r) == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	respond := func(ok bool, msg string) {
+		out := map[string]any{"ok": ok}
+		if msg != "" {
+			out["error"] = msg
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}
+	cfSrc := strings.TrimSpace(r.FormValue("caddyfile_src"))
+	jsonData := strings.TrimSpace(r.FormValue("json_data"))
+	caddyCl := s.caddyForRequest(r)
+	if cfSrc != "" {
+		// Adapt Caddyfile to JSON via the same pipeline used by save.
+		adapted, err := s.adaptRawRouteCaddyfile(caddyCl, cfSrc)
+		if err != nil {
+			respond(false, "Caddyfile rejected by Caddy: "+err.Error())
+			return
+		}
+		jsonData = adapted
+	}
+	if jsonData == "" {
+		respond(false, "Provide a Caddyfile block or JSON to validate.")
+		return
+	}
+	// Probe parse so we surface JSON syntax errors with the same message
+	// the save path would.
+	var probe any
+	if err := json.Unmarshal([]byte(jsonData), &probe); err != nil {
+		respond(false, "Invalid JSON: "+err.Error())
+		return
+	}
+	// Wrap the route in the minimal Caddy config shape so /adapt-validate
+	// runs the route through the full provisioning pipeline. We support
+	// both single-route-object and array-of-routes inputs (the import flow
+	// produces arrays for multi-block Caddyfiles).
+	var routes []any
+	switch v := probe.(type) {
+	case map[string]any:
+		routes = []any{v}
+	case []any:
+		routes = v
+	default:
+		respond(false, "Route JSON must be an object or array of route objects.")
+		return
+	}
+	cfg := map[string]any{
+		"apps": map[string]any{
+			"http": map[string]any{
+				"servers": map[string]any{
+					"_caddyui_validate": map[string]any{
+						"listen": []any{":0"},
+						"routes": routes,
+					},
+				},
+			},
+		},
+	}
+	if err := caddyCl.Validate(cfg); err != nil {
+		respond(false, err.Error())
+		return
+	}
+	respond(true, "")
 }
 
 // --- Feature F: Notifications (webhook + SMTP email) ---

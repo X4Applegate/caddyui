@@ -27,18 +27,34 @@
     <p class="text-xs text-ink-500 mt-1.5">For display only — pick something recognisable.</p>
   </div>
 
-  {{if .Row.CaddyfileSrc}}
+  {{/* v2.9.228: Caddyfile / JSON tabbed editor.
+       Either one can be filled. If Caddyfile is non-empty it's authoritative —
+       Caddy's /adapt regenerates the JSON on save. If only JSON is filled,
+       it's stored verbatim. New routes default to the Caddyfile tab since
+       it's far more readable; existing rows open on whichever already has
+       content (Caddyfile wins on tie). */}}
   <div>
-    <label class="block text-sm font-medium text-ink-800 mb-1.5">Caddyfile source <span class="text-ink-400 font-normal text-xs">(edit and Save to re-adapt; on error the previous config stays in place)</span></label>
-    <textarea name="caddyfile_src" rows="12" spellcheck="false" class="w-full rounded-lg border border-ink-200 px-3 py-2.5 font-mono text-xs bg-ink-900 text-ink-100 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.Row.CaddyfileSrc}}</textarea>
-    <p class="text-xs text-ink-500 mt-1.5">When this field is non-empty, Caddy's <code class="font-mono bg-ink-100 px-1 rounded">/adapt</code> re-runs on save and its JSON output replaces the Route JSON below. Caddy also validates the full merged config — if it would be rejected, save fails and you'll see the error here instead.</p>
-  </div>
-  {{end}}
-
-  <div>
-    <label class="block text-sm font-medium text-ink-800 mb-1.5">Route JSON {{if .Row.CaddyfileSrc}}<span class="text-ink-400 font-normal text-xs">(auto-regenerated from Caddyfile above — edits here are ignored while Caddyfile is set)</span>{{end}}</label>
-    <textarea name="json_data" rows="20" {{if not .Row.CaddyfileSrc}}required{{end}} spellcheck="false" class="w-full rounded-lg border border-ink-200 px-3 py-2.5 font-mono text-xs {{if .Row.CaddyfileSrc}}bg-ink-50 text-ink-500{{else}}bg-ink-50 focus:bg-white text-ink-800{{end}} focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{prettyJSON .Row.JSONData}}</textarea>
-    <p class="text-xs text-ink-500 mt-1.5">Must be valid JSON. Tip: start from an imported entry or the example below.</p>
+    <div class="flex items-center justify-between mb-2">
+      <div class="inline-flex rounded-lg border border-ink-200 p-0.5 text-xs font-medium" id="route-mode-tabs">
+        <button type="button" data-mode="caddyfile" class="px-3 py-1.5 rounded-md transition" id="tab-caddyfile">Caddyfile</button>
+        <button type="button" data-mode="json" class="px-3 py-1.5 rounded-md transition" id="tab-json">JSON</button>
+      </div>
+      <button type="button" id="route-validate-btn" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="20 6 9 17 4 12"/></svg>
+        Validate
+      </button>
+    </div>
+    <span id="route-validate-result" class="text-xs hidden mb-2 inline-block"></span>
+    <div id="pane-caddyfile">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Caddyfile source <span class="text-ink-400 font-normal text-xs">({{if .Row.CaddyfileSrc}}edit and Save to re-adapt{{else}}preferred — adapted to JSON via Caddy on save{{end}})</span></label>
+      <textarea name="caddyfile_src" rows="14" spellcheck="false" placeholder="example.com {&#10;    reverse_proxy backend:8080&#10;    encode gzip&#10;}" class="w-full rounded-lg border border-ink-200 px-3 py-2.5 font-mono text-xs bg-ink-900 text-ink-100 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.Row.CaddyfileSrc}}</textarea>
+      <p class="text-xs text-ink-500 mt-1.5">Filled? Caddy's <code class="font-mono bg-ink-100 px-1 rounded">/adapt</code> runs on save and the JSON tab is auto-regenerated. Empty? Use the JSON tab instead.</p>
+    </div>
+    <div id="pane-json" class="hidden">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Route JSON <span class="text-ink-400 font-normal text-xs">(auto-regenerated from Caddyfile when that tab is filled — edits here are ignored in that case)</span></label>
+      <textarea name="json_data" rows="18" spellcheck="false" placeholder='{"match":[{"host":["example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"backend:8080"}]}],"terminal":true}' class="w-full rounded-lg border border-ink-200 px-3 py-2.5 font-mono text-xs bg-ink-50 focus:bg-white text-ink-800 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{prettyJSON .Row.JSONData}}</textarea>
+      <p class="text-xs text-ink-500 mt-1.5">Must be valid JSON. Tip: paste an existing route as a starting point, or use the Caddyfile tab and let Caddy generate this for you.</p>
+    </div>
   </div>
 
   {{/* v2.7.1: TLS Certificate collapsed to match proxy-host and
@@ -491,6 +507,62 @@
 
   applyProvider(providerSel.value);
   scheduleCheck();
+})();
+
+// v2.9.228: Caddyfile / JSON tab switcher + Validate button.
+(function() {
+  var tabCf   = document.getElementById('tab-caddyfile');
+  var tabJson = document.getElementById('tab-json');
+  var paneCf  = document.getElementById('pane-caddyfile');
+  var paneJson= document.getElementById('pane-json');
+  var cfArea  = document.querySelector('textarea[name="caddyfile_src"]');
+  var jsArea  = document.querySelector('textarea[name="json_data"]');
+  if (!tabCf || !tabJson || !paneCf || !paneJson) return;
+
+  function setActive(mode) {
+    var on = 'bg-brand-600 text-white shadow-sm';
+    var off = 'text-ink-600 hover:text-ink-900';
+    tabCf.className   = 'px-3 py-1.5 rounded-md transition ' + (mode==='caddyfile' ? on : off);
+    tabJson.className = 'px-3 py-1.5 rounded-md transition ' + (mode==='json'      ? on : off);
+    paneCf.classList.toggle('hidden',   mode!=='caddyfile');
+    paneJson.classList.toggle('hidden', mode!=='json');
+  }
+  // Default tab: Caddyfile if it has content, else JSON if it has content,
+  // else Caddyfile (preferred for new routes).
+  var initial = (cfArea && cfArea.value.trim()) ? 'caddyfile'
+              : (jsArea && jsArea.value.trim()) ? 'json'
+              : 'caddyfile';
+  setActive(initial);
+  tabCf.addEventListener('click',   function(){ setActive('caddyfile'); });
+  tabJson.addEventListener('click', function(){ setActive('json'); });
+
+  var btn   = document.getElementById('route-validate-btn');
+  var out   = document.getElementById('route-validate-result');
+  if (btn && out) {
+    btn.addEventListener('click', function() {
+      btn.disabled = true;
+      out.classList.remove('hidden','text-green-600','text-red-600','text-ink-500');
+      out.classList.add('text-ink-500');
+      out.textContent = 'Validating…';
+      var fd = new FormData();
+      fd.append('caddyfile_src', cfArea ? cfArea.value : '');
+      fd.append('json_data',     jsArea ? jsArea.value : '');
+      fetch('/api/raw-routes/validate', {method:'POST', body: fd})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          out.classList.remove('text-ink-500');
+          if (d.ok) {
+            out.classList.add('text-green-600');
+            out.textContent = '✓ Caddy accepts this configuration';
+          } else {
+            out.classList.add('text-red-600');
+            out.textContent = '✗ ' + (d.error || 'Validation failed');
+          }
+        })
+        .catch(function(e){ out.classList.remove('text-ink-500'); out.classList.add('text-red-600'); out.textContent = '✗ Request failed: ' + e.message; })
+        .finally(function(){ btn.disabled = false; });
+    });
+  }
 })();
 </script>
 {{end}}

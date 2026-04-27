@@ -1826,6 +1826,79 @@ func migrate(db *sql.DB) error {
 			_, _ = db.Exec(`ALTER TABLE access_daily ADD COLUMN ` + col + ` INTEGER NOT NULL DEFAULT 0`)
 		}
 	}
+	// v2.9.212: add_x_request_remote_port — forward X-Request-Remote-Port header (echoes client port) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_remote_port") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_remote_port INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.213: add_x_request_protocol — forward X-Request-Protocol header (echoes HTTP/1.1, HTTP/2 etc.) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_protocol") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_protocol INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.214: add_save_data_vary — set Vary: Save-Data response header (client hint aware caching)
+	if !columnExists2(db, "proxy_hosts", "add_save_data_vary") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_save_data_vary INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.217: add_x_environment — static X-Environment request header value (production/staging/dev)
+	if !columnExists2(db, "proxy_hosts", "add_x_environment") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_environment TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.218: add_x_trace_id — forward X-Trace-ID request header (Caddy UUID per request) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_trace_id") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_trace_id INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.219: health_check_query_params — query string appended to active health check probe URL
+	if !columnExists2(db, "proxy_hosts", "health_check_query_params") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN health_check_query_params TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.220: add_x_session_id — forward X-Session-ID request header (Caddy UUID per request) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_session_id") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_session_id INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.221: add_x_response_trace_id — set X-Response-Trace-ID response header (echoes the trace UUID)
+	if !columnExists2(db, "proxy_hosts", "add_x_response_trace_id") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_response_trace_id INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.222: add_x_request_local_addr — forward X-Local-Addr header (Caddy's listening IP) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_local_addr") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_local_addr INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.223: add_x_request_local_port — forward X-Local-Port header (Caddy's listening port) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_local_port") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_local_port INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.224: add_x_request_path_info — forward X-PathInfo header (CGI-style PATH_INFO) to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_path_info") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_path_info INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
+	// the request URI before composing the Location header. Mirrors the
+	// proxy-host strip_path_prefix option for redirects (e.g. on a partial
+	// migration where /old-blog/* should redirect to newblog.com/*, not
+	// newblog.com/old-blog/*).
+	if !columnExists2(db, "redirection_hosts", "redirect_strip_path_prefix") {
+		_, _ = db.Exec(`ALTER TABLE redirection_hosts ADD COLUMN redirect_strip_path_prefix TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.231: redirect_wildcard_subdomain — when on, the matched subdomain
+	// label is preserved in the destination via the {http.request.host.labels.0}
+	// placeholder. Useful for *.old.com → *.new.com en-masse.
+	if !columnExists2(db, "redirection_hosts", "redirect_wildcard_subdomain") {
+		_, _ = db.Exec(`ALTER TABLE redirection_hosts ADD COLUMN redirect_wildcard_subdomain INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.232: sunset_at — ISO-8601 date (YYYY-MM-DD) after which the
+	// redirect returns 410 Gone instead of redirecting. Compliance/cleanup
+	// helper for "redirect from old domain until 2027-01-01, then drop it".
+	if !columnExists2(db, "redirection_hosts", "sunset_at") {
+		_, _ = db.Exec(`ALTER TABLE redirection_hosts ADD COLUMN sunset_at TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.229: redirect_rules — JSON array of path-based redirect rules.
+	// Each rule: {"path":"/old/*","code":301,"destination":"https://new.example.com{uri}"}
+	// When non-empty, the per-rule matchers run BEFORE the host-wide default
+	// redirect, so users can ship partial-migration rewrites like
+	// /old-blog/* → newblog.com without affecting the rest of the host.
+	// Empty (the default) keeps the existing whole-host redirect behaviour.
+	if !columnExists2(db, "redirection_hosts", "redirect_rules") {
+		_, _ = db.Exec(`ALTER TABLE redirection_hosts ADD COLUMN redirect_rules TEXT NOT NULL DEFAULT ''`)
+	}
 
 	return nil
 }
