@@ -2,7 +2,9 @@ package models
 
 import (
 	"database/sql"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -60,10 +62,49 @@ type AccessTotals struct {
 // AccessTotalsSince returns total views + distinct client_ip count for events
 // with ts >= since. Optionally scoped to a single host when host != "" (used
 // by the per-site drill-down; the overview passes "").
+//
+// v2.9.206: long windows (≥ today's UTC midnight in the past) read past-day
+// totals from the access_daily rollup and only scan access_events for today.
+// This drops the cost of the "Last 30 days" / "Last 90 days" cards from
+// O(rows-in-window) to O(rows-today) + O(days-in-window), turning multi-second
+// scans into ~10ms lookups on installs with millions of events.
+//
+// Visitor counts from the rollup are approximate by design — same IP across
+// multiple days is counted multiple times. The schema comment on access_daily
+// already calls this out as best-effort. For an exact distinct count over a
+// long window the caller can switch to the events table directly.
 func AccessTotalsSince(db *sql.DB, since time.Time, host string) (AccessTotals, error) {
+	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
+	if !since.UTC().Before(todayStart) {
+		// Window starts today or in the future — events table is fast enough
+		// (only today's slice of the (ts) index is touched).
+		return accessTotalsFromEvents(db, since, time.Time{}, host)
+	}
+	// Past + today: rollup for past days, events for today.
+	rollup, err := accessTotalsFromRollup(db, since, todayStart, host)
+	if err != nil {
+		return AccessTotals{}, err
+	}
+	today, err := accessTotalsFromEvents(db, todayStart, time.Time{}, host)
+	if err != nil {
+		return AccessTotals{}, err
+	}
+	return AccessTotals{
+		Views:    rollup.Views + today.Views,
+		Visitors: rollup.Visitors + today.Visitors,
+	}, nil
+}
+
+// accessTotalsFromEvents scans access_events directly. When `to` is the zero
+// value the upper bound is unbounded ("ts >= since" only).
+func accessTotalsFromEvents(db *sql.DB, from, to time.Time, host string) (AccessTotals, error) {
 	var t AccessTotals
 	q := `SELECT COUNT(*), COUNT(DISTINCT client_ip) FROM access_events WHERE ts >= ?`
-	args := []any{since.Unix()}
+	args := []any{from.Unix()}
+	if !to.IsZero() {
+		q += ` AND ts < ?`
+		args = append(args, to.Unix())
+	}
 	if host != "" {
 		q += ` AND host = ?`
 		args = append(args, host)
@@ -73,6 +114,128 @@ func AccessTotalsSince(db *sql.DB, since time.Time, host string) (AccessTotals, 
 		return t, nil
 	}
 	return t, err
+}
+
+// accessTotalsFromRollup sums access_daily for [fromDay, toDay) where
+// toDay is exclusive (typically today's UTC midnight).
+func accessTotalsFromRollup(db *sql.DB, from, to time.Time, host string) (AccessTotals, error) {
+	var t AccessTotals
+	fromDay := from.UTC().Format("2006-01-02")
+	toDay := to.UTC().Format("2006-01-02")
+	q := `SELECT COALESCE(SUM(views),0), COALESCE(SUM(unique_visitors),0)
+	      FROM access_daily WHERE day >= ? AND day < ?`
+	args := []any{fromDay, toDay}
+	if host != "" {
+		q += ` AND host = ?`
+		args = append(args, host)
+	}
+	err := db.QueryRow(q, args...).Scan(&t.Views, &t.Visitors)
+	if err == sql.ErrNoRows {
+		return t, nil
+	}
+	return t, err
+}
+
+// AggregateAccessDaily backfills the access_daily rollup for every UTC day
+// that has access_events but no rollup row, up to (but excluding) today.
+// Today's data is intentionally left out so the rollup only contains complete
+// days — partial-day numbers would change as more events arrive and the
+// rollup-vs-events math would double-count.
+//
+// Idempotent: re-runs only fill missing days, which makes it safe to invoke
+// from a startup hook and again from a periodic ticker. INSERT OR REPLACE
+// guarantees a consistent row even if the same day was partially inserted.
+//
+// v2.9.207: also populates per-status-class buckets (s2xx/s3xx/s4xx/s5xx/
+// s_other) so StatusBucketsSince can read the rollup for past days.
+//
+// Returns the number of days written so callers can log progress.
+func AggregateAccessDaily(db *sql.DB) (int, error) {
+	todayStr := time.Now().UTC().Format("2006-01-02")
+	// v2.9.207: detect rollup rows that were written by a pre-status-bucket
+	// build. Those rows have non-zero views but all zero status counters,
+	// which can't be the real distribution unless the day was empty (and an
+	// empty day wouldn't have a row at all). Re-aggregate them so the status
+	// pie picks up real numbers.
+	var staleDays []string
+	if rows, err := db.Query(`
+		SELECT day FROM access_daily
+		 WHERE views > 0
+		   AND s2xx = 0 AND s3xx = 0 AND s4xx = 0 AND s5xx = 0 AND s_other = 0
+		 GROUP BY day
+		 ORDER BY day
+		 LIMIT 365`); err == nil {
+		for rows.Next() {
+			var d string
+			if err := rows.Scan(&d); err == nil {
+				staleDays = append(staleDays, d)
+			}
+		}
+		rows.Close()
+	}
+	// Step 1: list every distinct UTC day in events older than today
+	// that doesn't already have a rollup row. Caps the work per pass at
+	// 365 days to keep the first run on a freshly-imported DB bounded.
+	rows, err := db.Query(`
+		SELECT DISTINCT date(ts, 'unixepoch') AS day
+		  FROM access_events
+		 WHERE date(ts, 'unixepoch') < ?
+		   AND date(ts, 'unixepoch') NOT IN (SELECT day FROM access_daily)
+		 ORDER BY day
+		 LIMIT 365`, todayStr)
+	if err != nil {
+		return 0, err
+	}
+	var missingDays []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		missingDays = append(missingDays, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	dedup := map[string]struct{}{}
+	var todo []string
+	for _, d := range append(staleDays, missingDays...) {
+		if _, ok := dedup[d]; ok {
+			continue
+		}
+		dedup[d] = struct{}{}
+		todo = append(todo, d)
+	}
+	if len(todo) == 0 {
+		return 0, nil
+	}
+	// Step 2: aggregate each day in its own statement so an early
+	// failure doesn't lose the days already committed. Each day fits in one
+	// INSERT…SELECT, no application-side accumulation needed.
+	written := 0
+	for _, day := range todo {
+		if _, err := db.Exec(`
+			INSERT OR REPLACE INTO access_daily
+			    (day, host, views, unique_visitors, s2xx, s3xx, s4xx, s5xx, s_other)
+			SELECT date(ts, 'unixepoch') AS day,
+			       host,
+			       COUNT(*) AS views,
+			       COUNT(DISTINCT client_ip) AS unique_visitors,
+			       SUM(CASE WHEN status >= 200 AND status < 300 THEN 1 ELSE 0 END) AS s2xx,
+			       SUM(CASE WHEN status >= 300 AND status < 400 THEN 1 ELSE 0 END) AS s3xx,
+			       SUM(CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END) AS s4xx,
+			       SUM(CASE WHEN status >= 500 AND status < 600 THEN 1 ELSE 0 END) AS s5xx,
+			       SUM(CASE WHEN status <  200 OR  status >= 600 THEN 1 ELSE 0 END) AS s_other
+			  FROM access_events
+			 WHERE date(ts, 'unixepoch') = ?
+			 GROUP BY date(ts, 'unixepoch'), host`, day); err != nil {
+			return written, err
+		}
+		written++
+	}
+	return written, nil
 }
 
 // AccessTotalsBetween is a variant of AccessTotalsSince with an explicit
@@ -315,7 +478,34 @@ type StatusBuckets struct {
 	SOther int
 }
 
+// StatusBucketsSince returns the per-class status-code distribution for
+// events with ts >= since. v2.9.207: long windows (≥ today's UTC midnight in
+// the past) read past-day buckets from the access_daily rollup and only scan
+// access_events for today, dropping the cost from O(window-rows) to
+// O(today-rows + days-in-window).
 func StatusBucketsSince(db *sql.DB, since time.Time, host string) (StatusBuckets, error) {
+	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
+	if !since.UTC().Before(todayStart) {
+		return statusBucketsFromEvents(db, since, time.Time{}, host)
+	}
+	rollup, err := statusBucketsFromRollup(db, since, todayStart, host)
+	if err != nil {
+		return StatusBuckets{}, err
+	}
+	today, err := statusBucketsFromEvents(db, todayStart, time.Time{}, host)
+	if err != nil {
+		return StatusBuckets{}, err
+	}
+	return StatusBuckets{
+		S2xx:   rollup.S2xx + today.S2xx,
+		S3xx:   rollup.S3xx + today.S3xx,
+		S4xx:   rollup.S4xx + today.S4xx,
+		S5xx:   rollup.S5xx + today.S5xx,
+		SOther: rollup.SOther + today.SOther,
+	}, nil
+}
+
+func statusBucketsFromEvents(db *sql.DB, from, to time.Time, host string) (StatusBuckets, error) {
 	var b StatusBuckets
 	q := `SELECT
 		COALESCE(SUM(CASE WHEN status >= 200 AND status < 300 THEN 1 ELSE 0 END), 0),
@@ -324,7 +514,29 @@ func StatusBucketsSince(db *sql.DB, since time.Time, host string) (StatusBuckets
 		COALESCE(SUM(CASE WHEN status >= 500 AND status < 600 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status < 200 OR  status >= 600 THEN 1 ELSE 0 END), 0)
 	FROM access_events WHERE ts >= ?`
-	args := []any{since.Unix()}
+	args := []any{from.Unix()}
+	if !to.IsZero() {
+		q += ` AND ts < ?`
+		args = append(args, to.Unix())
+	}
+	if host != "" {
+		q += ` AND host = ?`
+		args = append(args, host)
+	}
+	err := db.QueryRow(q, args...).Scan(&b.S2xx, &b.S3xx, &b.S4xx, &b.S5xx, &b.SOther)
+	if err == sql.ErrNoRows {
+		return b, nil
+	}
+	return b, err
+}
+
+func statusBucketsFromRollup(db *sql.DB, from, to time.Time, host string) (StatusBuckets, error) {
+	var b StatusBuckets
+	q := `SELECT COALESCE(SUM(s2xx),0), COALESCE(SUM(s3xx),0),
+	             COALESCE(SUM(s4xx),0), COALESCE(SUM(s5xx),0),
+	             COALESCE(SUM(s_other),0)
+	      FROM access_daily WHERE day >= ? AND day < ?`
+	args := []any{from.UTC().Format("2006-01-02"), to.UTC().Format("2006-01-02")}
 	if host != "" {
 		q += ` AND host = ?`
 		args = append(args, host)
@@ -369,4 +581,311 @@ func TopClientIPs(db *sql.DB, since time.Time, host string, limit int) ([]Client
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// ResponseTimeStats holds aggregate duration metrics for a query window.
+type ResponseTimeStats struct {
+	AvgMs int64
+	MinMs int64
+	MaxMs int64
+	P95Ms int64 // approximate 95th-percentile via sorted OFFSET
+}
+
+// ResponseTimeSince returns avg/min/max/p95 response times for events in the
+// window. P95 is approximated with a second OFFSET query — close enough for a
+// dashboard panel without a full window-function pass.
+func ResponseTimeSince(db *sql.DB, since time.Time, host string) (ResponseTimeStats, error) {
+	var s ResponseTimeStats
+	args := []any{since.Unix()}
+	hostFilter := ""
+	if host != "" {
+		hostFilter = " AND host = ?"
+		args = append(args, host)
+	}
+	err := db.QueryRow(
+		`SELECT COALESCE(AVG(duration_ms),0), COALESCE(MIN(duration_ms),0), COALESCE(MAX(duration_ms),0)
+		   FROM access_events WHERE ts >= ?`+hostFilter, args...).Scan(&s.AvgMs, &s.MinMs, &s.MaxMs)
+	if err != nil && err != sql.ErrNoRows {
+		return s, err
+	}
+	// P95 approximation: the value at the 95th-percentile index.
+	var count int64
+	_ = db.QueryRow(`SELECT COUNT(*) FROM access_events WHERE ts >= ?`+hostFilter, args...).Scan(&count)
+	if count > 0 {
+		offset := count * 95 / 100
+		p95args := make([]any, len(args)*2)
+		copy(p95args, args)
+		copy(p95args[len(args):], args)
+		_ = db.QueryRow(
+			`SELECT COALESCE(duration_ms,0) FROM access_events WHERE ts >= ?`+hostFilter+
+				` ORDER BY duration_ms LIMIT 1 OFFSET `+strconv.FormatInt(offset, 10), args...).Scan(&s.P95Ms)
+	}
+	return s, nil
+}
+
+// BandwidthSince returns the total bytes_out for events newer than since,
+// optionally scoped to a single host.
+func BandwidthSince(db *sql.DB, since time.Time, host string) (int64, error) {
+	var total int64
+	q := `SELECT COALESCE(SUM(bytes_out),0) FROM access_events WHERE ts >= ?`
+	args := []any{since.Unix()}
+	if host != "" {
+		q += ` AND host = ?`
+		args = append(args, host)
+	}
+	err := db.QueryRow(q, args...).Scan(&total)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return total, err
+}
+
+// BandwidthBucket is one time-bucket of bytes transferred.
+type BandwidthBucket struct {
+	Hour     time.Time
+	BytesOut int64
+}
+
+// BandwidthBuckets returns equally-sized time buckets of bytes_out between
+// `from` and `to`, each covering `bucketSeconds`. Buckets with zero bytes are
+// NOT returned — caller fills gaps. Same contract as AccessBuckets.
+func BandwidthBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host string) ([]BandwidthBucket, error) {
+	if bucketSeconds <= 0 {
+		bucketSeconds = 3600
+	}
+	q := `
+        SELECT (ts / ?) * ? AS bucket,
+               COALESCE(SUM(bytes_out), 0) AS total
+          FROM access_events
+         WHERE ts >= ? AND ts < ?`
+	args := []any{bucketSeconds, bucketSeconds, from.Unix(), to.Unix()}
+	if host != "" {
+		q += ` AND host = ?`
+		args = append(args, host)
+	}
+	q += ` GROUP BY 1 ORDER BY 1 ASC`
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BandwidthBucket
+	for rows.Next() {
+		var b BandwidthBucket
+		var bucket int64
+		if err := rows.Scan(&bucket, &b.BytesOut); err != nil {
+			return nil, err
+		}
+		b.Hour = time.Unix(bucket, 0)
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// RecentAccessEvents returns the most recent `limit` access events, ordered
+// newest-first. Used by the live traffic feed page and its SSE stream.
+func RecentAccessEvents(db *sql.DB, since int64, limit int) ([]AccessEvent, error) {
+	q := `SELECT id, ts, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out
+	        FROM access_events
+	       WHERE id > ?
+	       ORDER BY id DESC
+	       LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccessEvent
+	for rows.Next() {
+		var e AccessEvent
+		var ts int64
+		if err := rows.Scan(&e.ID, &ts, &e.Host, &e.Path, &e.Method, &e.Status, &e.ClientIP, &e.UserAgent, &e.DurationMs, &e.BytesOut); err != nil {
+			return nil, err
+		}
+		e.TS = time.Unix(ts, 0)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ExportAccessEvents returns up to `limit` access events newer than `since`,
+// optionally scoped to one host. Used by the CSV export endpoint. Ordered
+// oldest-first so the CSV reads chronologically.
+func ExportAccessEvents(db *sql.DB, since time.Time, host string, limit int) ([]AccessEvent, error) {
+	q := `SELECT id, ts, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out
+	        FROM access_events
+	       WHERE ts >= ?`
+	args := []any{since.Unix()}
+	if host != "" {
+		q += ` AND host = ?`
+		args = append(args, host)
+	}
+	q += ` ORDER BY ts ASC LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccessEvent
+	for rows.Next() {
+		var e AccessEvent
+		var ts int64
+		if err := rows.Scan(&e.ID, &ts, &e.Host, &e.Path, &e.Method, &e.Status,
+			&e.ClientIP, &e.UserAgent, &e.DurationMs, &e.BytesOut); err != nil {
+			return nil, err
+		}
+		e.TS = time.Unix(ts, 0)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ErrorPathStats is one row in the top-errors leaderboard.
+type ErrorPathStats struct {
+	Path   string
+	Method string
+	Count  int
+}
+
+// TopErrorPaths returns the paths+methods with the most 4xx/5xx responses
+// in the window, ordered by error count descending.
+func TopErrorPaths(db *sql.DB, since time.Time, host string, limit int) ([]ErrorPathStats, error) {
+	q := `SELECT path, method, COUNT(*) AS cnt
+		    FROM access_events
+		   WHERE ts >= ? AND status >= 400`
+	args := []any{since.Unix()}
+	if host != "" {
+		q += ` AND host = ?`
+		args = append(args, host)
+	}
+	q += ` GROUP BY path, method ORDER BY cnt DESC LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ErrorPathStats
+	for rows.Next() {
+		var e ErrorPathStats
+		if err := rows.Scan(&e.Path, &e.Method, &e.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// UABucket is one browser/bot category with its request count.
+type UABucket struct {
+	Browser string
+	Count   int
+}
+
+// parseUA classifies a user-agent string into a short browser/bot label.
+// Order matters: check more-specific strings before less-specific ones.
+func parseUA(ua string) string {
+	u := strings.ToLower(ua)
+	switch {
+	case u == "" || u == "-":
+		return "Unknown"
+	case strings.Contains(u, "googlebot"):
+		return "Googlebot"
+	case strings.Contains(u, "bingbot"):
+		return "Bingbot"
+	case strings.Contains(u, "bot") || strings.Contains(u, "crawler") || strings.Contains(u, "spider"):
+		return "Bot/Crawler"
+	case strings.Contains(u, "curl") || strings.Contains(u, "wget") || strings.Contains(u, "httpie"):
+		return "CLI tool"
+	case strings.Contains(u, "edg/") || strings.Contains(u, "edghtml"):
+		return "Edge"
+	case strings.Contains(u, "opr/") || strings.Contains(u, "opera"):
+		return "Opera"
+	case strings.Contains(u, "chrome") || strings.Contains(u, "chromium"):
+		return "Chrome"
+	case strings.Contains(u, "firefox"):
+		return "Firefox"
+	case strings.Contains(u, "safari"):
+		return "Safari"
+	case strings.Contains(u, "msie") || strings.Contains(u, "trident"):
+		return "IE"
+	case strings.Contains(u, "python") || strings.Contains(u, "go-http") || strings.Contains(u, "java") || strings.Contains(u, "php"):
+		return "HTTP library"
+	default:
+		return "Other"
+	}
+}
+
+// DomainRequestsToday returns a map of lowercase hostname → request count
+// for events since midnight UTC today. Used by the proxy-hosts list to show
+// per-host traffic indicators without N+1 queries.
+func DomainRequestsToday(db *sql.DB) (map[string]int, error) {
+	todayStart := time.Now().UTC().Truncate(24 * time.Hour).Unix()
+	rows, err := db.Query(
+		`SELECT host, COUNT(*) FROM access_events WHERE ts >= ? GROUP BY host`,
+		todayStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var host string
+		var cnt int
+		if err := rows.Scan(&host, &cnt); err != nil {
+			continue
+		}
+		out[strings.ToLower(host)] = cnt
+	}
+	return out, rows.Err()
+}
+
+// TopBrowsers returns browser categories sorted by count descending for the
+// given host and time window. Uses SQLite to fetch user_agent values grouped
+// by a bucketed key so we don't pull millions of strings into Go.
+// Since SQLite doesn't have a Go-callable UDF from SQL, we fetch the top
+// user_agent strings with their counts and classify them in Go.
+func TopBrowsers(db *sql.DB, since time.Time, host string, limit int) ([]UABucket, error) {
+	// Fetch top N distinct user_agent values by count — 200 is enough to cover
+	// all meaningful browsers while keeping the result set small.
+	rows, err := db.Query(`
+        SELECT user_agent, COUNT(*) AS cnt
+        FROM access_events
+        WHERE ts >= ? AND host = ?
+        GROUP BY user_agent
+        ORDER BY cnt DESC
+        LIMIT 200`, since.Unix(), host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := map[string]int{}
+	for rows.Next() {
+		var ua string
+		var cnt int
+		if err := rows.Scan(&ua, &cnt); err != nil {
+			continue
+		}
+		totals[parseUA(ua)] += cnt
+	}
+
+	// Sort by count descending.
+	type kv struct {
+		k string
+		v int
+	}
+	var sorted []kv
+	for k, v := range totals {
+		sorted = append(sorted, kv{k, v})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].v > sorted[j].v })
+
+	out := make([]UABucket, 0, limit)
+	for i, kv := range sorted {
+		if i >= limit {
+			break
+		}
+		out = append(out, UABucket{Browser: kv.k, Count: kv.v})
+	}
+	return out, nil
 }
