@@ -587,6 +587,22 @@ type ProxyHost struct {
 	AddXRequestByteCount bool
 	// v2.9.249: add_x_request_received_at — forward X-Request-Received-At (timestamp) header
 	AddXRequestReceivedAt bool
+	// v2.9.250: strip_request_headers — comma-separated list of request header names to delete
+	StripRequestHeaders string
+	// v2.9.251: add_x_forwarded_method — forward X-Forwarded-Method (HTTP method) header
+	AddXForwardedMethod bool
+	// v2.9.252: add_x_request_original_host — preserve original Host before rewrites
+	AddXRequestOriginalHost bool
+	// v2.9.253: add_x_request_dnt — forward DNT (Do Not Track) header
+	AddXRequestDNT bool
+	// v2.9.254: add_x_geo_region — static X-Geo-Region request header
+	AddXGeoRegion string
+	// v2.9.255: add_x_request_secure — X-Request-Secure: on/off based on TLS state
+	AddXRequestSecure bool
+	// v2.9.256: add_x_request_query_count — debug header counting query params
+	AddXRequestQueryCount bool
+	// v2.9.257: add_x_request_id_header_response — echo trace UUID to response header
+	AddXRequestIDHeaderResponse bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -1536,7 +1552,15 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.add_x_request_user_agent,0),
     COALESCE(ph.add_reporting_endpoints,''),
     COALESCE(ph.add_x_request_byte_count,0),
-    COALESCE(ph.add_x_request_received_at,0)`
+    COALESCE(ph.add_x_request_received_at,0),
+    COALESCE(ph.strip_request_headers,''),
+    COALESCE(ph.add_x_forwarded_method,0),
+    COALESCE(ph.add_x_request_original_host,0),
+    COALESCE(ph.add_x_request_dnt,0),
+    COALESCE(ph.add_x_geo_region,''),
+    COALESCE(ph.add_x_request_secure,0),
+    COALESCE(ph.add_x_request_query_count,0),
+    COALESCE(ph.add_x_request_id_header_response,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -1545,7 +1569,7 @@ func scanProxyHost(s interface {
 }, p *ProxyHost, ownerEmail *string) error {
 	var ws, bce, ssl, sslf, h2, en, bae int
 	var ownerID int64
-	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt int
+	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt, addXFwdMethod, addXReqOrigHost, addXReqDNT, addXReqSecure, addXReqQueryCount, addXReqIDHdrResp int
 	dst := []any{
 		&p.ID, &p.ServerID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
@@ -1835,6 +1859,14 @@ func scanProxyHost(s interface {
 		&p.AddReportingEndpoints,
 		&addXReqByteCount,
 		&addXReqReceivedAt,
+		&p.StripRequestHeaders,
+		&addXFwdMethod,
+		&addXReqOrigHost,
+		&addXReqDNT,
+		&p.AddXGeoRegion,
+		&addXReqSecure,
+		&addXReqQueryCount,
+		&addXReqIDHdrResp,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -1938,6 +1970,12 @@ func scanProxyHost(s interface {
 	p.AddXRequestUserAgent = addXReqUA == 1
 	p.AddXRequestByteCount = addXReqByteCount == 1
 	p.AddXRequestReceivedAt = addXReqReceivedAt == 1
+	p.AddXForwardedMethod = addXFwdMethod == 1
+	p.AddXRequestOriginalHost = addXReqOrigHost == 1
+	p.AddXRequestDNT = addXReqDNT == 1
+	p.AddXRequestSecure = addXReqSecure == 1
+	p.AddXRequestQueryCount = addXReqQueryCount == 1
+	p.AddXRequestIDHeaderResponse = addXReqIDHdrResp == 1
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -2160,8 +2198,11 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             add_x_request_priority, health_check_basic_auth,
             add_x_real_ssl_protocol, add_x_real_ssl_cipher, add_x_cache_status,
             deny_referer_regexp, add_x_request_user_agent, add_reporting_endpoints,
-            add_x_request_byte_count, add_x_request_received_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            add_x_request_byte_count, add_x_request_received_at,
+            strip_request_headers, add_x_forwarded_method, add_x_request_original_host,
+            add_x_request_dnt, add_x_geo_region, add_x_request_secure,
+            add_x_request_query_count, add_x_request_id_header_response)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -2271,6 +2312,9 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		boolInt(p.AddXRealSSLProtocol), boolInt(p.AddXRealSSLCipher), p.AddXCacheStatus,
 		p.DenyRefererRegexp, boolInt(p.AddXRequestUserAgent), p.AddReportingEndpoints,
 		boolInt(p.AddXRequestByteCount), boolInt(p.AddXRequestReceivedAt),
+		p.StripRequestHeaders, boolInt(p.AddXForwardedMethod), boolInt(p.AddXRequestOriginalHost),
+		boolInt(p.AddXRequestDNT), p.AddXGeoRegion, boolInt(p.AddXRequestSecure),
+		boolInt(p.AddXRequestQueryCount), boolInt(p.AddXRequestIDHeaderResponse),
 	)
 	if err != nil {
 		return 0, err
@@ -2576,6 +2620,14 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             add_reporting_endpoints=?,
             add_x_request_byte_count=?,
             add_x_request_received_at=?,
+            strip_request_headers=?,
+            add_x_forwarded_method=?,
+            add_x_request_original_host=?,
+            add_x_request_dnt=?,
+            add_x_geo_region=?,
+            add_x_request_secure=?,
+            add_x_request_query_count=?,
+            add_x_request_id_header_response=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -2857,6 +2909,14 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		p.AddReportingEndpoints,
 		boolInt(p.AddXRequestByteCount),
 		boolInt(p.AddXRequestReceivedAt),
+		p.StripRequestHeaders,
+		boolInt(p.AddXForwardedMethod),
+		boolInt(p.AddXRequestOriginalHost),
+		boolInt(p.AddXRequestDNT),
+		p.AddXGeoRegion,
+		boolInt(p.AddXRequestSecure),
+		boolInt(p.AddXRequestQueryCount),
+		boolInt(p.AddXRequestIDHeaderResponse),
 		p.ID,
 	)
 	return err

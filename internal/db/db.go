@@ -1934,6 +1934,38 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "add_x_request_received_at") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_received_at INTEGER NOT NULL DEFAULT 0`)
 	}
+	// v2.9.250: strip_request_headers — comma-separated list of request header names to delete
+	if !columnExists2(db, "proxy_hosts", "strip_request_headers") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN strip_request_headers TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.251: add_x_forwarded_method — forward X-Forwarded-Method (HTTP method) request header
+	if !columnExists2(db, "proxy_hosts", "add_x_forwarded_method") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_forwarded_method INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.252: add_x_request_original_host — preserve original Host header before any rewrites
+	if !columnExists2(db, "proxy_hosts", "add_x_request_original_host") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_original_host INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.253: add_x_request_dnt — forward DNT (Do Not Track) header to upstream
+	if !columnExists2(db, "proxy_hosts", "add_x_request_dnt") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_dnt INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.254: add_x_geo_region — static X-Geo-Region request header (US-CA, GB-LND, etc.)
+	if !columnExists2(db, "proxy_hosts", "add_x_geo_region") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_geo_region TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.255: add_x_request_secure — X-Request-Secure: on/off based on TLS state
+	if !columnExists2(db, "proxy_hosts", "add_x_request_secure") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_secure INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.256: add_x_request_query_count — debug header with query parameter count
+	if !columnExists2(db, "proxy_hosts", "add_x_request_query_count") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_query_count INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.257: add_x_request_id_header_response — echo the request UUID to the response header
+	if !columnExists2(db, "proxy_hosts", "add_x_request_id_header_response") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_id_header_response INTEGER NOT NULL DEFAULT 0`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

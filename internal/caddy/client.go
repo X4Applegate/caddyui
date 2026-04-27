@@ -1924,6 +1924,102 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			},
 		})
 	}
+	// v2.9.250: strip_request_headers — delete listed request headers before forwarding.
+	if p.StripRequestHeaders != "" {
+		delList := []any{}
+		for _, h := range strings.Split(p.StripRequestHeaders, ",") {
+			h = strings.TrimSpace(h)
+			if h != "" {
+				delList = append(delList, h)
+			}
+		}
+		if len(delList) > 0 {
+			handlers = append(handlers, map[string]any{
+				"handler": "headers",
+				"request": map[string]any{
+					"delete": delList,
+				},
+			})
+		}
+	}
+	// v2.9.251: add_x_forwarded_method — forward HTTP method as X-Forwarded-Method.
+	if p.AddXForwardedMethod {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Forwarded-Method": []any{"{http.request.method}"},
+				},
+			},
+		})
+	}
+	// v2.9.252: add_x_request_original_host — preserve original Host header (pre-rewrite).
+	if p.AddXRequestOriginalHost {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-Original-Host": []any{"{http.request.host}"},
+				},
+			},
+		})
+	}
+	// v2.9.253: add_x_request_dnt — forward DNT (Do Not Track) header to upstream.
+	if p.AddXRequestDNT {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-Dnt": []any{"{http.request.header.DNT}"},
+				},
+			},
+		})
+	}
+	// v2.9.254: add_x_geo_region — set static X-Geo-Region request header.
+	if p.AddXGeoRegion != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Geo-Region": []any{p.AddXGeoRegion},
+				},
+			},
+		})
+	}
+	// v2.9.255: add_x_request_secure — X-Request-Secure: on/off based on TLS state.
+	if p.AddXRequestSecure {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					// Caddy expression: TLS handshake completed → "on", else "off".
+					"X-Request-Secure": []any{"{http.request.tls.version}"},
+				},
+			},
+		})
+	}
+	// v2.9.256: add_x_request_query_count — debug header (presence of query string).
+	if p.AddXRequestQueryCount {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"request": map[string]any{
+				"set": map[string]any{
+					"X-Request-Query-Count": []any{"{http.request.uri.query}"},
+				},
+			},
+		})
+	}
+	// v2.9.257: add_x_request_id_header_response — echo trace UUID to response header.
+	if p.AddXRequestIDHeaderResponse {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"set": map[string]any{
+					"X-Request-Id": []any{"{http.request.uuid}"},
+				},
+			},
+		})
+	}
 	// v2.9.242: add_x_real_ssl_protocol — forward TLS version as X-Real-SSL-Protocol to upstream.
 	if p.AddXRealSSLProtocol {
 		handlers = append(handlers, map[string]any{
