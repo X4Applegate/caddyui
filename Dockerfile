@@ -46,8 +46,12 @@ COPY --from=build /out/caddyui /app/caddyui
 # Pre-created data directory (owned by caddyui uid 10001)
 COPY --from=build --chown=10001:10001 /out/data /data
 
-# World-writable /tmp (1777). v2.7.5.
-COPY --from=build /out/tmp /tmp
+# World-writable /tmp (1777). v2.7.5 added this; --chmod preserves mode
+# through the multi-stage COPY so non-root uid 10001 can write temp files.
+# Without 1777, SQLite returns SQLITE_IOERR_GETTEMPPATH (6410) on any query
+# that needs to spill a large sort to disk (e.g. GROUP BY host, ORDER BY views
+# across millions of rows) — manifests as silently-empty analytics tables.
+COPY --chmod=1777 --from=build /out/tmp /tmp
 
 USER 10001
 
