@@ -3071,6 +3071,22 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.AddXRequestQueryCount = r.FormValue("add_x_request_query_count") == "on"
 	// v2.9.257: add_x_request_id_header_response — echo trace UUID to response header.
 	ph.AddXRequestIDHeaderResponse = r.FormValue("add_x_request_id_header_response") == "on"
+	// v2.9.258: force_canonical_host — canonical host for SEO-style consolidation.
+	ph.ForceCanonicalHost = strings.TrimSpace(r.FormValue("force_canonical_host"))
+	// v2.9.259: add_x_robots_noindex_quick — X-Robots-Tag: noindex, nofollow.
+	ph.AddXRobotsNoindexQuick = r.FormValue("add_x_robots_noindex_quick") == "on"
+	// v2.9.260: block_bot_user_agents — built-in bot blocklist.
+	ph.BlockBotUserAgents = r.FormValue("block_bot_user_agents") == "on"
+	// v2.9.261: block_admin_paths — 404 common admin paths.
+	ph.BlockAdminPaths = r.FormValue("block_admin_paths") == "on"
+	// v2.9.262: add_link_dns_prefetch — Link rel=dns-prefetch header.
+	ph.AddLinkDNSPrefetch = strings.TrimSpace(r.FormValue("add_link_dns_prefetch"))
+	// v2.9.263: add_link_preconnect — Link rel=preconnect header.
+	ph.AddLinkPreconnect = strings.TrimSpace(r.FormValue("add_link_preconnect"))
+	// v2.9.264: add_x_csp_disabled — strip Content-Security-Policy from response.
+	ph.AddXCSPDisabled = r.FormValue("add_x_csp_disabled") == "on"
+	// v2.9.265: add_x_request_method_override — honor X-HTTP-Method-Override.
+	ph.AddXRequestMethodOverride = r.FormValue("add_x_request_method_override") == "on"
 	return ph, nil
 }
 

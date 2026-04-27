@@ -603,6 +603,22 @@ type ProxyHost struct {
 	AddXRequestQueryCount bool
 	// v2.9.257: add_x_request_id_header_response — echo trace UUID to response header
 	AddXRequestIDHeaderResponse bool
+	// v2.9.258: force_canonical_host — canonical host; alt hostnames get 301 redirected
+	ForceCanonicalHost string
+	// v2.9.259: add_x_robots_noindex_quick — quick X-Robots-Tag: noindex, nofollow toggle
+	AddXRobotsNoindexQuick bool
+	// v2.9.260: block_bot_user_agents — built-in bot blocklist (regexp matches common scrapers)
+	BlockBotUserAgents bool
+	// v2.9.261: block_admin_paths — 404 common admin paths
+	BlockAdminPaths bool
+	// v2.9.262: add_link_dns_prefetch — Link: <…>; rel=dns-prefetch response header
+	AddLinkDNSPrefetch string
+	// v2.9.263: add_link_preconnect — Link: <…>; rel=preconnect response header
+	AddLinkPreconnect string
+	// v2.9.264: add_x_csp_disabled — set Content-Security-Policy: '' to disable CSP explicitly
+	AddXCSPDisabled bool
+	// v2.9.265: add_x_request_method_override — honor X-HTTP-Method-Override (rewrites method)
+	AddXRequestMethodOverride bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -1560,7 +1576,15 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.add_x_geo_region,''),
     COALESCE(ph.add_x_request_secure,0),
     COALESCE(ph.add_x_request_query_count,0),
-    COALESCE(ph.add_x_request_id_header_response,0)`
+    COALESCE(ph.add_x_request_id_header_response,0),
+    COALESCE(ph.force_canonical_host,''),
+    COALESCE(ph.add_x_robots_noindex_quick,0),
+    COALESCE(ph.block_bot_user_agents,0),
+    COALESCE(ph.block_admin_paths,0),
+    COALESCE(ph.add_link_dns_prefetch,''),
+    COALESCE(ph.add_link_preconnect,''),
+    COALESCE(ph.add_x_csp_disabled,0),
+    COALESCE(ph.add_x_request_method_override,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -1569,7 +1593,7 @@ func scanProxyHost(s interface {
 }, p *ProxyHost, ownerEmail *string) error {
 	var ws, bce, ssl, sslf, h2, en, bae int
 	var ownerID int64
-	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt, addXFwdMethod, addXReqOrigHost, addXReqDNT, addXReqSecure, addXReqQueryCount, addXReqIDHdrResp int
+	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt, addXFwdMethod, addXReqOrigHost, addXReqDNT, addXReqSecure, addXReqQueryCount, addXReqIDHdrResp, addXRobotsNoindex, blockBotUA, blockAdminPaths, addXCSPDis, addXMethodOverride int
 	dst := []any{
 		&p.ID, &p.ServerID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
@@ -1867,6 +1891,14 @@ func scanProxyHost(s interface {
 		&addXReqSecure,
 		&addXReqQueryCount,
 		&addXReqIDHdrResp,
+		&p.ForceCanonicalHost,
+		&addXRobotsNoindex,
+		&blockBotUA,
+		&blockAdminPaths,
+		&p.AddLinkDNSPrefetch,
+		&p.AddLinkPreconnect,
+		&addXCSPDis,
+		&addXMethodOverride,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -1976,6 +2008,11 @@ func scanProxyHost(s interface {
 	p.AddXRequestSecure = addXReqSecure == 1
 	p.AddXRequestQueryCount = addXReqQueryCount == 1
 	p.AddXRequestIDHeaderResponse = addXReqIDHdrResp == 1
+	p.AddXRobotsNoindexQuick = addXRobotsNoindex == 1
+	p.BlockBotUserAgents = blockBotUA == 1
+	p.BlockAdminPaths = blockAdminPaths == 1
+	p.AddXCSPDisabled = addXCSPDis == 1
+	p.AddXRequestMethodOverride = addXMethodOverride == 1
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -2201,8 +2238,11 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             add_x_request_byte_count, add_x_request_received_at,
             strip_request_headers, add_x_forwarded_method, add_x_request_original_host,
             add_x_request_dnt, add_x_geo_region, add_x_request_secure,
-            add_x_request_query_count, add_x_request_id_header_response)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            add_x_request_query_count, add_x_request_id_header_response,
+            force_canonical_host, add_x_robots_noindex_quick, block_bot_user_agents,
+            block_admin_paths, add_link_dns_prefetch, add_link_preconnect,
+            add_x_csp_disabled, add_x_request_method_override)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -2315,6 +2355,9 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		p.StripRequestHeaders, boolInt(p.AddXForwardedMethod), boolInt(p.AddXRequestOriginalHost),
 		boolInt(p.AddXRequestDNT), p.AddXGeoRegion, boolInt(p.AddXRequestSecure),
 		boolInt(p.AddXRequestQueryCount), boolInt(p.AddXRequestIDHeaderResponse),
+		p.ForceCanonicalHost, boolInt(p.AddXRobotsNoindexQuick), boolInt(p.BlockBotUserAgents),
+		boolInt(p.BlockAdminPaths), p.AddLinkDNSPrefetch, p.AddLinkPreconnect,
+		boolInt(p.AddXCSPDisabled), boolInt(p.AddXRequestMethodOverride),
 	)
 	if err != nil {
 		return 0, err
@@ -2628,6 +2671,14 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             add_x_request_secure=?,
             add_x_request_query_count=?,
             add_x_request_id_header_response=?,
+            force_canonical_host=?,
+            add_x_robots_noindex_quick=?,
+            block_bot_user_agents=?,
+            block_admin_paths=?,
+            add_link_dns_prefetch=?,
+            add_link_preconnect=?,
+            add_x_csp_disabled=?,
+            add_x_request_method_override=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -2917,6 +2968,14 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		boolInt(p.AddXRequestSecure),
 		boolInt(p.AddXRequestQueryCount),
 		boolInt(p.AddXRequestIDHeaderResponse),
+		p.ForceCanonicalHost,
+		boolInt(p.AddXRobotsNoindexQuick),
+		boolInt(p.BlockBotUserAgents),
+		boolInt(p.BlockAdminPaths),
+		p.AddLinkDNSPrefetch,
+		p.AddLinkPreconnect,
+		boolInt(p.AddXCSPDisabled),
+		boolInt(p.AddXRequestMethodOverride),
 		p.ID,
 	)
 	return err

@@ -1924,6 +1924,129 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			},
 		})
 	}
+	// v2.9.258: force_canonical_host — when set, any request whose Host
+	// header doesn't equal the canonical value gets a 301 to the canonical
+	// equivalent (path + query preserved). Common SEO pattern: redirect
+	// www.example.com → example.com (or vice versa) to avoid duplicate
+	// content penalties.
+	if p.ForceCanonicalHost != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "subroute",
+			"routes": []any{
+				map[string]any{
+					"match": []any{
+						map[string]any{
+							"not": []any{
+								map[string]any{"host": []any{p.ForceCanonicalHost}},
+							},
+						},
+					},
+					"handle": []any{map[string]any{
+						"handler": "static_response",
+						"headers": map[string]any{
+							"Location": []any{"https://" + p.ForceCanonicalHost + "{http.request.uri}"},
+						},
+						"status_code": 301,
+					}},
+					"terminal": true,
+				},
+			},
+		})
+	}
+	// v2.9.259: add_x_robots_noindex_quick — quick X-Robots-Tag noindex toggle.
+	if p.AddXRobotsNoindexQuick {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"set": map[string]any{
+					"X-Robots-Tag": []any{"noindex, nofollow"},
+				},
+			},
+		})
+	}
+	// v2.9.260: block_bot_user_agents — built-in regexp matching common
+	// scrapers (AhrefsBot, SemrushBot, Bytespider, MJ12bot, DotBot, etc.).
+	// 403 on match. Maintained as a single regex string here so users get
+	// a baseline blocklist with one click without needing to write their own.
+	if p.BlockBotUserAgents {
+		const botRegex = `(?i)(AhrefsBot|SemrushBot|Bytespider|MJ12bot|DotBot|PetalBot|DataForSeoBot|YandexBot|BLEXBot|SerpstatBot)`
+		handlers = append(handlers, map[string]any{
+			"handler": "subroute",
+			"routes": []any{
+				map[string]any{
+					"match": []any{map[string]any{
+						"header_regexp": map[string]any{
+							"User-Agent": map[string]any{"pattern": botRegex},
+						},
+					}},
+					"handle": []any{map[string]any{"handler": "static_response", "status_code": 403}},
+				},
+			},
+		})
+	}
+	// v2.9.261: block_admin_paths — 404 common admin / config paths so
+	// scanners that probe /wp-admin, /.git, /.env, /phpmyadmin etc. on
+	// non-applicable upstreams don't waste upstream cycles. 404 (rather
+	// than 403) so the scanner doesn't learn the path exists at all.
+	if p.BlockAdminPaths {
+		handlers = append(handlers, map[string]any{
+			"handler": "subroute",
+			"routes": []any{
+				map[string]any{
+					"match": []any{map[string]any{"path": []any{
+						"/wp-admin*", "/wp-login*", "/.git*", "/.env*",
+						"/phpmyadmin*", "/myadmin*", "/.svn*", "/.hg*",
+						"/.aws*", "/.ssh*", "/admin/config.php*",
+					}}},
+					"handle": []any{map[string]any{"handler": "static_response", "status_code": 404}},
+				},
+			},
+		})
+	}
+	// v2.9.262: add_link_dns_prefetch — Link: <…>; rel=dns-prefetch response header.
+	if p.AddLinkDNSPrefetch != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"add": map[string]any{
+					"Link": []any{p.AddLinkDNSPrefetch + "; rel=dns-prefetch"},
+				},
+			},
+		})
+	}
+	// v2.9.263: add_link_preconnect — Link: <…>; rel=preconnect response header.
+	if p.AddLinkPreconnect != "" {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"add": map[string]any{
+					"Link": []any{p.AddLinkPreconnect + "; rel=preconnect"},
+				},
+			},
+		})
+	}
+	// v2.9.264: add_x_csp_disabled — explicitly clear Content-Security-Policy.
+	// Different from "no CSP set" because some upstreams set their own CSP
+	// header that you may want to suppress at the edge. Sets the header to
+	// empty so it overrides any upstream value.
+	if p.AddXCSPDisabled {
+		handlers = append(handlers, map[string]any{
+			"handler": "headers",
+			"response": map[string]any{
+				"delete": []any{"Content-Security-Policy"},
+			},
+		})
+	}
+	// v2.9.265: add_x_request_method_override — honor X-HTTP-Method-Override.
+	// When the client sends `X-HTTP-Method-Override: PUT`, Caddy rewrites
+	// the request method to PUT before forwarding. Common for clients
+	// behind firewalls that only allow GET/POST.
+	if p.AddXRequestMethodOverride {
+		handlers = append(handlers, map[string]any{
+			"handler": "rewrite",
+			"method":  "{http.request.header.X-Http-Method-Override}",
+		})
+	}
 	// v2.9.250: strip_request_headers — delete listed request headers before forwarding.
 	if p.StripRequestHeaders != "" {
 		delList := []any{}
