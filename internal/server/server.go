@@ -7347,13 +7347,20 @@ func (s *Server) apiTestUpstream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiValidateRawRoute checks whether a draft raw route would be accepted by
-// Caddy without committing it. Accepts either form field:
-//   - caddyfile_src: a Caddyfile block to /adapt first, then validate
-//   - json_data:     raw JSON to validate directly
-// Returns {"ok": bool, "error": string}. Does NOT mutate Caddy state — uses
-// /load?validate_only=true on a synthetic config that wraps the route in the
-// minimal apps.http.servers shape Caddy expects. v2.9.228.
+// apiValidateRawRoute checks whether a draft raw route is shaped correctly
+// before it's saved. Accepts either form field:
+//   - caddyfile_src: a Caddyfile block — runs through Caddy's /adapt which
+//     parses + validates Caddyfile syntax without applying anything.
+//   - json_data: raw JSON — done client-side (well, server-side parse)
+//     because Caddy's admin API has no JSON-only validate mode in v2.7+.
+//     We surface JSON parse errors and structural-shape errors (must have
+//     match/handle keys), but a route that's syntactically valid JSON yet
+//     semantically wrong won't be caught here — that surfaces at sync time.
+//
+// v2.9.228 originally posted to /load?validate_only=true thinking that
+// query param was honoured. Caddy ignores it entirely, so the synthetic
+// config was applied to the running instance, polluting autosave.json
+// with a `_caddyui_validate` ghost server. v2.9.233 drops that path.
 func (s *Server) apiValidateRawRoute(w http.ResponseWriter, r *http.Request) {
 	if s.currentUser(r) == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -7369,55 +7376,67 @@ func (s *Server) apiValidateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	cfSrc := strings.TrimSpace(r.FormValue("caddyfile_src"))
 	jsonData := strings.TrimSpace(r.FormValue("json_data"))
-	caddyCl := s.caddyForRequest(r)
 	if cfSrc != "" {
-		// Adapt Caddyfile to JSON via the same pipeline used by save.
-		adapted, err := s.adaptRawRouteCaddyfile(caddyCl, cfSrc)
+		// Caddy's /adapt parses Caddyfile syntax and runs the adapter
+		// pipeline — that catches the bulk of bugs (unknown directives,
+		// missing args, malformed blocks). It does NOT apply the config
+		// to Caddy's running state.
+		_, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
 		if err != nil {
 			respond(false, "Caddyfile rejected by Caddy: "+err.Error())
 			return
 		}
-		jsonData = adapted
+		// If Caddyfile is fine and JSON is empty (most common case), we're
+		// done. If JSON is also filled, fall through to validate it too.
+		if jsonData == "" {
+			respond(true, "")
+			return
+		}
 	}
 	if jsonData == "" {
 		respond(false, "Provide a Caddyfile block or JSON to validate.")
 		return
 	}
-	// Probe parse so we surface JSON syntax errors with the same message
-	// the save path would.
+	// JSON-only validation: parse + structural check.
 	var probe any
 	if err := json.Unmarshal([]byte(jsonData), &probe); err != nil {
 		respond(false, "Invalid JSON: "+err.Error())
 		return
 	}
-	// Wrap the route in the minimal Caddy config shape so /adapt-validate
-	// runs the route through the full provisioning pipeline. We support
-	// both single-route-object and array-of-routes inputs (the import flow
-	// produces arrays for multi-block Caddyfiles).
-	var routes []any
+	checkRoute := func(m map[string]any) string {
+		if _, ok := m["handle"]; !ok {
+			return `route is missing "handle" array`
+		}
+		if h, ok := m["handle"].([]any); !ok || len(h) == 0 {
+			return `"handle" must be a non-empty array`
+		}
+		// match is optional — a route with no matcher matches everything.
+		return ""
+	}
 	switch v := probe.(type) {
 	case map[string]any:
-		routes = []any{v}
+		if msg := checkRoute(v); msg != "" {
+			respond(false, msg)
+			return
+		}
 	case []any:
-		routes = v
+		if len(v) == 0 {
+			respond(false, "Route JSON array is empty.")
+			return
+		}
+		for i, e := range v {
+			m, ok := e.(map[string]any)
+			if !ok {
+				respond(false, fmt.Sprintf("entry %d is not an object", i))
+				return
+			}
+			if msg := checkRoute(m); msg != "" {
+				respond(false, fmt.Sprintf("entry %d: %s", i, msg))
+				return
+			}
+		}
 	default:
 		respond(false, "Route JSON must be an object or array of route objects.")
-		return
-	}
-	cfg := map[string]any{
-		"apps": map[string]any{
-			"http": map[string]any{
-				"servers": map[string]any{
-					"_caddyui_validate": map[string]any{
-						"listen": []any{":0"},
-						"routes": routes,
-					},
-				},
-			},
-		},
-	}
-	if err := caddyCl.Validate(cfg); err != nil {
-		respond(false, err.Error())
 		return
 	}
 	respond(true, "")
