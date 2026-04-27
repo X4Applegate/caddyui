@@ -19,13 +19,20 @@
     <label class="text-xs text-ink-500 font-medium">Server</label>
     <select
       class="text-sm border border-ink-200 rounded-lg px-2 py-1.5 bg-white hover:border-ink-300 focus:border-brand-400 focus:ring-1 focus:ring-brand-100 transition"
-      onchange="const v=this.value; window.location = v==='0' ? '/analytics' : '/analytics?server='+v;">
+      onchange="const v=parseInt(this.value,10)||0; window.location = v>0 ? '/analytics?server='+v : '/analytics';">
       <option value="0" {{if eq .SelectedServerID 0}}selected{{end}}>All servers</option>
       {{range .AllServers}}
       <option value="{{.ID}}" {{if eq $.SelectedServerID .ID}}selected{{end}}>{{.Name}}</option>
       {{end}}
     </select>
     {{end}}
+    <a href="/analytics/export.csv?days=7" download
+       class="inline-flex items-center gap-1.5 text-sm text-ink-600 hover:text-ink-800 border border-ink-200 hover:border-ink-300 px-3 py-1.5 rounded-lg transition">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+      </svg>
+      Export CSV
+    </a>
     {{if .IsAdmin}}
     <a href="/settings#analytics" class="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-700 border border-brand-200 hover:border-brand-300 px-3 py-1.5 rounded-lg transition">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="3"/></svg>
@@ -100,6 +107,30 @@
   </svg>
   {{else}}
   <div class="py-8 text-center text-sm text-ink-400">No data in the last 24 hours.</div>
+  {{end}}
+</div>
+
+{{/* ── 24h bandwidth sparkline ── */}}
+<div class="bg-white border border-ink-200 rounded-xl p-4 mb-6 shadow-card">
+  <div class="flex items-baseline justify-between mb-3">
+    <div>
+      <div class="text-sm font-medium text-ink-800">Bandwidth out, last 24 hours</div>
+      <div class="text-xs text-ink-400">1-hour buckets</div>
+    </div>
+    <div class="text-xs text-ink-500 font-medium">
+      {{fmtBytes .BandwidthTotal}} total
+    </div>
+  </div>
+  {{if .BandwidthSparkline}}
+  <svg viewBox="0 0 {{len .BandwidthSparkline}} 40" preserveAspectRatio="none" class="w-full h-24 text-emerald-500">
+    {{$bmax := .BandwidthMax}}
+    {{range $i, $b := .BandwidthSparkline}}
+      {{$h := mulDivInt64 $b.BytesOut 38 $bmax}}
+      <rect x="{{$i}}" y="{{subInt64 40 $h}}" width="0.8" height="{{$h}}" fill="currentColor" opacity="0.8"/>
+    {{end}}
+  </svg>
+  {{else}}
+  <div class="py-8 text-center text-sm text-ink-400">No bandwidth data in the last 24 hours.</div>
   {{end}}
 </div>
 
