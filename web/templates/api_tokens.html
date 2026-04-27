@@ -1,0 +1,102 @@
+{{define "title"}}API Tokens · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-6 flex items-start justify-between gap-4 flex-wrap">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">API Tokens</h1>
+    <p class="text-sm text-ink-500 mt-1">Bearer tokens for programmatic / headless access. Each token is shown exactly once at creation.</p>
+  </div>
+</div>
+
+{{if .CreatedToken}}
+<div class="bg-green-50 border border-green-200 rounded-xl px-5 py-4 mb-6 max-w-2xl">
+  <p class="text-sm font-medium text-green-800 mb-2">Token created — copy it now, it will not be shown again.</p>
+  <div class="flex items-center gap-2">
+    <code id="new-token" class="flex-1 font-mono text-xs bg-white border border-green-300 rounded-lg px-3 py-2 select-all break-all text-green-900">{{.CreatedToken}}</code>
+    <button type="button" onclick="(function(){var el=document.getElementById('new-token');navigator.clipboard&&navigator.clipboard.writeText(el.textContent).then(function(){var b=el.nextElementSibling;b.textContent='Copied!';setTimeout(function(){b.textContent='Copy'},2000)}).catch(function(){el.select()});})()" class="shrink-0 text-xs bg-green-100 hover:bg-green-200 text-green-800 font-medium px-3 py-2 rounded-lg transition">Copy</button>
+  </div>
+  <p class="text-xs text-green-700 mt-2">Use as: <code class="font-mono bg-green-100 px-1 rounded">Authorization: Bearer &lt;token&gt;</code></p>
+</div>
+{{end}}
+
+{{/* Create form */}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-6 max-w-2xl">
+  <h2 class="text-sm font-semibold text-ink-800 mb-4">Create new token</h2>
+  <form method="post" action="/api-tokens" class="flex flex-wrap items-end gap-3">
+    <div class="flex-1 min-w-40">
+      <label class="block text-xs font-medium text-ink-700 mb-1">Name</label>
+      <input name="name" required placeholder="CI deploy, Home Assistant, …" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div class="w-40">
+      <label class="block text-xs font-medium text-ink-700 mb-1">Expires <span class="font-normal text-ink-400">(optional)</span></label>
+      <input type="date" name="expires_at" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div class="w-44">
+      <label class="block text-xs font-medium text-ink-700 mb-1">Scope</label>
+      <select name="scopes" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="full">Full access</option>
+        <option value="read_only">Read-only</option>
+        <option value="proxy_write">Proxy write</option>
+      </select>
+    </div>
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition shrink-0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 mr-1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Create token
+    </button>
+  </form>
+</div>
+
+{{/* Token list */}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden max-w-4xl">
+  {{if not .Tokens}}
+  <div class="px-6 py-12 text-center">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="w-10 h-10 text-ink-300 mx-auto mb-3"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    <p class="text-sm text-ink-500">No API tokens yet.</p>
+  </div>
+  {{else}}
+  <table class="w-full text-sm">
+    <thead class="bg-ink-50 border-b border-ink-100">
+      <tr>
+        {{if .IsAdmin}}<th class="text-left text-xs font-medium text-ink-500 px-4 py-3">User</th>{{end}}
+        <th class="text-left text-xs font-medium text-ink-500 px-4 py-3">Name</th>
+        <th class="text-left text-xs font-medium text-ink-500 px-4 py-3 hidden sm:table-cell">Created</th>
+        <th class="text-left text-xs font-medium text-ink-500 px-4 py-3 hidden md:table-cell">Last used</th>
+        <th class="text-left text-xs font-medium text-ink-500 px-4 py-3 hidden md:table-cell">Expires</th>
+        <th class="text-left text-xs font-medium text-ink-500 px-4 py-3 hidden lg:table-cell">Scope</th>
+        <th class="text-right text-xs font-medium text-ink-500 px-4 py-3"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-ink-100">
+      {{range .Tokens}}
+      <tr class="hover:bg-ink-50/50 transition">
+        {{if $.IsAdmin}}<td class="px-4 py-3 text-xs text-ink-500 font-mono">{{.UserEmail}}</td>{{end}}
+        <td class="px-4 py-3 font-medium text-ink-800">
+          {{.Name}}
+          {{if .Expired}}<span class="ml-1.5 text-[10px] bg-red-100 text-red-700 font-medium px-1.5 py-0.5 rounded-full">Expired</span>{{end}}
+        </td>
+        <td class="px-4 py-3 text-xs text-ink-500 hidden sm:table-cell">{{fmtDate .CreatedAt}}</td>
+        <td class="px-4 py-3 text-xs text-ink-500 hidden md:table-cell">{{if .LastUsedAt.Valid}}{{fmtRel .LastUsedAt.Time}}{{else}}Never{{end}}</td>
+        <td class="px-4 py-3 text-xs hidden md:table-cell {{if .Expired}}text-red-600{{else if .ExpiresAt.Valid}}text-ink-600{{else}}text-ink-400{{end}}">
+          {{if .ExpiresAt.Valid}}{{fmtDate .ExpiresAt.Time}}{{else}}Never{{end}}
+        </td>
+        <td class="px-4 py-3 hidden lg:table-cell">
+          {{if eq .Scopes "read_only"}}
+          <span class="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-medium">Read-only</span>
+          {{else if eq .Scopes "proxy_write"}}
+          <span class="text-xs bg-sky-50 text-sky-700 border border-sky-200 px-2 py-0.5 rounded-full font-medium">Proxy write</span>
+          {{else}}
+          <span class="text-xs bg-ink-50 text-ink-500 border border-ink-200 px-2 py-0.5 rounded-full font-medium">Full</span>
+          {{end}}
+        </td>
+        <td class="px-4 py-3 text-right">
+          <form method="post" action="/api-tokens/{{.ID}}/revoke" onsubmit="return confirm('Revoke token «{{.Name}}»? Any scripts using it will stop working.')">
+            <button class="text-xs text-red-500 hover:text-red-700 font-medium transition">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+<p class="mt-4 text-xs text-ink-400 max-w-2xl">Tokens authenticate as the user who created them and carry that user's permissions. Revoke tokens you no longer use. Tokens are stored as SHA-256 hashes — the raw value cannot be recovered.</p>
+{{end}}

@@ -1,0 +1,123 @@
+{{define "title"}}Search · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Search</h1>
+  <p class="text-sm text-ink-500 mt-1">Find proxy hosts, redirects, raw routes, and certificates.</p>
+</div>
+
+<form method="get" action="/search" class="mb-6">
+  <div class="flex gap-2 max-w-xl">
+    <input type="search" name="q" value="{{.Query}}" autofocus placeholder="Domain, hostname, label…"
+      class="flex-1 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    <button type="submit" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      Search
+    </button>
+  </div>
+</form>
+
+{{if .Query}}
+  {{if and (not .ProxyHosts) (not .Redirects) (not .RawRoutes) (not .Certs)}}
+  <div class="bg-white border border-ink-200 rounded-xl px-5 py-16 text-center shadow-card">
+    <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </div>
+    <div class="text-ink-600 text-sm font-medium">No results for "{{.Query}}"</div>
+  </div>
+  {{else}}
+  <div class="space-y-6">
+
+    {{if .ProxyHosts}}
+    <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+      <div class="px-5 pt-4 pb-2 flex items-baseline justify-between">
+        <div class="text-sm font-medium text-ink-800">Proxy Hosts</div>
+        <span class="text-xs text-ink-400">{{len .ProxyHosts}} found</span>
+      </div>
+      <table class="w-full text-sm">
+        <tbody>
+          {{range .ProxyHosts}}
+          <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition cursor-pointer" onclick="window.location='/proxy-hosts/{{.ID}}/edit'">
+            <td class="px-5 py-3">
+              <div class="font-mono text-xs text-ink-800 font-medium">{{.Domains}}</div>
+              <div class="text-xs text-ink-500 mt-0.5">→ {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</div>
+            </td>
+            <td class="px-5 py-3 text-right">
+              {{if .Enabled}}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>on</span>
+              {{else}}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</span>
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{end}}
+
+    {{if .Redirects}}
+    <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+      <div class="px-5 pt-4 pb-2 flex items-baseline justify-between">
+        <div class="text-sm font-medium text-ink-800">Redirects</div>
+        <span class="text-xs text-ink-400">{{len .Redirects}} found</span>
+      </div>
+      <table class="w-full text-sm">
+        <tbody>
+          {{range .Redirects}}
+          <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition cursor-pointer" onclick="window.location='/redirection-hosts/{{.ID}}/edit'">
+            <td class="px-5 py-3">
+              <div class="font-mono text-xs text-ink-800 font-medium">{{.Domains}}</div>
+              <div class="text-xs text-ink-500 mt-0.5">→ {{.ForwardDomain}} ({{.ForwardHTTPCode}})</div>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{end}}
+
+    {{if .RawRoutes}}
+    <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+      <div class="px-5 pt-4 pb-2 flex items-baseline justify-between">
+        <div class="text-sm font-medium text-ink-800">Advanced Routes</div>
+        <span class="text-xs text-ink-400">{{len .RawRoutes}} found</span>
+      </div>
+      <table class="w-full text-sm">
+        <tbody>
+          {{range .RawRoutes}}
+          <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition cursor-pointer" onclick="window.location='/raw-routes/{{.ID}}/edit'">
+            <td class="px-5 py-3">
+              <div class="font-mono text-xs text-ink-800 font-medium">{{.Label}}</div>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{end}}
+
+    {{if .Certs}}
+    <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+      <div class="px-5 pt-4 pb-2 flex items-baseline justify-between">
+        <div class="text-sm font-medium text-ink-800">Certificates</div>
+        <span class="text-xs text-ink-400">{{len .Certs}} found</span>
+      </div>
+      <table class="w-full text-sm">
+        <tbody>
+          {{range .Certs}}
+          <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition cursor-pointer" onclick="window.location='/certificates/{{.ID}}/edit'">
+            <td class="px-5 py-3">
+              <div class="font-mono text-xs text-ink-800 font-medium">{{.Name}}</div>
+              <div class="text-xs text-ink-500 mt-0.5">{{.Domains}}</div>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{end}}
+
+  </div>
+  {{end}}
+{{end}}
+{{end}}

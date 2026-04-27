@@ -1,6 +1,6 @@
 {{define "title"}}Users · CaddyUI{{end}}
 {{define "content"}}
-<div class="flex items-start justify-between mb-8 gap-6">
+<div class="flex items-start justify-between mb-4 gap-6">
   <div>
     <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Users</h1>
     <p class="text-sm text-ink-500 mt-1 max-w-2xl">
@@ -9,10 +9,46 @@
       delete, or trigger syncs.
     </p>
   </div>
-  <a href="/users/new" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition whitespace-nowrap">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    New user
-  </a>
+  <div class="flex items-center gap-2 shrink-0">
+    <a href="/users/new" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition whitespace-nowrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      New user
+    </a>
+    <button type="button" onclick="document.getElementById('invite-form-panel').classList.toggle('hidden')"
+      class="inline-flex items-center gap-1.5 bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 text-sm font-medium px-4 py-2 rounded-lg transition whitespace-nowrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.88 13.5a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.77 2.8h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 10.1a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+      Invite
+    </button>
+  </div>
+</div>
+
+{{if .Invited}}
+<div class="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg mb-4 text-sm">Invite sent successfully.</div>
+{{end}}
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 text-red-800 px-3 py-2 rounded-lg mb-4 text-sm">{{.Error}}</div>
+{{end}}
+
+<div id="invite-form-panel" class="hidden mb-6 bg-white border border-ink-200 rounded-xl shadow-card p-5">
+  <h2 class="text-sm font-semibold text-ink-800 mb-3">Invite a new user</h2>
+  <form method="post" action="/users/invite" class="flex flex-wrap items-end gap-3">
+    <div class="flex-1 min-w-[200px]">
+      <label class="block text-xs font-medium text-ink-700 mb-1">Email address</label>
+      <input name="invite_email" type="email" required placeholder="user@example.com"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1">Role</label>
+      <select name="invite_role" class="rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="user">User (write)</option>
+        <option value="view">Viewer (read-only)</option>
+        <option value="admin">Admin</option>
+      </select>
+    </div>
+    <button type="submit" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+      Send invite
+    </button>
+  </form>
 </div>
 
 <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-x-auto">

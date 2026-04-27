@@ -1,0 +1,86 @@
+{{define "title"}}My Profile · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">My Profile</h1>
+  <p class="text-sm text-ink-500 mt-1">Update your display name and password.</p>
+</div>
+
+{{if .Flash}}
+<div class="bg-green-50 border border-green-200 rounded-xl px-5 py-3 mb-5 text-sm text-green-800">{{.Flash}}</div>
+{{end}}
+{{if .Error}}
+<div class="bg-red-50 border border-red-200 rounded-xl px-5 py-3 mb-5 text-sm text-red-700">{{.Error}}</div>
+{{end}}
+
+<div class="max-w-lg space-y-6">
+  {{/* Name + Email info */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
+    <h2 class="text-sm font-semibold text-ink-800 mb-4">Account info</h2>
+    <form method="post" action="/profile" class="space-y-4">
+      <input type="hidden" name="action" value="update_name">
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Email <span class="font-normal text-ink-400">(read-only)</span></label>
+        <input type="email" value="{{.User.Email}}" disabled class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-ink-50 text-ink-400 cursor-not-allowed" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Display name</label>
+        <input type="text" name="name" value="{{.User.Name}}" placeholder="Your name" required
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div class="flex items-center gap-3">
+        <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">
+          Save name
+        </button>
+        <span class="text-xs text-ink-400">Role: <span class="font-medium text-ink-600">{{.User.Role}}</span></span>
+      </div>
+    </form>
+  </div>
+
+  {{/* 2FA quick link */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
+    <div class="flex items-center justify-between">
+      <div>
+        <h2 class="text-sm font-semibold text-ink-800">Two-factor authentication</h2>
+        <p class="text-xs text-ink-500 mt-0.5">
+          {{if .User.TOTPEnabled}}
+            <span class="text-green-700 font-medium">Enabled</span> — your account is protected with an authenticator app.
+          {{else}}
+            <span class="text-amber-700 font-medium">Not configured</span> — add an extra layer of security.
+          {{end}}
+        </p>
+      </div>
+      <a href="/totp/setup" class="text-sm font-medium text-brand-600 hover:text-brand-700 transition shrink-0">
+        {{if .User.TOTPEnabled}}Manage{{else}}Enable{{end}}
+      </a>
+    </div>
+  </div>
+
+  {{/* Change password */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
+    <h2 class="text-sm font-semibold text-ink-800 mb-4">Change password</h2>
+    <form method="post" action="/profile" class="space-y-4">
+      <input type="hidden" name="action" value="change_password">
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Current password</label>
+        <input type="password" name="current_password" required autocomplete="current-password"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">New password</label>
+        <input type="password" name="new_password" required autocomplete="new-password" minlength="8"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Confirm new password</label>
+        <input type="password" name="confirm_password" required autocomplete="new-password" minlength="8"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      </div>
+      <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">
+        Update password
+      </button>
+    </form>
+  </div>
+
+  <p class="text-xs text-ink-400">To change your email address, ask an administrator.</p>
+</div>
+{{end}}
