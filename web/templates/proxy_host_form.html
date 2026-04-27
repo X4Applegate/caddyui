@@ -177,6 +177,60 @@
     </div>
   </details>
 
+  {{/* v2.9.0: Security — compression + response headers + TLS min version */}}
+  <details class="pt-4 border-t border-ink-100"{{if or .Host.CompressionEnabled .Host.SecurityHeadersEnabled .Host.TLSMinVersion}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Security &amp; Performance <span class="font-normal normal-case">(compression, headers, TLS)</span>
+    </summary>
+    <div class="mt-3 space-y-4">
+
+      {{/* Compression */}}
+      <div>
+        <label class="flex items-start gap-2.5 cursor-pointer">
+          <input type="checkbox" name="compression_enabled" {{if .Host.CompressionEnabled}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          <span>
+            <span class="text-sm font-medium text-ink-800">Enable gzip / zstd compression</span>
+            <span class="block text-xs text-ink-500 mt-0.5">Caddy compresses responses before sending to the browser. Reduces bandwidth for text assets (HTML, CSS, JS, JSON) by ~70%. Skipped for already-compressed types (images, video).</span>
+          </span>
+        </label>
+      </div>
+
+      {{/* Security headers */}}
+      <div>
+        <label class="flex items-start gap-2.5 cursor-pointer">
+          <input type="checkbox" name="security_headers_enabled" {{if .Host.SecurityHeadersEnabled}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          <span>
+            <span class="text-sm font-medium text-ink-800">Add security response headers</span>
+            <span class="block text-xs text-ink-500 mt-0.5">Injects the following headers on every response:</span>
+            <span class="block mt-1.5 font-mono text-[11px] text-ink-600 space-y-0.5">
+              <span class="block">Strict-Transport-Security: max-age=31536000; includeSubDomains</span>
+              <span class="block">X-Frame-Options: SAMEORIGIN</span>
+              <span class="block">X-Content-Type-Options: nosniff</span>
+              <span class="block">Referrer-Policy: strict-origin-when-cross-origin</span>
+              <span class="block">X-XSS-Protection: 1; mode=block</span>
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {{/* TLS minimum version */}}
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+        <div>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Minimum TLS version</label>
+          <select name="tls_min_version" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+            <option value=""  {{if eq .Host.TLSMinVersion ""  }}selected{{end}}>Default (Caddy decides)</option>
+            <option value="1.2" {{if eq .Host.TLSMinVersion "1.2"}}selected{{end}}>TLS 1.2 (recommended minimum)</option>
+            <option value="1.3" {{if eq .Host.TLSMinVersion "1.3"}}selected{{end}}>TLS 1.3 only (most secure)</option>
+            <option value="1.1" {{if eq .Host.TLSMinVersion "1.1"}}selected{{end}}>TLS 1.1 (legacy, not recommended)</option>
+            <option value="1.0" {{if eq .Host.TLSMinVersion "1.0"}}selected{{end}}>TLS 1.0 (legacy, insecure)</option>
+          </select>
+        </div>
+        <p class="text-xs text-ink-500 sm:pt-7">Sets a per-SNI TLS connection policy in Caddy. TLS 1.2+ is the modern standard. TLS 1.3 offers improved security and performance but drops support for some older clients.</p>
+      </div>
+
+    </div>
+  </details>
+
   {{/* Feature C: IP Allowlist */}}
   <details class="pt-4 border-t border-ink-100"{{if .Host.AccessList}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">

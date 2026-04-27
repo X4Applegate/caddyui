@@ -73,8 +73,14 @@ type ProxyHost struct {
 	CFZoneID      string
 	PBDNSRecordID string
 	PBDomain      string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// v2.9.0: per-host security settings. All default to off/empty so
+	// existing hosts are unchanged after upgrade. These three are persisted
+	// to the proxy_hosts table and reflected in the Caddy config on each sync.
+	CompressionEnabled     bool   // prepend gzip/zstd encode handler
+	SecurityHeadersEnabled bool   // add HSTS, X-Frame-Options, X-Content-Type-Options, etc.
+	TLSMinVersion          string // "" | "1.0" | "1.1" | "1.2" | "1.3"
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // BasicAuthUserList parses the JSON-encoded BasicAuthUsers string into a slice.
@@ -454,7 +460,9 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.access_list, ''), COALESCE(ph.extra_upstreams, '[]'),
     COALESCE(ph.owner_id, 0),
     COALESCE(ph.dns_provider,''), COALESCE(ph.dns_zone_id,''),
-    COALESCE(ph.dns_zone_name,''), COALESCE(ph.dns_record_id,'')`
+    COALESCE(ph.dns_zone_name,''), COALESCE(ph.dns_record_id,''),
+    COALESCE(ph.compression_enabled,0), COALESCE(ph.security_headers_enabled,0),
+    COALESCE(ph.tls_min_version,'')`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -463,6 +471,7 @@ func scanProxyHost(s interface {
 }, p *ProxyHost, ownerEmail *string) error {
 	var ws, bce, ssl, sslf, h2, en, bae int
 	var ownerID int64
+	var compr, sechdrs int
 	dst := []any{
 		&p.ID, &p.ServerID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 		&ws, &bce, &ssl, &sslf, &h2, &p.AdvancedConfig, &en, &p.CertificateID,
@@ -471,6 +480,7 @@ func scanProxyHost(s interface {
 		&p.AccessList, &p.ExtraUpstreams,
 		&ownerID,
 		&p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID,
+		&compr, &sechdrs, &p.TLSMinVersion,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -485,6 +495,8 @@ func scanProxyHost(s interface {
 	p.HTTP2Support = h2 == 1
 	p.Enabled = en == 1
 	p.BasicAuthEnabled = bae == 1
+	p.CompressionEnabled = compr == 1
+	p.SecurityHeadersEnabled = sechdrs == 1
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -578,8 +590,9 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             websocket_support, block_common_exploits, ssl_enabled, ssl_forced,
             http2_support, advanced_config, enabled, certificate_id,
             basicauth_enabled, basicauth_users, access_list, extra_upstreams, owner_id,
-            dns_provider, dns_zone_id, dns_zone_name, dns_record_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id,
+            compression_enabled, security_headers_enabled, tls_min_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -589,6 +602,7 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		p.AccessList, p.ExtraUpstreams,
 		nilIfZero(ownerID),
 		p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DNSRecordID,
+		boolInt(p.CompressionEnabled), boolInt(p.SecurityHeadersEnabled), p.TLSMinVersion,
 	)
 	if err != nil {
 		return 0, err
@@ -613,6 +627,7 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             basicauth_enabled=?, basicauth_users=?,
             access_list=?, extra_upstreams=?,
             dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
+            compression_enabled=?, security_headers_enabled=?, tls_min_version=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -622,6 +637,7 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		boolInt(p.BasicAuthEnabled), p.BasicAuthUsers,
 		p.AccessList, p.ExtraUpstreams,
 		p.DNSProvider, p.DNSZoneID, p.DNSZoneName, p.DNSRecordID,
+		boolInt(p.CompressionEnabled), boolInt(p.SecurityHeadersEnabled), p.TLSMinVersion,
 		p.ID,
 	)
 	return err
