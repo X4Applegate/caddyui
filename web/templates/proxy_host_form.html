@@ -470,6 +470,51 @@
         </label>
         <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Method</code> request header containing the HTTP method (GET/POST/etc.) when forwarding to the upstream.</p>
       </div>
+      <!-- v2.9.251: add_x_forwarded_method -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_method" {{if .Host.AddXForwardedMethod}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-Method Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Forwarded-Method</code> containing the HTTP method (GET / POST / etc.) to upstream calls.</p>
+      </div>
+      <!-- v2.9.252: add_x_request_original_host -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_original_host" {{if .Host.AddXRequestOriginalHost}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Original-Host Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Preserves the original Host header (before any rewrites) and forwards it to the upstream.</p>
+      </div>
+      <!-- v2.9.253: add_x_request_dnt -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_dnt" {{if .Host.AddXRequestDNT}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-DNT Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Forwards the client's DNT (Do Not Track) header to the upstream as <code>X-Request-DNT</code>.</p>
+      </div>
+      <!-- v2.9.255: add_x_request_secure -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_secure" {{if .Host.AddXRequestSecure}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Secure Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-Secure</code> header indicating whether TLS was used (the TLS version when present, empty for plain HTTP).</p>
+      </div>
+      <!-- v2.9.256: add_x_request_query_count -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_query_count" {{if .Host.AddXRequestQueryCount}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Query-Count Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Query-Count</code> header with the raw query string for debugging (multiple proxies can stack their own copies).</p>
+      </div>
       <!-- v2.9.189: add_x_request_query -->
       <div class="mb-4 flex items-center gap-3 sm:col-span-2">
         <label class="flex items-center gap-2 cursor-pointer">
@@ -663,6 +708,14 @@
           placeholder="e.g. US"
           class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Geo-Country</code> request header (CDN convention; useful for geo-restricted upstream behavior testing).</p>
+      </div>
+      <!-- v2.9.254: add_x_geo_region -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Geo-Region Header</label>
+        <input type="text" name="add_x_geo_region" value="{{.Host.AddXGeoRegion}}"
+          placeholder="e.g. US-CA, GB-LND"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Geo-Region</code> request header (ISO 3166-2 region code).</p>
       </div>
       <!-- v2.9.193: add_x_forwarded_groups -->
       <div class="mb-4 sm:col-span-2">
@@ -1017,6 +1070,15 @@
             placeholder="default-src 'self'"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
           <p class="text-xs text-ink-500 mt-1">Injects a <code class="bg-ink-100 px-1 rounded text-xs">Content-Security-Policy-Report-Only</code> header — reports violations without blocking. Useful for testing a new policy.</p>
+        </div>
+        {{/* v2.9.264: add_x_csp_disabled */}}
+        <div class="ml-6 mt-3 flex items-center gap-3">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" name="add_x_csp_disabled" {{if .Host.AddXCSPDisabled}}checked{{end}}
+              class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Strip Content-Security-Policy from Response</span>
+          </label>
+          <p class="text-xs text-gray-500 dark:text-gray-400">Deletes any <code>Content-Security-Policy</code> header set by the upstream. Useful when an embedded app sets a too-restrictive CSP and you want the edge to override it.</p>
         </div>
         {{/* v2.9.169: add_report_to */}}
         <div class="ml-6 mt-3">
@@ -1626,6 +1688,16 @@
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1"><code>X-Robots-Tag</code> response header for search-engine indexing control (e.g. <code>noindex</code>, <code>nofollow</code>, <code>noindex, nofollow</code>). Empty = omit header.</p>
       </div>
 
+      <!-- v2.9.259: add_x_robots_noindex_quick -->
+      <div class="mb-4 flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_robots_noindex_quick" {{if .Host.AddXRobotsNoindexQuick}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Quick Noindex (X-Robots-Tag: noindex, nofollow)</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">One-click toggle to add <code>X-Robots-Tag: noindex, nofollow</code> on every response (overrides the X-Robots-Tag text input above).</p>
+      </div>
+
       <!-- v2.9.200: add_x_no_archive -->
       <div class="mb-4 flex items-center gap-3">
         <label class="flex items-center gap-2 cursor-pointer">
@@ -1644,6 +1716,16 @@
           <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Response-Trace-ID Header</span>
         </label>
         <p class="text-xs text-gray-500 dark:text-gray-400">Sets the <code>X-Response-Trace-ID</code> response header to Caddy's request UUID so clients can correlate responses with server-side traces.</p>
+      </div>
+
+      <!-- v2.9.257: add_x_request_id_header_response -->
+      <div class="mb-4 flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_id_header_response" {{if .Host.AddXRequestIDHeaderResponse}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Echo X-Request-ID to Response</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Sets the <code>X-Request-Id</code> response header to Caddy's per-request UUID so clients can correlate API calls with server logs.</p>
       </div>
 
       <div class="flex items-center gap-3">
@@ -2437,6 +2519,25 @@
         <p class="text-xs text-ink-400 mt-1.5">Remove these headers from the upstream request before forwarding. Companion to "Strip response headers" above.</p>
       </div>
 
+      <!-- v2.9.250: strip_request_headers -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Strip Request Headers</label>
+        <input type="text" name="strip_request_headers" value="{{.Host.StripRequestHeaders}}"
+          placeholder="e.g. X-Forwarded-Server, Authorization"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated request header names to delete before forwarding to the upstream.</p>
+      </div>
+
+      <!-- v2.9.265: add_x_request_method_override -->
+      <div class="mb-4 flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_method_override" {{if .Host.AddXRequestMethodOverride}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Honor X-HTTP-Method-Override Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">When the client sends <code>X-HTTP-Method-Override: PUT</code> (or DELETE/PATCH/etc.), Caddy rewrites the request method before forwarding. Common for clients behind firewalls that only allow GET/POST.</p>
+      </div>
+
       <!-- v2.9.127: req_header_rename -->
       <div class="mb-4">
         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Rename Request Headers</label>
@@ -2702,6 +2803,24 @@
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Value for the <code>Link</code> response header, used for HTTP/2 server push hints or resource preloading.</p>
       </div>
 
+      <!-- v2.9.262: add_link_dns_prefetch -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link rel=dns-prefetch</label>
+        <input type="text" name="add_link_dns_prefetch" value="{{.Host.AddLinkDNSPrefetch}}"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="e.g. https://cdn.example.com">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Adds a <code>Link: &lt;…&gt;; rel=dns-prefetch</code> response header so the browser pre-resolves DNS for the given origin.</p>
+      </div>
+
+      <!-- v2.9.263: add_link_preconnect -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link rel=preconnect</label>
+        <input type="text" name="add_link_preconnect" value="{{.Host.AddLinkPreconnect}}"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="e.g. https://cdn.example.com">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Adds a <code>Link: &lt;…&gt;; rel=preconnect</code> response header — stronger than dns-prefetch, also opens TCP/TLS in advance.</p>
+      </div>
+
       <!-- v2.9.236: add_link_modulepreload -->
       <div class="mb-4">
         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link rel=modulepreload</label>
@@ -2803,6 +2922,35 @@
           <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Block Private / Loopback IPs</span>
         </label>
         <p class="text-xs text-gray-500 dark:text-gray-400">Reject incoming requests from RFC 1918 addresses (10.x, 172.16–31.x, 192.168.x), loopback (127.x, ::1), link-local (169.254.x), and CGNAT (100.64.x). Returns 403. Useful for public-facing hosts that should not be reachable from internal networks.</p>
+      </div>
+
+      <!-- v2.9.258: force_canonical_host -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Force Canonical Host</label>
+        <input type="text" name="force_canonical_host" value="{{.Host.ForceCanonicalHost}}"
+          class="w-full max-w-md rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="e.g. example.com (without www)">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">When set, requests to any other Host on this proxy get a 301 redirect to this canonical hostname (path + query preserved). Common for SEO consolidation: redirect www.example.com &rarr; example.com or vice versa.</p>
+      </div>
+
+      <!-- v2.9.260: block_bot_user_agents -->
+      <div class="mb-4 flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="block_bot_user_agents" {{if .Host.BlockBotUserAgents}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Block Common Bots</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Returns 403 to scrapers identified by User-Agent: AhrefsBot, SemrushBot, Bytespider, MJ12bot, DotBot, PetalBot, DataForSeoBot, YandexBot, BLEXBot, SerpstatBot. Doesn't block legitimate crawlers (Googlebot, Bingbot).</p>
+      </div>
+
+      <!-- v2.9.261: block_admin_paths -->
+      <div class="mb-4 flex items-center gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="block_admin_paths" {{if .Host.BlockAdminPaths}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Block Common Admin / Config Paths</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Returns 404 for /wp-admin, /wp-login, /.git, /.env, /phpmyadmin, /myadmin, /.svn, /.hg, /.aws, /.ssh, /admin/config.php so scanners don't waste upstream cycles. Disable if your app legitimately uses one of these paths.</p>
       </div>
 
       <!-- v2.9.41: allowed_methods -->
