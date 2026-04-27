@@ -359,20 +359,38 @@ func proxyFromHandler(h map[string]any, hosts []string) (models.ProxyHost, bool)
 		return models.ProxyHost{}, false
 	}
 	scheme := "http"
+	verifyUpstream := false
 	if transport, ok := h["transport"].(map[string]any); ok {
-		if _, hasTLS := transport["tls"]; hasTLS {
+		if tls, hasTLS := transport["tls"].(map[string]any); hasTLS {
 			scheme = "https"
+			// Caddy default with transport.tls is to verify the upstream
+			// certificate; insecure_skip_verify=true means "don't verify".
+			// CaddyUI's SSLVerifyUpstream is the inverse: true = verify,
+			// false = skip. v2.10.8: import the user's actual choice instead
+			// of always defaulting to skip-verify.
+			if skip, ok := tls["insecure_skip_verify"].(bool); ok {
+				verifyUpstream = !skip
+			} else {
+				verifyUpstream = true
+			}
 		}
 	}
+
+	// NOTE: ProxyHost models a single (host, port) upstream. If the
+	// reverse_proxy block has multiple peers (load-balanced pool), only
+	// the first peer is captured here — AdditionalUpstreamRules is
+	// path-based, not pool-based, so it can't represent extra peers.
+	// Future work: add a real upstream pool field to the schema.
 	return models.ProxyHost{
-		Domains:       strings.Join(hosts, ","),
-		ForwardScheme: scheme,
-		ForwardHost:   fh,
-		ForwardPort:   fp,
-		Enabled:       true,
-		SSLEnabled:    true,
-		SSLForced:     true,
-		HTTP2Support:  true,
+		Domains:           strings.Join(hosts, ","),
+		ForwardScheme:     scheme,
+		ForwardHost:       fh,
+		ForwardPort:       fp,
+		Enabled:           true,
+		SSLEnabled:        true,
+		SSLForced:         true,
+		HTTP2Support:      true,
+		SSLVerifyUpstream: verifyUpstream,
 	}, true
 }
 
