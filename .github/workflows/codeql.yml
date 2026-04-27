@@ -34,6 +34,12 @@ jobs:
         include:
           - language: go
             build-mode: autobuild
+          # v2.9.225: keep parity with main's GitHub-generated workflow which
+          # also scans javascript-typescript. The repo has one real .js
+          # (web/static/sw.js, the PWA service worker) plus inline <script>
+          # blocks in HTML templates. No build step needed for JS.
+          - language: javascript-typescript
+            build-mode: none
 
     steps:
       - name: Checkout repository
