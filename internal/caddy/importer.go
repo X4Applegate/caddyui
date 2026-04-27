@@ -88,6 +88,14 @@ func (c *Client) Import() (*ImportResult, error) {
 	return r, nil
 }
 
+// ClassifyConfig is the exported entry point for non-import callers (e.g. the
+// Caddyfile-import flow that runs /adapt locally and wants to classify the
+// resulting routes into proxies / redirects / raw without ever talking to a
+// running Caddy admin endpoint). v2.10.7.
+func ClassifyConfig(cfg map[string]any) *ImportResult {
+	return parseConfig(cfg)
+}
+
 func parseConfig(cfg map[string]any) *ImportResult {
 	r := &ImportResult{}
 	apps, _ := cfg["apps"].(map[string]any)

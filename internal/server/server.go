@@ -4086,8 +4086,22 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// v2.10.7: when auto_classify is on (default), each adapted route is
+	// run through the same classifier the /import flow uses. Routes that
+	// look like a simple host { reverse_proxy ... } become ProxyHost rows;
+	// pure redir blocks become RedirectionHost rows; anything more exotic
+	// (custom matchers, multiple handles the classifier can't decompose,
+	// layer-4 stuff) falls back to RawRoute. Off → everything goes to raw,
+	// matching the legacy behaviour.
+	autoClassify := r.FormValue("auto_classify") != "off"
+
 	var results []caddyfileImportResult
 	created := 0
+	cu := s.currentUser(r)
+	var ownerID int64
+	if cu != nil && cu.Role != models.RoleAdmin {
+		ownerID = cu.ID
+	}
 
 	for idx, route := range routes {
 		hosts := hostsFromRoute(route)
@@ -4120,6 +4134,69 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
+		// v2.10.7: try to classify this single route as proxy / redirect / raw
+		// by wrapping it in a one-route synthetic server config and running
+		// the same classifier the /import flow uses. The classifier returns
+		// at most one entry per category for a single-route input — anything
+		// it doesn't recognise falls through to RawRoute below.
+		if autoClassify {
+			synth := map[string]any{
+				"apps": map[string]any{
+					"http": map[string]any{
+						"servers": map[string]any{
+							"_classify": map[string]any{
+								"routes": []any{route},
+							},
+						},
+					},
+				},
+			}
+			classified := caddy.ClassifyConfig(synth)
+			if len(classified.Proxies) == 1 {
+				ph := classified.Proxies[0]
+				ph.Enabled = true
+				id, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph)
+				if err != nil {
+					results = append(results, caddyfileImportResult{
+						Head: label, Snippet: blockText, RouteIdx: idx,
+						Status: "error", Message: "create proxy host: " + err.Error(),
+					})
+					continue
+				}
+				for _, h := range hosts {
+					taken[strings.ToLower(h)] = struct{}{}
+				}
+				created++
+				results = append(results, caddyfileImportResult{
+					Head: label, Snippet: blockText, RouteIdx: idx,
+					Status: "created", Message: fmt.Sprintf("proxy_host:%d", id),
+				})
+				continue
+			}
+			if len(classified.Redirect) == 1 {
+				rh := classified.Redirect[0]
+				rh.Enabled = true
+				id, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), ownerID, &rh)
+				if err != nil {
+					results = append(results, caddyfileImportResult{
+						Head: label, Snippet: blockText, RouteIdx: idx,
+						Status: "error", Message: "create redirection: " + err.Error(),
+					})
+					continue
+				}
+				for _, h := range hosts {
+					taken[strings.ToLower(h)] = struct{}{}
+				}
+				created++
+				results = append(results, caddyfileImportResult{
+					Head: label, Snippet: blockText, RouteIdx: idx,
+					Status: "created", Message: fmt.Sprintf("redirection:%d", id),
+				})
+				continue
+			}
+			// Classifier didn't recognise it as proxy or redirect — fall
+			// through to raw_route below.
+		}
 		blob, err := json.Marshal(route)
 		if err != nil {
 			results = append(results, caddyfileImportResult{
@@ -4128,7 +4205,7 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-		id, err := models.CreateRawRoute(s.DB, s.currentServerID(r), 0, &models.RawRoute{
+		id, err := models.CreateRawRoute(s.DB, s.currentServerID(r), ownerID, &models.RawRoute{
 			Label:        label,
 			JSONData:     string(blob),
 			CaddyfileSrc: blockText,

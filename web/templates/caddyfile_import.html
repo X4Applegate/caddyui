@@ -72,10 +72,23 @@
       reported and skipped, the rest import.
     </p>
   </div>
+  {{/* v2.10.7: auto-classify checkbox. Default ON — each pasted block is
+       inspected and turned into a Proxy Host / Redirection / Advanced route
+       based on what it contains. Off keeps the legacy "everything as Advanced"
+       behaviour — useful when you want full control of the JSON. */}}
+  <div class="pt-2 border-t border-ink-100">
+    <label class="inline-flex items-start gap-2.5 cursor-pointer select-none">
+      <input type="checkbox" name="auto_classify" value="on" checked class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span class="text-sm">
+        <span class="font-medium text-ink-800">Auto-classify blocks into Proxy / Redirection / Advanced</span>
+        <span class="block text-xs text-ink-500 mt-0.5">When on (recommended), simple <code class="font-mono bg-ink-100 px-1 rounded">host { reverse_proxy ... }</code> blocks become Proxy Hosts, <code class="font-mono bg-ink-100 px-1 rounded">redir</code>-only blocks become Redirections, and exotic configs (custom matchers, layer-4, etc.) fall back to Advanced routes. Off keeps everything as Advanced.</span>
+      </span>
+    </label>
+  </div>
   <div class="flex items-center gap-3 pt-2 border-t border-ink-100">
     <button class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
-      Import as Advanced routes
+      Import
     </button>
     <a href="/raw-routes" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
   </div>
