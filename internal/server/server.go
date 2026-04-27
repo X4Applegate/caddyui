@@ -3100,6 +3100,20 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		}
 		return v
 	}()
+	// v2.9.267: additional_upstream_rules — JSON array of path-based upstream
+	// overrides. Probe-parse to drop garbage that UpstreamRuleList would
+	// silently ignore on read.
+	ph.AdditionalUpstreamRules = func() string {
+		v := strings.TrimSpace(r.FormValue("additional_upstream_rules"))
+		if v == "" || v == "[]" {
+			return ""
+		}
+		var probe []models.UpstreamRule
+		if err := json.Unmarshal([]byte(v), &probe); err != nil {
+			return ""
+		}
+		return v
+	}()
 	return ph, nil
 }
 

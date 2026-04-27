@@ -2006,6 +2006,16 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "proxy_redirect_rules") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN proxy_redirect_rules TEXT NOT NULL DEFAULT ''`)
 	}
+	// v2.9.267: additional_upstream_rules — JSON array of path-based upstream
+	// overrides. Each entry: {path, scheme, host, port, strip_prefix, add_x_real_ip}.
+	// When matched, that path goes to the override upstream instead of the
+	// host's main forward_*. Common case: Nextcloud + notify_push on /push/*
+	// + AppAPI on /exapps/* + main app on everything else, all on one
+	// hostname — previously expressible only via raw routes / Caddyfile.
+	// Empty / "[]" keeps the legacy single-upstream behaviour.
+	if !columnExists2(db, "proxy_hosts", "additional_upstream_rules") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN additional_upstream_rules TEXT NOT NULL DEFAULT ''`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

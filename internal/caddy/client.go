@@ -3586,6 +3586,77 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			})
 		}
 	}
+	// v2.9.267: additional_upstream_rules — path-based upstream overrides
+	// emitted as terminal subroutes BEFORE the main reverse_proxy. Each
+	// rule gets its own match{path}+handle{reverse_proxy}; unmatched paths
+	// fall through to the host's main forward_*. Common pattern: Nextcloud
+	// + notify_push + AppAPI on a single hostname (each on a different
+	// internal upstream). StripPrefix mirrors `handle_path` (rewrites the
+	// URI to drop the matched prefix); when off the full path is forwarded.
+	if rules := p.UpstreamRuleList(); len(rules) > 0 {
+		for _, rule := range rules {
+			if rule.Path == "" || rule.Host == "" || rule.Port == 0 {
+				continue
+			}
+			scheme := strings.ToLower(strings.TrimSpace(rule.Scheme))
+			if scheme != "https" {
+				scheme = "http"
+			}
+			// Build a minimal reverse_proxy with TLS handling matching the
+			// host-wide options for self-signed upstreams (most common in
+			// Docker-internal multi-upstream setups).
+			rp := map[string]any{
+				"handler": "reverse_proxy",
+				"upstreams": []any{
+					map[string]any{"dial": fmt.Sprintf("%s:%d", rule.Host, rule.Port)},
+				},
+			}
+			if scheme == "https" {
+				rp["transport"] = map[string]any{
+					"protocol": "http",
+					"tls": map[string]any{
+						"insecure_skip_verify": !p.SSLVerifyUpstream,
+					},
+				}
+			}
+			subHandlers := []any{}
+			// v2.9.267: per-rule X-Real-IP toggle (independent of host-wide).
+			if rule.AddXRealIP {
+				subHandlers = append(subHandlers, map[string]any{
+					"handler": "headers",
+					"request": map[string]any{
+						"set": map[string]any{
+							"X-Real-Ip": []any{"{http.request.remote.host}"},
+						},
+					},
+				})
+			}
+			// v2.9.267: handle_path equivalent — rewrite the URI to drop
+			// the matched prefix before forwarding. The strip path is the
+			// rule's path with any trailing wildcard removed.
+			if rule.StripPrefix {
+				stripPfx := strings.TrimRight(rule.Path, "*")
+				stripPfx = strings.TrimRight(stripPfx, "/")
+				if stripPfx != "" {
+					subHandlers = append(subHandlers, map[string]any{
+						"handler":           "rewrite",
+						"strip_path_prefix": stripPfx,
+					})
+				}
+			}
+			subHandlers = append(subHandlers, rp)
+			handlers = append(handlers, map[string]any{
+				"handler": "subroute",
+				"routes": []any{
+					map[string]any{
+						"match":    []any{map[string]any{"path": []any{rule.Path}}},
+						"handle":   subHandlers,
+						"terminal": true,
+					},
+				},
+			})
+		}
+	}
 	// v2.9.266: proxy_redirect_rules — when present, emit a subroute BEFORE
 	// the reverse_proxy that catches matching paths and redirects. The
 	// reverse_proxy still handles every path that doesn't match any rule
