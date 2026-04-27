@@ -619,6 +619,10 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/raw-routes/{id}/edit", s.editRawRoute)
 			r.Post("/raw-routes/{id}", s.updateRawRoute)
 			r.Post("/raw-routes/{id}/delete", s.deleteRawRoute)
+			// v2.10.9: bulk re-run the classifier over Advanced routes —
+			// useful for users who imported before v2.10.7 (auto-classify)
+			// shipped, when every block landed in Advanced.
+			r.Post("/raw-routes/reclassify", s.postReclassifyRawRoutes)
 
 			// Phase 7: database backup download.
 			r.Get("/backup", s.getBackup)
@@ -5404,6 +5408,8 @@ func (s *Server) listRawRoutes(w http.ResponseWriter, r *http.Request) {
 		"Rows":     rows,
 		"Section":  "raw",
 		"ViewerID": viewerID,
+		// v2.10.9: surface the post-reclassify flash banner.
+		"Flash": r.URL.Query().Get("flash"),
 	})
 }
 
@@ -5847,6 +5853,94 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	forceTLS := old != nil && old.CertificateID != 0
 	s.syncCaddy(s.currentServerID(r), forceTLS)
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
+}
+
+// postReclassifyRawRoutes runs the same classifier the Caddyfile-import flow
+// uses over every existing raw_route the caller is allowed to touch. Routes
+// that the classifier now recognises as a simple proxy or redirect are
+// converted: a new ProxyHost / RedirectionHost row is created, and the
+// raw_route is deleted. Routes the classifier still can't simplify are left
+// alone. Useful for cleaning up Advanced routes that pre-date v2.10.7.
+// v2.10.9.
+func (s *Server) postReclassifyRawRoutes(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	var viewerID int64
+	if cu != nil {
+		viewerID = cu.ID
+	}
+	rows, err := models.ListRawRoutes(s.DB, s.currentServerID(r), viewerID, isAdmin, s.groupPeerIDs(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var ownerID int64
+	if !isAdmin && cu != nil {
+		ownerID = cu.ID
+	}
+	var nProxy, nRedir, nKept int
+	for _, row := range rows {
+		// Edit-permission gate: non-admins only touch their own rows. The
+		// list query above already filters to visible rows, but visibility
+		// includes group peers — re-check ownership before mutating.
+		if !isAdmin {
+			if !row.OwnerID.Valid || row.OwnerID.Int64 != cu.ID {
+				continue
+			}
+		}
+		if row.JSONData == "" {
+			nKept++
+			continue
+		}
+		var route map[string]any
+		if err := json.Unmarshal([]byte(row.JSONData), &route); err != nil {
+			nKept++
+			continue
+		}
+		synth := map[string]any{
+			"apps": map[string]any{
+				"http": map[string]any{
+					"servers": map[string]any{
+						"_reclassify": map[string]any{
+							"routes": []any{route},
+						},
+					},
+				},
+			},
+		}
+		classified := caddy.ClassifyConfig(synth)
+		if len(classified.Proxies) == 1 {
+			ph := classified.Proxies[0]
+			ph.Enabled = row.Enabled
+			if _, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph); err != nil {
+				nKept++
+				continue
+			}
+			_ = models.DeleteRawRoute(s.DB, row.ID)
+			nProxy++
+			continue
+		}
+		if len(classified.Redirect) == 1 {
+			rh := classified.Redirect[0]
+			rh.Enabled = row.Enabled
+			if _, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), ownerID, &rh); err != nil {
+				nKept++
+				continue
+			}
+			_ = models.DeleteRawRoute(s.DB, row.ID)
+			nRedir++
+			continue
+		}
+		nKept++
+	}
+	if nProxy > 0 || nRedir > 0 {
+		_ = s.syncCaddy(s.currentServerID(r), false)
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_reclassify", "",
+		fmt.Sprintf("proxies=%d redirects=%d kept=%d", nProxy, nRedir, nKept), true)
+	flash := url.QueryEscape(fmt.Sprintf("Re-classified %d → Proxy Hosts · %d → Redirections · %d kept as Advanced",
+		nProxy, nRedir, nKept))
+	http.Redirect(w, r, "/raw-routes?flash="+flash, http.StatusSeeOther)
 }
 
 // newCaddyClient builds a fresh caddy.Client from any server's AdminURL plus
