@@ -203,14 +203,32 @@
       </li>
     </ul>
 
-    <h3 class="text-base font-semibold text-ink-900 pt-4">Things Caddy adds automatically (no field needed)</h3>
-    <p>Don't bother flipping toggles for these — Caddy's reverse_proxy module adds them by default:</p>
+    <h3 class="text-base font-semibold text-ink-900 pt-4">Things Caddy already does by default</h3>
+    <p>Caddy's <code class="px-1 bg-ink-100 rounded font-mono text-xs">reverse_proxy</code> module sets these on every upstream request without you doing anything:</p>
     <ul class="list-disc ml-5 space-y-1">
-      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-For</code> — the original client IP, with previous values preserved</li>
-      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-Proto</code> — http or https, matching what the client used</li>
-      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">Host</code> — the original Host header from the client</li>
-      <li>HTTPS termination + auto-cert via Let's Encrypt</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-For</code> — original client IP, prior values preserved and the new IP appended</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-Proto</code> — <code class="px-1 bg-ink-100 rounded font-mono text-xs">http</code> or <code class="px-1 bg-ink-100 rounded font-mono text-xs">https</code> matching the inbound request</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-Host</code> — the original Host header (Caddy v2.7+)</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">Host</code> — passed through unchanged from the client</li>
+      <li>HTTPS termination + auto-cert via Let's Encrypt / ZeroSSL</li>
       <li>HTTP → HTTPS auto-redirect (when Auto SSL is on)</li>
+    </ul>
+    <p class="mt-3"><strong>So why does CaddyUI have <code class="px-1 bg-ink-100 rounded font-mono text-xs">Add X-Forwarded-Host</code> / <code class="px-1 bg-ink-100 rounded font-mono text-xs">Add X-Forwarded-For</code> toggles if Caddy adds them anyway?</strong> Three reasons:</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><strong>Explicit override.</strong> The toggle uses <code class="px-1 bg-ink-100 rounded font-mono text-xs">set</code> semantics — it forces the value. If something earlier in the handler chain changed the request (e.g. a <code class="px-1 bg-ink-100 rounded font-mono text-xs">rewrite</code> directive), the toggle still sends the original/expected value.</li>
+      <li><strong>Audit clarity.</strong> A teammate reading the host's configuration sees the toggle is on and knows the upstream gets the header — they don't have to remember Caddy's default behaviour.</li>
+      <li><strong>Backwards compatibility.</strong> The toggles predate some of Caddy's current defaults. Removing them would silently change behaviour for existing installs.</li>
+    </ul>
+    <p class="mt-2">Bottom line: leaving these toggles <em>off</em> is fine — Caddy still does the right thing. Turning them <em>on</em> is also fine — they just re-set the value Caddy was going to set anyway. They're not redundant in a buggy way; they're explicit-vs-implicit.</p>
+
+    <h3 class="text-base font-semibold text-ink-900 pt-4">Toggles that DO add something Caddy wouldn't</h3>
+    <p>These are <strong>not</strong> Caddy defaults and only ship to the upstream if you tick the box:</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Real-IP</code> — Nginx convention, Caddy doesn't add this</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Real-Scheme</code>, <code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-Method</code>, <code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-Path</code>, <code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-URI</code></li>
+      <li>Static identity headers: <code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Forwarded-User</code> / <code class="px-1 bg-ink-100 rounded font-mono text-xs">-Email</code> / <code class="px-1 bg-ink-100 rounded font-mono text-xs">-Groups</code> / <code class="px-1 bg-ink-100 rounded font-mono text-xs">-Roles</code></li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Request-*</code> debug/trace family (Method, Path, Query, Hostname, Referer, Origin, Start, Trace-ID, Session-ID, Local-Addr, etc.)</li>
+      <li><code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Real-SSL-Protocol</code>, <code class="px-1 bg-ink-100 rounded font-mono text-xs">X-Real-SSL-Cipher</code> — TLS visibility for the upstream</li>
     </ul>
 
     <h3 class="text-base font-semibold text-ink-900 pt-4">When the form isn't enough</h3>
