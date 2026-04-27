@@ -12,6 +12,21 @@
 <div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 font-mono text-xs max-w-3xl whitespace-pre-wrap break-all">{{.Error}}</div>
 {{end}}
 
+{{/* v2.10.2: form search. With ~300+ per-host options across many tabs and
+     <details> sections, finding a specific field by name was getting hard.
+     This sticky search input filters fields by label / placeholder / help
+     text, auto-opens any <details> that contain matches, and shows a count
+     of visible fields so you know whether your query found anything. Empty
+     query restores the full form (collapsing previously-closed sections). */}}
+<div class="sticky top-0 z-10 bg-ink-50 pt-1 pb-2 mb-4 max-w-3xl">
+  <div class="relative">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="ph-form-search" type="search" placeholder="Search fields — e.g. X-Forwarded, websocket, HSTS, redirect, health" autocomplete="off"
+      class="w-full rounded-lg border border-ink-200 pl-9 pr-32 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    <span id="ph-form-search-count" class="hidden absolute right-3 top-1/2 -translate-y-1/2 text-xs text-ink-500 pointer-events-none"></span>
+  </div>
+</div>
+
 <form method="post" action="{{if .Host.ID}}/proxy-hosts/{{.Host.ID}}{{else}}/proxy-hosts{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
   <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
     <div class="sm:col-span-2">
@@ -3740,6 +3755,83 @@
     makeAddRow('req-headers-list', 'header_req_key', 'header_req_val');
     makeAddRow('resp-headers-list', 'header_resp_key', 'header_resp_val');
   })();
+})();
+
+// v2.10.2: form search/filter. Indexes every <label> on the form, finds
+// the smallest containing block (the <div> wrapping that label + its
+// input + help <p>), and toggles visibility based on whether the query
+// matches the label text, placeholder, help text, or input name. Auto-
+// opens any <details> ancestor that has visible matches.
+(function() {
+  var input  = document.getElementById('ph-form-search');
+  var counter = document.getElementById('ph-form-search-count');
+  if (!input) return;
+  var form = document.querySelector('form[action*="/proxy-hosts"]');
+  if (!form) return;
+
+  // Build the field index once. A "field" is the smallest ancestor that
+  // contains a <label> and at least one input/select/textarea — usually
+  // a <div>. We grab from each such div: the label text, all input/
+  // textarea/select name + placeholder attributes, and any nearby
+  // help <p> text. The detail tree is harvested separately so the
+  // search can decide which <details> to expand.
+  var fields = [];
+  Array.prototype.forEach.call(form.querySelectorAll('label'), function(lbl) {
+    // Walk up to the closest "field block": prefer a div that also has an
+    // input/select/textarea among its descendants.
+    var node = lbl;
+    var block = null;
+    while (node && node !== form) {
+      if (node.tagName === 'DIV' && node.querySelector('input, select, textarea')) {
+        block = node; break;
+      }
+      node = node.parentElement;
+    }
+    if (!block) return;
+    if (fields.some(function(f){ return f.block === block; })) return;
+    var pieces = [lbl.textContent || ''];
+    Array.prototype.forEach.call(block.querySelectorAll('input, select, textarea'), function(el) {
+      if (el.name) pieces.push(el.name);
+      if (el.placeholder) pieces.push(el.placeholder);
+      if (el.id) pieces.push(el.id);
+    });
+    Array.prototype.forEach.call(block.querySelectorAll('p'), function(p) {
+      pieces.push(p.textContent || '');
+    });
+    fields.push({ block: block, text: pieces.join(' ').toLowerCase() });
+  });
+
+  function applyFilter(rawQ) {
+    var q = (rawQ || '').toLowerCase().trim();
+    if (q === '') {
+      // Reset: show all fields. Don't touch <details> open state — leave
+      // whatever the user had open before searching.
+      fields.forEach(function(f) { f.block.style.display = ''; });
+      counter.classList.add('hidden');
+      return;
+    }
+    var hits = 0;
+    fields.forEach(function(f) {
+      var match = f.text.indexOf(q) !== -1;
+      f.block.style.display = match ? '' : 'none';
+      if (match) {
+        hits++;
+        // Ensure every <details> ancestor is open so the match is visible.
+        var n = f.block.parentElement;
+        while (n && n !== form) {
+          if (n.tagName === 'DETAILS' && !n.open) n.open = true;
+          n = n.parentElement;
+        }
+      }
+    });
+    counter.textContent = hits + ' match' + (hits === 1 ? '' : 'es');
+    counter.classList.remove('hidden');
+  }
+  input.addEventListener('input', function() { applyFilter(this.value); });
+  // Esc clears the filter.
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') { input.value = ''; applyFilter(''); input.blur(); }
+  });
 })();
 </script>
 {{end}}
