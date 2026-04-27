@@ -424,6 +424,7 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(s.adminIPGate)
+	r.Use(s.securityHeaders)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
@@ -705,6 +706,43 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	return r
+}
+
+// securityHeaders sets baseline response headers on every CaddyUI response
+// regardless of whether the request reached us through a reverse proxy or
+// directly. Defense-in-depth: even if you bypass Caddy and hit CaddyUI on
+// its bound port (or behind a different proxy that doesn't add security
+// headers), these still ship.
+//
+// Headers set:
+//   - X-Frame-Options: SAMEORIGIN — page can only be iframed by itself,
+//     mitigates clickjacking against the management UI.
+//   - X-Content-Type-Options: nosniff — browser respects the Content-Type
+//     header instead of MIME-sniffing, mitigates MIME confusion.
+//   - Referrer-Policy: strict-origin-when-cross-origin — hides path/query
+//     from cross-origin navigations.
+//
+// HSTS is intentionally NOT set here — CaddyUI may be served on plain HTTP
+// when accessed via Tailscale / Wireguard / localhost during dev/test, and
+// HSTS would make those flows uncomfortable. The fronting Caddy adds HSTS
+// for public HTTPS access via the Security Headers checkbox on the
+// proxy host fronting CaddyUI. v2.10.3.
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		// Set-only-if-not-already-present so a more restrictive value from
+		// a fronting proxy (e.g. X-Frame-Options: DENY) still wins.
+		if h.Get("X-Frame-Options") == "" {
+			h.Set("X-Frame-Options", "SAMEORIGIN")
+		}
+		if h.Get("X-Content-Type-Options") == "" {
+			h.Set("X-Content-Type-Options", "nosniff")
+		}
+		if h.Get("Referrer-Policy") == "" {
+			h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // adminIPGate returns a middleware that enforces the admin_allowlist setting.
