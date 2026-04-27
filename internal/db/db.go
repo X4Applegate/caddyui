@@ -1966,6 +1966,38 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "add_x_request_id_header_response") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_id_header_response INTEGER NOT NULL DEFAULT 0`)
 	}
+	// v2.9.258: force_canonical_host — canonical host; any other request hostname is redirected to it
+	if !columnExists2(db, "proxy_hosts", "force_canonical_host") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN force_canonical_host TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.259: add_x_robots_noindex_quick — quick X-Robots-Tag: noindex, nofollow toggle
+	if !columnExists2(db, "proxy_hosts", "add_x_robots_noindex_quick") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_robots_noindex_quick INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.260: block_bot_user_agents — built-in bot blocklist (regexp matches common scrapers)
+	if !columnExists2(db, "proxy_hosts", "block_bot_user_agents") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN block_bot_user_agents INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.261: block_admin_paths — 404 common admin paths (/wp-admin, /.git, /phpmyadmin, etc.)
+	if !columnExists2(db, "proxy_hosts", "block_admin_paths") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN block_admin_paths INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.262: add_link_dns_prefetch — Link: <…>; rel=dns-prefetch response header
+	if !columnExists2(db, "proxy_hosts", "add_link_dns_prefetch") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_link_dns_prefetch TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.263: add_link_preconnect — Link: <…>; rel=preconnect response header
+	if !columnExists2(db, "proxy_hosts", "add_link_preconnect") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_link_preconnect TEXT NOT NULL DEFAULT ''`)
+	}
+	// v2.9.264: add_x_csp_disabled — set Content-Security-Policy: '' to explicitly disable CSP
+	if !columnExists2(db, "proxy_hosts", "add_x_csp_disabled") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_csp_disabled INTEGER NOT NULL DEFAULT 0`)
+	}
+	// v2.9.265: add_x_request_method_override — honor X-HTTP-Method-Override (rewrite method from header)
+	if !columnExists2(db, "proxy_hosts", "add_x_request_method_override") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_method_override INTEGER NOT NULL DEFAULT 0`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial
