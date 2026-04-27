@@ -345,9 +345,19 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		liveVisitors int
 	)
 	if !scoped {
-		todayTotals, _ = models.AccessTotalsSince(s.DB, todayStart, "")
-		sevenTotals, _ = models.AccessTotalsSince(s.DB, sevenDaysAgo, "")
-		liveVisitors, _ = models.AccessLiveVisitors(s.DB, 5*time.Minute)
+		var err2 error
+		todayTotals, err2 = models.AccessTotalsSince(s.DB, todayStart, "")
+		if err2 != nil {
+			log.Printf("analytics: AccessTotalsSince(today): %v", err2)
+		}
+		sevenTotals, err2 = models.AccessTotalsSince(s.DB, sevenDaysAgo, "")
+		if err2 != nil {
+			log.Printf("analytics: AccessTotalsSince(7d): %v", err2)
+		}
+		liveVisitors, err2 = models.AccessLiveVisitors(s.DB, 5*time.Minute)
+		if err2 != nil {
+			log.Printf("analytics: AccessLiveVisitors: %v", err2)
+		}
 	} else {
 		for _, h := range allowedHosts {
 			t1, _ := models.AccessTotalsSince(s.DB, todayStart, h)
@@ -366,16 +376,28 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	// Per-host table: top 50 by views in last 7 days.
 	var hostRows []models.HostStats
 	if !scoped {
-		hostRows, _ = models.TopHostsSince(s.DB, sevenDaysAgo, 50)
+		var err2 error
+		hostRows, err2 = models.TopHostsSince(s.DB, sevenDaysAgo, 50)
+		if err2 != nil {
+			log.Printf("analytics: TopHostsSince: %v", err2)
+		}
 	} else {
-		hostRows, _ = models.HostStatsForHosts(s.DB, sevenDaysAgo, allowedHosts)
+		var err2 error
+		hostRows, err2 = models.HostStatsForHosts(s.DB, sevenDaysAgo, allowedHosts)
+		if err2 != nil {
+			log.Printf("analytics: HostStatsForHosts: %v", err2)
+		}
 	}
 
 	// 24h hourly sparkline: fill zero-buckets so the chart doesn't jump.
 	bucketSec := int64(3600) // 1h buckets
 	var rawBuckets []models.HourlyBucket
 	if !scoped {
-		rawBuckets, _ = models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "")
+		var err2 error
+		rawBuckets, err2 = models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "")
+		if err2 != nil {
+			log.Printf("analytics: AccessBuckets(unscoped): %v", err2)
+		}
 	} else {
 		// Scoped path needs per-host buckets summed. AccessBuckets takes a
 		// single host string, so loop and merge by hour.
@@ -400,10 +422,18 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	// Status-class pie.
 	var statusBuckets models.StatusBuckets
 	if !scoped {
-		statusBuckets, _ = models.StatusBucketsSince(s.DB, sevenDaysAgo, "")
+		var err2 error
+		statusBuckets, err2 = models.StatusBucketsSince(s.DB, sevenDaysAgo, "")
+		if err2 != nil {
+			log.Printf("analytics: StatusBucketsSince(unscoped): %v", err2)
+		}
 	} else {
 		for _, h := range allowedHosts {
-			b, _ := models.StatusBucketsSince(s.DB, sevenDaysAgo, h)
+			b, err2 := models.StatusBucketsSince(s.DB, sevenDaysAgo, h)
+			if err2 != nil {
+				log.Printf("analytics: StatusBucketsSince(%s): %v", h, err2)
+				continue
+			}
 			statusBuckets.S2xx += b.S2xx
 			statusBuckets.S3xx += b.S3xx
 			statusBuckets.S4xx += b.S4xx

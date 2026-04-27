@@ -2,6 +2,7 @@ package models
 
 import (
 	"database/sql"
+	"strconv"
 	"time"
 )
 
@@ -116,24 +117,20 @@ type HostStats struct {
 }
 
 // TopHostsSince returns per-host aggregates for events newer than `since`,
-// ordered by view count. Limit caps the returned set; the per-host TopPath
-// comes from a correlated subquery so we stay on one round-trip.
+// ordered by view count. Limit caps the returned set. TopPath is filled via
+// a second pass (one query per host) to avoid a correlated subquery that
+// produces empty results in modernc.org/sqlite when no host filter is present.
 func TopHostsSince(db *sql.DB, since time.Time, limit int) ([]HostStats, error) {
-	rows, err := db.Query(`
-        SELECT host,
-               COUNT(*) AS views,
-               COUNT(DISTINCT client_ip) AS visitors,
-               COALESCE((
-                   SELECT path FROM access_events
-                   WHERE host = outer_e.host AND ts >= ?
-                   GROUP BY path ORDER BY COUNT(*) DESC LIMIT 1
-               ), '') AS top_path,
-               MAX(ts) AS last_ts
-          FROM access_events outer_e
-         WHERE ts >= ?
-         GROUP BY host
-         ORDER BY views DESC
-         LIMIT ?`, since.Unix(), since.Unix(), limit)
+	sinceUnix := since.Unix()
+	// Step 1: aggregate by host — no correlated subquery, no alias in GROUP BY.
+	rows, err := db.Query(
+		`SELECT host, COUNT(*) AS views, COUNT(DISTINCT client_ip) AS visitors, MAX(ts) AS last_ts
+		   FROM access_events
+		  WHERE ts >= ?
+		  GROUP BY host
+		  ORDER BY views DESC
+		  LIMIT `+strconv.Itoa(limit),
+		sinceUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -142,13 +139,30 @@ func TopHostsSince(db *sql.DB, since time.Time, limit int) ([]HostStats, error) 
 	for rows.Next() {
 		var s HostStats
 		var lastTs int64
-		if err := rows.Scan(&s.Host, &s.Views, &s.Visitors, &s.TopPath, &lastTs); err != nil {
+		if err := rows.Scan(&s.Host, &s.Views, &s.Visitors, &lastTs); err != nil {
 			return nil, err
 		}
 		s.LastVisit = time.Unix(lastTs, 0)
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Step 2: fill TopPath for each host with a targeted single-host query.
+	// Runs up to `limit` small indexed lookups — fast on the (host, ts) index.
+	for i := range out {
+		var p string
+		_ = db.QueryRow(
+			`SELECT path FROM access_events
+			  WHERE host = ? AND ts >= ?
+			  GROUP BY path
+			  ORDER BY COUNT(*) DESC
+			  LIMIT 1`,
+			out[i].Host, sinceUnix).Scan(&p)
+		out[i].TopPath = p
+	}
+	return out, nil
 }
 
 // HostStatsForHosts is the ownership-scoped variant of TopHostsSince. Pass
@@ -237,7 +251,7 @@ func AccessBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host str
 		q += ` AND host = ?`
 		args = append(args, host)
 	}
-	q += ` GROUP BY bucket ORDER BY bucket ASC`
+	q += ` GROUP BY 1 ORDER BY 1 ASC`
 	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -275,7 +289,7 @@ func TopPaths(db *sql.DB, since time.Time, host string, limit int) ([]PathStats,
          WHERE ts >= ? AND host = ?
          GROUP BY path, method
          ORDER BY views DESC
-         LIMIT ?`, since.Unix(), host, limit)
+         LIMIT `+strconv.Itoa(limit), since.Unix(), host)
 	if err != nil {
 		return nil, err
 	}
@@ -303,36 +317,23 @@ type StatusBuckets struct {
 
 func StatusBucketsSince(db *sql.DB, since time.Time, host string) (StatusBuckets, error) {
 	var b StatusBuckets
-	q := `SELECT status FROM access_events WHERE ts >= ?`
+	q := `SELECT
+		COALESCE(SUM(CASE WHEN status >= 200 AND status < 300 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status >= 300 AND status < 400 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status >= 500 AND status < 600 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status < 200 OR  status >= 600 THEN 1 ELSE 0 END), 0)
+	FROM access_events WHERE ts >= ?`
 	args := []any{since.Unix()}
 	if host != "" {
 		q += ` AND host = ?`
 		args = append(args, host)
 	}
-	rows, err := db.Query(q, args...)
-	if err != nil {
-		return b, err
+	err := db.QueryRow(q, args...).Scan(&b.S2xx, &b.S3xx, &b.S4xx, &b.S5xx, &b.SOther)
+	if err == sql.ErrNoRows {
+		return b, nil
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var s int
-		if err := rows.Scan(&s); err != nil {
-			return b, err
-		}
-		switch {
-		case s >= 200 && s < 300:
-			b.S2xx++
-		case s >= 300 && s < 400:
-			b.S3xx++
-		case s >= 400 && s < 500:
-			b.S4xx++
-		case s >= 500 && s < 600:
-			b.S5xx++
-		default:
-			b.SOther++
-		}
-	}
-	return b, rows.Err()
+	return b, err
 }
 
 // TopClientIPs returns the distinct client_ip values with the most events on
@@ -353,8 +354,7 @@ func TopClientIPs(db *sql.DB, since time.Time, host string, limit int) ([]Client
 		q += ` AND host = ?`
 		args = append(args, host)
 	}
-	q += ` GROUP BY client_ip ORDER BY views DESC LIMIT ?`
-	args = append(args, limit)
+	q += ` GROUP BY client_ip ORDER BY views DESC LIMIT ` + strconv.Itoa(limit)
 	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
