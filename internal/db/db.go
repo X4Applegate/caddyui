@@ -1998,6 +1998,14 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "add_x_request_method_override") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN add_x_request_method_override INTEGER NOT NULL DEFAULT 0`)
 	}
+	// v2.9.266: proxy_redirect_rules — JSON array of path-based redirect rules
+	// fired BEFORE the reverse_proxy. Mirrors redirection_hosts.redirect_rules
+	// from v2.9.229 but on proxy hosts. Each rule: {path, code, destination}.
+	// Use case: "redirect / to /webmail with 302, but proxy everything else
+	// to backend" — common in Caddyfile as `@root path / + redir @root /webmail 302`.
+	if !columnExists2(db, "proxy_hosts", "proxy_redirect_rules") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN proxy_redirect_rules TEXT NOT NULL DEFAULT ''`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

@@ -878,6 +878,87 @@
        underlying field has a saved value, so users editing an existing
        host never have to hunt for their own config. */}}
 
+  {{/* v2.9.266: path-based redirect rules on proxy hosts. Mirrors the
+       redirect-host feature from v2.9.229 but on the proxy-host form.
+       When set, each rule's matcher fires BEFORE the reverse_proxy.
+       Common case: redirect / → /webmail (302) while still proxying
+       every other path normally. Auto-opens when rules are configured. */}}
+  <details class="pt-4 border-t border-ink-100"{{if .Host.ProxyRedirectRules}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Path redirects <span class="font-normal normal-case">(optional, fires before reverse_proxy)</span>
+    </summary>
+    <div class="mt-3 space-y-3">
+      <p class="text-xs text-ink-500">Each rule overrides the reverse_proxy for paths that match. Use Caddy path patterns: <code class="font-mono bg-ink-100 px-1 rounded">/old-blog/*</code> matches a prefix, <code class="font-mono bg-ink-100 px-1 rounded">/</code> matches just the root. In the destination, <code class="font-mono bg-ink-100 px-1 rounded">{uri}</code> is the original path+query. Leave Destination empty to return the status code without redirecting (e.g. <strong>410 Gone</strong> for retired URLs). Equivalent to <code class="font-mono bg-ink-100 px-1 rounded">@root path / + redir @root /webmail 302</code> in a Caddyfile.</p>
+      <div id="prr-rules-table" class="space-y-2"></div>
+      <button type="button" id="prr-add-rule" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add rule
+      </button>
+      <input type="hidden" name="proxy_redirect_rules" id="prr-rules-json" value="{{.Host.ProxyRedirectRules}}" />
+    </div>
+  </details>
+  <script>
+  (function(){
+    var data = [];
+    try { var raw = document.getElementById('prr-rules-json').value; if (raw) data = JSON.parse(raw); } catch(e){}
+    if (!Array.isArray(data)) data = [];
+    var table  = document.getElementById('prr-rules-table');
+    var hidden = document.getElementById('prr-rules-json');
+    var addBtn = document.getElementById('prr-add-rule');
+    if (!table || !hidden || !addBtn) return;
+    function rowHTML(rule, idx) {
+      var path = (rule && rule.path) || '';
+      var code = (rule && rule.code) || 302;
+      var dest = (rule && rule.destination) || '';
+      return '<div class="grid grid-cols-12 gap-2 items-start" data-idx="'+idx+'">' +
+        '<input type="text" data-field="path" value="'+escapeAttr(path)+'" placeholder="/" class="col-span-4 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
+        '<select data-field="code" class="col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">' +
+          opt(code, 301, '301') + opt(code, 302, '302') + opt(code, 307, '307') + opt(code, 308, '308') + opt(code, 410, '410 Gone') + opt(code, 451, '451') +
+        '</select>' +
+        '<input type="text" data-field="destination" value="'+escapeAttr(dest)+'" placeholder="/webmail" class="col-span-5 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
+        '<button type="button" data-action="remove" class="col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center" title="Remove rule">×</button>' +
+      '</div>';
+    }
+    function opt(cur, val, label) { return '<option value="'+val+'"'+(cur==val?' selected':'')+'>'+label+'</option>'; }
+    function escapeAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function render() {
+      table.innerHTML = data.map(rowHTML).join('') || '<p class="text-xs text-ink-400 italic">No rules — every request will hit the reverse_proxy.</p>';
+    }
+    function syncHidden() {
+      var clean = data.filter(function(r){ return r && (r.path||'').trim() !== ''; });
+      hidden.value = clean.length ? JSON.stringify(clean) : '';
+    }
+    function readRows() {
+      data = Array.prototype.map.call(table.querySelectorAll('[data-idx]'), function(row) {
+        return {
+          path:        row.querySelector('[data-field="path"]').value.trim(),
+          code:        parseInt(row.querySelector('[data-field="code"]').value, 10) || 302,
+          destination: row.querySelector('[data-field="destination"]').value.trim(),
+        };
+      });
+    }
+    addBtn.addEventListener('click', function(){
+      readRows();
+      data.push({path:'', code:302, destination:''});
+      render();
+      syncHidden();
+    });
+    table.addEventListener('click', function(e){
+      if (e.target.matches('[data-action="remove"]')) {
+        var row = e.target.closest('[data-idx]');
+        readRows();
+        data.splice(parseInt(row.dataset.idx,10), 1);
+        render();
+        syncHidden();
+      }
+    });
+    table.addEventListener('input', function(){ readRows(); syncHidden(); });
+    table.addEventListener('change', function(){ readRows(); syncHidden(); });
+    render();
+    syncHidden();
+  })();
+  </script>
+
   <details class="pt-4 border-t border-ink-100"{{if .Host.AdvancedConfig}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Advanced config <span class="font-normal normal-case">(optional Caddyfile directives)</span>
