@@ -4361,8 +4361,20 @@ func (s *Server) reloadCaddy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	// v2.12.19: was returning 204 No Content + HX-Trigger header on the
+	// assumption HTMX was driving the dashboard's "Sync Caddy" form. The
+	// form is a plain <form method="post"> with no hx-* attributes, so
+	// some browsers treated the empty Content-Type-less 204 from a form
+	// POST as "save the URL's last segment as a file" — the user saw a
+	// download named "reload" appear instead of a successful sync. Redirect
+	// back to the dashboard (or the referrer if present) so the form-submit
+	// completes cleanly without a body the browser has to interpret.
 	w.Header().Set("HX-Trigger", "caddy-reloaded")
-	w.WriteHeader(http.StatusNoContent)
+	dest := r.Header.Get("Referer")
+	if dest == "" {
+		dest = "/"
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 // --- Import from live Caddy ---
