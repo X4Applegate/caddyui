@@ -3,589 +3,560 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.12.0 — UX &amp; navigation polish (major release)</title>
-<meta name="description" content="v2.12.0 is the GA cut of the v2.11.x preview cycle — the largest UX-only release in CaddyUI's history. Ships ⌘K command palette, bulk multi-select on every list page, drag-to-reorder rows, top-of-form reorder, live route-JSON preview, Recently edited dashboard widget, multi-server health grid, ACME / Let's Encrypt cert expiry alerts via the notifier, an opt-in Ollama-powered AI assistant, and wildcard cert auto-issuance via DNS-01 (Cloudflare).">
-<meta property="og:title" content="CaddyUI v2.12.0 — UX &amp; navigation polish (major release)">
-<meta property="og:description" content="GA cut of the v2.11 preview cycle: ⌘K palette, bulk ops everywhere, drag-to-reorder, hoisted DNS + TLS, live JSON preview, multi-server health, ACME-cert expiry alerts, and an Ollama-powered AI assistant. :latest now points here.">
+<title>CaddyUI v2.12.4 — UX cycle GA: ⌘K palette, bulk ops, AI assistant, Managed DNS everywhere</title>
+<meta name="description" content="v2.12 is the GA cut of CaddyUI's largest UX-only release. Ships a ⌘K command palette, bulk multi-select + drag-to-reorder on every list page, top-of-form reorder, live route-JSON preview, Recently edited dashboard widget, multi-server health grid, ACME / Let's Encrypt cert expiry alerts, an opt-in Ollama-powered AI assistant, wildcard cert auto-issuance via DNS-01, and Managed DNS on redirections.">
+<meta property="og:title" content="CaddyUI v2.12.4 — UX cycle GA + Managed DNS everywhere">
+<meta property="og:description" content="GA cut of the v2.11 → v2.12 cycle: ⌘K palette, bulk ops, drag-to-reorder, hoisted DNS + TLS, live JSON preview, multi-server health, ACME-cert expiry alerts, Ollama AI assistant, wildcard DNS-01, and Managed DNS on redirections. :latest now points here.">
 <meta property="og:type" content="article">
-<meta property="article:published_time" content="2026-04-27">
+<meta property="article:published_time" content="2026-04-28">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Barlow:wght@400;500;600&family=Inconsolata:wght@400;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --brand-50: #eff6ff;
-    --brand-100: #dbeafe;
-    --brand-500: #3b82f6;
-    --brand-600: #2563eb;
-    --brand-700: #1d4ed8;
-    --ink-50:  #f8fafc;
-    --ink-100: #f1f5f9;
-    --ink-200: #e2e8f0;
-    --ink-300: #cbd5e1;
-    --ink-400: #94a3b8;
-    --ink-500: #64748b;
-    --ink-600: #475569;
-    --ink-700: #334155;
-    --ink-800: #1e293b;
-    --ink-900: #0f172a;
-    --bg: #ffffff;
-    --fg: var(--ink-800);
-    --muted: var(--ink-500);
-    --card-bg: #ffffff;
-    --card-border: var(--ink-200);
-    --code-bg: var(--ink-100);
-    --code-fg: var(--ink-800);
-    --amber-50: #fffbeb;
-    --amber-200: #fde68a;
-    --amber-700: #b45309;
-    --emerald-50: #ecfdf5;
-    --emerald-200: #a7f3d0;
-    --emerald-700: #047857;
-    --sky-50: #f0f9ff;
-    --sky-200: #bae6fd;
-    --sky-700: #0369a1;
+    --bg:         #0c0b09;
+    --bg2:        #131210;
+    --bg3:        #1a1814;
+    --orange:     #e8890a;
+    --orange-dim: #b86d08;
+    --cream:      #f0ece3;
+    --cream-dim:  #b0a98f;
+    --muted:      #5a5446;
+    --border:     #2a2720;
+    --border-hi:  #3d3a32;
+    --code-bg:    #111008;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0b1220;
-      --fg: #e2e8f0;
-      --muted: #94a3b8;
-      --card-bg: #111a2e;
-      --card-border: #1e293b;
-      --code-bg: #0f172a;
-      --code-fg: #e2e8f0;
-      --amber-50: rgba(251, 191, 36, 0.08);
-      --amber-200: rgba(251, 191, 36, 0.25);
-      --amber-700: #fcd34d;
-      --emerald-50: rgba(16, 185, 129, 0.08);
-      --emerald-200: rgba(16, 185, 129, 0.25);
-      --emerald-700: #6ee7b7;
-      --sky-50: rgba(14, 165, 233, 0.08);
-      --sky-200: rgba(14, 165, 233, 0.25);
-      --sky-700: #7dd3fc;
-    }
-  }
-  * { box-sizing: border-box; }
+
+  *, *::before, *::after { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
+
   body {
     margin: 0;
     background: var(--bg);
-    color: var(--fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+    color: var(--cream-dim);
+    font-family: 'Barlow', sans-serif;
     font-size: 17px;
-    line-height: 1.65;
+    line-height: 1.7;
     -webkit-font-smoothing: antialiased;
   }
+
+  /* NAV BAR */
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 40px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(12,11,9,0.9);
+    backdrop-filter: blur(14px);
+  }
+
+  .nav-brand {
+    display: flex; align-items: center; gap: 10px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 900; font-size: 20px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--cream); text-decoration: none; border: none;
+  }
+  .nav-brand span { color: var(--orange); }
+  .nav-brand:hover { border: none; }
+
+  .nav-badge {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 20px;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    background: rgba(232,137,10,0.1);
+    color: var(--orange);
+    border: 1px solid rgba(232,137,10,0.25);
+  }
+  .nav-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--orange);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.7)} }
+
+  /* LAYOUT */
   .wrap {
-    max-width: 760px;
+    max-width: 780px;
     margin: 0 auto;
-    padding: 48px 20px 96px;
+    padding: 64px 28px 100px;
   }
-  header.hero { margin-bottom: 40px; }
+
+  /* HERO */
+  header.hero { margin-bottom: 48px; }
+
   .eyebrow {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-    color: var(--brand-600);
-    background: var(--brand-50);
-    padding: 6px 12px;
-    border-radius: 999px;
-    margin-bottom: 16px;
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--orange);
+    background: rgba(232,137,10,0.08);
+    border: 1px solid rgba(232,137,10,0.2);
+    padding: 5px 14px; border-radius: 999px;
+    margin-bottom: 24px;
   }
-  @media (prefers-color-scheme: dark) {
-    .eyebrow { background: rgba(59, 130, 246, 0.15); }
-  }
+
   h1 {
-    font-size: clamp(28px, 4.5vw, 40px);
-    line-height: 1.15;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 900;
+    font-size: clamp(36px, 6vw, 58px);
+    line-height: 1.0;
     letter-spacing: -0.02em;
-    margin: 0 0 16px;
-    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--cream);
+    margin: 0 0 20px;
   }
+
   .lead {
-    font-size: 19px;
-    color: var(--muted);
-    margin: 0 0 24px;
-    line-height: 1.55;
+    font-size: 18px;
+    color: var(--cream-dim);
+    margin: 0 0 28px;
+    line-height: 1.65;
+    border-left: 3px solid var(--orange);
+    padding-left: 18px;
   }
+
   .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    font-size: 14px;
-    color: var(--muted);
+    display: flex; flex-wrap: wrap; gap: 16px;
+    font-size: 13px; color: var(--muted);
+    font-family: 'Inconsolata', monospace;
+    letter-spacing: 0.04em;
   }
   .meta time::before { content: "📅 "; }
   .meta .tag::before { content: "🏷️ "; }
+
+  /* HEADINGS */
   h2 {
-    font-size: 26px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 900;
+    font-size: clamp(28px, 4vw, 40px);
     letter-spacing: -0.01em;
-    margin: 56px 0 12px;
-    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--cream);
+    margin: 64px 0 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-hi);
   }
+
   h3 {
-    font-size: 19px;
-    margin: 28px 0 10px;
-    font-weight: 600;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--orange);
+    margin: 36px 0 12px;
   }
+
   p { margin: 0 0 18px; }
   ul { padding-left: 22px; margin: 0 0 18px; }
-  li { margin-bottom: 8px; }
+  li { margin-bottom: 10px; }
+
+  /* LINKS */
   a {
-    color: var(--brand-600);
+    color: var(--orange);
     text-decoration: none;
-    border-bottom: 1px solid rgba(37, 99, 235, 0.3);
-    transition: border-color 0.15s;
+    border-bottom: 1px solid rgba(232,137,10,0.35);
+    transition: border-color 0.15s, color 0.15s;
   }
-  a:hover { border-bottom-color: var(--brand-600); }
+  a:hover {
+    color: var(--cream);
+    border-bottom-color: var(--orange);
+  }
+
+  /* CODE */
   code {
-    font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-    font-size: 0.88em;
+    font-family: 'Inconsolata', monospace;
+    font-size: 0.87em;
     background: var(--code-bg);
-    color: var(--code-fg);
-    padding: 2px 6px;
+    color: var(--orange);
+    padding: 2px 7px;
     border-radius: 4px;
+    border: 1px solid var(--border-hi);
   }
+
   pre {
     background: var(--code-bg);
-    color: var(--code-fg);
-    padding: 16px 18px;
-    border-radius: 10px;
+    color: var(--cream-dim);
+    padding: 18px 22px;
+    border-radius: 6px;
     overflow-x: auto;
     font-size: 14px;
-    line-height: 1.55;
-    margin: 18px 0 22px;
-    border: 1px solid var(--card-border);
+    line-height: 1.6;
+    margin: 18px 0 24px;
+    border: 1px solid var(--border-hi);
+    font-family: 'Inconsolata', monospace;
   }
-  pre code { background: transparent; padding: 0; }
+  pre code {
+    background: transparent;
+    padding: 0; border: none;
+    color: var(--cream-dim);
+  }
+
+  /* TABLE */
   table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 18px 0 22px;
+    width: 100%; border-collapse: collapse;
+    margin: 20px 0 24px;
     font-size: 15px;
+    border: 1px solid var(--border-hi);
   }
   th, td {
     text-align: left;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--card-border);
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
   }
+  th:last-child, td:last-child { border-right: none; }
+  tr:last-child td { border-bottom: none; }
   th {
     color: var(--muted);
     font-weight: 600;
-    font-size: 13px;
+    font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.14em;
+    background: var(--bg2);
+    font-family: 'Barlow', sans-serif;
   }
+  td { background: var(--bg); }
+  tr:hover td { background: var(--bg2); }
+
+  /* BLOCKQUOTE */
   blockquote {
-    border-left: 3px solid var(--brand-500);
-    padding: 4px 0 4px 18px;
-    margin: 20px 0;
-    color: var(--muted);
+    border-left: 3px solid var(--orange);
+    padding: 4px 0 4px 20px;
+    margin: 22px 0;
+    color: var(--cream-dim);
     font-style: italic;
   }
+
+  /* CALLOUT */
   .callout {
-    background: var(--brand-50);
-    border: 1px solid var(--brand-100);
-    border-radius: 10px;
-    padding: 16px 18px;
-    margin: 22px 0;
+    background: rgba(232,137,10,0.06);
+    border: 1px solid rgba(232,137,10,0.2);
+    border-radius: 6px;
+    padding: 18px 20px;
+    margin: 24px 0;
     font-size: 15px;
+    line-height: 1.65;
   }
-  @media (prefers-color-scheme: dark) {
-    .callout {
-      background: rgba(59, 130, 246, 0.08);
-      border-color: rgba(59, 130, 246, 0.2);
-    }
-  }
-  .callout strong { color: var(--brand-700); }
-  @media (prefers-color-scheme: dark) {
-    .callout strong { color: #93bbfc; }
-  }
+  .callout strong { color: var(--orange); }
+
   .callout.amber {
-    background: var(--amber-50);
-    border-color: var(--amber-200);
+    background: rgba(232,137,10,0.06);
+    border-color: rgba(232,137,10,0.25);
   }
-  .callout.amber strong { color: var(--amber-700); }
+  .callout.amber strong { color: var(--orange); }
+
   .callout.emerald {
-    background: var(--emerald-50);
-    border-color: var(--emerald-200);
+    background: rgba(240,236,227,0.04);
+    border-color: var(--border-hi);
   }
-  .callout.emerald strong { color: var(--emerald-700); }
+  .callout.emerald strong { color: var(--cream); }
+
+  /* PILLS */
   .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 1px 8px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 500;
-    border: 1px solid;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 600;
+    border: 1px solid; vertical-align: middle;
+    font-family: 'Inconsolata', monospace;
+    letter-spacing: 0.04em;
+  }
+  .pill.proxy   { background: rgba(232,137,10,0.1); color: var(--orange);    border-color: rgba(232,137,10,0.3); }
+  .pill.redir   { background: rgba(240,236,227,0.06); color: var(--cream);   border-color: var(--border-hi); }
+  .pill.advanced{ background: rgba(90,84,70,0.2);  color: var(--cream-dim); border-color: var(--muted); }
+  .pill.cert    { background: rgba(176,169,143,0.12); color: var(--cream-dim); border-color: var(--border-hi); }
+
+  /* KBD */
+  kbd {
+    display: inline-block;
+    font-family: 'Inconsolata', monospace;
+    font-size: 12px; font-weight: 600;
+    background: var(--code-bg);
+    color: var(--cream);
+    padding: 2px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--border-hi);
+    box-shadow: 0 1px 0 var(--border-hi);
+    line-height: 1.4;
     vertical-align: middle;
   }
-  .pill.proxy   { background: var(--emerald-50); color: var(--emerald-700); border-color: var(--emerald-200); }
-  .pill.redir   { background: var(--sky-50);     color: var(--sky-700);     border-color: var(--sky-200); }
-  .pill.advanced{ background: var(--amber-50);   color: var(--amber-700);   border-color: var(--amber-200); }
+
+  /* BUTTONS */
   .cta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin: 28px 0;
+    display: flex; flex-wrap: wrap; gap: 12px;
+    margin: 32px 0;
   }
   .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 18px;
-    border-radius: 10px;
-    font-weight: 600;
-    font-size: 15px;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 22px; border-radius: 6px;
+    font-weight: 600; font-size: 15px;
+    font-family: 'Barlow', sans-serif;
     border: 1px solid transparent;
-    text-decoration: none;
-    border-bottom: none;
-    transition: transform 0.1s, box-shadow 0.15s;
+    text-decoration: none; border-bottom: none;
+    transition: transform 0.1s, background 0.15s;
+    letter-spacing: 0.02em;
   }
+  .btn:hover { transform: translateY(-1px); border-bottom: none; }
+
   .btn.primary {
-    background: var(--brand-600);
-    color: #fff;
+    background: var(--orange);
+    color: var(--bg);
+    border-color: var(--orange);
   }
-  .btn.primary:hover { background: var(--brand-700); }
+  .btn.primary:hover { background: var(--orange-dim); border-color: var(--orange-dim); }
+
   .btn.secondary {
-    background: var(--card-bg);
-    color: var(--fg);
-    border-color: var(--card-border);
+    background: var(--bg2);
+    color: var(--cream-dim);
+    border-color: var(--border-hi);
   }
-  .btn.secondary:hover { background: var(--ink-100); }
-  @media (prefers-color-scheme: dark) {
-    .btn.secondary:hover { background: rgba(255,255,255,0.05); }
-  }
+  .btn.secondary:hover { background: var(--bg3); color: var(--cream); }
+
+  /* TOC */
   .toc {
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 16px 22px;
-    margin: 24px 0 32px;
+    background: var(--bg2);
+    border: 1px solid var(--border-hi);
+    border-radius: 6px;
+    padding: 20px 26px;
+    margin: 28px 0 36px;
     font-size: 15px;
   }
-  .toc strong { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.03em; font-weight: 600; }
+  .toc strong {
+    display: block; margin-bottom: 10px;
+    color: var(--muted); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.2em;
+    font-weight: 600;
+  }
   .toc ul { padding-left: 18px; margin: 0; }
-  .toc li { margin-bottom: 4px; }
+  .toc li { margin-bottom: 6px; }
+  .toc a { color: var(--cream-dim); border-bottom-color: transparent; }
+  .toc a:hover { color: var(--orange); border-bottom-color: rgba(232,137,10,0.35); }
+
+  /* DIVIDER */
+  hr.divider {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 48px 0;
+  }
+
+  /* FOOTER */
   footer.signoff {
-    margin-top: 56px;
-    padding-top: 24px;
-    border-top: 1px solid var(--card-border);
+    margin-top: 64px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
     color: var(--muted);
     font-size: 14px;
   }
-  footer.signoff p { margin-bottom: 8px; }
-  hr.divider {
-    border: 0;
-    border-top: 1px solid var(--card-border);
-    margin: 40px 0;
-  }
+  footer.signoff p { margin-bottom: 10px; }
+
+  /* STRONG */
+  strong { color: var(--cream); font-weight: 600; }
+
+  /* EM in headings */
+  em { color: var(--cream-dim); font-style: italic; }
 </style>
 </head>
 <body>
-<div class="wrap">
 
+<!-- NAV -->
+<nav>
+  <a class="nav-brand" href="#">Caddy<span>UI</span></a>
+  <div class="nav-badge"><div class="nav-dot"></div> v2.12.4</div>
+</nav>
+
+<div class="wrap">
 <article>
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.12.0 — UX &amp; navigation polish (major release)</h1>
-  <p class="lead">v2.11 is a UX cycle. v2.11.0 ships eight features — live filters on <code>/raw-routes</code> and <code>/certificates</code>, a tri-state theme toggle (<em>auto</em> / <em>light</em> / <em>dark</em>), a keyboard-shortcut overlay (<code>?</code>), Vim-style chord nav (<code>g</code> + letter), a sticky save bar on the proxy-host form, configured-field count badges, and richer empty states. v2.11.1 → v2.11.3 then collapse the proxy-host form by default — only <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> stay open. v2.11.4 hoists the three essential SSL toggles to the form's always-visible top. v2.11.5 ships a global <kbd style="font-family:var(--mono);font-size:.85em;background:var(--ink-100);padding:.1em .4em;border-radius:4px;border:1px solid var(--ink-200)">⌘K</kbd> / <kbd style="font-family:var(--mono);font-size:.85em;background:var(--ink-100);padding:.1em .4em;border-radius:4px;border:1px solid var(--ink-200)">Ctrl+K</kbd> command palette searching every resource. v2.11.6 brings bulk multi-select to <code>/redirection-hosts</code>, matching what <code>/proxy-hosts</code> already had. The rest of the v2.10 arc (Smart Caddyfile import, ~70 per-host options, baseline security headers) is still covered below.</p>
+  <h1>CaddyUI v2.12 — UX cycle GA: palette, bulk ops, AI, Managed DNS everywhere</h1>
+  <p class="lead">v2.12 is the GA cut of CaddyUI's largest UX-only release in two years. A <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> command palette, bulk multi-select on every list page, drag-to-reorder rows, a top-of-form reorder that puts essentials first, a live route-JSON preview, a multi-server health grid, ACME / Let's Encrypt expiry alerts, an opt-in Ollama-powered AI assistant, wildcard cert auto-issuance via DNS-01, and Managed DNS finally landing on redirections. <code>:latest</code> retags here.</p>
   <div class="meta">
     <time datetime="2026-04-28">April 28, 2026</time>
-    <span class="tag">v2.12.0</span>
-    <span>☕ ~16 min read</span>
+    <span class="tag">v2.12.4</span>
+    <span>☕ ~12 min read</span>
   </div>
 </header>
 
 <div class="toc">
   <strong>What's in this post</strong>
   <ul>
-    <li><a href="#nav-polish">UX &amp; navigation polish (v2.11.0 → v2.12.0)</a></li>
-    <li><a href="#smart-import">Smart Caddyfile import (v2.10.7 → v2.10.9)</a></li>
-    <li><a href="#perhost">~70 per-host options + path-based routing (v2.10.0)</a></li>
-    <li><a href="#search">Proxy-host form search / filter (v2.10.2)</a></li>
-    <li><a href="#headers">Baseline security headers (v2.10.3 → v2.10.5)</a></li>
-    <li><a href="#docs">Caddyfile ↔ form-field mapping doc (v2.10.6)</a></li>
+    <li><a href="#palette">⌘K command palette + keyboard nav (v2.11.0 → v2.11.5)</a></li>
+    <li><a href="#bulk-drag">Bulk ops + drag-to-reorder (v2.11.6 → v2.11.11)</a></li>
+    <li><a href="#proxy-form">Proxy-host form rebuilt top-down (v2.11.4 → v2.11.8)</a></li>
+    <li><a href="#preview">Live route-JSON preview (v2.11.13)</a></li>
+    <li><a href="#dashboard">Dashboard widgets — Recent edits + fleet health (v2.11.12, .16)</a></li>
+    <li><a href="#ai">AI assistant via local Ollama (v2.11.15)</a></li>
+    <li><a href="#dns">Managed DNS — wildcards, ACME, redirections (v2.11.14, .19, v2.12.2)</a></li>
     <li><a href="#upgrade">Upgrade</a></li>
+    <li><a href="#whiteboard">On the whiteboard</a></li>
   </ul>
 </div>
 
 <hr class="divider">
 
-<h2 id="nav-polish">⚡ UX &amp; navigation polish <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.11.0 → v2.12.0</span></h2>
+<h2 id="palette">⌘ Command palette + keyboard nav <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.11.0 → v2.11.5</span></h2>
 
 <p>
-  v2.10 added an enormous amount of surface area — ~70 per-host options, four list pages, deep forms. v2.11 makes that surface fast to navigate and forgiving to scroll through.
-</p>
-
-<h3>v2.11.0 — eight features, all UX</h3>
-
-<ul>
-  <li><strong>Live filters on <code>/raw-routes</code> and <code>/certificates</code>.</strong> Same pattern as <code>/proxy-hosts</code> and <code>/redirection-hosts</code>: search input above the table, JS filters rows by host / label / Caddyfile content (raw routes) or name / SAN list / owner email (certificates). Honours <code>?q=…</code> deep-links so a filtered view is bookmarkable.</li>
-  <li><strong>Tri-state theme toggle</strong> (<em>auto</em> / <em>light</em> / <em>dark</em>). The previous binary toggle locked you out of system preference the moment you clicked it. <em>auto</em> is now the default and actively tracks <code>prefers-color-scheme</code> via a <code>matchMedia</code> listener — explicit choices override. Cycles through the three states; icon + tooltip update to show the active mode.</li>
-  <li><strong>Keyboard-shortcut overlay (<code>?</code>).</strong> Press <code>?</code> on any page to open a modal listing every global shortcut. <code>Esc</code> closes; clicks outside dismiss. Bindings ignore key presses while typing in inputs / textareas / contenteditables so <code>/</code>, <code>?</code>, etc. don't fire mid-edit.</li>
-  <li><strong>Quick-nav chord shortcuts</strong> — Vim-style <code>g</code> + letter:
-    <ul style="margin-top:6px;">
-      <li><code>g d</code> → / (dashboard)</li>
-      <li><code>g p</code> → /proxy-hosts</li>
-      <li><code>g r</code> → /redirection-hosts</li>
-      <li><code>g c</code> → /certificates</li>
-      <li><code>g a</code> → /raw-routes</li>
-      <li><code>g n</code> → /analytics</li>
-    </ul>
-    1.2s window for the second key; out-of-window resets the chord.
-  </li>
-  <li><strong>Sticky save bar on the proxy-host form.</strong> With ~70 options plus the form-search row, the in-form Save button is often offscreen. <code>IntersectionObserver</code> shows a floating Save / Cancel pill at the bottom of the viewport whenever the in-form actions row scrolls out of view. Re-uses the same <code>&lt;form&gt;</code> via the <code>form=</code> attribute — no duplicate state.</li>
-  <li><strong>Configured-field badges</strong> on every <code>&lt;details&gt;</code> section of the proxy-host form. Each section's summary carries a small brand-coloured pill counting how many fields inside are non-default — so you can spot what's set without expanding sections one by one.</li>
-  <li><strong>Richer empty states</strong> on <code>/proxy-hosts</code> and <code>/redirection-hosts</code>. Replaces the bare "No proxy hosts yet · + Create your first" with a card that explains what the resource <em>is</em>, offers three on-ramps (manual, paste Caddyfile, import live config), and links to the docs. Brand-tinted (proxy = brand, redir = sky) so the visual identity matches the rest of the app.</li>
-</ul>
-
-<h3>v2.11.1 → v2.11.3 — proxy-host form, collapsed by default</h3>
-
-<p>
-  Three iterations on the same problem: the proxy-host form has so many <code>&lt;details&gt;</code> sections that auto-opening even half of them gives a multi-page scroll on first paint.
-</p>
-
-<ul>
-  <li><strong>v2.11.1</strong> — on <em>create</em>, every section starts collapsed so you can expand a feature, edit it, collapse it back, and move to the next. On edit, sections with configured fields auto-opened (originally).</li>
-  <li><strong>v2.11.2</strong> — wrapped the ~50-field <strong>Options &amp; Forwarded Headers</strong> block in a <code>&lt;details&gt;</code> too. It was a plain <code>&lt;div&gt;</code> so the v2.11.1 collapse logic was skipping it. Also marked <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> with <code>data-keep-open</code> so they stay open regardless — picked on almost every host.</li>
-  <li><strong>v2.11.3</strong> — collapse on <em>edit</em> too. The configured-field badges from v2.11.0 already tell you what's set, so auto-opening on edit was redundant noise. <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> remain auto-open via <code>data-keep-open</code>.</li>
-</ul>
-
-<div class="callout">
-  <strong>Quick test.</strong> Open any existing proxy host: every section starts collapsed except <strong>Managed DNS</strong> and <strong>TLS Certificate</strong>. The brand-coloured number on each section's summary tells you how many fields inside are configured — click to expand and they're already filled.
-</div>
-
-<h3>v2.11.8 → v2.11.16 — fleet, AI, drag-to-reorder &amp; more</h3>
-
-<p>Eight features that round out the form-reorder arc and start widening the surface beyond editing:</p>
-
-<ul>
-  <li><strong>v2.11.8</strong> — <strong>Forward Scheme / Host / Port + Test upstream</strong> hoisted to directly under Domain. The "where does this domain go?" essentials now sit beside the Domain field instead of below the SSL/DNS/Cert block. <strong>New top-of-form order</strong>: Domain → Forward → Enabled / Auto-SSL / Force-SSL → Managed DNS → TLS Cert → (everything else collapsed).</li>
-  <li><strong>v2.11.9</strong> — <strong>Bulk multi-select on <code>/raw-routes</code></strong>. Same pattern <code>/proxy-hosts</code> already had: per-row checkbox, select-all, floating bottom bar with Enable / Disable / Delete.</li>
-  <li><strong>v2.11.10</strong> — <strong>Bulk delete on <code>/certificates</code></strong>. Honours the same ownership + in-use guards as the single-row delete; checkboxes only appear on certs the viewer can edit. One <code>syncCaddy</code> call per batch — affected hosts revert to auto-issuance on the next sync.</li>
-  <li><strong>v2.11.11</strong> — <strong>Drag-to-reorder rows</strong> on <code>/proxy-hosts</code> and <code>/redirection-hosts</code>. ⠿ handle in the leftmost cell; HTML5 drag/drop. <code>sort_order</code> writes are <code>index * 10</code> so manual edits can wedge between drag-saved rows without a renumber. UI-only — Caddy isn't re-synced on reorder.</li>
-  <li><strong>v2.11.12</strong> — <strong>"Recently edited" widget on the dashboard</strong>. Last 8 successful CRUD events across every resource type, colour-coded by resource and pulled from the activity log. Skips login / sync / snapshot noise so it reads as "what changed in CaddyUI".</li>
-  <li><strong>v2.11.13</strong> — <strong>Live route-JSON preview</strong> at the bottom of the proxy-host edit form. Collapsed by default; expanding shows the exact JSON the form would push, refreshing ~500ms after the last change. Useful for debugging why a header isn't being added or why a path matcher isn't firing.</li>
-  <li><strong>v2.11.14</strong> — <strong>Notifier covers Let's Encrypt / ACME-managed live certs</strong>. The existing notifier only inspected custom certs in CaddyUI's DB; production deployments using auto-issuance got no warning. v2.11.14 dials <code>{first_domain}:443</code> for every enabled SSL-on proxy host once a day, reads the peer cert, and fires the same webhook + email channels when expiry is within the configured threshold.</li>
-  <li><strong>v2.11.15</strong> — <strong>AI assistant powered by local Ollama</strong>. Opt-in floating chat button (bottom-right) that proxies prompts to a local Ollama instance for "explain this proxy host", "convert this Caddyfile snippet", "suggest headers for Nextcloud", etc. Runs locally on the user's GPU — no cloud calls. Configure under <em>Settings → AI assistant</em>.</li>
-  <li><strong>v2.11.16</strong> — <strong>Caddy fleet status grid on the dashboard</strong>. One status card per registered Caddy server with online/offline status, host count, version, and last-seen relative timestamp. The active server (matching the picker) gets a brand-tinted ring; non-active rows show a "Switch to this server" button. Renders only when more than one Caddy server is registered.</li>
-  <li><strong>v2.11.19</strong> — <strong>Wildcard cert auto-issuance via DNS-01</strong>. Type <code>*.example.com</code> in Domains and a live callout explains that Caddy will use the ACME DNS-01 challenge with your already-configured Managed-DNS Cloudflare token. <code>syncCaddy</code> pushes a matching <code>apps.tls.automation.policies</code> entry per wildcard host, grouped by provider. Cloudflare-only at GA — other DNS providers slot in incrementally as their caddy-dns plugin schemas are confirmed. Caveat: Caddy must include the <code>caddy-dns/cloudflare</code> plugin (default <code>caddy:2-alpine</code> doesn't — use xcaddy).</li>
-</ul>
-
-<h3>v2.11.4 — Enabled / Auto SSL / Force SSL hoisted to the top</h3>
-
-<p>
-  Three toggles are picked on almost every proxy host: <code>Enabled</code>, <code>Auto SSL (Let's Encrypt)</code>, and <code>Force SSL (HTTPS redirect)</code>. After v2.11.2 they were buried inside the collapsed <strong>Options &amp; Forwarded Headers</strong> section, so flipping <em>any</em> of them required expanding a 50-field block first.
+  v2.11 leans hard on keyboard navigation. <kbd>⌘K</kbd> on macOS or <kbd>Ctrl+K</kbd> anywhere else opens a global palette that searches across every <span class="pill proxy">Proxy Host</span>, <span class="pill redir">Redirection</span>, <span class="pill advanced">Advanced</span> route, and <span class="pill cert">Cert</span> visible to the active user on the active server. <kbd>↑</kbd>/<kbd>↓</kbd> navigates, <kbd>Enter</kbd> opens, <kbd>Esc</kbd> closes. Backed by a new <code>GET /api/search</code> endpoint that shares the same viewer / peer / admin permission filtering the list pages already use; frontend caches the response per palette open with a 60-second freshness window.
 </p>
 
 <p>
-  v2.11.4 lifts them out into their own always-visible row directly under the Domain names input, alongside <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> as the form's "essentials" area. The Options &amp; Forwarded Headers section keeps the rest (Verify Upstream TLS, X-Forwarded-* headers, blocking toggles, ~50 fields) collapsed by default — same <code>data-keep-open</code> / collapse pattern as before.
-</p>
-
-<h3>v2.11.5 — ⌘K / Ctrl+K command palette</h3>
-
-<p>
-  Press <kbd style="font-family:var(--mono);background:var(--ink-100);padding:.15em .5em;border-radius:4px;border:1px solid var(--ink-200);font-size:.9em">⌘K</kbd> on macOS or <kbd style="font-family:var(--mono);background:var(--ink-100);padding:.15em .5em;border-radius:4px;border:1px solid var(--ink-200);font-size:.9em">Ctrl+K</kbd> anywhere else to open a modal that searches across every <span class="pill proxy">Proxy Host</span>, <span class="pill redir">Redirection</span>, <span class="pill advanced">Advanced</span> route, and certificate visible to your account on the active server.
-</p>
-
-<ul>
-  <li><strong>One-keystroke access from anywhere</strong> — works on the dashboard, settings, the analytics page, deeply-nested edit forms. You don't need to know which list page a resource lives on.</li>
-  <li><strong>↑/↓ to navigate, Enter to open, Esc to close.</strong> Or just click. Hovering with the mouse moves the highlight too.</li>
-  <li><strong>Type pills</strong> colour-code each result with the same brand colour the list pages use, so the resource type registers visually before you read the label.</li>
-</ul>
-
-<p>
-  Backed by a new <code>GET /api/search</code> endpoint that returns a flat list of every visible resource, scoped through the same viewer / peer / admin permission filtering the list pages already use. The frontend caches the response per palette open with a 60-second freshness window — reopening the palette is instant; a stale cache silently re-fetches in the background.
-</p>
-
-<h3>v2.11.6 — bulk multi-select on /redirection-hosts</h3>
-
-<p>
-  <code>/proxy-hosts</code> has had a floating bulk-action bar for a while: tick the per-row checkboxes, the bar appears at the bottom with <strong>Enable</strong> / <strong>Disable</strong> / <strong>Delete</strong> / <strong>Maintenance</strong> buttons that operate on every selected row in one shot. v2.11.6 adds the same to <code>/redirection-hosts</code> (sans Maintenance, which is proxy-host-specific).
-</p>
-
-<ul>
-  <li><strong>Per-row checkbox</strong> on every desktop-table row, plus a select-all in the column header.</li>
-  <li><strong>Floating bar</strong> at the bottom showing the selected count, with Enable / Disable / Delete buttons. Each successful batch triggers a single <code>syncCaddy</code> call instead of one-per-row.</li>
-  <li><strong>Per-row ownership honoured</strong> — non-admins can only toggle / delete redirections they own. The bulk endpoints silently skip rows that don't belong to the current user.</li>
-  <li><strong>Mobile card view stays checkbox-free.</strong> Bulk select on a phone screen is rare and the extra UI noise wasn't worth it — <code>/proxy-hosts</code> uses the same pattern.</li>
-</ul>
-
-<h3>v2.11.7 — Managed DNS + TLS Certificate hoisted to the top, Path matching + Upstream TLS collapsed</h3>
-
-<p>
-  Two sections that used to live ~700 lines down — between the big Options block and the path-based upstream overrides — are now at the top of the proxy-host edit form, directly under the v2.11.4 essentials row.
-</p>
-
-<ul>
-  <li><strong>Managed DNS</strong> moved up. Most hosts pick a DNS zone — burying it past Forward Host, Test upstream, and a 50-field options block was friction. Still <code>data-keep-open</code> so it's visible on both create and edit.</li>
-  <li><strong>TLS Certificate</strong> moved up alongside it. Same reasoning — picked frequently, doesn't belong below 50 niche-tuning fields.</li>
-</ul>
-
-<p>
-  Two new collapsed sections were added to keep the visible top compact:
-</p>
-
-<ul>
-  <li><strong>Path matching, query string, tags &amp; notes</strong> bundles Path prefix, Strip prefix, Strip query string, Delete query params, Add query params, Tags, Notes, Color label, and Sort Order into one <code>&lt;details&gt;</code>. Routine hosts won't touch any of these on first save.</li>
-  <li><strong>Upstream TLS &amp; advanced settings</strong> bundles Upstream TLS SNI, minimum TLS version, Forward proxy URL, Upstream path prefix, Strip path suffix, and Upstream Host header. Most users never touch any of these.</li>
-</ul>
-
-<p>
-  The v2.11.0 section badges count configured fields inside each collapsed section, so a user editing an existing host can see at a glance which sections are non-default.
-</p>
-
-<div class="callout">
-  <strong>New top-of-form order.</strong>
-  <ol style="margin-top:8px;">
-    <li>Domain names + www redirect + trailing slash</li>
-    <li>Enabled / Auto SSL / Force SSL</li>
-    <li><strong>Managed DNS</strong></li>
-    <li><strong>TLS Certificate</strong></li>
-    <li><em>Path matching, query string, tags &amp; notes</em> (collapsed)</li>
-    <li>Forward Scheme + Host + Port + Test upstream</li>
-    <li><em>Upstream TLS &amp; advanced settings</em> (collapsed)</li>
-    <li><em>Options &amp; Forwarded Headers</em> (collapsed)</li>
-  </ol>
-</div>
-
-<hr class="divider">
-
-<h2 id="smart-import">📥 Smart Caddyfile import — paste once, get the right resource type <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.10.7 → v2.10.9</span></h2>
-
-<p>
-  This is the headline of the release. Until v2.10.6, pasting a Caddyfile into <code>/caddyfile-import</code> turned <em>every</em> site block into an Advanced (raw JSON) route — even the trivial <code>example.com { reverse_proxy localhost:3000 }</code> ones. They worked fine, but you lost the form-driven editor: the per-host security headers, health checks, alias management, all the things the proxy-host UI exists for.
-</p>
-
-<p>
-  v2.10.7 fixes that. Each pasted block is now inspected after Caddy's <code>/adapt</code> runs and routed to the right table:
+  Around the palette, v2.11.0 ships a tri-state theme toggle (<em>auto</em> / <em>light</em> / <em>dark</em>), live filter inputs on every list page, a <kbd>?</kbd> overlay listing every binding, and Vim-style <kbd>g</kbd>+letter chord nav:
 </p>
 
 <table>
   <thead>
-    <tr><th>Block looks like</th><th>Imported as</th></tr>
+    <tr><th>Chord</th><th>Goes to</th></tr>
   </thead>
   <tbody>
-    <tr><td>host(s) + a single <code>reverse_proxy</code></td><td><span class="pill proxy">Proxy Host</span> — full edit form</td></tr>
-    <tr><td>host(s) + a single <code>redir</code></td><td><span class="pill redir">Redirection</span></td></tr>
-    <tr><td>custom matchers, multiple handlers, layer-4, anything exotic</td><td><span class="pill advanced">Advanced</span> route — JSON preserved verbatim</td></tr>
+    <tr><td><kbd>g d</kbd></td><td>Dashboard</td></tr>
+    <tr><td><kbd>g p</kbd></td><td>/proxy-hosts</td></tr>
+    <tr><td><kbd>g r</kbd></td><td>/redirection-hosts</td></tr>
+    <tr><td><kbd>g c</kbd></td><td>/certificates</td></tr>
+    <tr><td><kbd>g a</kbd></td><td>/raw-routes</td></tr>
+    <tr><td><kbd>g n</kbd></td><td>/analytics</td></tr>
+  </tbody>
+</table>
+
+<hr class="divider">
+
+<h2 id="bulk-drag">📋 Bulk ops + drag-to-reorder <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.11.6 → v2.11.11</span></h2>
+
+<p>
+  Every list page now has a per-row checkbox, a select-all in the header, and a floating bulk-action bar at the bottom. The pattern <code>/proxy-hosts</code> already had is now everywhere:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Page</th><th>Bulk actions</th><th>Version</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>/proxy-hosts</code></td><td>Enable · Disable · Delete · Maintenance</td><td>existing</td></tr>
+    <tr><td><code>/redirection-hosts</code></td><td>Enable · Disable · Delete</td><td>v2.11.6</td></tr>
+    <tr><td><code>/raw-routes</code></td><td>Enable · Disable · Delete</td><td>v2.11.9</td></tr>
+    <tr><td><code>/certificates</code></td><td>Delete (honours in-use guard)</td><td>v2.11.10</td></tr>
   </tbody>
 </table>
 
 <p>
-  The classification runs <em>after</em> Caddy normalises the Caddyfile, so you don't get false negatives from quirky-but-equivalent syntax. The auto-classify checkbox is on by default — uncheck it if you want the old "everything as Advanced" behaviour for full control of the JSON.
+  v2.11.11 adds an HTML5 <code>⠿</code> drag handle on every row of <code>/proxy-hosts</code> and <code>/redirection-hosts</code>. Drag the handle to reflow the row immediately; the new order POSTs to <code>/proxy-hosts/reorder</code> (or the redirection equivalent) and persists. UI-only — no Caddy sync on reorder. The <code>sort_order</code> writes are <code>index * 10</code> so future single-row Sort Order edits can wedge between drag-saved rows without renumbering.
 </p>
 
-<h3>v2.10.8 — knowing what just happened</h3>
+<hr class="divider">
+
+<h2 id="proxy-form">🛠️ Proxy-host form rebuilt top-down <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.11.4 → v2.11.8</span></h2>
 
 <p>
-  Importing 30 blocks in one paste produces 30 rows. v2.10.8 makes the result page tell you what each one became:
+  After v2.10 added ~70 per-host options, the proxy-host edit form became a wall of toggles. The v2.11 cycle puts essentials at the top and collapses the rest. The form now reads top-down:
 </p>
 
-<ul>
-  <li><strong>"Imported as" column</strong> in the result table — coloured pill linking to the right list page (<span class="pill proxy">Proxy Host</span> → <code>/proxy-hosts</code>, <span class="pill redir">Redirection</span> → <code>/redirection-hosts</code>, <span class="pill advanced">Advanced</span> → <code>/raw-routes</code>).</li>
-  <li><strong>Per-kind tally banner</strong> — "<em>Imported 12 routes — 8 proxy hosts · 2 redirections · 2 advanced</em>" so you don't have to count rows to know the split.</li>
-  <li><strong><code>SSLVerifyUpstream</code> import</strong> — <code>reverse_proxy</code> blocks with <code>transport http { tls_insecure_skip_verify }</code> now correctly land as proxy hosts with TLS-verify <em>off</em>, matching the Caddyfile's intent. Previously this fell through to Advanced because the importer didn't recognise the transport-TLS shape.</li>
-</ul>
-
-<h3>v2.10.9 — rescuing older imports</h3>
+<ol>
+  <li>Domain names + www redirect + trailing slash</li>
+  <li><strong>Forward Scheme + Host + Port + Test upstream</strong> <em>← v2.11.8</em></li>
+  <li><strong>Enabled / Auto SSL / Force SSL</strong> <em>← v2.11.4</em></li>
+  <li><strong>Managed DNS</strong> <em>← v2.11.7</em></li>
+  <li><strong>TLS Certificate</strong> <em>← v2.11.7</em></li>
+  <li><em>Path matching, query string, tags &amp; notes</em> (collapsed)</li>
+  <li><em>Upstream TLS &amp; advanced settings</em> (collapsed)</li>
+  <li><em>Options &amp; Forwarded Headers</em> (collapsed, ~70 fields)</li>
+</ol>
 
 <p>
-  If you imported your Caddyfile under v2.10.6 or earlier, your proxy-shaped blocks are sitting on <code>/raw-routes</code> as Advanced rows. v2.10.9 adds a <strong>"Re-classify"</strong> button at the top of <code>/raw-routes</code> that re-runs the v2.10.7 classifier across every visible Advanced row:
+  Every <code>&lt;details&gt;</code> section carries a configured-field count badge in its summary, so users editing an existing host can see at a glance which sections are non-default without expanding any. Plus a sticky save bar that floats at the bottom whenever the in-form Save button scrolls offscreen.
 </p>
 
-<ul>
-  <li>Each row's JSON is fed through the same classifier as the import path. Rows that <em>now</em> qualify as proxy or redirection get converted into the proper table; the original Advanced row is deleted in the same transaction.</li>
-  <li>Genuinely-Advanced rows (custom matchers, multiple handlers) are left alone — re-clicking the button is idempotent.</li>
-  <li>Per-row ownership is honoured — non-admins can only re-classify their own rows.</li>
-  <li>A confirmation prompt fires before the bulk operation, and a flash banner reports the result count when it lands back on the page.</li>
-</ul>
+<hr class="divider">
+
+<h2 id="preview">🔬 Live route-JSON preview <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.11.13</span></h2>
+
+<p>
+  A new collapsed <code>&lt;details&gt;</code> at the bottom of the proxy-host edit form shows the exact Caddy route JSON the form would push, refreshing ~500ms after the last keystroke or toggle. Reuses the same <code>parseProxyHostForm</code> + <code>caddy.BuildProxyRoute</code> path as <code>createProxyHost</code>, so what the user sees here is exactly what gets pushed on save — byte-for-byte.
+</p>
+
+<p>
+  Lenient on missing required fields (v2.11.17 / v2.11.18): empty <code>forward_port</code> / <code>forward_host</code> / <code>domains</code> render as visible placeholders instead of leaking the raw <code>strconv.Atoi</code> error to the user. The strict parser is still used at save time — only the preview path is forgiving.
+</p>
 
 <div class="callout">
-  <strong>Why this matters in practice.</strong> The proxy-host form is where ~70 of CaddyUI's options live — security headers, health checks, alias domains, managed DNS, the deploying-page poller, the v2.7.7 duplicate-domain guard, all of it. An Advanced row is an opaque JSON blob that none of those features can introspect. Re-classifying turns those rows back into editable, observable, governable proxy hosts in one click.
+  <strong>Why this matters in practice.</strong> Debugging "why isn't this header being added" or "why isn't path matching firing" used to mean save → check <code>caddy_config</code> → adjust → save again. Now the JSON updates as you toggle. First-class loop closure for the form-driven workflow.
 </div>
 
 <hr class="divider">
 
-<h2 id="perhost">🔧 ~70 per-host options + path-based routing <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.10.0</span></h2>
+<h2 id="dashboard">📊 Dashboard widgets — Recent edits + fleet health <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.11.12, v2.11.16</span></h2>
 
 <p>
-  v2.10.0 was the GA cut of a long preview cycle (v2.9.0 → v2.9.267). Two structural features and around seventy individual per-host options landed:
-</p>
-
-<h3>Two structural features</h3>
-
-<ul>
-  <li><strong><code>proxy_redirect_rules</code></strong> — path-based redirects on a proxy host, fired <em>before</em> the reverse_proxy. Lets you express <code>@root path / → redir /webmail 302</code> as a single proxy host with one redirect rule, instead of dropping into Advanced JSON.</li>
-  <li><strong><code>additional_upstream_rules</code></strong> — one proxy host can route different paths to different upstreams. The Nextcloud-style <code>handle_path /push/* { reverse_proxy push:7867 }</code> + <code>handle /exapps/* { reverse_proxy harp:8780 }</code> + <code>handle { reverse_proxy nc:80 }</code> pattern is now a single proxy host with two override rules plus the host's main forward target, with optional <code>strip_prefix</code> per rule.</li>
-</ul>
-
-<h3>~70 per-host options across four batches</h3>
-
-<p>
-  Eight features per batch, four batches, plus ad-hoc additions. A non-exhaustive sample of the categories:
+  Two new strips on the dashboard:
 </p>
 
 <ul>
-  <li><strong>Identity headers</strong> — X-Forwarded-Method, X-Request-Original-Host, canonical-host enforcement (301 to the canonical Host for SEO consolidation)</li>
-  <li><strong>Bot &amp; admin-path blocking</strong> — built-in blocklist for AhrefsBot, SemrushBot, Bytespider, MJ12bot, etc. (legit crawlers untouched), plus 404-not-403 on <code>/wp-admin</code>, <code>/.git</code>, <code>/.env</code>, <code>/phpmyadmin</code>, <code>/.aws</code>, <code>/.ssh</code>, etc.</li>
-  <li><strong>Header strip / forward toggles</strong> — strip arbitrary request headers before forwarding (symmetric with strip_response_headers), Link: rel=dns-prefetch / rel=preconnect hints, X-Robots-Tag noindex one-click</li>
-  <li><strong>Health-check authentication</strong> — Basic auth or bearer token for active health probes against upstreams that require it</li>
-  <li><strong>Performance</strong> — SQLite tuning + <code>access_daily</code> rollup wiring shrank multi-second analytics scans to ~10ms</li>
+  <li><strong>Recently edited</strong> — last 8 successful CRUD events across every resource type (proxy hosts, redirections, raw routes, certs, groups, API tokens), pulled from the activity log. Skips login / sync / snapshot noise so the widget reads as "what just changed in CaddyUI". Each row colour-codes the resource type with the same brand colours used by the ⌘K palette and the list pages.</li>
+  <li><strong>Caddy fleet status grid</strong> — one card per registered Caddy server with online/offline status, host count, version, and last-seen relative timestamp. The active server (matching the picker) gets a brand-tinted ring; non-active rows show a "Switch to this server" button. Renders only when more than one Caddy server is registered — single-server installs see no widget.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="ai">🤖 AI assistant via local Ollama <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.11.15</span></h2>
+
+<p>
+  Opt-in floating chat button (bottom-right) that proxies prompts to a local Ollama instance for "explain this proxy host", "convert this Caddyfile snippet", "suggest headers for Nextcloud", etc. Runs locally on your GPU — no cloud calls, no telemetry, no third-party API keys.
+</p>
+
+<p>
+  Configure under <strong>Settings → AI assistant</strong>:
+</p>
+
+<ul>
+  <li><strong>Enable</strong> toggle (off by default)</li>
+  <li><strong>Ollama URL</strong> — defaults to <code>http://ollama:11434</code> (assumes same docker network as CaddyUI)</li>
+  <li><strong>Model</strong> — defaults to <code>llama3.2:latest</code>; anything you've pulled into Ollama works (<code>qwen2.5</code>, <code>mistral</code>, etc.)</li>
 </ul>
 
 <p>
-  Migrations are additive (<code>ALTER TABLE ADD COLUMN</code> guarded by a column-existence check), so upgrading from any v2.7.x or v2.8.x doesn't require any manual steps.
+  The backend wraps the user prompt in a CaddyUI-flavoured system prompt that steers generic-knowledge models toward Caddy / TLS / DNS answers. 60-second context-deadline on the upstream call so a slow Ollama doesn't park a request handler indefinitely.
 </p>
 
 <hr class="divider">
 
-<h2 id="search">🔍 Proxy-host form search / filter <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.10.2</span></h2>
+<h2 id="dns">🌐 Managed DNS — wildcards, ACME, redirections <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.11.14, v2.11.19, v2.12.2</span></h2>
 
 <p>
-  With ~70 fields on the proxy-host edit form, finding the one you want became its own challenge. v2.10.2 adds a search box at the top of the form that filters fields live as you type — match against the field label, hint text, or the underlying option name. Tab headers stay visible; matching fields glow, non-matches fade. Clearing the box restores the full form.
+  Three big DNS / cert improvements stitched together this cycle:
 </p>
 
+<h3>v2.11.14 — Notifier covers Caddy-managed live certs</h3>
+
 <p>
-  Looking for the X-Forwarded-Proto toggle? Type "forwarded". CSP override? Type "csp". Fastest way to navigate a dense form without imposing a new IA on it.
+  The expiry notifier used to inspect only custom certs stored in CaddyUI's DB. Production deployments using ACME / Let's Encrypt auto-issuance got no warning when those expired. v2.11.14 adds a daily TLS dial against <code>{first_domain}:443</code> for every enabled SSL-on proxy host, reads the peer cert, and fires the same webhook + email channels when expiry is within the configured threshold. Wildcard SANs are skipped (can't dial them directly). Dedup keys are prefixed <code>proxy:</code> so they don't collide with custom-cert keys.
 </p>
 
-<hr class="divider">
-
-<h2 id="headers">🛡️ Baseline security headers on CaddyUI's own responses <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.10.3 → v2.10.5</span></h2>
+<h3>v2.11.19 — Wildcard cert auto-issuance via DNS-01</h3>
 
 <p>
-  CaddyUI itself is a web app, served by Caddy. v2.10.3 adds a baseline security-header bundle to <em>CaddyUI's own</em> response chain — separate from any per-host headers you toggle on for your downstream sites. Defaults that Mozilla Observatory rates A+ out of the box:
-</p>
-
-<ul>
-  <li><code>Strict-Transport-Security</code> with one-year max-age and includeSubDomains</li>
-  <li><code>X-Content-Type-Options: nosniff</code></li>
-  <li><code>Referrer-Policy: strict-origin-when-cross-origin</code></li>
-  <li><code>X-Frame-Options: DENY</code> + <code>Content-Security-Policy: frame-ancestors 'none'</code> (defence in depth — older browsers honour XFO, modern ones honour CSP frame-ancestors)</li>
-  <li><code>Permissions-Policy</code> denying camera, microphone, geolocation, payment, USB</li>
-</ul>
-
-<p>
-  v2.10.4 fixed a bundle-dedup bug where the initial implementation could ship two copies of the same header when both the global bundle and a per-host toggle set the same name. v2.10.5 generalised the fix: per-header response setters now go through a <code>delete + set</code> pattern so the upstream's value is unconditionally replaced, instead of being appended next to a CaddyUI-set value (which some clients honour differently).
+  Type <code>*.example.com</code> in Domains and a yellow callout appears under the field: "Wildcard SAN detected. Wildcards can only be issued via the ACME DNS-01 challenge — HTTP-01 can't validate them." Pick Cloudflare in the Managed DNS section below and <code>syncCaddy</code> automatically pushes a matching <code>apps.tls.automation.policies</code> entry using the Cloudflare token already stored for managed-DNS A-record CRUD. No second token entry, no manual JSON.
 </p>
 
 <div class="callout amber">
-  <strong>If you front CaddyUI with another reverse proxy</strong> (e.g. Cloudflare in front of Caddy in front of CaddyUI), check that the outer proxy isn't <em>also</em> setting these headers — otherwise you'll see duplicates in the response. Either disable them on the outer layer or drop the v2.10.3 baseline (it's per-toggle in Settings).
+  <strong>Caveat.</strong> Caddy must include the matching <code>caddy-dns/cloudflare</code> plugin (xcaddy build). Default <code>caddy:2-alpine</code> has no DNS plugins; CaddyUI surfaces "unknown module" errors as <code>sync_apply_automation_failed</code> in the activity log if the plugin's missing. Cloudflare-only at GA — other DNS providers slot into <code>caddyDNSProviderConfig</code> as their plugin schemas are confirmed.
 </div>
 
-<hr class="divider">
-
-<h2 id="docs">📚 Caddyfile ↔ form-field mapping <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.10.6</span></h2>
+<h3>v2.12.2 — Managed DNS for redirection hosts</h3>
 
 <p>
-  Built-in docs at <code>/docs</code> got a new section: a side-by-side mapping of every Caddyfile directive to the proxy-host form field that produces it. Inline links from the Caddyfile-import page route you to the relevant doc anchor when a paste fails. Useful when you're hand-translating an old Caddyfile and want to know which form field corresponds to <code>header_up</code>, <code>handle_errors</code>, <code>tls dns cloudflare</code>, etc.
+  The long-standing gap closed. Proxy hosts got Managed DNS in v2.5.6, raw routes got it in v2.5.6 — but redirections were skipped. The db.go comment even said "redirection_hosts don't create records." Not anymore.
+</p>
+
+<ul>
+  <li>New <code>dns_provider</code> / <code>dns_zone_id</code> / <code>dns_zone_name</code> / <code>dns_record_id</code> columns on <code>redirection_hosts</code> (additive migration, no backfill)</li>
+  <li>New picker section in the redirection edit form (right under TLS Certificate), mirroring the proxy-host placement</li>
+  <li><code>dnsCreateRecordForRedirection</code> auto-creates one A record per hostname in Domains on save, deleted on row removal</li>
+  <li>Per-hostname pre-flight checklist (v2.12.1) on every form: <em>⚠ wildcard already exists, will skip</em> · <em>✓ apex will be created</em></li>
+</ul>
+
+<p>
+  Providers supported: Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap. Same picker, same flow, every resource type.
 </p>
 
 <hr class="divider">
@@ -603,7 +574,7 @@
 </p>
 
 <pre><code># pinned to this exact release (recommended)
-docker pull applegater/caddyui:v2.12.0
+docker pull applegater/caddyui:v2.12.4
 
 # rolling tags — all four point at the same image right now
 docker pull applegater/caddyui:latest
@@ -611,12 +582,12 @@ docker pull applegater/caddyui:stable
 docker pull applegater/caddyui:preview</code></pre>
 
 <p>
-  v2.12.0 is the GA cut of the v2.11.0 → v2.11.18 preview cycle. <code>:latest</code> and <code>:stable</code> retag here, replacing v2.11.7. Multi-arch on Docker Hub: <code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001.
+  <code>:latest</code> and <code>:stable</code> retag here, replacing v2.12.0. The cadence rule (retag <code>:latest</code> every ~8 features) is satisfied — the v2.11.0 → v2.12.4 cycle landed 19 numbered preview builds plus a GA marker.
 </p>
 
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases" class="btn primary">
-    📦 View latest release
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.12.4" class="btn primary">
+    📦 View v2.12.4 release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub
@@ -626,13 +597,14 @@ docker pull applegater/caddyui:preview</code></pre>
   </a>
 </div>
 
-<h3>🗺️ On the whiteboard</h3>
+<h2 id="whiteboard">🗺️ On the whiteboard</h2>
 
 <ul>
-  <li><strong>Export as Caddyfile</strong> — reverse direction of the import path: turn a proxy host (or a whole server) back into a paste-able Caddyfile snippet for backup or hand-off.</li>
-  <li><strong>Raw-route conflict guard</strong> — extend the v2.7.7 duplicate-domain check into raw routes (host matchers live inside JSON, so this needs a parser pass).</li>
-  <li><strong>More DNS providers</strong> — Route 53, Gandi, Njalla if there's demand.</li>
+  <li><strong>More DNS plugins for wildcard auto-issuance</strong> — DigitalOcean, Hetzner, Porkbun next; the credential-to-Caddy-plugin mapping table is already there in <code>caddyDNSProviderConfig</code>, just needs each provider's schema confirmed.</li>
+  <li><strong>Caddyfile export</strong> — reverse direction of the import path: turn a proxy host (or a whole server) back into a paste-able Caddyfile snippet for backup / hand-off.</li>
   <li><strong>Per-host rate limiting</strong> — Caddy supports it natively; the UI doesn't expose it yet.</li>
+  <li><strong>Inline-edit on the list pages</strong> — change a domain alias, port, or tag without entering the full edit form.</li>
+  <li><strong>Multi-server bulk operations</strong> — push a single proxy host to <em>N</em> servers at once (the "Also deploy to" checkboxes are already in the form, just need a bulk variant on the list page).</li>
 </ul>
 
 <p>
@@ -640,13 +612,12 @@ docker pull applegater/caddyui:preview</code></pre>
 </p>
 
 <footer class="signoff">
-  <p>Thanks to everyone running CaddyUI in production and reporting the rough edges. The v2.10 import-classification arc came directly out of "I just pasted my whole Caddyfile and now everything is Advanced — what?" feedback. Keep that loop going. 🙏</p>
+  <p>The v2.11 → v2.12 cycle came directly out of "I've got 70 fields on this form and I can't find anything", "why doesn't bulk-delete work on /raw-routes", and "Managed DNS works on proxy hosts but not redirects, wat?" feedback. Keep that loop going. 🙏</p>
   <p>Please enjoy. 🚀</p>
   <p>— Richard · <a href="https://github.com/X4Applegate">@X4Applegate</a></p>
 </footer>
 
 </article>
-
 </div>
 </body>
 </html>
