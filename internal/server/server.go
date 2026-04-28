@@ -1760,15 +1760,34 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Today's analytics stats (best-effort — zero-values if analytics is not yet enabled).
+	// Today's analytics stats — v2.12.8: scoped to the active server's
+	// hostnames so the dashboard cards match what the picker has
+	// selected. Previously called AccessTotalsSince("") which sums the
+	// whole fleet, leaking other-server traffic into the active-server
+	// view (confusing on multi-server installs). Sums per-host the way
+	// /analytics already does when ?server=<id> is set.
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
 	todayViews, todayVisitors := 0, 0
 	var todayBandwidth int64
-	if totals, err := models.AccessTotalsSince(s.DB, todayStart, ""); err == nil {
-		todayViews = totals.Views
-		todayVisitors = totals.Visitors
+	hostsForActive := make([]string, 0, len(hosts)+len(redirs)+len(raws))
+	for _, h := range hosts {
+		hostsForActive = append(hostsForActive, h.DomainList()...)
 	}
-	todayBandwidth, _ = models.BandwidthSince(s.DB, todayStart, "")
+	for _, rh := range redirs {
+		hostsForActive = append(hostsForActive, rh.DomainList()...)
+	}
+	for _, rr := range raws {
+		hostsForActive = append(hostsForActive, rawRouteHosts(rr)...)
+	}
+	for _, host := range hostsForActive {
+		if t, err := models.AccessTotalsSince(s.DB, todayStart, host); err == nil {
+			todayViews += t.Views
+			todayVisitors += t.Visitors
+		}
+		if bw, err := models.BandwidthSince(s.DB, todayStart, host); err == nil {
+			todayBandwidth += bw
+		}
+	}
 
 	// Count hosts in maintenance mode for the dashboard banner.
 	maintenanceCount := 0
