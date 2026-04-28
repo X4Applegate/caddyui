@@ -603,6 +603,40 @@ if ('serviceWorker' in navigator) {
       return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
     });
   }
+  // v2.12.7: tiny markdown renderer for assistant bubbles. Handles fenced
+  // code blocks, inline code, bold, italic, basic bullet/number lists,
+  // and paragraph breaks. Input is HTML-escaped first so regex-injected
+  // tags can't be exploited.
+  function renderMarkdown(text) {
+    var html = escapeHTML(text);
+    var codeBlocks = [];
+    // Pull fenced code blocks out so further regexes don't touch them.
+    html = html.replace(/```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+      var idx = codeBlocks.length;
+      codeBlocks.push(code.replace(/^\n+|\n+$/g, ''));
+      return ' CB' + idx + ' ';
+    });
+    // Inline code (single backticks, single line).
+    html = html.replace(/`([^`\n]+?)`/g, '<code class="bg-ink-200 dark:bg-slate-600 text-ink-900 dark:text-slate-100 px-1 py-0.5 rounded text-[0.85em] font-mono">$1</code>');
+    // Bold.
+    html = html.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+    // Italic — avoid matching inside words (so `foo*bar` doesn't trip).
+    html = html.replace(/(^|[^\w*])\*([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>');
+    // List-line markers (numbered and bulleted) — render as a row with the
+    // marker dimmed; full <ol>/<ul> grouping isn't worth the regex weight
+    // for chat output, the visual cue is enough.
+    html = html.replace(/^(\d+)\.\s+/gm, '<span class="text-ink-500 dark:text-slate-400 mr-1">$1.</span>');
+    html = html.replace(/^[-*]\s+/gm, '<span class="text-ink-500 dark:text-slate-400 mr-1">•</span>');
+    // Paragraph + line break handling.
+    html = html.replace(/\n{2,}/g, '</p><p class="mt-2">');
+    html = html.replace(/\n/g, '<br>');
+    html = '<p>' + html + '</p>';
+    // Re-inject the code blocks.
+    html = html.replace(/ CB(\d+) /g, function(_, idx) {
+      return '<pre class="bg-slate-900 dark:bg-black/50 text-slate-100 p-2.5 rounded-lg overflow-x-auto text-xs my-2 font-mono leading-relaxed"><code>' + codeBlocks[parseInt(idx, 10)] + '</code></pre>';
+    });
+    return html;
+  }
   function appendBubble(role, text, isError) {
     var div = document.createElement('div');
     if (role === 'user') {
@@ -612,8 +646,11 @@ if ('serviceWorker' in navigator) {
       div.className = 'flex justify-start';
       div.innerHTML = '<div class="bg-red-50 dark:bg-red-900/40 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800 px-3 py-2 rounded-lg max-w-[85%] whitespace-pre-wrap text-xs">' + escapeHTML(text) + '</div>';
     } else {
+      // v2.12.7: render markdown for assistant replies. The whitespace-
+      // pre-wrap class is dropped here since renderMarkdown emits real
+      // <p>/<br> tags; pre-wrap would double up the spacing.
       div.className = 'flex justify-start';
-      div.innerHTML = '<div class="bg-ink-100 dark:bg-slate-700 text-ink-900 dark:text-slate-100 px-3 py-2 rounded-lg max-w-[85%] whitespace-pre-wrap">' + escapeHTML(text) + '</div>';
+      div.innerHTML = '<div class="bg-ink-100 dark:bg-slate-700 text-ink-900 dark:text-slate-100 px-3 py-2 rounded-lg max-w-[85%] leading-relaxed text-sm ai-md">' + renderMarkdown(text) + '</div>';
     }
     history.appendChild(div);
     history.scrollTop = history.scrollHeight;
