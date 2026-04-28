@@ -8071,21 +8071,38 @@ func (s *Server) apiAIChat(w http.ResponseWriter, r *http.Request) {
 		model = "llama3.2:latest"
 	}
 
+	// v2.12.10: accept multi-turn message arrays for conversation memory
+	// while keeping back-compat with the single {message:""} shape.
 	var body struct {
-		Message string `json:"message"`
+		Message  string              `json:"message"`
+		Messages []map[string]string `json:"messages"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "send a non-empty {message: ...}"})
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "could not parse JSON body"})
 		return
+	}
+	turns := body.Messages
+	if len(turns) == 0 && strings.TrimSpace(body.Message) != "" {
+		turns = []map[string]string{{"role": "user", "content": body.Message}}
+	}
+	if len(turns) == 0 {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "send {messages:[{role,content},...]} or {message:'...'}"})
+		return
+	}
+	// Cap conversation length so a long-running tab doesn't blow past the
+	// model's context window. ~20 messages = 5–10 conversational rounds.
+	if len(turns) > 20 {
+		turns = turns[len(turns)-20:]
 	}
 
 	// v2.12.5: beefed-up system prompt. Small models (e.g. llama3.2:3b) were
-	// hallucinating Caddy v1 trivia and inventing directives like
-	// "adguardhome /var/lib/adguardhome". Concrete Caddyfile examples plus
-	// an explicit "say I don't know rather than invent" rule helps even the
-	// 3B-class models stay correct on the 80% of common questions, and
-	// 8B+ models become genuinely useful.
-	systemPrompt := `You are an assistant inside CaddyUI, a web app for managing the Caddy reverse proxy. Caddy v2 ONLY — never reference Caddy v1.
+	// hallucinating Caddy v1 trivia and inventing directives. Concrete
+	// Caddyfile examples plus an explicit "say I don't know" rule helps.
+	// v2.12.10: relaxed the "be concise" constraint and added an explicit
+	// rule about respecting prior conversation turns. Custom system prompt
+	// (settingAISystemPrompt) overrides this default when the user sets one
+	// in Settings.
+	defaultSystemPrompt := `You are an assistant inside CaddyUI, a web app for managing the Caddy reverse proxy. Caddy v2 ONLY — never reference Caddy v1.
 
 When the user asks for a Caddy config, output a valid Caddy v2 Caddyfile site block. Use this exact shape:
 
@@ -8122,18 +8139,25 @@ Rules:
 - Site blocks ALWAYS start with hostnames followed by a space and an opening brace.
 - NEVER invent directives. If you don't know the exact Caddy v2 directive name, say "I'm not certain — check https://caddyserver.com/docs" instead of guessing.
 - Output valid Caddyfile syntax — directives like ` + "`" + `reverse_proxy` + "`" + `, ` + "`" + `redir` + "`" + `, ` + "`" + `tls` + "`" + `, ` + "`" + `header` + "`" + `, ` + "`" + `handle` + "`" + `, ` + "`" + `handle_path` + "`" + `, ` + "`" + `respond` + "`" + `, ` + "`" + `file_server` + "`" + `, ` + "`" + `encode gzip` + "`" + `. Don't make up new ones.
-- Keep answers concise (one short paragraph or a single code block). Verbose preambles waste the user's time.
+- Treat earlier messages in the conversation as binding context — when the user says "make one here" or "add to that", refer back to what was discussed instead of inventing an unrelated example.
+- Be as detailed as the question warrants: short answers for simple questions; a full Caddyfile + a few sentences of explanation for setup walk-throughs. Skip filler preambles.
 - The user is editing a config in CaddyUI alongside this chat. When relevant, point them at form fields: Domain names, Forward Host/Port, Auto SSL toggle, Managed DNS picker, Upstream Host Header, etc.
 
 If you are NOT sure about a specific Caddy directive or behavior, say so. Hallucinated config is worse than "I don't know."`
 
+	systemPrompt := defaultSystemPrompt
+	if customPrompt, _ := models.GetSetting(s.DB, settingAISystemPrompt); strings.TrimSpace(customPrompt) != "" {
+		systemPrompt = customPrompt
+	}
+
+	finalMessages := make([]map[string]string, 0, len(turns)+1)
+	finalMessages = append(finalMessages, map[string]string{"role": "system", "content": systemPrompt})
+	finalMessages = append(finalMessages, turns...)
+
 	payload := map[string]any{
-		"model":  model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": body.Message},
-		},
+		"model":    model,
+		"stream":   false,
+		"messages": finalMessages,
 	}
 	pb, _ := json.Marshal(payload)
 
@@ -8683,9 +8707,10 @@ const (
 	// instance. Default URL points at the docker service name "ollama"
 	// since most users running CaddyUI on a homelab GPU box co-locate
 	// Ollama in the same compose network.
-	settingAIEnabled     = "ai_enabled"      // "1" / "0"
-	settingAIOllamaURL   = "ai_ollama_url"   // base URL, e.g. http://ollama:11434
-	settingAIOllamaModel = "ai_ollama_model" // e.g. llama3.2:latest
+	settingAIEnabled      = "ai_enabled"       // "1" / "0"
+	settingAIOllamaURL    = "ai_ollama_url"    // base URL, e.g. http://ollama:11434
+	settingAIOllamaModel  = "ai_ollama_model"  // e.g. llama3.2:latest
+	settingAISystemPrompt = "ai_system_prompt" // v2.12.10: optional override of the built-in system prompt
 )
 
 // sendEmail delivers a plain-text email via the SMTP settings stored in the DB.
@@ -10889,6 +10914,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	if aiOllamaModel == "" {
 		aiOllamaModel = "llama3.2:latest"
 	}
+	aiSystemPrompt, _ := models.GetSetting(s.DB, settingAISystemPrompt)
 
 	smtpHost, _ := models.GetSetting(s.DB, settingSMTPHost)
 	smtpPort, _ := models.GetSetting(s.DB, settingSMTPPort)
@@ -11044,6 +11070,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AIEnabled":          aiEnabledStr == "1",
 		"AIOllamaURL":        aiOllamaURL,
 		"AIOllamaModel":      aiOllamaModel,
+		"AISystemPrompt":     aiSystemPrompt,
 		"SMTPHost":           smtpHost,
 		"SMTPPort":           smtpPort,
 		"SMTPUsername":       smtpUsername,
@@ -11236,8 +11263,9 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			return "0"
 		}(),
-		settingAIOllamaURL:   strings.TrimSpace(r.FormValue("ai_ollama_url")),
-		settingAIOllamaModel: strings.TrimSpace(r.FormValue("ai_ollama_model")),
+		settingAIOllamaURL:    strings.TrimSpace(r.FormValue("ai_ollama_url")),
+		settingAIOllamaModel:  strings.TrimSpace(r.FormValue("ai_ollama_model")),
+		settingAISystemPrompt: r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
 		// v2.9.5: 2FA enforcement policy (checkbox → "on" when checked).
 		settingRequire2FA: func() string {
 			if r.FormValue("require_2fa") == "on" {
