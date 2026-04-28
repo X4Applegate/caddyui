@@ -571,6 +571,9 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/proxy-hosts/bulk-toggle", s.bulkToggleProxyHosts)
 			r.Post("/proxy-hosts/bulk-maintenance", s.bulkMaintenanceProxyHosts)
 			r.Post("/proxy-hosts/bulk-delete", s.bulkDeleteProxyHosts)
+			// v2.11.11: drag-to-reorder rows — accepts ids[] in desired
+			// display order, writes sort_order = (index * 10) for each.
+			r.Post("/proxy-hosts/reorder", s.reorderProxyHosts)
 
 			// v2.9.5: REST JSON API write routes (write-scoped, honours requireWrite).
 			r.Post("/api/v1/proxy-hosts", s.apiV1CreateProxyHost)
@@ -593,6 +596,8 @@ func (s *Server) Routes() http.Handler {
 			// v2.11.6: bulk operations on /redirection-hosts (parallel of proxy-host bulk).
 			r.Post("/redirection-hosts/bulk-toggle", s.bulkToggleRedirectionHosts)
 			r.Post("/redirection-hosts/bulk-delete", s.bulkDeleteRedirectionHosts)
+			// v2.11.11: drag-to-reorder rows.
+			r.Post("/redirection-hosts/reorder", s.reorderRedirectionHosts)
 
 			r.Post("/caddy/reload", s.reloadCaddy)
 			r.Post("/import", s.postImport)
@@ -2205,6 +2210,82 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// reorderProxyHosts — v2.11.11: writes a new sort_order for each proxy
+// host based on its index in the submitted ids[] list. Multiplied by 10
+// so future single-row Sort Order edits can wedge between drag-saved
+// rows without a full re-renumber. Skips Caddy sync — list ordering is
+// UI-only and doesn't change the generated config. Non-admins can only
+// reorder rows they own; foreign rows in the list are silently ignored.
+func (s *Server) reorderProxyHosts(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	rawIDs := r.Form["ids[]"]
+	if len(rawIDs) == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	for i, raw := range rawIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			continue
+		}
+		if !isAdmin {
+			ph, err := models.GetProxyHost(s.DB, id)
+			if err != nil || ph == nil || !ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID {
+				continue
+			}
+		}
+		if _, err := s.DB.Exec(`UPDATE proxy_hosts SET sort_order=? WHERE id=?`, i*10, id); err != nil {
+			log.Printf("reorderProxyHosts: update %d: %v", id, err)
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// reorderRedirectionHosts — v2.11.11: parallel of reorderProxyHosts for
+// the /redirection-hosts list page.
+func (s *Server) reorderRedirectionHosts(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	rawIDs := r.Form["ids[]"]
+	if len(rawIDs) == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	for i, raw := range rawIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			continue
+		}
+		if !isAdmin {
+			rh, err := models.GetRedirectionHost(s.DB, id)
+			if err != nil || rh == nil || !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID {
+				continue
+			}
+		}
+		if _, err := s.DB.Exec(`UPDATE redirection_hosts SET sort_order=? WHERE id=?`, i*10, id); err != nil {
+			log.Printf("reorderRedirectionHosts: update %d: %v", id, err)
+		}
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // bulkDeleteCertificates — v2.11.10: deletes a set of certificates in one
