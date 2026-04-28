@@ -747,38 +747,6 @@ func (s *Server) Routes() http.Handler {
 	return r
 }
 
-// stripHeaderWriter — v2.12.15: drops headers in `strip` (lower-cased keys)
-// from the response just before WriteHeader fires. Wraps the standard
-// http.ResponseWriter so any handler downstream can still call .Header()
-// or .WriteHeader() normally; the strip happens at the last possible moment.
-type stripHeaderWriter struct {
-	http.ResponseWriter
-	strip       map[string]bool
-	wroteHeader bool
-}
-
-func (w *stripHeaderWriter) WriteHeader(code int) {
-	if !w.wroteHeader {
-		w.wroteHeader = true
-		if len(w.strip) > 0 {
-			h := w.Header()
-			for k := range h {
-				if w.strip[strings.ToLower(k)] {
-					h.Del(k)
-				}
-			}
-		}
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *stripHeaderWriter) Write(b []byte) (int, error) {
-	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
 // securityHeaders sets baseline response headers on every CaddyUI response
 // regardless of whether the request reached us through a reverse proxy or
 // directly. Defense-in-depth: even if you bypass Caddy and hit CaddyUI on
@@ -828,10 +796,15 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		if !stripped["referrer-policy"] && h.Get("Referrer-Policy") == "" {
 			h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		}
-		// Wrap the response writer so we can also strip headers the inner
-		// handler tries to set itself (404 page, Caddy-served static, etc.).
-		ww := &stripHeaderWriter{ResponseWriter: w, strip: stripped}
-		next.ServeHTTP(ww, r)
+		// v2.12.18: previously wrapped w in a stripHeaderWriter so headers
+		// set by downstream handlers (templates / 404 / Caddy-static) could
+		// also be stripped. Reverted — the wrapper didn't implement
+		// http.Flusher / http.Hijacker so streaming responses degraded into
+		// browser-side "save as" downloads (no detected Content-Type
+		// flushing). The conditional skips above on the three headers this
+		// middleware unconditionally sets are enough; downstream handlers
+		// don't add X-Frame-Options / etc. on their own.
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -11797,6 +11770,18 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	if newServerIP != "" && newServerIP != oldServerIP {
 		go s.dnsUpdateAllRecords(0, newServerIP)
 	}
+
+	// v2.12.18: auto-sync Caddy after a settings save so changes that
+	// affect the live config (global strip-headers, catch-all 404 HTML,
+	// global maintenance toggle, etc.) take effect immediately. Without
+	// this, users had to manually click Sync Caddy after Save and
+	// wondered why their setting "didn't work." Best-effort — failures
+	// are logged but don't block the redirect.
+	go func(serverID int64) {
+		if err := s.syncCaddy(serverID, false); err != nil {
+			log.Printf("settings: auto-sync after save failed (non-fatal): %v", err)
+		}
+	}(s.currentServerID(r))
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }
