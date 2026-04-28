@@ -131,7 +131,17 @@
       <input type="text" name="ai_ollama_model" value="{{.AIOllamaModel}}"
         placeholder="llama3.2:latest"
         class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <p class="text-xs text-ink-400 mt-1">Any model you've pulled into Ollama. Smaller is faster; <code class="bg-ink-100 px-1 rounded">llama3.2</code>, <code class="bg-ink-100 px-1 rounded">qwen2.5</code>, and <code class="bg-ink-100 px-1 rounded">mistral</code> work well. Run <code class="bg-ink-100 px-1 rounded">ollama list</code> on the Ollama host to see what's installed.</p>
+      <p class="text-xs text-ink-400 mt-1">Any model you've pulled into Ollama. Run <code class="bg-ink-100 px-1 rounded">ollama list</code> on the Ollama host to see what's installed.</p>
+      <div class="mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+        <strong>Pick a big enough model.</strong> The 3B-class default (<code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">llama3.2</code>) is fast but tends to hallucinate Caddy-specific syntax — directives that don't exist, mixing up v1/v2, etc. Recommended models for actually-correct Caddy answers:
+        <ul class="mt-1.5 ml-5 list-disc space-y-0.5">
+          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">qwen2.5:14b</code> — best balance of accuracy + speed on most setups</li>
+          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">qwen2.5-coder:14b</code> — sharper at config-file generation</li>
+          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">gemma2:9b</code> — solid mid-range alternative</li>
+          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">llama3.1:8b</code> — minimum viable for technical Q&amp;A</li>
+        </ul>
+        Pull one with <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">ollama pull qwen2.5:14b</code> on the Ollama host, then put the exact tag in the field above.
+      </div>
     </div>
   </div>
 
