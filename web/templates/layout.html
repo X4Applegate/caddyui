@@ -1,7 +1,10 @@
 {{define "layout"}}<!doctype html>
 <html lang="en">
 <head>
-  <script>(function(){try{var t=localStorage.getItem('caddyui-theme');if(t==='dark'||(t===null&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark')}}catch(e){}})();</script>
+  {{/* v2.11.0: tri-state theme — 'light' | 'dark' | 'auto' (default).
+       The toggle button cycles auto → light → dark → auto. 'auto' tracks
+       the OS via prefers-color-scheme; explicit values override. */}}
+  <script>(function(){try{var t=localStorage.getItem('caddyui-theme')||'auto';var dark=t==='dark'||(t==='auto'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(dark){document.documentElement.classList.add('dark')}document.documentElement.dataset.themeMode=t;if(t==='auto'&&window.matchMedia){window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(e){if(document.documentElement.dataset.themeMode==='auto'){document.documentElement.classList.toggle('dark',e.matches)}})}}catch(e){}})();</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>{{block "title" .}}{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}{{end}}</title>
@@ -168,9 +171,10 @@ if ('serviceWorker' in navigator) {
       {{end}}
     </a>
     <div class="flex items-center gap-1">
-      <button type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 dark:text-slate-400 dark:hover:bg-slate-800 transition">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden dark:block"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 block dark:hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <button type="button" data-theme-toggle title="Theme: auto" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 dark:text-slate-400 dark:hover:bg-slate-800 transition">
+        <svg data-theme-icon="auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12a9 9 0 0 0 18 0"/></svg>
+        <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden"><circle cx="12" cy="12" r="4"/><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>
+        <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
       <button type="button" aria-label="Open navigation" onclick="document.getElementById('sidebar').classList.remove('-translate-x-full');document.getElementById('sidebar-scrim').classList.remove('hidden');" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 transition">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -309,11 +313,10 @@ if ('serviceWorker' in navigator) {
           <a href="/search" title="Search" class="text-ink-400 hover:text-ink-700 transition shrink-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           </a>
-          <button id="theme-toggle" type="button" title="Toggle dark mode" onclick="(function(){var h=document.documentElement;var dark=h.classList.toggle('dark');try{localStorage.setItem('caddyui-theme',dark?'dark':'light')}catch(e){};})()" class="p-1 rounded text-ink-400 hover:text-ink-700 dark:text-slate-400 dark:hover:text-slate-100 transition shrink-0">
-            <!-- Sun icon: shown in dark mode -->
-            <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden dark:block"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-            <!-- Moon icon: shown in light mode -->
-            <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 block dark:hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <button data-theme-toggle type="button" title="Theme: auto" class="p-1 rounded text-ink-400 hover:text-ink-700 dark:text-slate-400 dark:hover:text-slate-100 transition shrink-0">
+            <svg data-theme-icon="auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12a9 9 0 0 0 18 0"/></svg>
+            <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><circle cx="12" cy="12" r="4"/><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>
+            <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           </button>
         </div>
       </div>
@@ -323,6 +326,34 @@ if ('serviceWorker' in navigator) {
           {{block "content" .}}{{end}}
         </div>
       </main>
+    </div>
+  </div>
+
+  {{/* v2.11.0: keyboard shortcut overlay — press ? to open, esc to close.
+       Renders only when a user is signed in so the login page stays clean. */}}
+  <div id="kbd-overlay" class="hidden fixed inset-0 z-50 bg-ink-900/60 backdrop-blur-sm flex items-center justify-center p-4" onclick="if(event.target===this)this.classList.add('hidden')">
+    <div class="bg-white dark:bg-slate-800 border border-ink-200 dark:border-slate-700 rounded-xl shadow-card max-w-lg w-full p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-ink-900 dark:text-slate-100">Keyboard shortcuts</h2>
+        <button type="button" onclick="document.getElementById('kbd-overlay').classList.add('hidden')" class="text-ink-400 hover:text-ink-700 dark:hover:text-slate-200 transition" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <dl class="space-y-2 text-sm">
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Show this help</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">?</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Focus filter / search</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">/</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Close dialog / dropdown</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">Esc</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Submit form (from textarea)</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">Ctrl/⌘+Enter</kbd></dd></div>
+        <div class="border-t border-ink-100 dark:border-slate-700 pt-2 mt-3">
+          <p class="text-xs text-ink-500 dark:text-slate-400 mb-2">Quick navigation (press <kbd class="font-mono text-[10px] bg-ink-100 dark:bg-slate-700 px-1 rounded">g</kbd> then a letter):</p>
+        </div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Dashboard</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">g d</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Proxy Hosts</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">g p</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Redirections</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">g r</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Advanced routes</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">g a</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Certificates</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">g c</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ink-700 dark:text-slate-300">Analytics</dt><dd><kbd class="font-mono text-xs bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600">g n</kbd></dd></div>
+      </dl>
     </div>
   </div>
   {{else}}
@@ -351,6 +382,91 @@ if ('serviceWorker' in navigator) {
       });
     })
     .catch(function() {});
+})();
+
+// v2.11.0: global keyboard shortcuts.
+//   "?" — open the shortcut overlay
+//   "/" — focus the page's filter/search input (any [type=search])
+//   Esc — close the overlay
+//   "g" then p|r|a|c|d|n — quick-nav to the matching list page
+// All bindings ignore key presses while the user is typing in an input,
+// textarea, or contenteditable so /-focus etc. doesn't fire mid-edit.
+(function() {
+  var overlay = document.getElementById('kbd-overlay');
+  var pendingChord = null;
+  var chordTimer = null;
+  var ROUTES = { p: '/proxy-hosts', r: '/redirection-hosts', a: '/raw-routes', c: '/certificates', d: '/', n: '/analytics' };
+  function isTyping(el) {
+    if (!el) return false;
+    var tag = (el.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+  document.addEventListener('keydown', function(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Escape') {
+      if (overlay && !overlay.classList.contains('hidden')) {
+        overlay.classList.add('hidden');
+        e.preventDefault();
+      }
+      return;
+    }
+    if (isTyping(e.target)) return;
+    if (e.key === '?') {
+      if (overlay) { overlay.classList.toggle('hidden'); e.preventDefault(); }
+      return;
+    }
+    if (e.key === '/') {
+      var search = document.querySelector('input[type=search]');
+      if (search) { search.focus(); search.select(); e.preventDefault(); }
+      return;
+    }
+    if (pendingChord === 'g' && ROUTES[e.key]) {
+      pendingChord = null;
+      if (chordTimer) { clearTimeout(chordTimer); chordTimer = null; }
+      window.location.href = ROUTES[e.key];
+      e.preventDefault();
+      return;
+    }
+    if (e.key === 'g') {
+      pendingChord = 'g';
+      if (chordTimer) clearTimeout(chordTimer);
+      chordTimer = setTimeout(function() { pendingChord = null; }, 1200);
+      return;
+    }
+    pendingChord = null;
+  });
+})();
+
+// v2.11.0: tri-state theme toggle (auto → light → dark → auto).
+// One handler bound to every [data-theme-toggle] button (mobile + topbar).
+(function() {
+  var STATES = ['auto', 'light', 'dark'];
+  function paint() {
+    var mode = document.documentElement.dataset.themeMode || 'auto';
+    document.querySelectorAll('[data-theme-toggle]').forEach(function(btn) {
+      btn.title = 'Theme: ' + mode + ' (click to change)';
+      btn.querySelectorAll('[data-theme-icon]').forEach(function(icon) {
+        icon.classList.toggle('hidden', icon.dataset.themeIcon !== mode);
+      });
+    });
+  }
+  function applyMode(mode) {
+    document.documentElement.dataset.themeMode = mode;
+    var dark = mode === 'dark' || (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.classList.toggle('dark', dark);
+    try { localStorage.setItem('caddyui-theme', mode); } catch(e) {}
+    paint();
+  }
+  paint();
+  document.querySelectorAll('[data-theme-toggle]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var cur = document.documentElement.dataset.themeMode || 'auto';
+      var next = STATES[(STATES.indexOf(cur) + 1) % STATES.length];
+      applyMode(next);
+    });
+  });
 })();
 
 // Card-click → edit on mobile. Desktop tables have a visible pencil icon
