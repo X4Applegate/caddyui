@@ -100,6 +100,11 @@
         placeholder="0 = keep forever"
         class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
     </div>
+    {{/* v2.12.6: per-section save button. Submits the parent form (saves
+         every setting, same as the bottom button) — just convenient. */}}
+    <div class="pt-3 border-t border-ink-100">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+    </div>
   </div>
 
   {{/* ── v2.11.15: AI assistant (Ollama) ── */}}
@@ -142,6 +147,9 @@
         </ul>
         Pull one with <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">ollama pull qwen2.5:14b</code> on the Ollama host, then put the exact tag in the field above.
       </div>
+    </div>
+    <div class="pt-3 border-t border-ink-100">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
     </div>
   </div>
 
@@ -372,6 +380,9 @@
         <p class="text-xs text-ink-400 mt-1">Most users don't need this — set the per-server IPs above instead. Kept for backwards compatibility with pre-v2.4.0 setups.</p>
       </div>
     </details>
+    <div class="pt-3 border-t border-ink-100">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+    </div>
   </div>
 
   {{/* ── DNS provider credential cards — one per registered provider ──
@@ -594,6 +605,12 @@
     sync();
   })();
   </script>
+
+  {{/* v2.12.6: per-section save button rendered after the captcha card (the
+       card itself closes above; this floats as a sibling, same form). */}}
+  <div class="flex items-center pt-1 pb-3">
+    <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+  </div>
 
   {{/* ── Security policy (v2.9.5) ── 2FA enforcement and future auth settings */}}
   <div id="settings-security" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
