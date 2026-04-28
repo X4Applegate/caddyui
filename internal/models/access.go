@@ -73,6 +73,22 @@ type AccessTotals struct {
 // multiple days is counted multiple times. The schema comment on access_daily
 // already calls this out as best-effort. For an exact distinct count over a
 // long window the caller can switch to the events table directly.
+// hostMatchClause — v2.12.9: builds a SQL fragment that filters access_events
+// (or access_daily) by `host`, with wildcard support. A leading `*.` means
+// "any subdomain of foo.bar" — translates to `host LIKE '%.foo.bar'`. An
+// exact hostname stays an `=` match. Empty host returns "" so callers can
+// drop the filter entirely. Used by the dashboard + per-host analytics
+// scoping when proxy_hosts.Domains contains wildcard SANs.
+func hostMatchClause(host string) (string, []any) {
+	if host == "" {
+		return "", nil
+	}
+	if len(host) > 2 && host[0] == '*' && host[1] == '.' {
+		return " AND host LIKE ?", []any{"%" + host[1:]}
+	}
+	return " AND host = ?", []any{host}
+}
+
 func AccessTotalsSince(db *sql.DB, since time.Time, host string) (AccessTotals, error) {
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
 	if !since.UTC().Before(todayStart) {
@@ -105,9 +121,9 @@ func accessTotalsFromEvents(db *sql.DB, from, to time.Time, host string) (Access
 		q += ` AND ts < ?`
 		args = append(args, to.Unix())
 	}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
 	}
 	err := db.QueryRow(q, args...).Scan(&t.Views, &t.Visitors)
 	if err == sql.ErrNoRows {
@@ -125,9 +141,9 @@ func accessTotalsFromRollup(db *sql.DB, from, to time.Time, host string) (Access
 	q := `SELECT COALESCE(SUM(views),0), COALESCE(SUM(unique_visitors),0)
 	      FROM access_daily WHERE day >= ? AND day < ?`
 	args := []any{fromDay, toDay}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
 	}
 	err := db.QueryRow(q, args...).Scan(&t.Views, &t.Visitors)
 	if err == sql.ErrNoRows {
@@ -629,9 +645,9 @@ func BandwidthSince(db *sql.DB, since time.Time, host string) (int64, error) {
 	var total int64
 	q := `SELECT COALESCE(SUM(bytes_out),0) FROM access_events WHERE ts >= ?`
 	args := []any{since.Unix()}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
 	}
 	err := db.QueryRow(q, args...).Scan(&total)
 	if err == sql.ErrNoRows {
