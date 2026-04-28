@@ -5,6 +5,124 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.11.16] — 2026-04-28 · Multi-server health widget on the dashboard
+
+> Preview build (`applegater/caddyui:v2.11.16` and `:preview`). `:latest` still pinned at v2.11.7.
+
+### Added
+- **Caddy fleet status grid on `/`.** One card per registered Caddy server with online/offline/unknown status, host count, Caddy version, and "last seen" relative timestamp. The active server (matching the picker) gets a brand-tinted ring; non-active rows show a "Switch to this server" button. External (read-only) servers carry a `read-only` tag so users remember they can observe but not push config there.
+- Renders only when more than one Caddy server is registered. Single-server installs see no widget.
+
+---
+
+## [2.11.15] — 2026-04-28 · AI assistant powered by local Ollama
+
+> Preview build (`applegater/caddyui:v2.11.15`).
+
+### Added
+- **Floating AI chat button** (bottom-right) that proxies prompts to a local Ollama instance. Useful for "explain this proxy host", "convert this Caddyfile snippet", "suggest headers for Nextcloud", etc. Runs locally on your GPU — no cloud calls.
+- **New settings section** (Settings → AI assistant): enable toggle, Ollama base URL (default `http://ollama:11434`), model name (default `llama3.2:latest`).
+- New endpoints `GET /api/ai/status` (so the floating button hides when AI is off) and `POST /api/ai/chat` (proxies to Ollama's `/api/chat` with a CaddyUI-flavoured system prompt that steers generic models toward Caddy / TLS / DNS answers).
+- 60-second context-deadline on the upstream call so a slow / hung Ollama doesn't park a request handler indefinitely.
+- MVP scope: single-shot Q&A, no server-side history. `Esc` closes the modal; `Enter` sends.
+
+---
+
+## [2.11.14] — 2026-04-28 · Notifier covers Let's Encrypt / ACME-managed live certs
+
+> Preview build (`applegater/caddyui:v2.11.14`).
+
+### Added
+- **Cert-expiry alerts now cover Caddy-managed (ACME / LE / ZeroSSL) certs.** The existing notifier only inspected custom certs stored in CaddyUI's DB — production deployments using auto-issuance got no warning when those expired. v2.11.14 adds a daily TLS dial against `{first_domain}:443` for every enabled SSL-enabled proxy host, reads the peer cert chain, and fires the same webhook + email channels when expiry is within the configured threshold.
+
+### Internal
+- Reuses `notifierState.lastNotified` for 24h dedup; entries are keyed `proxy:<domain>` so they don't collide with custom-cert dedup keys.
+- Wildcard SANs are skipped (can't dial `*.example.com` directly). Failed dials are silently retried tomorrow.
+
+---
+
+## [2.11.13] — 2026-04-28 · Live route-JSON preview on the proxy-host edit form
+
+> Preview build (`applegater/caddyui:v2.11.13`).
+
+### Added
+- **Live route-JSON preview pane** at the bottom of the proxy-host edit form. Collapsed by default; expanding it shows the exact Caddy route JSON the form would push, refreshing ~500ms after the last keystroke or toggle. Useful for debugging why a header isn't being added or why a path matcher isn't firing.
+- Reuses the same `parseProxyHostForm` + `caddy.BuildProxyRoute` path as `createProxyHost`, so what the user sees here is exactly what gets pushed on save. Lenient on missing fields — shows `⚠ strconv.Atoi: parsing "": invalid syntax` instead of breaking the pane.
+
+### Internal
+- New endpoint `POST /api/proxy-hosts/preview`. Skips fetches while the `<details>` is collapsed so background traffic stays minimal.
+
+---
+
+## [2.11.12] — 2026-04-28 · "Recently edited" widget on the dashboard
+
+> Preview build (`applegater/caddyui:v2.11.12`).
+
+### Added
+- **Recent-CRUD activity strip on `/`.** Last 8 successful create / update / delete events across proxy hosts, redirects, raw routes, certificates, groups, and API tokens, plus `caddyfile_import` and `raw_reclassify`. Skips login / logout / sync_applied / snapshot / profile noise so the widget reads as "what just changed in CaddyUI".
+- Each row shows a colour-coded resource pill matching the brand colours used elsewhere (Proxy / Redirect / Advanced / Cert / Group / API key), the actor, the verb (created / updated / deleted), the target, and a relative timestamp.
+
+### Internal
+- Adds `hasPrefix` and `hasSuffix` to the template `FuncMap` so action-string classification stays in the template.
+
+---
+
+## [2.11.11] — 2026-04-28 · Drag-to-reorder rows on /proxy-hosts and /redirection-hosts
+
+> Preview build (`applegater/caddyui:v2.11.11`).
+
+### Added
+- **HTML5 drag handle (⠿)** in the leftmost cell of every desktop-table row on `/proxy-hosts` and `/redirection-hosts`. Drag the handle to reflow the row immediately; the new order POSTs to the matching `/reorder` endpoint and persists. Skips Caddy sync — list ordering is UI-only and doesn't change the generated config.
+
+### Internal
+- New endpoints `POST /proxy-hosts/reorder` and `POST /redirection-hosts/reorder`. Each accepts `ids[]` in desired display order and writes `sort_order = (index * 10)` per row. The `*10` multiplier leaves room for future single-row Sort Order edits to wedge between drag-saved rows without a full re-renumber.
+- Non-admins can only reorder rows they own; foreign rows in the list are silently ignored.
+
+---
+
+## [2.11.10] — 2026-04-28 · Bulk delete on /certificates
+
+> Preview build (`applegater/caddyui:v2.11.10`).
+
+### Added
+- **Floating bulk-action bar on `/certificates`** — Delete only since certs have no enable/disable state. Per-row checkbox is gated by `.CanEdit` so non-admins only see checkboxes on certs they own.
+
+### Internal
+- New endpoint `POST /certificates/bulk-delete`. Honours the same ownership + in-use guards as the single-row `deleteCertificate` handler — non-admins can only delete their own certs AND only when no other user's site still references the cert. A successful batch triggers a single `syncCaddy(forceTLS=true)` call so hosts that referenced any deleted cert revert to auto-issuance.
+
+---
+
+## [2.11.9] — 2026-04-28 · Bulk multi-select on /raw-routes
+
+> Preview build (`applegater/caddyui:v2.11.9`).
+
+### Added
+- **Floating bulk-action bar on `/raw-routes`** — same pattern as `/proxy-hosts` and `/redirection-hosts`. Per-row checkbox, select-all in the header, **Enable / Disable / Delete** buttons that operate on every selected row in one shot.
+
+### Internal
+- New endpoints `POST /raw-routes/bulk-toggle` (action=enable|disable) and `POST /raw-routes/bulk-delete`. Both honour per-row ownership; each successful batch triggers a single `syncCaddy` call.
+
+---
+
+## [2.11.8] — 2026-04-28 · Proxy-form: hoist Forward Scheme / Host / Port + Test upstream to under Domain
+
+> Preview build (`applegater/caddyui:v2.11.8`).
+
+### Changed
+- **Forward Scheme + Host + Port + Test upstream** moved to directly under the Domain row. Pairs naturally with the Domain field — no reason to scroll past Enabled / Auto-SSL / Managed-DNS / TLS-Cert / collapsed-metadata to set them.
+
+### New top-of-form order
+1. Domain names + www redirect + trailing slash
+2. **Forward Scheme + Host + Port + Test upstream** ← v2.11.8
+3. Enabled / Auto SSL / Force SSL ← v2.11.4
+4. Managed DNS ← v2.11.7
+5. TLS Certificate ← v2.11.7
+6. *Path matching, query string, tags & notes* (collapsed)
+7. *Upstream TLS & advanced settings* (collapsed)
+8. *Options & Forwarded Headers* (collapsed)
+
+---
+
 ## [2.11.7] — 2026-04-28 · Proxy-form: hoist Managed DNS + TLS Certificate to top, collapse path/metadata + upstream TLS
 
 > **`:latest` retag.** Published as `applegater/caddyui:v2.11.7`, `:preview`, `:stable`, and `:latest` (multi-arch `linux/amd64` + `linux/arm64`). Fifteen features past v2.10.0 — the cadence rule (retag `:latest` every ~8 features) has been overdue since v2.11.0, and v2.11.7 is the moment.

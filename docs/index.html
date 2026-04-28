@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.11.7 — UX &amp; navigation polish: ⌘K palette, bulk ops, hoisted DNS+TLS</title>
-<meta name="description" content="v2.11 is a UX cycle. v2.11.0 ships eight features (live filters, tri-state theme, keyboard-shortcut overlay, chord nav, sticky save bar, configured-field badges, richer empty states); v2.11.1 → v2.11.3 collapse the proxy-host form by default; v2.11.4 hoists Enabled / Auto SSL / Force SSL; v2.11.5 ships a global ⌘K command palette; v2.11.6 brings bulk multi-select to /redirection-hosts; v2.11.7 hoists Managed DNS + TLS Certificate to the top and collapses Path matching + Upstream TLS sections.">
-<meta property="og:title" content="CaddyUI v2.11.7 — UX &amp; navigation polish">
-<meta property="og:description" content="Fifteen features past v2.10.0: hoisted DNS + TLS Cert at the top, ⌘K palette, bulk ops on redirections, plus the full v2.11.0 batch — and Path matching / Upstream TLS now collapsed by default.">
+<title>CaddyUI v2.11.16 — UX &amp; navigation polish: AI assist, drag-to-reorder, bulk ops everywhere</title>
+<meta name="description" content="The v2.11 cycle now spans 17 features: live filters, tri-state theme, ⌘K command palette, bulk multi-select on every list page, drag-to-reorder rows, top-of-form reorder (Domain → Forward Host → SSL essentials → Managed DNS → TLS Cert), live route-JSON preview, Recently edited dashboard widget, multi-server health grid, LE-cert expiry alerts via the notifier, and an opt-in AI assistant powered by local Ollama.">
+<meta property="og:title" content="CaddyUI v2.11.16 — UX &amp; navigation polish">
+<meta property="og:description" content="17 features past v2.10.0: ⌘K palette, bulk ops everywhere, drag-to-reorder, hoisted DNS + TLS, live JSON preview, multi-server health, ACME-cert expiry alerts, and an Ollama-powered AI assistant.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-04-27">
 <style>
@@ -293,19 +293,19 @@
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.11.7 — UX &amp; navigation polish</h1>
+  <h1>CaddyUI v2.11.16 — UX &amp; navigation polish</h1>
   <p class="lead">v2.11 is a UX cycle. v2.11.0 ships eight features — live filters on <code>/raw-routes</code> and <code>/certificates</code>, a tri-state theme toggle (<em>auto</em> / <em>light</em> / <em>dark</em>), a keyboard-shortcut overlay (<code>?</code>), Vim-style chord nav (<code>g</code> + letter), a sticky save bar on the proxy-host form, configured-field count badges, and richer empty states. v2.11.1 → v2.11.3 then collapse the proxy-host form by default — only <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> stay open. v2.11.4 hoists the three essential SSL toggles to the form's always-visible top. v2.11.5 ships a global <kbd style="font-family:var(--mono);font-size:.85em;background:var(--ink-100);padding:.1em .4em;border-radius:4px;border:1px solid var(--ink-200)">⌘K</kbd> / <kbd style="font-family:var(--mono);font-size:.85em;background:var(--ink-100);padding:.1em .4em;border-radius:4px;border:1px solid var(--ink-200)">Ctrl+K</kbd> command palette searching every resource. v2.11.6 brings bulk multi-select to <code>/redirection-hosts</code>, matching what <code>/proxy-hosts</code> already had. The rest of the v2.10 arc (Smart Caddyfile import, ~70 per-host options, baseline security headers) is still covered below.</p>
   <div class="meta">
     <time datetime="2026-04-28">April 28, 2026</time>
-    <span class="tag">v2.11.7</span>
-    <span>☕ ~13 min read</span>
+    <span class="tag">v2.11.16</span>
+    <span>☕ ~16 min read</span>
   </div>
 </header>
 
 <div class="toc">
   <strong>What's in this post</strong>
   <ul>
-    <li><a href="#nav-polish">UX &amp; navigation polish (v2.11.0 → v2.11.7)</a></li>
+    <li><a href="#nav-polish">UX &amp; navigation polish (v2.11.0 → v2.11.16)</a></li>
     <li><a href="#smart-import">Smart Caddyfile import (v2.10.7 → v2.10.9)</a></li>
     <li><a href="#perhost">~70 per-host options + path-based routing (v2.10.0)</a></li>
     <li><a href="#search">Proxy-host form search / filter (v2.10.2)</a></li>
@@ -317,7 +317,7 @@
 
 <hr class="divider">
 
-<h2 id="nav-polish">⚡ UX &amp; navigation polish <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.11.0 → v2.11.7</span></h2>
+<h2 id="nav-polish">⚡ UX &amp; navigation polish <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.11.0 → v2.11.16</span></h2>
 
 <p>
   v2.10 added an enormous amount of surface area — ~70 per-host options, four list pages, deep forms. v2.11 makes that surface fast to navigate and forgiving to scroll through.
@@ -360,6 +360,22 @@
 <div class="callout">
   <strong>Quick test.</strong> Open any existing proxy host: every section starts collapsed except <strong>Managed DNS</strong> and <strong>TLS Certificate</strong>. The brand-coloured number on each section's summary tells you how many fields inside are configured — click to expand and they're already filled.
 </div>
+
+<h3>v2.11.8 → v2.11.16 — fleet, AI, drag-to-reorder &amp; more</h3>
+
+<p>Eight features that round out the form-reorder arc and start widening the surface beyond editing:</p>
+
+<ul>
+  <li><strong>v2.11.8</strong> — <strong>Forward Scheme / Host / Port + Test upstream</strong> hoisted to directly under Domain. The "where does this domain go?" essentials now sit beside the Domain field instead of below the SSL/DNS/Cert block. <strong>New top-of-form order</strong>: Domain → Forward → Enabled / Auto-SSL / Force-SSL → Managed DNS → TLS Cert → (everything else collapsed).</li>
+  <li><strong>v2.11.9</strong> — <strong>Bulk multi-select on <code>/raw-routes</code></strong>. Same pattern <code>/proxy-hosts</code> already had: per-row checkbox, select-all, floating bottom bar with Enable / Disable / Delete.</li>
+  <li><strong>v2.11.10</strong> — <strong>Bulk delete on <code>/certificates</code></strong>. Honours the same ownership + in-use guards as the single-row delete; checkboxes only appear on certs the viewer can edit. One <code>syncCaddy</code> call per batch — affected hosts revert to auto-issuance on the next sync.</li>
+  <li><strong>v2.11.11</strong> — <strong>Drag-to-reorder rows</strong> on <code>/proxy-hosts</code> and <code>/redirection-hosts</code>. ⠿ handle in the leftmost cell; HTML5 drag/drop. <code>sort_order</code> writes are <code>index * 10</code> so manual edits can wedge between drag-saved rows without a renumber. UI-only — Caddy isn't re-synced on reorder.</li>
+  <li><strong>v2.11.12</strong> — <strong>"Recently edited" widget on the dashboard</strong>. Last 8 successful CRUD events across every resource type, colour-coded by resource and pulled from the activity log. Skips login / sync / snapshot noise so it reads as "what changed in CaddyUI".</li>
+  <li><strong>v2.11.13</strong> — <strong>Live route-JSON preview</strong> at the bottom of the proxy-host edit form. Collapsed by default; expanding shows the exact JSON the form would push, refreshing ~500ms after the last change. Useful for debugging why a header isn't being added or why a path matcher isn't firing.</li>
+  <li><strong>v2.11.14</strong> — <strong>Notifier covers Let's Encrypt / ACME-managed live certs</strong>. The existing notifier only inspected custom certs in CaddyUI's DB; production deployments using auto-issuance got no warning. v2.11.14 dials <code>{first_domain}:443</code> for every enabled SSL-on proxy host once a day, reads the peer cert, and fires the same webhook + email channels when expiry is within the configured threshold.</li>
+  <li><strong>v2.11.15</strong> — <strong>AI assistant powered by local Ollama</strong>. Opt-in floating chat button (bottom-right) that proxies prompts to a local Ollama instance for "explain this proxy host", "convert this Caddyfile snippet", "suggest headers for Nextcloud", etc. Runs locally on the user's GPU — no cloud calls. Configure under <em>Settings → AI assistant</em>.</li>
+  <li><strong>v2.11.16</strong> — <strong>Caddy fleet status grid on the dashboard</strong>. One status card per registered Caddy server with online/offline status, host count, version, and last-seen relative timestamp. The active server (matching the picker) gets a brand-tinted ring; non-active rows show a "Switch to this server" button. Renders only when more than one Caddy server is registered.</li>
+</ul>
 
 <h3>v2.11.4 — Enabled / Auto SSL / Force SSL hoisted to the top</h3>
 
@@ -586,15 +602,15 @@
 </p>
 
 <pre><code># pinned to this exact release (recommended)
-docker pull applegater/caddyui:v2.11.7
+docker pull applegater/caddyui:v2.11.16
 
 # rolling tags — pick the cadence you want
-docker pull applegater/caddyui:latest    # retags every ~8 features (now v2.11.7)
-docker pull applegater/caddyui:stable    # parity with :latest, distinct alias
-docker pull applegater/caddyui:preview   # latest dev push (currently v2.11.7)</code></pre>
+docker pull applegater/caddyui:preview   # every dev push (currently v2.11.16)
+docker pull applegater/caddyui:latest    # retags every ~8 features (currently v2.11.7)
+docker pull applegater/caddyui:stable    # parity with :latest</code></pre>
 
 <p>
-  v2.11.7 retags <code>:latest</code> for the first time since v2.10.0 — fifteen features (v2.10.7 → v2.11.7) have accumulated past the previous <code>:latest</code> retag, so the cadence rule (retag every ~8 features) was overdue. <code>:stable</code> is a new alias that points at the same image as <code>:latest</code> for setups that prefer the wording. Multi-arch on Docker Hub: <code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001.
+  <code>:latest</code> still points at <strong>v2.11.7</strong>. v2.11.8 → v2.11.16 (nine features) is on <code>:preview</code> and the per-version tag — <code>:latest</code> retag is due per the every-~8-features cadence rule. <code>:stable</code> currently mirrors <code>:latest</code> at v2.11.7. Multi-arch on Docker Hub: <code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001.
 </p>
 
 <div class="cta">
