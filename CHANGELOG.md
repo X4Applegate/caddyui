@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.12.12] — 2026-04-28 · AI tool calling + dashboard scoping + 13 CodeQL fixes (cumulative)
+
+> **Patch wave on top of v2.12.4.** Republishes `:latest`, `:stable`, `:preview`, and `:v2.12.12` (multi-arch). `:latest` retags from v2.12.4 → v2.12.12.
+
+Eight patch versions in one image, headlined by a real LLM tool-calling pipeline that can actually create proxy hosts and redirections from a chat prompt.
+
+### Added
+- **v2.12.11 — AI tool calling.** The chat panel now exposes `create_proxy_host` and `create_redirection` as Ollama tools. The model decides when to emit a `tool_call` (vs. a Caddyfile snippet); the frontend renders a confirmation card with the exact arguments; the user clicks Apply, and the resource is actually created. Every exec writes an `ai_tool_call` activity-log row. Works on qwen2.5 / llama3.1+ / gemma2; older models silently ignore the tools field.
+- **v2.12.10 — AI conversation memory + custom system prompt.** `/api/ai/chat` now accepts `{messages:[{role,content},...]}` for multi-turn context — "make one here" actually refers back to what was discussed. New "New chat" button in the modal header clears context. New Settings → AI assistant → Custom system prompt textarea overrides the built-in CaddyUI prompt without writing an Ollama Modelfile.
+- **v2.12.7 — Markdown rendering in AI chat bubbles.** Llama / Qwen output `**bold**`, fenced code blocks, ` `inline code` `, lists. Tiny in-line renderer (no CDN, no library) handles them safely (HTML-escape first, then regex-replace markers).
+- **v2.12.6 — Per-section Save buttons on Settings.** General / AI assistant / DNS IPs / Captcha sections now have Save buttons inline so users don't have to scroll to the page bottom for every toggle change.
+
+### Fixed
+- **v2.12.12 — 13 CodeQL js/xss-through-dom alerts** silenced by rewriting bulk-action-bar hidden-input building (`/proxy-hosts`, `/redirection-hosts`, `/raw-routes`, `/certificates`) and the path-based-upstream-rules row builder (proxy_host_form) from `innerHTML` string concat to DOM API (`createElement` + `.value` + `replaceChildren`). No behaviour change; just safer construction that CodeQL can verify.
+- **v2.12.9 — Wildcard hostnames count traffic in dashboard + analytics.** Proxy hosts with `*.example.com` in Domains were being passed as a literal `host = '*.example.com'` filter to `AccessTotalsSince` / `BandwidthSince` — never matched. New `hostMatchClause` helper detects the `*.` prefix and translates to `host LIKE '%.example.com'`. Wildcard-routed traffic now contributes to per-server cards.
+- **v2.12.8 — Dashboard cards scoped to active server.** Requests / Visitors / Bandwidth Today were summing across the whole fleet instead of the active picker selection. Now loops over the active server's hostnames and sums per-host (same pattern `/analytics?server=<id>` already used).
+- **v2.12.5 — AI assistant beefed-up system prompt + model-size hint.** llama3.2:3b was hallucinating Caddy v1 trivia and inventing directives. Concrete Caddyfile examples in the prompt + an explicit "say I don't know" rule. Settings now warns about 3B-class models and recommends qwen2.5:14b / qwen2.5-coder:14b / gemma2:9b / llama3.1:8b for actually-correct answers.
+
+---
+
 ## [2.12.4] — 2026-04-28 · Managed DNS on redirections + multi-domain checks (cumulative)
 
 > **Patch wave on top of v2.12.0.** Republishes `:latest`, `:stable`, `:preview`, and `:v2.12.4` (multi-arch). `:latest` retags from v2.12.0 → v2.12.4.

@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.12.4 — UX cycle GA: ⌘K palette, bulk ops, AI assistant, Managed DNS everywhere</title>
-<meta name="description" content="v2.12 is the GA cut of CaddyUI's largest UX-only release. Ships a ⌘K command palette, bulk multi-select + drag-to-reorder on every list page, top-of-form reorder, live route-JSON preview, Recently edited dashboard widget, multi-server health grid, ACME / Let's Encrypt cert expiry alerts, an opt-in Ollama-powered AI assistant, wildcard cert auto-issuance via DNS-01, and Managed DNS on redirections.">
-<meta property="og:title" content="CaddyUI v2.12.4 — UX cycle GA + Managed DNS everywhere">
-<meta property="og:description" content="GA cut of the v2.11 → v2.12 cycle: ⌘K palette, bulk ops, drag-to-reorder, hoisted DNS + TLS, live JSON preview, multi-server health, ACME-cert expiry alerts, Ollama AI assistant, wildcard DNS-01, and Managed DNS on redirections. :latest now points here.">
+<title>CaddyUI v2.12.12 — AI tool calling: chat the assistant into actually creating proxy hosts</title>
+<meta name="description" content="v2.12.12 ships real LLM tool calling — describe a proxy host in chat, the AI emits a structured tool_call, you confirm, the resource gets created. Plus active-server-scoped dashboard cards (with wildcard SAN traffic counted), markdown in AI replies, conversation memory, custom system prompt, per-section Save buttons on Settings, and 13 CodeQL XSS-through-DOM fixes.">
+<meta property="og:title" content="CaddyUI v2.12.12 — AI tool calling + dashboard scoping">
+<meta property="og:description" content="The AI assistant can now actually create proxy hosts and redirections. Plus dashboard cards that respect the active server, markdown in chat replies, conversation memory, and 13 CodeQL fixes. :latest retags here.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-04-28">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -362,7 +362,7 @@
 <!-- NAV -->
 <nav>
   <a class="nav-brand" href="#">Caddy<span>UI</span></a>
-  <div class="nav-badge"><div class="nav-dot"></div> v2.12.4</div>
+  <div class="nav-badge"><div class="nav-dot"></div> v2.12.12</div>
 </nav>
 
 <div class="wrap">
@@ -370,29 +370,110 @@
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.12 — UX cycle GA: palette, bulk ops, AI, Managed DNS everywhere</h1>
-  <p class="lead">v2.12 is the GA cut of CaddyUI's largest UX-only release in two years. A <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> command palette, bulk multi-select on every list page, drag-to-reorder rows, a top-of-form reorder that puts essentials first, a live route-JSON preview, a multi-server health grid, ACME / Let's Encrypt expiry alerts, an opt-in Ollama-powered AI assistant, wildcard cert auto-issuance via DNS-01, and Managed DNS finally landing on redirections. <code>:latest</code> retags here.</p>
+  <h1>CaddyUI v2.12.12 — AI tool calling: chat the assistant into actually building proxy hosts</h1>
+  <p class="lead">The headline of this patch wave: the AI assistant grew real <strong>tool calling</strong>. Describe what you want — "create a proxy host for AdGuardHome on adguardhome:3000" — and the model emits a structured <code>create_proxy_host</code> call instead of a Caddyfile snippet. The chat panel renders a confirmation card with the exact arguments, you click Apply, and the resource gets created. No copy-paste. Every exec writes an audit-log entry. Plus dashboard cards now respect the active-server picker (including wildcard SAN traffic), markdown in chat replies, conversation memory, custom system prompts, per-section Save buttons on Settings, and 13 CodeQL XSS-through-DOM fixes.</p>
   <div class="meta">
     <time datetime="2026-04-28">April 28, 2026</time>
-    <span class="tag">v2.12.4</span>
-    <span>☕ ~12 min read</span>
+    <span class="tag">v2.12.12</span>
+    <span>☕ ~10 min read</span>
   </div>
 </header>
 
 <div class="toc">
   <strong>What's in this post</strong>
   <ul>
+    <li><a href="#tools">AI tool calling — create from chat (v2.12.11)</a></li>
+    <li><a href="#chat-polish">Conversation memory, markdown, custom prompts (v2.12.7, .10)</a></li>
+    <li><a href="#dash-scope">Dashboard scoped to active server (v2.12.8, .9)</a></li>
     <li><a href="#palette">⌘K command palette + keyboard nav (v2.11.0 → v2.11.5)</a></li>
     <li><a href="#bulk-drag">Bulk ops + drag-to-reorder (v2.11.6 → v2.11.11)</a></li>
     <li><a href="#proxy-form">Proxy-host form rebuilt top-down (v2.11.4 → v2.11.8)</a></li>
     <li><a href="#preview">Live route-JSON preview (v2.11.13)</a></li>
     <li><a href="#dashboard">Dashboard widgets — Recent edits + fleet health (v2.11.12, .16)</a></li>
-    <li><a href="#ai">AI assistant via local Ollama (v2.11.15)</a></li>
+    <li><a href="#ai">AI assistant — local Ollama (v2.11.15)</a></li>
     <li><a href="#dns">Managed DNS — wildcards, ACME, redirections (v2.11.14, .19, v2.12.2)</a></li>
     <li><a href="#upgrade">Upgrade</a></li>
     <li><a href="#whiteboard">On the whiteboard</a></li>
   </ul>
 </div>
+
+<hr class="divider">
+
+<h2 id="tools">🔧 AI tool calling — chat the assistant into building things <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.12.11</span></h2>
+
+<p>
+  The AI assistant always knew how to write Caddyfile snippets — copy/paste them into <code>/caddyfile-import</code> and you'd get a proxy host. v2.12.11 closes that loop: the model emits a structured <strong>tool call</strong>, you see a confirmation card with the parameters, click Apply, and CaddyUI creates the resource for real.
+</p>
+
+<p>
+  Two tools shipped today:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Tool</th><th>Arguments</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>create_proxy_host</code></td>
+      <td><code>domains, forward_scheme, forward_host, forward_port, ssl_enabled, ssl_forced</code></td>
+      <td>New row in <code>proxy_hosts</code>; <code>syncCaddy</code> fires immediately</td>
+    </tr>
+    <tr>
+      <td><code>create_redirection</code></td>
+      <td><code>domains, forward_scheme, forward_domain, forward_http_code, preserve_path</code></td>
+      <td>New row in <code>redirection_hosts</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  The system prompt tells the model when to call a tool vs. just write a snippet:
+</p>
+
+<ul>
+  <li>"create a proxy host for X" / "set up X" / "add X" → <strong>tool call</strong></li>
+  <li>"redirect old.com to new.com" → <strong>tool call</strong></li>
+  <li>"what's the Caddyfile for X" / "explain X" / "how would I configure X" → <strong>just write a snippet</strong>, no tool</li>
+</ul>
+
+<p>
+  Implemented over Ollama's OpenAI-compatible <code>tools</code> array. Works on <strong>qwen2.5</strong>, <strong>qwen2.5-coder</strong>, <strong>llama3.1+</strong>, <strong>gemma2</strong>; older or smaller models silently ignore the tools field, so back-compat is automatic. Every successful exec writes an <code>ai_tool_call</code> row to the activity log with the resource ID + a human-readable summary, so admins can audit what the AI actually did.
+</p>
+
+<div class="callout">
+  <strong>Trade-off, deliberate.</strong> The tool exec doesn't continue the conversation back into the model — you don't get a "Done! Created proxy host #42…" follow-up automatically. Multi-step tool flows ("now redirect old to new") still work because each turn is independent and the model sees the conversation history. Keeps v1 simple and the user keeps full control over what gets created.
+</div>
+
+<hr class="divider">
+
+<h2 id="chat-polish">💬 Chat polish — memory, markdown, custom prompts <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.12.7, v2.12.10</span></h2>
+
+<p>
+  Three rounds of polish on the AI panel that landed alongside tool calling:
+</p>
+
+<ul>
+  <li><strong>Conversation memory.</strong> <code>/api/ai/chat</code> now accepts <code>{messages:[{role,content},...]}</code> for multi-turn context. Every prior turn is sent with the next request, so "make one here" or "add to that" actually refers back to what was discussed instead of restarting cold. Capped at 20 messages server-side to avoid blowing the model's context window. <strong>"New chat"</strong> button in the modal header wipes context when the topic switches.</li>
+  <li><strong>Markdown rendering.</strong> Llama / Qwen / Gemma all emit Markdown — <code>**bold**</code>, fenced <code>```code blocks```</code>, ` <code>inline code</code> `, lists. The chat panel was passing those through HTML-escape only, so the asterisks and backticks showed up as literal characters in every reply. Tiny in-line renderer (no CDN, no library) handles bold, italic, code spans, fenced blocks, and bullet/numbered lists. HTML-escape happens first; regex marker replacement runs on the escaped text so injected tags can't reach the DOM.</li>
+  <li><strong>Custom system prompt setting.</strong> Settings → AI assistant → Custom system prompt — paste your own steering text to override the built-in Caddy-flavoured one. Useful for teams with in-house naming conventions, different verbosity preferences, or a different persona — without writing an Ollama Modelfile.</li>
+</ul>
+
+<hr class="divider">
+
+<h2 id="dash-scope">📊 Dashboard cards scoped to the active server <span style="color:var(--muted);font-weight:400;font-size:0.6em;letter-spacing:0;">v2.12.8, v2.12.9</span></h2>
+
+<p>
+  The Requests / Visitors / Bandwidth Today cards on the dashboard were calling <code>AccessTotalsSince(..., "")</code> with no host filter, so they summed every access event across the entire fleet — ignoring which server the picker had selected. On a multi-server install with a busy edge node, the active server's dashboard would show another server's traffic.
+</p>
+
+<p>
+  v2.12.8 scopes the cards to the active server's hostnames (loops over each Domain in the active server's proxy hosts / redirections / raw routes and sums per-host).
+</p>
+
+<p>
+  v2.12.9 fixed a related bug: hosts with wildcard SAN domains (<code>*.example.com</code>) were being passed as a literal <code>host = '*.example.com'</code> filter to the analytics queries — which never matched a real recorded hostname. New <code>hostMatchClause</code> helper detects the <code>*.</code> prefix and translates to <code>host LIKE '%.example.com'</code>. Wildcard-routed traffic now contributes to the per-server totals correctly.
+</p>
 
 <hr class="divider">
 
@@ -574,7 +655,7 @@
 </p>
 
 <pre><code># pinned to this exact release (recommended)
-docker pull applegater/caddyui:v2.12.4
+docker pull applegater/caddyui:v2.12.12
 
 # rolling tags — all four point at the same image right now
 docker pull applegater/caddyui:latest
@@ -582,12 +663,12 @@ docker pull applegater/caddyui:stable
 docker pull applegater/caddyui:preview</code></pre>
 
 <p>
-  <code>:latest</code> and <code>:stable</code> retag here, replacing v2.12.0. The cadence rule (retag <code>:latest</code> every ~8 features) is satisfied — the v2.11.0 → v2.12.4 cycle landed 19 numbered preview builds plus a GA marker.
+  <code>:latest</code> and <code>:stable</code> retag here, replacing v2.12.4. Eight patch versions in this wave (v2.12.5 → v2.12.12), headlined by the AI tool-calling feature.
 </p>
 
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.12.4" class="btn primary">
-    📦 View v2.12.4 release
+  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.12.12" class="btn primary">
+    📦 View v2.12.12 release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub
