@@ -681,6 +681,70 @@ if ('serviceWorker' in navigator) {
       e.preventDefault();
     }
   });
+  // v2.12.11: render a confirmation card for an AI-proposed tool call.
+  // The user clicks Apply → POST to /api/ai/exec-tool → resource is
+  // actually created. Cancel just dismisses the card.
+  function appendToolCallCard(tc) {
+    var args = tc.args || {};
+    var labels = { 'create_proxy_host': '➕ Create proxy host', 'create_redirection': '➕ Create redirection' };
+    var color = tc.name === 'create_redirection' ? 'sky' : 'brand';
+    var rows = Object.keys(args).map(function(k) {
+      var v = args[k];
+      if (typeof v === 'boolean') v = v ? '✓ true' : '✗ false';
+      return '<div class="grid grid-cols-[8rem_1fr] gap-2 text-xs"><span class="text-ink-500 dark:text-slate-400 font-mono">' + escapeHTML(k) + '</span><span class="text-ink-900 dark:text-slate-100 font-mono break-all">' + escapeHTML(String(v)) + '</span></div>';
+    }).join('');
+    var card = document.createElement('div');
+    card.className = 'flex justify-start';
+    card.innerHTML =
+      '<div class="border-2 border-' + color + '-300 dark:border-' + color + '-700 bg-' + color + '-50 dark:bg-' + color + '-900/30 rounded-lg p-3 max-w-[90%] w-full">' +
+        '<div class="flex items-center justify-between mb-2">' +
+          '<div class="text-sm font-semibold text-' + color + '-800 dark:text-' + color + '-200">' + (labels[tc.name] || tc.name) + '</div>' +
+          '<span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-' + color + '-100 dark:bg-' + color + '-900/50 text-' + color + '-700 dark:text-' + color + '-300 font-medium">tool call</span>' +
+        '</div>' +
+        '<div class="space-y-1 mb-3">' + rows + '</div>' +
+        '<div class="flex items-center gap-2">' +
+          '<button data-tc-apply class="px-3 py-1 rounded-md bg-' + color + '-600 hover:bg-' + color + '-700 text-white text-xs font-medium transition">Apply</button>' +
+          '<button data-tc-cancel class="px-3 py-1 rounded-md border border-ink-200 dark:border-slate-600 text-ink-600 dark:text-slate-300 hover:bg-ink-100 dark:hover:bg-slate-700 text-xs transition">Cancel</button>' +
+          '<span data-tc-status class="text-xs text-ink-500 dark:text-slate-400 ml-2"></span>' +
+        '</div>' +
+      '</div>';
+    history.appendChild(card);
+    history.scrollTop = history.scrollHeight;
+
+    var applyBtn = card.querySelector('[data-tc-apply]');
+    var cancelBtn = card.querySelector('[data-tc-cancel]');
+    var statusEl = card.querySelector('[data-tc-status]');
+
+    cancelBtn.addEventListener('click', function() {
+      applyBtn.disabled = true;
+      cancelBtn.disabled = true;
+      statusEl.textContent = '✗ cancelled';
+    });
+    applyBtn.addEventListener('click', function() {
+      applyBtn.disabled = true;
+      cancelBtn.disabled = true;
+      statusEl.textContent = 'creating…';
+      fetch('/api/ai/exec-tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ name: tc.name, args: tc.args })
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.error) {
+            statusEl.innerHTML = '<span class="text-red-600 dark:text-red-400">✗ ' + escapeHTML(d.error) + '</span>';
+            return;
+          }
+          var url = d.url ? ' <a href="' + d.url + '" class="text-' + color + '-700 dark:text-' + color + '-300 underline">edit →</a>' : '';
+          statusEl.innerHTML = '<span class="text-emerald-700 dark:text-emerald-300">' + escapeHTML(d.summary || '✓ created') + '</span>' + url;
+        })
+        .catch(function(err) {
+          statusEl.innerHTML = '<span class="text-red-600 dark:text-red-400">✗ network error: ' + escapeHTML(err.message) + '</span>';
+        });
+    });
+  }
+
   // v2.12.10: in-memory conversation transcript. Each user/assistant
   // exchange gets pushed; sent on every request as the multi-turn
   // messages[] payload. "New chat" clears it.
@@ -717,7 +781,19 @@ if ('serviceWorker' in navigator) {
         if (d.error) {
           appendBubble('assistant', d.error, true);
           // Don't store error responses in conversation memory.
-        } else if (d.reply) {
+          return;
+        }
+        // v2.12.11: tool calls — render a confirmation card per call,
+        // optionally alongside any prose the model included.
+        if (d.tool_calls && d.tool_calls.length > 0) {
+          if (d.reply) {
+            appendBubble('assistant', d.reply);
+            conversation.push({ role: 'assistant', content: d.reply });
+          }
+          d.tool_calls.forEach(function(tc) { appendToolCallCard(tc); });
+          return;
+        }
+        if (d.reply) {
           appendBubble('assistant', d.reply);
           conversation.push({ role: 'assistant', content: d.reply });
         } else {
