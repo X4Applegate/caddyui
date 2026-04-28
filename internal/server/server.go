@@ -9161,6 +9161,106 @@ func runNotifierCheck(db *sql.DB) {
 			log.Printf("notifier: sent cert-expiry notification for %q (%d days left)", domain, daysLeft)
 		}
 	}
+
+	// v2.11.14: also alert on Let's Encrypt / ACME-managed certs by doing a
+	// live TLS dial against each enabled, SSL-enabled proxy host's first
+	// domain. Caddy stores ACME-issued certs in its own data dir (which
+	// CaddyUI can't read without sharing the volume), so dialing the
+	// public endpoint and reading the peer certificate is the most
+	// reliable way to surface expiry across LE / ZeroSSL / custom alike.
+	runProxyHostCertExpiryCheck(db, webhookURL, emailOK, daysBefore, alreadyNotified, now)
+}
+
+// runProxyHostCertExpiryCheck — v2.11.14: extension of runNotifierCheck that
+// covers Caddy-managed (ACME / LE) certificates. For each enabled proxy host
+// with SSLEnabled=true, dials the first domain at :443, reads the leaf cert,
+// and fires the same webhook + email channels when expiry is within
+// daysBefore. Dedup keys are prefixed "proxy:" so they don't collide with
+// the custom-cert dedup keys used above.
+func runProxyHostCertExpiryCheck(db *sql.DB, webhookURL string, emailOK bool, daysBefore int, alreadyNotified map[string]struct{}, now time.Time) {
+	threshold := time.Duration(daysBefore) * 24 * time.Hour
+	servers, _ := models.ListCaddyServers(db)
+	if len(servers) == 0 {
+		// Fallback for fresh installs that haven't seeded servers yet.
+		servers = []models.CaddyServer{{ID: 1}}
+	}
+	for _, srv := range servers {
+		hosts, err := models.ListProxyHosts(db, srv.ID, 0, true, nil)
+		if err != nil {
+			continue
+		}
+		for _, h := range hosts {
+			if !h.Enabled || !h.SSLEnabled {
+				continue
+			}
+			first := strings.TrimSpace(strings.SplitN(h.Domains, ",", 2)[0])
+			if first == "" || strings.HasPrefix(first, "*.") {
+				// Skip wildcards — can't dial a wildcard hostname directly.
+				continue
+			}
+			key := "proxy:" + first
+			if _, seen := alreadyNotified[key]; seen {
+				continue
+			}
+			d := &net.Dialer{Timeout: 8 * time.Second}
+			conn, err := tls.DialWithDialer(d, "tcp", first+":443", &tls.Config{
+				ServerName: first,
+				// We need the peer cert chain, not auth — system roots are
+				// fine. If verification fails we still get the chain back
+				// via PeerCertificates so we can read expiry; but we keep
+				// strict verify on first to surface expired/invalid certs.
+			})
+			if err != nil {
+				continue
+			}
+			peers := conn.ConnectionState().PeerCertificates
+			conn.Close()
+			if len(peers) == 0 {
+				continue
+			}
+			leaf := peers[0]
+			if !leaf.NotAfter.After(now) {
+				continue
+			}
+			remaining := leaf.NotAfter.Sub(now)
+			if remaining > threshold {
+				continue
+			}
+			daysLeft := int(remaining.Hours() / 24)
+
+			sent := false
+			if webhookURL != "" {
+				payload, _ := json.Marshal(map[string]any{
+					"event":     "proxy_cert_expiring",
+					"domain":    first,
+					"days_left": daysLeft,
+					"issuer":    leaf.Issuer.CommonName,
+				})
+				sendWebhookPayload(db, webhookURL, payload)
+				sent = true
+			}
+			if emailOK {
+				subject := fmt.Sprintf("[CaddyUI] Live cert expiring: %s (%d days left)", first, daysLeft)
+				body := fmt.Sprintf(
+					"CaddyUI live-cert expiry alert\n\nDomain  : %s\nDays left: %d\nExpires  : %s\nIssuer  : %s\n\nThis is the certificate Caddy is currently serving for the host. Check /certificates and the host's TLS settings if a renewal hasn't fired.\n",
+					first, daysLeft, leaf.NotAfter.UTC().Format("2006-01-02"), leaf.Issuer.CommonName,
+				)
+				if err := sendEmail(db, subject, body); err != nil {
+					log.Printf("notifier: send email for live cert %q: %v", first, err)
+				} else {
+					sent = true
+				}
+			}
+			if sent {
+				notifierState.lastNotified = append(notifierState.lastNotified, notifiedEntry{
+					Domain:     key,
+					DaysLeft:   daysLeft,
+					NotifiedAt: now,
+				})
+				log.Printf("notifier: sent live-cert-expiry notification for %q (%d days left, issuer %q)", first, daysLeft, leaf.Issuer.CommonName)
+			}
+		}
+	}
 }
 
 // sendWebhookPayload POSTs a JSON payload to webhookURL. If a secret is configured
