@@ -284,9 +284,9 @@
     <p class="text-xs text-ink-500 mt-1">Override the Host header sent to the upstream (leave blank to forward the original)</p>
   </div>
 
-  <div class="pt-2">
-    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">Options</div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  <details class="pt-4 border-t border-ink-100">
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">Options &amp; Forwarded Headers</summary>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
       <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
       <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_enabled" {{if .Host.SSLEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Auto SSL (Let's Encrypt)</label>
       <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_forced" {{if .Host.SSLForced}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Force SSL (HTTPS redirect)</label>
@@ -781,7 +781,7 @@
         <span>Block Dotfiles (403)<span class="block text-xs text-ink-500 mt-0.5 font-normal">Block requests to hidden files and directories (paths starting with a dot, e.g. .env, .git)</span></span>
       </label>
     </div>
-  </div>
+  </details>
 
   {{/* ── Managed DNS (unified picker across all enabled providers) ──
        v2.7.1 moved this block from its previous position (buried under Basic
@@ -792,7 +792,7 @@
        form still reads compactly. */}}
   {{if .AnyDNSEnabled}}
   {{$provider := .Host.DNSProvider}}
-  <details class="pt-4 border-t border-ink-100"{{if $provider}} open{{end}}>
+  <details class="pt-4 border-t border-ink-100" data-keep-open open>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
     </summary>
@@ -876,7 +876,7 @@
        opens on edit only when the host has a non-default certificate picked,
        matching the behaviour of Advanced config / IP Allowlist / Managed DNS
        above. */}}
-  <details class="pt-4 border-t border-ink-100"{{if gt .Host.CertificateID 0}} open{{end}}>
+  <details class="pt-4 border-t border-ink-100" data-keep-open open>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       TLS Certificate <span class="font-normal normal-case">(optional, defaults to auto Let's Encrypt)</span>
     </summary>
@@ -3447,7 +3447,8 @@
   document.querySelectorAll('form#proxy-host-form details').forEach(function(det) {
     var summary = det.querySelector(':scope > summary');
     if (!summary) return;
-    if (!isEdit) { det.open = false; }
+    var keepOpen = det.hasAttribute('data-keep-open');
+    if (!isEdit && !keepOpen) { det.open = false; }
     var inputs = det.querySelectorAll('input, select, textarea');
     var n = 0;
     inputs.forEach(function(i) { if (isModified(i)) n++; });
@@ -3457,7 +3458,7 @@
     badge.title = n + ' configured field' + (n === 1 ? '' : 's') + ' in this section';
     badge.className = 'ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-[10px] font-semibold bg-brand-100 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300';
     summary.appendChild(badge);
-    if (isEdit) { det.open = true; }
+    if (isEdit && !keepOpen) { det.open = true; }
   });
 })();
 </script>
