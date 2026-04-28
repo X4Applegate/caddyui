@@ -270,7 +270,11 @@
       fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID))
         .then(function(r) { return r.json(); })
         .then(function(data) {
-          if (!data || !Array.isArray(data.zones)) {
+          // v2.12.4: /api/dns-zones returns a flat [{id,name,...}] array,
+          // not {zones:[...]}. Earlier shape mismatch surfaced as "failed
+          // to load zones" on the redirection form's picker.
+          var zones = Array.isArray(data) ? data : (data && data.zones);
+          if (!Array.isArray(zones)) {
             zoneSel.replaceChildren(new Option('— failed to load zones —', ''));
             return;
           }
@@ -278,7 +282,7 @@
           var frag = document.createDocumentFragment();
           var placeholder = new Option('Select a zone', '');
           frag.appendChild(placeholder);
-          data.zones.forEach(function(z) {
+          zones.forEach(function(z) {
             var label = z.name || z.id;
             var opt = new Option(label + (z.id && z.id !== z.name ? ' (' + z.id + ')' : ''), z.id);
             opt.setAttribute('data-name', z.name || z.id);
