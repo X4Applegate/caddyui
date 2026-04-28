@@ -230,6 +230,58 @@
 </div>
 {{end}}
 
+{{/* v2.11.16: Caddy fleet health — one status card per registered server.
+     Renders only when more than one server is registered (single-server
+     installs don't benefit from a fleet view). */}}
+{{if .ServerHealth}}
+<div class="flex items-center justify-between mb-3 mt-2">
+  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Caddy servers</h2>
+  <a href="/servers" class="text-xs text-ink-500 hover:text-ink-900 transition">Manage &rarr;</a>
+</div>
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-8">
+  {{range .ServerHealth}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-4{{if .IsActive}} ring-2 ring-brand-500/40{{end}}">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-1.5">
+          <span class="font-medium text-ink-900 truncate">{{.Name}}</span>
+          {{if .IsActive}}<span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-brand-100 text-brand-700 font-medium">active</span>{{end}}
+          {{if .IsExternal}}<span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium" title="External (read-only) server">read-only</span>{{end}}
+        </div>
+        <div class="text-xs text-ink-400 font-mono truncate mt-0.5">{{.AdminURL}}</div>
+      </div>
+      {{if eq .Status "online"}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>online</span>
+      {{else if eq .Status "offline"}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>offline</span>
+      {{else}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>unknown</span>
+      {{end}}
+    </div>
+    <div class="grid grid-cols-3 gap-2 mt-3 text-xs">
+      <div>
+        <div class="text-ink-400 uppercase tracking-wider text-[10px]">Hosts</div>
+        <div class="text-ink-900 font-semibold mt-0.5">{{.HostCount}}</div>
+      </div>
+      <div>
+        <div class="text-ink-400 uppercase tracking-wider text-[10px]">Caddy</div>
+        <div class="text-ink-900 font-mono mt-0.5">{{if .Version}}{{.Version}}{{else}}—{{end}}</div>
+      </div>
+      <div>
+        <div class="text-ink-400 uppercase tracking-wider text-[10px]">Last seen</div>
+        <div class="text-ink-900 mt-0.5">{{fmtRel .LastContactAt}}</div>
+      </div>
+    </div>
+    {{if not .IsActive}}
+    <form method="post" action="/servers/{{.ID}}/select" class="mt-3">
+      <button class="w-full text-xs px-2 py-1.5 rounded-md border border-ink-200 hover:border-brand-300 hover:bg-brand-50/30 text-ink-700 transition">Switch to this server</button>
+    </form>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 {{/* v2.11.12: "Recently edited" widget — last 8 CRUD events across all
      resource types (proxy hosts, redirects, raw routes, certs, groups,
      API tokens), pulled from the activity log. Skips login/sync/snapshot

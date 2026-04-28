@@ -1779,6 +1779,43 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	globalMaintenance, _ := models.GetSetting(s.DB, settingGlobalMaintenance)
 
+	// v2.11.16: per-server health summary — one card per Caddy server
+	// the user has registered, showing status / host count / last contact.
+	// Aggregated cross-server (not just the active picker) so users with
+	// 4+ servers don't have to flip the picker to spot a down node.
+	type serverHealthRow struct {
+		ID            int64
+		Name          string
+		AdminURL      string
+		Status        string // "online" | "offline" | "unknown"
+		Version       string
+		HostCount     int
+		LastContactAt time.Time // zero = never; fmtRel handles that
+		IsExternal    bool
+		IsActive      bool // matches the active server picker
+	}
+	var serverHealth []serverHealthRow
+	if servers, err := models.ListCaddyServers(s.DB); err == nil && len(servers) > 1 {
+		// Only render the widget when there's more than one server — single-
+		// server installs don't benefit from a fleet view.
+		for _, sr := range servers {
+			row := serverHealthRow{
+				ID: sr.ID, Name: sr.Name, AdminURL: sr.AdminURL,
+				Status: sr.Status, Version: sr.Version,
+				IsExternal: sr.Type == models.CaddyServerTypeExternal,
+				IsActive:   sr.ID == sid,
+			}
+			if sr.LastContactAt.Valid {
+				row.LastContactAt = sr.LastContactAt.Time
+			}
+			// Cheap host count — admin sees every host on every server.
+			var n int
+			_ = s.DB.QueryRow(`SELECT COUNT(*) FROM proxy_hosts WHERE server_id=?`, sr.ID).Scan(&n)
+			row.HostCount = n
+			serverHealth = append(serverHealth, row)
+		}
+	}
+
 	// v2.11.12: "Recently edited" widget — pulls the last few CRUD events
 	// from the activity log (skips login/sync/snapshot noise) so users
 	// landing on the dashboard see at a glance what just changed.
@@ -1820,6 +1857,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		"EnabledHostCount":     enabledHosts,
 		"MaintenanceHostCount": maintenanceCount,
 		"RecentEdits":          recentEdits,
+		"ServerHealth":         serverHealth,
 		"Section":              "dashboard",
 	})
 }
