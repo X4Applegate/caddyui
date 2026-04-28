@@ -83,6 +83,12 @@ type ProxyHost struct {
 	// to the proxy_hosts table and reflected in the Caddy config on each sync.
 	CompressionEnabled     bool   // prepend gzip/zstd encode handler
 	SecurityHeadersEnabled bool   // add HSTS, X-Frame-Options, X-Content-Type-Options, etc.
+	// v2.12.16: in-memory only (not persisted). syncCaddy populates this
+	// from settingGlobalStripResponseHeaders before BuildProxyRoute fires
+	// so the per-host SecurityHeaders bundle can skip headers the user
+	// listed in the global strip — otherwise the bundle's `set` would
+	// override the strip handler.
+	GlobalStripHeaders []string `json:"-"`
 	TLSMinVersion          string // "" | "1.0" | "1.1" | "1.2" | "1.3"
 	CustomReqHeaders  string // JSON: map[string]string of request headers to set/delete
 	CustomRespHeaders string // JSON: map[string]string of response headers to set/delete

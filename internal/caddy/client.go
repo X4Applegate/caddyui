@@ -1372,6 +1372,20 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		if p.PermissionsPolicy != "" {
 			secHdrs["Permissions-Policy"] = []any{p.PermissionsPolicy}
 		}
+		// v2.12.16: respect Settings → "Globally stripped response headers"
+		// even when the per-host SecurityHeaders bundle is on. Without this,
+		// the bundle's set re-adds X-Frame-Options (or whatever) right after
+		// the v2.9.168 strip handler tries to remove it. Empty bundle after
+		// filtering = no handler emitted at all (skip the whole block).
+		if len(p.GlobalStripHeaders) > 0 {
+			for _, name := range p.GlobalStripHeaders {
+				for k := range secHdrs {
+					if strings.EqualFold(k, name) {
+						delete(secHdrs, k)
+					}
+				}
+			}
+		}
 		// v2.10.4: delete-then-set semantics. Caddy's response.set on an
 		// already-present header (when the upstream sets the same header
 		// itself, e.g. CaddyUI's own middleware as of v2.10.3) appends a
@@ -1379,17 +1393,22 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		// duplicate X-Frame-Options / X-Content-Type-Options lines. Adding
 		// `delete` first guarantees the upstream's value is cleared before
 		// we set our own, so the bundle ships exactly one of each header.
-		delHdrs := []any{}
-		for k := range secHdrs {
-			delHdrs = append(delHdrs, k)
+		// v2.12.16: skip the whole handler if the global-strip filter
+		// removed every entry — emitting an empty set/delete block is
+		// noise.
+		if len(secHdrs) > 0 {
+			delHdrs := []any{}
+			for k := range secHdrs {
+				delHdrs = append(delHdrs, k)
+			}
+			handlers = append(handlers, map[string]any{
+				"handler": "headers",
+				"response": map[string]any{
+					"delete": delHdrs,
+					"set":    secHdrs,
+				},
+			})
 		}
-		handlers = append(handlers, map[string]any{
-			"handler": "headers",
-			"response": map[string]any{
-				"delete": delHdrs,
-				"set":    secHdrs,
-			},
-		})
 	} else if p.PermissionsPolicy != "" {
 		// Even without the full security bundle, still inject Permissions-Policy alone.
 		// v2.10.5: delete+set so an upstream-set value doesn't pile up alongside ours.

@@ -6813,13 +6813,24 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	// proxy host's per-host list so the eventual BuildProxyRoute emits a
 	// header-delete handler covering both. Mutating in-place is safe — the
 	// proxies slice is a fresh ListProxyHosts call, not a long-lived cache.
+	// v2.12.16: also populate GlobalStripHeaders so the SecurityHeaders
+	// bundle can filter against it (otherwise the bundle's `set` would
+	// fight the strip handler and X-Frame-Options would persist).
 	if globalStrip, _ := models.GetSetting(s.DB, settingGlobalStripResponseHeaders); strings.TrimSpace(globalStrip) != "" {
+		var stripList []string
+		for _, h := range strings.Split(globalStrip, ",") {
+			h = strings.TrimSpace(h)
+			if h != "" {
+				stripList = append(stripList, h)
+			}
+		}
 		for i := range proxies {
 			if strings.TrimSpace(proxies[i].StripResponseHeaders) == "" {
 				proxies[i].StripResponseHeaders = globalStrip
 			} else {
 				proxies[i].StripResponseHeaders = globalStrip + "," + proxies[i].StripResponseHeaders
 			}
+			proxies[i].GlobalStripHeaders = stripList
 		}
 	}
 
