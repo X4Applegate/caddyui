@@ -93,7 +93,7 @@
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
     </summary>
-    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for the first hostname in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>, pointing at this server's public IP. The record is deleted when the route is removed. Pick the provider that owns the domain, then select the zone.</p>
+    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every hostname</strong> in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>, pointing at this server's public IP. Records are deleted when the route is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create). Pick the provider that owns the domain, then select the zone.</p>
     {{if .CurrentServerIP}}
     <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
     {{else}}
@@ -254,17 +254,14 @@
     return best;
   }
 
-  // Pull the first hostname out of the form. Preference order matches
+  // Pull every hostname out of the form. Preference order matches
   // parseRawRouteForm on the server:
   //   1. caddyfile_src's first site-block header (user edits this when set)
-  //   2. json_data's match[].host[0]
-  // Both are parsed defensively — any shape mismatch returns "" and the
+  //   2. json_data's match[].host[]
+  // Both are parsed defensively — any shape mismatch returns [] and the
   // picker treats the form as "no domain known yet."
-  function firstDomain() {
+  function allDomains() {
     if (cfIn && cfIn.value && cfIn.value.trim()) {
-      // Scan non-blank / non-comment lines until we hit one ending in "{".
-      // The token before " {" is the site header; the first comma-separated
-      // entry is what we consider the primary domain.
       var lines = cfIn.value.split('\n');
       for (var i = 0; i < lines.length; i++) {
         var line = lines[i].trim();
@@ -273,29 +270,40 @@
         if (bi < 0) continue;
         var header = line.slice(0, bi).trim();
         if (!header) continue;
-        var first = header.split(',')[0].trim();
-        // Strip scheme prefix "https://" if present.
-        first = first.replace(/^https?:\/\//i, '');
-        // Skip obvious non-hostname site-block heads (":443", "http", etc.)
-        if (!first || first.charAt(0) === ':' || first === 'http' || first === 'https') continue;
-        return first.toLowerCase();
+        var out = [];
+        header.split(',').forEach(function(part) {
+          var d = part.trim().replace(/^https?:\/\//i, '');
+          if (!d || d.charAt(0) === ':' || d === 'http' || d === 'https') return;
+          out.push(d.toLowerCase());
+        });
+        if (out.length) return out;
       }
     }
-    if (!jsonIn) return '';
+    if (!jsonIn) return [];
     var raw = jsonIn.value;
-    if (!raw || !raw.trim()) return '';
+    if (!raw || !raw.trim()) return [];
     try {
       var cfg = JSON.parse(raw);
       var matches = (cfg && cfg.match) || [];
+      var out2 = [];
+      var seen = {};
       for (var i2 = 0; i2 < matches.length; i2++) {
         var hosts = matches[i2] && matches[i2].host;
-        if (hosts && hosts.length) {
-          var h = (hosts[0] || '').toString().trim().toLowerCase();
-          if (h) return h;
+        if (!hosts) continue;
+        for (var j = 0; j < hosts.length; j++) {
+          var h = (hosts[j] || '').toString().trim().toLowerCase();
+          if (h && !seen[h]) { seen[h] = true; out2.push(h); }
         }
       }
+      return out2;
     } catch (e) {}
-    return '';
+    return [];
+  }
+  // v2.12.0 backwards-compat shim — earlier code (zone picker, mismatch warn)
+  // still wants a single first domain. Keep it as a thin wrapper.
+  function firstDomain() {
+    var d = allDomains();
+    return d.length > 0 ? d[0] : '';
   }
 
   function syncZoneName() {
@@ -408,65 +416,73 @@
     warnBox.className = 'hidden mt-3 rounded-lg border px-3 py-2 text-xs';
   }
 
-  function showWarn(fqdn, records) {
+  // v2.12.1: render per-hostname status — every match.host[] entry is
+  // checked, so users with multi-hostname routes (apex + wildcard, alias
+  // bundles, etc.) see at a glance which records will be created and
+  // which will be skipped because something already lives there.
+  function renderMultiStatus(rows) {
     if (!warnBox) return;
-    warnBox.className = 'mt-3 rounded-lg border px-3 py-2 text-xs bg-amber-50 border-amber-200 text-amber-800';
-    warnMsg.textContent = records.length === 1
-      ? 'A DNS record for ' + fqdn + ' already exists.'
-      : 'DNS records for ' + fqdn + ' already exist (' + records.length + ').';
-    warnDetail.textContent = records.map(function(r) {
-      return r.type + ' → ' + (r.content || '');
-    }).join(', ');
+    var anyExisting = rows.some(function(r) { return r.exists; });
+    var allMissing  = rows.every(function(r) { return !r.exists; });
+    if (allMissing) {
+      // All-clear — no warning at all.
+      hideWarn();
+      return;
+    }
+    warnBox.className = 'mt-3 rounded-lg border px-3 py-2 text-xs ' +
+      (anyExisting ? 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-900/30 dark:border-amber-800 dark:text-amber-200' : 'bg-emerald-50 border-emerald-200 text-emerald-800');
+    warnMsg.textContent = 'Per-hostname A-record check on save:';
+    warnDetail.innerHTML = rows.map(function(r) {
+      if (r.exists) {
+        var content = (r.records || []).map(function(rec) { return rec.type + '→' + (rec.content || ''); }).join(', ');
+        return '<div>⚠ <strong>' + r.fqdn + '</strong> — already exists (' + content + '), CaddyUI will skip</div>';
+      }
+      return '<div>✓ <strong>' + r.fqdn + '</strong> — will be created</div>';
+    }).join('');
   }
 
-  var lastCheck = { key: '', records: null };
+  var lastCheck = { key: '', rows: null };
   var checkTimer = null;
 
   function triple() {
     return (providerSel.value || '') + '|' +
            (zoneSel.value || '') + '|' +
-           firstDomain();
+           allDomains().join(',');
   }
 
   function checkExistingRecord() {
     var provider = providerSel.value;
     var zoneID   = zoneSel.value;
     var zoneName = zoneNameIn ? zoneNameIn.value : '';
-    var fqdn     = firstDomain();
+    var fqdns    = allDomains();
     var key      = triple();
-    if (!provider || !zoneID || !fqdn) {
-      lastCheck = { key: '', records: null };
+    if (!provider || !zoneID || fqdns.length === 0) {
+      lastCheck = { key: '', rows: null };
       hideWarn();
       return;
     }
-    if (key === lastCheck.key) {
-      if (lastCheck.records && lastCheck.records.length > 0) {
-        showWarn(fqdn, lastCheck.records);
-      }
+    if (key === lastCheck.key && lastCheck.rows) {
+      renderMultiStatus(lastCheck.rows);
       return;
     }
-    fetch('/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
-          '&zone=' + encodeURIComponent(zoneID) +
-          '&zone_name=' + encodeURIComponent(zoneName) +
-          '&fqdn=' + encodeURIComponent(fqdn))
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (!data || !data.ok) {
-          lastCheck = { key: key, records: null };
-          hideWarn();
-          return;
-        }
-        lastCheck = { key: key, records: data.records || [] };
-        if (data.exists && lastCheck.records.length > 0) {
-          showWarn(fqdn, lastCheck.records);
-        } else {
-          hideWarn();
-        }
-      })
-      .catch(function() {
-        lastCheck = { key: key, records: null };
-        hideWarn();
-      });
+    // v2.12.1: fetch every fqdn in parallel and aggregate.
+    var url = function(fqdn) {
+      return '/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
+             '&zone=' + encodeURIComponent(zoneID) +
+             '&zone_name=' + encodeURIComponent(zoneName) +
+             '&fqdn=' + encodeURIComponent(fqdn);
+    };
+    Promise.all(fqdns.map(function(fqdn) {
+      return fetch(url(fqdn))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          return { fqdn: fqdn, exists: !!(d && d.ok && d.exists), records: (d && d.records) || [] };
+        })
+        .catch(function() { return { fqdn: fqdn, exists: false, records: [] }; });
+    })).then(function(rows) {
+      lastCheck = { key: key, rows: rows };
+      renderMultiStatus(rows);
+    });
   }
 
   function scheduleCheck() {
