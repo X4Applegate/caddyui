@@ -35,6 +35,19 @@
     <div class="sm:col-span-2">
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Domain names <span class="text-ink-400 font-normal">(comma separated)</span></label>
       <input name="domains" value="{{.Host.Domains}}" required placeholder="example.com, www.example.com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      {{/* v2.12.0: wildcard cert via DNS-01 callout. Shown only when the
+           Domains field contains a *.foo.bar entry — wildcards can't be
+           validated via HTTP-01, so Caddy needs DNS-01 with a real DNS
+           provider plugin. JS toggles visibility live. */}}
+      <div id="wildcard-callout" class="hidden mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+        <div class="flex items-start gap-2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0 mt-0.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div class="flex-1 min-w-0">
+            <strong>Wildcard SAN detected.</strong> Wildcards can only be issued via the ACME <strong>DNS-01</strong> challenge — HTTP-01 can't validate them.
+            <span id="wildcard-callout-detail" class="block mt-1"></span>
+          </div>
+        </div>
+      </div>
     </div>
     <div>
       <label class="block text-sm font-medium text-ink-800 mb-1.5">www redirect</label>
@@ -3424,6 +3437,43 @@
 </form>
 
 <script>
+// v2.12.0: wildcard SAN callout — show a DNS-01 hint whenever the
+// Domains field has any *.foo.bar entry. Updates live as the user types
+// and reacts to dns_provider <select> changes so the message reflects
+// whether a provider has been picked.
+(function() {
+  var domainsIn = document.querySelector('input[name="domains"]');
+  var providerSel = document.getElementById('dns-provider-select');
+  var callout = document.getElementById('wildcard-callout');
+  var detail = document.getElementById('wildcard-callout-detail');
+  if (!domainsIn || !callout || !detail) return;
+  function refresh() {
+    var raw = (domainsIn.value || '').split(',').map(function(s) { return s.trim(); });
+    var wildcards = raw.filter(function(d) { return d.indexOf('*.') === 0; });
+    if (wildcards.length === 0) {
+      callout.classList.add('hidden');
+      return;
+    }
+    callout.classList.remove('hidden');
+    var providerID = providerSel ? providerSel.value : '';
+    var providerLabel = '';
+    if (providerSel && providerID) {
+      var opt = providerSel.options[providerSel.selectedIndex];
+      providerLabel = opt ? opt.text : providerID;
+    }
+    if (providerID === 'cloudflare') {
+      detail.textContent = 'Will use Cloudflare DNS-01 with the API token already configured under Settings → DNS providers. Caddy must include the caddy-dns/cloudflare plugin (the default caddy:2-alpine image does not — use a custom xcaddy build).';
+    } else if (providerID && providerLabel) {
+      detail.textContent = providerLabel + ' is selected, but DNS-01 auto-emit currently supports only Cloudflare. The cert request will fail at issuance time. Either pick Cloudflare or add the tls/automation policy manually via /caddyfile-import.';
+    } else {
+      detail.textContent = 'Pick a Managed DNS provider in the section below — the credentials you enter for A-record management will be reused for the ACME DNS-01 challenge automatically.';
+    }
+  }
+  domainsIn.addEventListener('input', refresh);
+  if (providerSel) providerSel.addEventListener('change', refresh);
+  refresh();
+})();
+
 // v2.11.13: live route JSON preview. Listens for form changes, debounces
 // 500ms, POSTs the form to /api/proxy-hosts/preview, renders the result
 // in <pre id="ph-preview-json">. Server returns either {route:{...}} on
