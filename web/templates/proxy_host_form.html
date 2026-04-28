@@ -159,7 +159,7 @@
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
     </summary>
-    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for the first domain in this host, pointing at this server's public IP. The record is deleted when the host is removed. Pick the provider that owns the domain, then select the zone.</p>
+    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every domain</strong> in this host, pointing at this server's public IP. Records are deleted when the host is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create). Pick the provider that owns the domain, then select the zone.</p>
     {{if .CurrentServerIP}}
     <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
     {{else}}
@@ -3784,10 +3784,22 @@
     var warnMsg    = document.getElementById('dns-record-warn-msg');
     var warnDetail = document.getElementById('dns-record-warn-detail');
 
+    // v2.12.1: every comma-separated entry, not just the first. Backend
+    // creates an A record per entry since v2.5.9; the form pre-flight
+    // now matches that behaviour.
+    function allDomains() {
+      if (!domainsIn) return [];
+      var seen = {};
+      var out = [];
+      (domainsIn.value || '').split(',').forEach(function(part) {
+        var d = part.trim().toLowerCase();
+        if (d && !seen[d]) { seen[d] = true; out.push(d); }
+      });
+      return out;
+    }
     function firstDomain() {
-      if (!domainsIn) return '';
-      var v = (domainsIn.value || '').split(',')[0] || '';
-      return v.trim().toLowerCase();
+      var d = allDomains();
+      return d.length > 0 ? d[0] : '';
     }
 
     function hideWarn() {
@@ -3796,67 +3808,65 @@
       warnBox.className = 'hidden mt-3 rounded-lg border px-3 py-2 text-xs';
     }
 
-    function showWarn(fqdn, records) {
+    // v2.12.1: per-hostname status — see raw_route_form for the matching version.
+    function renderMultiStatus(rows) {
       if (!warnBox) return;
-      warnBox.className = 'mt-3 rounded-lg border px-3 py-2 text-xs bg-amber-50 border-amber-200 text-amber-800';
-      warnMsg.textContent = records.length === 1
-        ? 'A DNS record for ' + fqdn + ' already exists.'
-        : 'DNS records for ' + fqdn + ' already exist (' + records.length + ').';
-      warnDetail.textContent = records.map(function(r) {
-        return r.type + ' → ' + (r.content || '');
-      }).join(', ');
+      var anyExisting = rows.some(function(r) { return r.exists; });
+      var allMissing  = rows.every(function(r) { return !r.exists; });
+      if (allMissing) { hideWarn(); return; }
+      warnBox.className = 'mt-3 rounded-lg border px-3 py-2 text-xs ' +
+        (anyExisting ? 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-900/30 dark:border-amber-800 dark:text-amber-200' : 'bg-emerald-50 border-emerald-200 text-emerald-800');
+      warnMsg.textContent = 'Per-hostname A-record check on save:';
+      warnDetail.innerHTML = rows.map(function(r) {
+        if (r.exists) {
+          var content = (r.records || []).map(function(rec) { return rec.type + '→' + (rec.content || ''); }).join(', ');
+          return '<div>⚠ <strong>' + r.fqdn + '</strong> — already exists (' + content + '), CaddyUI will skip</div>';
+        }
+        return '<div>✓ <strong>' + r.fqdn + '</strong> — will be created</div>';
+      }).join('');
     }
 
-    var lastCheck = { key: '', records: null };
+    var lastCheck = { key: '', rows: null };
     var checkTimer = null;
 
     function triple() {
       return (providerSel.value || '') + '|' +
              (zoneSel.value || '') + '|' +
-             firstDomain();
+             allDomains().join(',');
     }
 
     function checkExistingRecord() {
       var provider = providerSel.value;
       var zoneID   = zoneSel.value;
       var zoneName = zoneNameIn ? zoneNameIn.value : '';
-      var fqdn     = firstDomain();
+      var fqdns    = allDomains();
       var key      = triple();
-      if (!provider || !zoneID || !fqdn) {
-        lastCheck = { key: '', records: null };
+      if (!provider || !zoneID || fqdns.length === 0) {
+        lastCheck = { key: '', rows: null };
         hideWarn();
         return;
       }
-      // Same triple, already checked — don't refetch. Keep the banner in
-      // sync with cached state.
-      if (key === lastCheck.key) {
-        if (lastCheck.records && lastCheck.records.length > 0) {
-          showWarn(fqdn, lastCheck.records);
-        }
+      if (key === lastCheck.key && lastCheck.rows) {
+        renderMultiStatus(lastCheck.rows);
         return;
       }
-      fetch('/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
-            '&zone=' + encodeURIComponent(zoneID) +
-            '&zone_name=' + encodeURIComponent(zoneName) +
-            '&fqdn=' + encodeURIComponent(fqdn))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          if (!data || !data.ok) {
-            lastCheck = { key: key, records: null };
-            hideWarn();
-            return;
-          }
-          lastCheck = { key: key, records: data.records || [] };
-          if (data.exists && lastCheck.records.length > 0) {
-            showWarn(fqdn, lastCheck.records);
-          } else {
-            hideWarn();
-          }
-        })
-        .catch(function() {
-          lastCheck = { key: key, records: null };
-          hideWarn();
-        });
+      var url = function(fqdn) {
+        return '/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
+               '&zone=' + encodeURIComponent(zoneID) +
+               '&zone_name=' + encodeURIComponent(zoneName) +
+               '&fqdn=' + encodeURIComponent(fqdn);
+      };
+      Promise.all(fqdns.map(function(fqdn) {
+        return fetch(url(fqdn))
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            return { fqdn: fqdn, exists: !!(d && d.ok && d.exists), records: (d && d.records) || [] };
+          })
+          .catch(function() { return { fqdn: fqdn, exists: false, records: [] }; });
+      })).then(function(rows) {
+        lastCheck = { key: key, rows: rows };
+        renderMultiStatus(rows);
+      });
     }
 
     function scheduleCheck() {
