@@ -271,6 +271,22 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 				add(d)
 			}
 		}
+		// v2.12.17: include redirection hosts in analytics scope. The
+		// access-log ingest tags every request by hostname regardless of
+		// what handler served it (proxy / redirect / raw), so leaving
+		// redirections out meant the dashboard cards undercounted users
+		// who land on a redirect, follow it, and produce two access_events
+		// — one for the source hostname (redirect) and one for the target
+		// (proxy). Only the target was being counted.
+		redirs, err := models.ListRedirectionHosts(s.DB, sr.ID, viewerID, queryAsAdmin, peers)
+		if err != nil {
+			return nil, err
+		}
+		for _, rh := range redirs {
+			for _, d := range rh.DomainList() {
+				add(d)
+			}
+		}
 		raws, err := models.ListRawRoutes(s.DB, sr.ID, viewerID, queryAsAdmin, peers)
 		if err != nil {
 			return nil, err
