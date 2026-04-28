@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.12.4] — 2026-04-28 · Managed DNS on redirections + multi-domain checks (cumulative)
+
+> **Patch wave on top of v2.12.0.** Republishes `:latest`, `:stable`, `:preview`, and `:v2.12.4` (multi-arch). `:latest` retags from v2.12.0 → v2.12.4.
+
+This block consolidates four small releases that landed right after v2.12.0:
+
+### Added
+- **v2.12.1 — per-hostname DNS-record pre-flight on multi-domain routes.** The Managed-DNS form now iterates *every* hostname in the route's `match.host` (or the proxy host's Domains CSV) and shows a per-hostname status checklist: `⚠ already exists, will skip` vs `✓ will be created`. Backend has been creating records per hostname since v2.5.9; the form now matches.
+- **v2.12.2 — Managed DNS for redirection hosts.** Closes the long-standing gap where proxy hosts and raw routes had Managed DNS but redirections didn't. New `dns_provider` / `dns_zone_id` / `dns_zone_name` / `dns_record_id` columns on `redirection_hosts`; new picker on the redirection edit form (right under TLS Certificate); `dnsCreateRecordForRedirection` mirrors the proxy-host helper. A record per hostname auto-created on save, deleted on row removal.
+
+### Fixed
+- **v2.12.3** — closed an unbalanced `{{if .AnyDNSEnabled}}` block in `redirection_host_form.html` that surfaced as `template: redirection_host_form.html:486: unexpected EOF` in the server log on every redirection-form render after v2.12.2.
+- **v2.12.4** — redirection-host zone picker was checking `data.zones` but `/api/dns-zones` returns a flat `[{id,name},...]` array, so Cloudflare zones never populated. Picker now accepts both shapes.
+
+---
+
 ## [2.12.0] — 2026-04-28 · UX & navigation polish — major release
 
 > **Major release.** Published as `applegater/caddyui:v2.12.0`, `:preview`, `:stable`, and `:latest` (multi-arch `linux/amd64` + `linux/arm64`). Consolidates the v2.11.0 → v2.11.18 preview cycle into the new GA tag. **`:latest` now points at v2.12.0**, replacing the previous v2.11.7.
