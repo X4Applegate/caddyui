@@ -3974,14 +3974,14 @@ func (s *Server) listRedirectionHosts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	certs, _ := s.certListForRequest(r)
-	s.render(w, r, "redirection_host_form.html", map[string]any{
+	s.render(w, r, "redirection_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.RedirectionHost{Enabled: true, PreservePath: true, ForwardHTTPCode: 301, ForwardScheme: "auto", SSLEnabled: true, SSLForced: true},
 		"Certificates": certs,
 		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "redirect",
-	})
+	}))
 }
 
 func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) {
@@ -3991,6 +3991,25 @@ func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) 
 		code = 301
 	}
 	certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
+	// v2.12.2: Managed DNS triple — same shape as proxy hosts and raw routes.
+	provider := strings.ToLower(strings.TrimSpace(r.FormValue("dns_provider")))
+	zoneID := ""
+	zoneName := ""
+	if provider != "" {
+		if _, ok := dns.Lookup(provider); !ok {
+			provider = ""
+		} else {
+			zoneID = strings.TrimSpace(r.FormValue("dns_zone_id"))
+			zoneName = strings.TrimSpace(r.FormValue("dns_zone_name"))
+			if zoneID == "" {
+				provider = ""
+				zoneName = ""
+			}
+			if zoneName == "" {
+				zoneName = zoneID
+			}
+		}
+	}
 	return &models.RedirectionHost{
 		Domains:         strings.TrimSpace(r.FormValue("domains")),
 		ForwardScheme:   r.FormValue("forward_scheme"),
@@ -4059,6 +4078,10 @@ func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) 
 		RedirectWildcardSubdomain: r.FormValue("redirect_wildcard_subdomain") == "on",
 		// v2.9.232: sunset_at — accept ISO date YYYY-MM-DD; empty disables.
 		SunsetAt: strings.TrimSpace(r.FormValue("sunset_at")),
+		// v2.12.2: Managed DNS — wired to the same picker as proxy hosts.
+		DNSProvider: provider,
+		DNSZoneID:   zoneID,
+		DNSZoneName: zoneName,
 	}, nil
 }
 
@@ -4103,6 +4126,10 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// v2.12.2: auto-create A record(s) per hostname when Managed DNS is set.
+	if rh.DNSProvider != "" && rh.DNSZoneID != "" {
+		s.dnsCreateRecordForRedirection(s.currentServerID(r), id, rh)
+	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_create", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
 	s.syncCaddy(s.currentServerID(r), rh.CertificateID != 0)
 	if len(deployTo) > 0 {
@@ -4127,14 +4154,14 @@ func (s *Server) editRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	certs, _ := s.certListForRequest(r)
-	s.render(w, r, "redirection_host_form.html", map[string]any{
+	s.render(w, r, "redirection_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         rh,
 		"Certificates": certs,
 		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "redirect",
-	})
+	}))
 }
 
 func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
@@ -4170,9 +4197,34 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	deployTo := parseDeployTo(r)
 	old, _ := models.GetRedirectionHost(s.DB, id)
+	// v2.12.2: preserve existing record IDs across UPDATE so delete-on-change
+	// still has them. parseRedirectionHostForm doesn't carry DNSRecordID
+	// (the form has no hidden field for it — same as proxy hosts).
+	if old != nil {
+		rh.DNSRecordID = old.DNSRecordID
+	}
 	if err := models.UpdateRedirectionHost(s.DB, rh); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// v2.12.2: DNS provider / zone changed → drop the old A records, create
+	// fresh ones for the new triple. Same pattern as proxy hosts.
+	if old != nil {
+		oldKey := old.DNSProvider + "|" + old.DNSZoneID
+		newKey := rh.DNSProvider + "|" + rh.DNSZoneID
+		if oldKey != newKey {
+			if old.DNSRecordID != "" {
+				s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+				_ = models.UpdateRedirectionHostDNSRecord(s.DB, rh.ID, rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, "")
+				rh.DNSRecordID = ""
+			}
+			if rh.DNSProvider != "" && rh.DNSZoneID != "" {
+				s.dnsCreateRecordForRedirection(s.currentServerID(r), rh.ID, rh)
+			}
+		} else if rh.DNSProvider != "" && rh.DNSZoneID != "" && rh.DNSRecordID == "" {
+			// Same provider, but no record yet (first save with DNS chosen on edit).
+			s.dnsCreateRecordForRedirection(s.currentServerID(r), rh.ID, rh)
+		}
 	}
 	// v2.7.3: admin-only owner reassignment. Separate from UpdateRedirectionHost
 	// so the user-role path (ownership-gated above) can never touch ownership.
@@ -4206,6 +4258,10 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	if err := models.DeleteRedirectionHost(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// v2.12.2: drop the auto-created A record(s) so the row leaves nothing behind in DNS.
+	if old != nil && old.DNSRecordID != "" {
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redirect:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
@@ -6797,7 +6853,7 @@ func validateSSLFlags(enabled, forced bool, certID int64) string {
 
 func (s *Server) renderRedirectionHostFormError(w http.ResponseWriter, r *http.Request, rh *models.RedirectionHost, errMsg string) {
 	certs, _ := s.certListForRequest(r)
-	s.render(w, r, "redirection_host_form.html", map[string]any{
+	s.render(w, r, "redirection_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         rh,
 		"Certificates": certs,
@@ -6805,7 +6861,7 @@ func (s *Server) renderRedirectionHostFormError(w http.ResponseWriter, r *http.R
 		"OtherServers": s.otherManagedServers(r),
 		"Error":        errMsg,
 		"Section":      "redirect",
-	})
+	}))
 }
 
 func (s *Server) validateProxyAdvanced(p *models.ProxyHost) string {
@@ -9885,6 +9941,35 @@ func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
 	}
 	if err := models.UpdateProxyHostDNSRecord(s.DB, hostID, p.DNSProvider, p.DNSZoneID, zname, strings.Join(ids, ",")); err != nil {
 		log.Printf("DNS %s: store record IDs for host %d: %v", p.DNSProvider, hostID, err)
+	}
+}
+
+// dnsCreateRecordForRedirection — v2.12.2: creates an A record per hostname
+// in the redirection host's Domains CSV, mirroring dnsCreateRecord on the
+// proxy-host side. Persists the comma-separated provider IDs to the
+// redirection_hosts row via UpdateRedirectionHostDNSRecord.
+func (s *Server) dnsCreateRecordForRedirection(serverID, hostID int64, rh *models.RedirectionHost) {
+	domains := rh.DomainList()
+	if len(domains) == 0 {
+		return
+	}
+	var ids []string
+	var zname string
+	for _, fqdn := range domains {
+		recID, zn := s.dnsCreateRecordForFQDN(serverID, rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, fqdn)
+		if recID == "" {
+			continue
+		}
+		ids = append(ids, recID)
+		if zname == "" {
+			zname = zn
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if err := models.UpdateRedirectionHostDNSRecord(s.DB, hostID, rh.DNSProvider, rh.DNSZoneID, zname, strings.Join(ids, ",")); err != nil {
+		log.Printf("DNS %s: store record IDs for redirection %d: %v", rh.DNSProvider, hostID, err)
 	}
 }
 

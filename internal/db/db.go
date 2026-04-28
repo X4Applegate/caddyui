@@ -442,8 +442,8 @@ func migrate(db *sql.DB) error {
 
 	// v2.5.6: same unified DNS quad on raw_routes so advanced routes can
 	// auto-create their A record the way proxy hosts do. Separate loop
-	// (rather than a shared tables list) because only these two tables
-	// participate in managed DNS — redirection_hosts don't create records.
+	// (rather than a shared tables list) because only these tables
+	// participate in managed DNS.
 	for _, col := range []struct{ name, def string }{
 		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},
 		{"dns_zone_id", "TEXT NOT NULL DEFAULT ''"},
@@ -457,6 +457,25 @@ func migrate(db *sql.DB) error {
 		if !has {
 			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE raw_routes ADD COLUMN %s %s`, col.name, col.def)); err != nil {
 				return fmt.Errorf("add %s to raw_routes: %w", col.name, err)
+			}
+		}
+	}
+
+	// v2.12.2: extend the same unified DNS quad to redirection_hosts so
+	// users can auto-create A records for redirect-only hostnames too.
+	for _, col := range []struct{ name, def string }{
+		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},
+		{"dns_zone_id", "TEXT NOT NULL DEFAULT ''"},
+		{"dns_zone_name", "TEXT NOT NULL DEFAULT ''"},
+		{"dns_record_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := columnExists(db, "redirection_hosts", col.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE redirection_hosts ADD COLUMN %s %s`, col.name, col.def)); err != nil {
+				return fmt.Errorf("add %s to redirection_hosts: %w", col.name, err)
 			}
 		}
 	}
