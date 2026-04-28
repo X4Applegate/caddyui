@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.11.7] — 2026-04-28 · Proxy-form: hoist Managed DNS + TLS Certificate to top, collapse path/metadata + upstream TLS
+
+> **`:latest` retag.** Published as `applegater/caddyui:v2.11.7`, `:preview`, `:stable`, and `:latest` (multi-arch `linux/amd64` + `linux/arm64`). Fifteen features past v2.10.0 — the cadence rule (retag `:latest` every ~8 features) has been overdue since v2.11.0, and v2.11.7 is the moment.
+
+### Changed
+- **Managed DNS** and **TLS Certificate** sections moved to the top of the proxy-host edit form, directly under the v2.11.4 essentials row (Enabled / Auto SSL / Force SSL). They previously lived ~700 lines below, between the big Options block and the path-based upstream overrides — too far down for sections picked on almost every host. Both still carry `data-keep-open` so they stay open on both create and edit.
+- **Path matching, query string, tags & notes** is now a single collapsed `<details>` covering Path prefix, Strip prefix, Strip query string, Delete query params, Add query params, Tags, Notes, Color label, and Sort Order. The v2.11.0 section badges count configured fields inside, so users can spot what's set without expanding.
+- **Upstream TLS & advanced settings** is a new collapsed `<details>` covering Upstream TLS SNI, minimum TLS version, Forward proxy URL, Upstream path prefix, Strip path suffix, and Upstream Host header. Most users never touch any of these.
+
+### Top of form now reads (top-down)
+1. Domain names + www redirect + trailing slash
+2. Enabled / Auto SSL / Force SSL
+3. **Managed DNS** (visible)
+4. **TLS Certificate** (visible)
+5. *Path matching, query string, tags & notes* (collapsed)
+6. Forward Scheme + Host + Port + Test-upstream button
+7. *Upstream TLS & advanced settings* (collapsed)
+8. *Options & Forwarded Headers* (collapsed, existing)
+
+---
+
 ## [2.11.6] — 2026-04-28 · Bulk multi-select on /redirection-hosts
 
 > Preview build (`applegater/caddyui:v2.11.6` and `:preview`). `:latest` still pinned at v2.10.0.
