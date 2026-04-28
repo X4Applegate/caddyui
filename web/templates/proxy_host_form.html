@@ -3429,13 +3429,17 @@
 // expanding them all. Empty/default fields don't count; checkboxes count
 // when checked; selects count when not the first <option>.
 (function() {
+  // On create, every section starts collapsed so the form is browsable —
+  // the user expands one feature at a time, configures it, collapses, and
+  // moves to the next. On edit, sections with configured fields auto-open
+  // so the user immediately sees what's set.
+  var isEdit = {{if .Host.ID}}true{{else}}false{{end}};
   function isModified(input) {
     if (input.disabled) return false;
     var t = (input.type || '').toLowerCase();
     if (t === 'checkbox' || t === 'radio') return input.checked;
     if (t === 'submit' || t === 'button' || t === 'reset' || t === 'hidden') return false;
     if (input.tagName === 'SELECT') {
-      // Treat the first <option> as the default.
       return input.selectedIndex > 0 && input.value !== '';
     }
     return (input.value || '').trim() !== '';
@@ -3443,6 +3447,7 @@
   document.querySelectorAll('form#proxy-host-form details').forEach(function(det) {
     var summary = det.querySelector(':scope > summary');
     if (!summary) return;
+    if (!isEdit) { det.open = false; }
     var inputs = det.querySelectorAll('input, select, textarea');
     var n = 0;
     inputs.forEach(function(i) { if (isModified(i)) n++; });
@@ -3452,9 +3457,7 @@
     badge.title = n + ' configured field' + (n === 1 ? '' : 's') + ' in this section';
     badge.className = 'ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-[10px] font-semibold bg-brand-100 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300';
     summary.appendChild(badge);
-    // Auto-open sections that already have configured fields so the user
-    // sees what's set without having to click each one.
-    det.open = true;
+    if (isEdit) { det.open = true; }
   });
 })();
 </script>
