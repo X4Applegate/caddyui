@@ -7919,12 +7919,31 @@ func (s *Server) apiAIChat(w http.ResponseWriter, r *http.Request) {
 // apiPreviewProxyHost — v2.11.13: live preview of the route JSON Caddy
 // would receive for the in-progress proxy-host edit form. Reuses the
 // same parseProxyHostForm + BuildProxyRoute path as createProxyHost so
-// what the user sees here is exactly what gets pushed on save. Lenient
-// on missing required fields — returns {"error": "..."} instead of a
-// 400 so the frontend can surface "fill in port" inline without
-// breaking the preview pane.
+// what the user sees here is exactly what gets pushed on save.
+//
+// v2.11.17: pads required fields with visible placeholders so a partly-
+// filled form still renders a representative preview. The previous
+// version leaked the raw `strconv.Atoi: parsing "": invalid syntax`
+// from the strict parser into the user's face the moment they expanded
+// the panel before filling in Forward port.
 func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if err := r.ParseForm(); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "could not parse form: " + err.Error()})
+		return
+	}
+	pad := func(key, fallback string) {
+		if strings.TrimSpace(r.Form.Get(key)) == "" {
+			r.Form.Set(key, fallback)
+			if r.PostForm != nil {
+				r.PostForm.Set(key, fallback)
+			}
+		}
+	}
+	pad("forward_port", "0")
+	pad("forward_host", "(your-upstream)")
+	pad("domains", "example.com")
+
 	p, err := parseProxyHostForm(r)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

@@ -3413,7 +3413,7 @@
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Live route JSON preview <span class="font-normal normal-case">(what Caddy will see)</span>
     </summary>
-    <p class="text-xs text-ink-500 mt-3 mb-2">Updates as you edit. Reflects every field above — fill in <strong>Forward port</strong> first or you'll see <em>"strconv.Atoi: parsing \"\": invalid syntax"</em>.</p>
+    <p class="text-xs text-ink-500 mt-3 mb-2">Updates as you edit. Reflects every field above. Empty required fields render as placeholders in the preview (<code class="bg-ink-100 px-1 rounded">example.com</code> / <code class="bg-ink-100 px-1 rounded">(your-upstream)</code> / port <code class="bg-ink-100 px-1 rounded">0</code>) so the JSON shape is still visible while you fill the form in.</p>
     <pre id="ph-preview-json" class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-96">— start typing in the form to see the preview —</pre>
   </details>
 
