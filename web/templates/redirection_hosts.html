@@ -110,6 +110,28 @@
   {{end}}
 </div>
 
+{{/* ── Bulk action bar (v2.11.6, parallel of proxy_hosts) ── */}}
+<div id="bulk-bar" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-gray-900 dark:bg-gray-800 text-white px-5 py-3 rounded-2xl shadow-xl text-sm">
+  <span id="bulk-count" class="font-medium">0 selected</span>
+  <div class="w-px h-4 bg-white/20"></div>
+  <form method="post" action="/redirection-hosts/bulk-toggle" id="bulk-form-enable">
+    <input type="hidden" name="action" value="enable">
+    <div id="bulk-enable-ids"></div>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium transition">Enable</button>
+  </form>
+  <form method="post" action="/redirection-hosts/bulk-toggle" id="bulk-form-disable">
+    <input type="hidden" name="action" value="disable">
+    <div id="bulk-disable-ids"></div>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium transition">Disable</button>
+  </form>
+  <form method="post" action="/redirection-hosts/bulk-delete" id="bulk-form-delete"
+        onsubmit="return confirm('Delete selected redirections? This cannot be undone.')">
+    <div id="bulk-delete-ids"></div>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white font-medium transition">Delete</button>
+  </form>
+  <button id="bulk-clear" type="button" class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition">Clear</button>
+</div>
+
 {{/* ── Desktop table ──
      Actions column is position:sticky right-0 so Edit/Delete stay visible
      at any viewport width. Wrapper switched to overflow-x-auto so narrow
@@ -119,6 +141,8 @@
   <table class="w-full text-sm min-w-[820px]" id="redir-table">
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
+        {{/* v2.11.6: select-all checkbox for bulk operations. */}}
+        <th class="pl-5 py-3 w-8"><input type="checkbox" id="select-all" class="w-4 h-4 rounded border-gray-300"></th>
         <th class="px-5 py-3 font-medium">Source</th>
         <th class="px-5 py-3 font-medium">Destination</th>
         <th class="px-5 py-3 font-medium">Code</th>
@@ -132,6 +156,7 @@
       {{$canEdit := or (eq $.User.Role "admin") (and .OwnerID.Valid (eq .OwnerID.Int64 $.ViewerID))}}
       {{$isTeam := and (ne $.User.Role "admin") .OwnerID.Valid (ne .OwnerID.Int64 $.ViewerID)}}
       <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Domains}} {{.ForwardDomain}}" data-tags="{{.Tags}}" data-notes="{{.Notes}}">
+        <td class="pl-5 py-3 w-8">{{if $canEdit}}<input type="checkbox" class="bulk-check w-4 h-4 rounded border-gray-300" value="{{.ID}}">{{end}}</td>
         <td class="px-5 py-3">
           <div class="flex flex-wrap items-center gap-1">
             {{$redirID := .ID}}
@@ -209,7 +234,7 @@
       </tr>
       {{else}}
       <tr class="bg-white">
-        <td colspan="{{if eq .User.Role "admin"}}6{{else}}5{{end}}" class="px-5 py-16 text-center">
+        <td colspan="{{if eq .User.Role "admin"}}7{{else}}6{{end}}" class="px-5 py-16 text-center">
           <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/></svg>
           </div>
@@ -238,6 +263,48 @@
       card.style.display = (!q || text.includes(q)) ? '' : 'none';
     });
   });
+})();
+
+// v2.11.6: bulk-action bar — wires the per-row checkboxes + select-all to
+// the floating action bar at the bottom of the page. Mirrors proxy_hosts.
+(function() {
+  var bar = document.getElementById('bulk-bar');
+  var countEl = document.getElementById('bulk-count');
+  var selectAll = document.getElementById('select-all');
+  var enableIds = document.getElementById('bulk-enable-ids');
+  var disableIds = document.getElementById('bulk-disable-ids');
+  var deleteIds = document.getElementById('bulk-delete-ids');
+  if (!bar || !enableIds || !disableIds || !deleteIds) return;
+
+  function getChecked() {
+    return Array.from(document.querySelectorAll('.bulk-check:checked'));
+  }
+  function syncBar() {
+    var checked = getChecked();
+    if (checked.length === 0) { bar.classList.add('hidden'); return; }
+    bar.classList.remove('hidden');
+    countEl.textContent = checked.length + ' selected';
+    var ids = checked.map(function(c) { return c.value; });
+    var hidden = ids.map(function(id) { return '<input type="hidden" name="ids[]" value="' + id + '">'; }).join('');
+    enableIds.innerHTML = hidden;
+    disableIds.innerHTML = hidden;
+    deleteIds.innerHTML = hidden;
+  }
+  document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.addEventListener('change', syncBar); });
+  if (selectAll) {
+    selectAll.addEventListener('change', function() {
+      document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = selectAll.checked; });
+      syncBar();
+    });
+  }
+  var clearBtn = document.getElementById('bulk-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function() {
+      document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = false; });
+      if (selectAll) selectAll.checked = false;
+      syncBar();
+    });
+  }
 })();
 </script>
 {{end}}

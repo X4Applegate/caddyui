@@ -590,6 +590,9 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/redirection-hosts/{id}/delete", s.deleteRedirectionHost)
 			r.Post("/redirection-hosts/{id}/toggle", s.toggleRedirectionHost)
 			r.Post("/redirection-hosts/{id}/clone", s.cloneRedirectionHost)
+			// v2.11.6: bulk operations on /redirection-hosts (parallel of proxy-host bulk).
+			r.Post("/redirection-hosts/bulk-toggle", s.bulkToggleRedirectionHosts)
+			r.Post("/redirection-hosts/bulk-delete", s.bulkDeleteRedirectionHosts)
 
 			r.Post("/caddy/reload", s.reloadCaddy)
 			r.Post("/import", s.postImport)
@@ -2196,6 +2199,101 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// bulkToggleRedirectionHosts — v2.11.6: enables or disables a set of
+// redirection hosts in one shot. Mirrors bulkToggleProxyHosts.
+// Expects form fields: ids[]={id,...} and action=enable|disable.
+func (s *Server) bulkToggleRedirectionHosts(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	action := r.FormValue("action")
+	if action != "enable" && action != "disable" {
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	enabled := action == "enable"
+	rawIDs := r.Form["ids[]"]
+	if len(rawIDs) == 0 {
+		http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
+		return
+	}
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	sid := s.currentServerID(r)
+	changed := 0
+	for _, raw := range rawIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			continue
+		}
+		rh, err := models.GetRedirectionHost(s.DB, id)
+		if err != nil || rh == nil {
+			continue
+		}
+		if !isAdmin && (cu == nil || !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID) {
+			continue
+		}
+		if rh.Enabled != enabled {
+			rh.Enabled = enabled
+			if err := models.UpdateRedirectionHost(s.DB, rh); err != nil {
+				log.Printf("bulkToggleRedir: update %d: %v", id, err)
+				continue
+			}
+			changed++
+		}
+	}
+	if changed > 0 {
+		if err := s.syncCaddy(sid, false); err != nil {
+			log.Printf("bulkToggleRedir: syncCaddy: %v", err)
+		}
+	}
+	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
+}
+
+// bulkDeleteRedirectionHosts — v2.11.6: deletes a set of redirection hosts.
+// Admin can delete any; others only their own.
+func (s *Server) bulkDeleteRedirectionHosts(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	_ = r.ParseForm()
+	ids := r.Form["ids[]"]
+	if len(ids) == 0 {
+		http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
+		return
+	}
+	sid := s.currentServerID(r)
+	deleted := 0
+	for _, raw := range ids {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			continue
+		}
+		if !isAdmin {
+			rh, err := models.GetRedirectionHost(s.DB, id)
+			if err != nil || rh == nil || !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID {
+				continue
+			}
+		}
+		if err := models.DeleteRedirectionHost(s.DB, id); err != nil {
+			log.Printf("bulk-delete redirection %d: %v", id, err)
+			continue
+		}
+		deleted++
+		_ = models.LogActivity(s.DB, sid, cu.Email, "redirect_delete", "id", strconv.FormatInt(id, 10), true)
+	}
+	if deleted > 0 {
+		if err := s.syncCaddy(sid, false); err != nil {
+			log.Printf("bulk-delete redir: sync error: %v", err)
+		}
+	}
+	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
 }
 
 // toggleMaintenanceMode flips the maintenance_mode flag for a proxy host.
