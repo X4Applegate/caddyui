@@ -5,6 +5,83 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.12.0] — 2026-04-28 · UX & navigation polish — major release
+
+> **Major release.** Published as `applegater/caddyui:v2.12.0`, `:preview`, `:stable`, and `:latest` (multi-arch `linux/amd64` + `linux/arm64`). Consolidates the v2.11.0 → v2.11.18 preview cycle into the new GA tag. **`:latest` now points at v2.12.0**, replacing the previous v2.11.7.
+
+### What's included
+
+The v2.11 preview cycle was the largest UX-only release in CaddyUI's history — 18 numbered preview builds spanning navigation, search, form ergonomics, bulk operations, and live-edit tooling. v2.12.0 ships all of it as one stable cut.
+
+#### Navigation & search
+- **⌘K / Ctrl+K command palette** searching every proxy host, redirection, raw route, and certificate (v2.11.5).
+- **Live filter inputs** on `/raw-routes`, `/certificates`, `/redirection-hosts` (matching the existing `/proxy-hosts` pattern; v2.11.0).
+- **Tri-state theme toggle** (auto / light / dark) tracking system preference by default (v2.11.0).
+- **Quick-nav chord shortcuts** (`g d` / `g p` / `g r` / `g c` / `g a` / `g n`) (v2.11.0).
+- **Keyboard-shortcut overlay** (`?`) listing every binding (v2.11.0).
+
+#### Proxy-host edit form (top-down reorder)
+After v2.11.0 → v2.11.8, the form reads:
+1. Domain names
+2. Forward Scheme + Host + Port + Test upstream
+3. Enabled / Auto SSL / Force SSL
+4. Managed DNS
+5. TLS Certificate
+6. Path matching + tags + notes (collapsed)
+7. Upstream TLS & advanced settings (collapsed)
+8. Options & Forwarded Headers (collapsed, ~70 fields)
+
+Plus: configured-field count badges on every collapsed `<details>`, sticky save bar, live route-JSON preview.
+
+#### Bulk operations on every list page
+- `/proxy-hosts` (existing) — Enable / Disable / Delete / Maintenance bulk
+- `/redirection-hosts` (v2.11.6) — Enable / Disable / Delete bulk
+- `/raw-routes` (v2.11.9) — Enable / Disable / Delete bulk
+- `/certificates` (v2.11.10) — Delete bulk (honours in-use guard)
+
+#### Drag-to-reorder
+Per-row ⠿ handles on `/proxy-hosts` and `/redirection-hosts` — UI-only, writes `sort_order = index*10` (v2.11.11).
+
+#### Dashboard widgets
+- **Recently edited** strip — last 8 CRUD events across all resource types (v2.11.12).
+- **Caddy fleet status grid** — one card per registered server with status, host count, version, last seen (v2.11.16). Renders only when more than one server is registered.
+
+#### Operational features
+- **Live route-JSON preview** on the proxy-host form — shows the exact Caddy JSON the form would push, refreshing as you edit. Lenient on missing required fields (v2.11.13, fixes in v2.11.17 and v2.11.18).
+- **Notifier covers ACME / Let's Encrypt managed live certs** — daily TLS dial against each enabled SSL-on proxy host, fires webhook + email when expiry is within threshold (v2.11.14).
+- **AI assistant powered by local Ollama** — opt-in floating chat button. Settings: enable toggle, Ollama URL (default `http://ollama:11434`), model name (default `llama3.2:latest`). Runs locally, no cloud calls (v2.11.15).
+- **Wildcard cert auto-issuance via DNS-01** — `*.example.com` in Domains now triggers an automatic `apps.tls.automation.policies` entry that drives Caddy's DNS-01 challenge using the Cloudflare token already configured for managed DNS. Frontend shows a live callout when wildcards are detected in the form. Cloudflare-only for v2.12.0; other DNS providers can be added incrementally (v2.11.19).
+
+### Upgrade
+
+```
+docker compose pull && docker compose up -d
+# or in Portainer: Recreate → enable Re-pull image
+```
+
+`:latest`, `:stable`, `:preview`, and `:v2.12.0` all point at the same multi-arch manifest. Migrations run automatically on startup. No downtime beyond the container restart.
+
+### Per-version preview cycle
+
+The v2.11.0 → v2.11.18 entries below remain for traceability — every preview build's individual changes are documented in this changelog.
+
+---
+
+## [2.11.19] — 2026-04-28 · Wildcard SAN auto-detection + DNS-01 ACME automation
+
+> Preview build folded into v2.12.0.
+
+### Added
+- **Wildcard auto-detection on the proxy-host form.** When the Domains field has a `*.foo.bar` entry, a live callout under the field explains that DNS-01 ACME challenge will be used and asks for / confirms the Managed DNS provider selection.
+- **Auto-emitted `apps.tls.automation.policies` for wildcard hosts.** `syncCaddy` now scans every enabled SSL-on proxy host, groups wildcard subjects by their Managed-DNS provider, and pushes a per-provider automation policy via the existing `pushAutomationPolicies` plumbing. The DNS provider's existing credentials (e.g. `cf_api_token`) are reused — no duplicate-entry friction.
+- Cloudflare is the only provider mapped for v2.12.0. Other DNS providers slot into `caddyDNSProviderConfig` as their caddy-dns plugin schemas are confirmed.
+
+### Caveats
+- Caddy must include the `caddy-dns/<provider>` plugin (xcaddy build). Default `caddy:2-alpine` has no DNS plugins; users hitting "unknown module" errors should switch to a custom xcaddy build.
+- The auto-emit is non-fatal: if Caddy rejects the policy, routes + apex certs are still applied. The failure surfaces as `sync_apply_automation_failed` in the activity log.
+
+---
+
 ## [2.11.16] — 2026-04-28 · Multi-server health widget on the dashboard
 
 > Preview build (`applegater/caddyui:v2.11.16` and `:preview`). `:latest` still pinned at v2.11.7.
