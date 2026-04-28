@@ -3429,11 +3429,11 @@
 // expanding them all. Empty/default fields don't count; checkboxes count
 // when checked; selects count when not the first <option>.
 (function() {
-  // On create, every section starts collapsed so the form is browsable —
-  // the user expands one feature at a time, configures it, collapses, and
-  // moves to the next. On edit, sections with configured fields auto-open
-  // so the user immediately sees what's set.
-  var isEdit = {{if .Host.ID}}true{{else}}false{{end}};
+  // Both on create and on edit, every section starts collapsed so the form
+  // stays browsable. The summary badge shows the count of configured fields
+  // so users can see at a glance what each section contains without
+  // expanding it. Managed DNS and TLS Certificate carry data-keep-open and
+  // stay open since users almost always want them visible.
   function isModified(input) {
     if (input.disabled) return false;
     var t = (input.type || '').toLowerCase();
@@ -3448,7 +3448,7 @@
     var summary = det.querySelector(':scope > summary');
     if (!summary) return;
     var keepOpen = det.hasAttribute('data-keep-open');
-    if (!isEdit && !keepOpen) { det.open = false; }
+    if (!keepOpen) { det.open = false; }
     var inputs = det.querySelectorAll('input, select, textarea');
     var n = 0;
     inputs.forEach(function(i) { if (isModified(i)) n++; });
@@ -3458,7 +3458,6 @@
     badge.title = n + ' configured field' + (n === 1 ? '' : 's') + ' in this section';
     badge.className = 'ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-[10px] font-semibold bg-brand-100 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300';
     summary.appendChild(badge);
-    if (isEdit && !keepOpen) { det.open = true; }
   });
 })();
 </script>
