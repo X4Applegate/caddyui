@@ -823,6 +823,13 @@ type RedirectionHost struct {
 	OwnerEmail      string // populated via JOIN for display
 	Tags            string // comma-separated labels (UI-only, same as proxy hosts)
 	Notes           string // freeform admin notes (UI-only)
+	// v2.12.2: unified Managed DNS — same triple as proxy_hosts and
+	// raw_routes. CaddyUI auto-creates an A record per hostname in
+	// Domains when DNSProvider is set, deletes them on row removal.
+	DNSProvider     string
+	DNSZoneID       string
+	DNSZoneName     string
+	DNSRecordID     string
 	// v2.9.13: access control + maintenance mode (parity with proxy hosts)
 	AccessList      string // comma/newline-separated CIDR allowlist (empty = allow all)
 	MaintenanceMode bool   // when true, respond 503 before redirecting
@@ -3161,7 +3168,9 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.redirect_rules,''),
                COALESCE(rh.redirect_strip_path_prefix,''),
                COALESCE(rh.redirect_wildcard_subdomain,0),
-               COALESCE(rh.sunset_at,'')
+               COALESCE(rh.sunset_at,''),
+               COALESCE(rh.dns_provider,''), COALESCE(rh.dns_zone_id,''),
+               COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,'')
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ? ORDER BY rh.sort_order ASC, rh.id DESC`, serverID)
@@ -3185,7 +3194,9 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.redirect_rules,''),
                COALESCE(rh.redirect_strip_path_prefix,''),
                COALESCE(rh.redirect_wildcard_subdomain,0),
-               COALESCE(rh.sunset_at,'')
+               COALESCE(rh.sunset_at,''),
+               COALESCE(rh.dns_provider,''), COALESCE(rh.dns_zone_id,''),
+               COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,'')
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ?
@@ -3211,7 +3222,8 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 			&r.HSTSMaxAgeSec, &hstsSubdomains, &hstsPreload,
 			&r.AdvancedConfig, &r.Color,
 			&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
-			&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt); err != nil {
+			&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt,
+			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID); err != nil {
 			return nil, err
 		}
 		r.PreservePath = pp == 1
@@ -3252,7 +3264,9 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
                COALESCE(redirect_rules,''),
                COALESCE(redirect_strip_path_prefix,''),
                COALESCE(redirect_wildcard_subdomain,0),
-               COALESCE(sunset_at,'')
+               COALESCE(sunset_at,''),
+               COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
+               COALESCE(dns_zone_name,''), COALESCE(dns_record_id,'')
         FROM redirection_hosts WHERE id = ?`, id).Scan(
 		&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain, &r.ForwardHTTPCode,
 		&pp, &ssl, &sslf, &en, &r.CertificateID, &r.CreatedAt, &r.UpdatedAt,
@@ -3263,6 +3277,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 		&r.AdvancedConfig, &r.Color,
 		&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
 		&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt,
+		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID,
 	)
 	if err != nil {
 		return nil, err
@@ -3301,8 +3316,9 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
             tags, notes, access_list, maintenance_mode, maintenance_msg, custom_resp_headers, ip_blocklist,
             hsts_max_age_sec, hsts_include_subdomains, hsts_preload, advanced_config, color,
             maintenance_status_code, sort_order, redirect_rules,
-            redirect_strip_path_prefix, redirect_wildcard_subdomain, sunset_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            redirect_strip_path_prefix, redirect_wildcard_subdomain, sunset_at,
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -3314,6 +3330,7 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
 		r.AdvancedConfig, r.Color,
 		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
 		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
 	)
 	if err != nil {
 		return 0, err
@@ -3341,6 +3358,7 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
             advanced_config=?, color=?,
             maintenance_status_code=?, sort_order=?, redirect_rules=?,
             redirect_strip_path_prefix=?, redirect_wildcard_subdomain=?, sunset_at=?,
+            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
             updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -3351,8 +3369,20 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
 		r.AdvancedConfig, r.Color,
 		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
 		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
 		r.ID,
 	)
+	return err
+}
+
+// UpdateRedirectionHostDNSRecord — v2.12.2: persists provider-returned record
+// IDs after auto-creation. Mirror of UpdateProxyHostDNSRecord /
+// UpdateRawRouteDNSRecord. recordIDs may be a single ID or comma-separated.
+func UpdateRedirectionHostDNSRecord(db *sql.DB, id int64, provider, zoneID, zoneName, recordIDs string) error {
+	_, err := db.Exec(`UPDATE redirection_hosts
+        SET dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		provider, zoneID, zoneName, recordIDs, id)
 	return err
 }
 
