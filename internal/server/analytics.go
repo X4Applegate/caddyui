@@ -298,13 +298,26 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 
-	// Parse + validate the optional ?server=<id> filter. Bad values
-	// (negative, non-numeric, unknown ID) fall back silently to "all".
+	// v2.12.13: bare /analytics now defaults to the picker-active server
+	// (s.currentServerID), not the cross-fleet view. The all-fleet rollup
+	// is the slow path on multi-server installs; users almost always want
+	// "show me what's happening on the server I picked." Explicit
+	// ?server=all (or ?server=0 for back-compat with old bookmarks)
+	// still gets you the cross-fleet view.
 	var serverScopeID int64
-	if raw := strings.TrimSpace(r.URL.Query().Get("server")); raw != "" && raw != "0" && raw != "all" {
-		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
-			serverScopeID = n
+	q := r.URL.Query()
+	if q.Has("server") {
+		raw := strings.TrimSpace(q.Get("server"))
+		switch raw {
+		case "", "0", "all":
+			serverScopeID = 0
+		default:
+			if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+				serverScopeID = n
+			}
 		}
+	} else {
+		serverScopeID = s.currentServerID(r)
 	}
 
 	allowedHosts, err := s.scopedHostsForAnalytics(u, serverScopeID)

@@ -17,10 +17,13 @@
          server context, it just narrows what this one page shows. */}}
     {{if gt (len .AllServers) 1}}
     <label class="text-xs text-ink-500 font-medium">Server</label>
+    {{/* v2.12.13: picker always sets ?server= explicitly (either a numeric
+         ID or 'all') so the URL is canonical / shareable. Bare /analytics
+         (e.g. from the sidebar) defaults to the picker-active server. */}}
     <select
       class="text-sm border border-ink-200 rounded-lg px-2 py-1.5 bg-white hover:border-ink-300 focus:border-brand-400 focus:ring-1 focus:ring-brand-100 transition"
-      onchange="const v=parseInt(this.value,10)||0; window.location = v>0 ? '/analytics?server='+v : '/analytics';">
-      <option value="0" {{if eq .SelectedServerID 0}}selected{{end}}>All servers</option>
+      onchange="window.location='/analytics?server='+encodeURIComponent(this.value);">
+      <option value="all" {{if eq .SelectedServerID 0}}selected{{end}}>All servers (slow)</option>
       {{range .AllServers}}
       <option value="{{.ID}}" {{if eq $.SelectedServerID .ID}}selected{{end}}>{{.Name}}</option>
       {{end}}
