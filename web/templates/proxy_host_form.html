@@ -58,6 +58,13 @@
 </div>
   </div>
 
+  {{/* v2.11.4: essential SSL/enabled toggles always-visible at top — pulled out of the collapsed Options & Forwarded Headers section so users don't have to expand it just to enable a host or flip Auto SSL. */}}
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-ink-100">
+    <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
+    <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_enabled" {{if .Host.SSLEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Auto SSL (Let's Encrypt)</label>
+    <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_forced" {{if .Host.SSLForced}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Force SSL (HTTPS redirect)</label>
+  </div>
+
   <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
     <div>
       <label class="block text-xs font-medium text-ink-700 mb-1">Path prefix <span class="text-ink-400 font-normal">(optional — leave blank to match all paths)</span></label>
@@ -287,9 +294,7 @@
   <details class="pt-4 border-t border-ink-100">
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">Options &amp; Forwarded Headers</summary>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
-      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_enabled" {{if .Host.SSLEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Auto SSL (Let's Encrypt)</label>
-      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_forced" {{if .Host.SSLForced}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Force SSL (HTTPS redirect)</label>
+      {{/* v2.11.4: Enabled / Auto SSL / Force SSL hoisted to the always-visible top of the form. */}}
       <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2">
         <input type="checkbox" name="ssl_verify_upstream" {{if .Host.SSLVerifyUpstream}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
         <span>Verify Upstream TLS Certificate<span class="block text-xs text-ink-500 mt-0.5 font-normal">When enabled, validates the upstream TLS certificate against the system trust store (only applies when Forward Scheme is HTTPS)</span></span>
