@@ -747,6 +747,38 @@ func (s *Server) Routes() http.Handler {
 	return r
 }
 
+// stripHeaderWriter — v2.12.15: drops headers in `strip` (lower-cased keys)
+// from the response just before WriteHeader fires. Wraps the standard
+// http.ResponseWriter so any handler downstream can still call .Header()
+// or .WriteHeader() normally; the strip happens at the last possible moment.
+type stripHeaderWriter struct {
+	http.ResponseWriter
+	strip       map[string]bool
+	wroteHeader bool
+}
+
+func (w *stripHeaderWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+		if len(w.strip) > 0 {
+			h := w.Header()
+			for k := range h {
+				if w.strip[strings.ToLower(k)] {
+					h.Del(k)
+				}
+			}
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *stripHeaderWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
 // securityHeaders sets baseline response headers on every CaddyUI response
 // regardless of whether the request reached us through a reverse proxy or
 // directly. Defense-in-depth: even if you bypass Caddy and hit CaddyUI on
@@ -768,19 +800,38 @@ func (s *Server) Routes() http.Handler {
 // proxy host fronting CaddyUI. v2.10.3.
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// v2.12.15: honour Settings → "Globally stripped response headers"
+		// for CaddyUI's own responses too (not just proxied upstream replies).
+		// Without this, a user setting `X-Frame-Options` in the global-strip
+		// field still saw SAMEORIGIN on CaddyUI-served pages (login redirect,
+		// admin UI, etc.) because this middleware unconditionally set it.
+		stripped := map[string]bool{}
+		if globalStrip, _ := models.GetSetting(s.DB, settingGlobalStripResponseHeaders); strings.TrimSpace(globalStrip) != "" {
+			for _, hh := range strings.Split(globalStrip, ",") {
+				hh = strings.ToLower(strings.TrimSpace(hh))
+				if hh != "" {
+					stripped[hh] = true
+				}
+			}
+		}
 		h := w.Header()
 		// Set-only-if-not-already-present so a more restrictive value from
-		// a fronting proxy (e.g. X-Frame-Options: DENY) still wins.
-		if h.Get("X-Frame-Options") == "" {
+		// a fronting proxy (e.g. X-Frame-Options: DENY) still wins. Skip
+		// entirely if the header is in the global-strip list — user has
+		// explicitly told us to drop it everywhere.
+		if !stripped["x-frame-options"] && h.Get("X-Frame-Options") == "" {
 			h.Set("X-Frame-Options", "SAMEORIGIN")
 		}
-		if h.Get("X-Content-Type-Options") == "" {
+		if !stripped["x-content-type-options"] && h.Get("X-Content-Type-Options") == "" {
 			h.Set("X-Content-Type-Options", "nosniff")
 		}
-		if h.Get("Referrer-Policy") == "" {
+		if !stripped["referrer-policy"] && h.Get("Referrer-Policy") == "" {
 			h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		}
-		next.ServeHTTP(w, r)
+		// Wrap the response writer so we can also strip headers the inner
+		// handler tries to set itself (404 page, Caddy-served static, etc.).
+		ww := &stripHeaderWriter{ResponseWriter: w, strip: stripped}
+		next.ServeHTTP(ww, r)
 	})
 }
 
