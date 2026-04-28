@@ -43,15 +43,28 @@ See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
 
 ## Features
 
+### What's new in v2.12
+
+- **⌘K / Ctrl+K command palette** — global search across every proxy host, redirection, raw route, and certificate. `↑/↓ Enter Esc`. Color-coded type pills. *(v2.11.5)*
+- **Bulk multi-select on every list page** — checkbox + select-all + floating Enable / Disable / Delete bar on `/proxy-hosts`, `/redirection-hosts`, `/raw-routes`, and `/certificates`. *(v2.11.6, .9, .10)*
+- **Drag-to-reorder rows** — HTML5 ⠿ handle on `/proxy-hosts` and `/redirection-hosts`. *(v2.11.11)*
+- **Live route-JSON preview** on the proxy-host edit form — see the exact Caddy route JSON your form would push, refreshing as you type. *(v2.11.13)*
+- **Multi-server health widget** on the dashboard — one card per registered Caddy server with status, host count, version, last seen. Renders only when more than one server is registered. *(v2.11.16)*
+- **AI assistant powered by local Ollama** — opt-in floating chat button. Settings → AI assistant. Runs locally on your GPU, no cloud calls. *(v2.11.15)*
+- **Wildcard cert auto-issuance via DNS-01** — type `*.example.com` in Domains, CaddyUI emits the `tls.automation.policies` block using your existing Cloudflare token (caveat: needs `caddy-dns/cloudflare` plugin in your Caddy build). *(v2.11.19)*
+- **Per-hostname DNS-record pre-flight** on multi-domain routes — checklist showing which records will be created vs already exist. *(v2.12.1)*
+- **Managed DNS on redirections** — closes the long-standing gap where redirects had no DNS plumbing. Now creates A records per hostname on save, deletes on row removal. *(v2.12.2)*
+
 ### Routing
 
 - **Proxy Hosts** — point domains at upstream services with one-click TLS via Caddy's automatic HTTPS
-- **Redirections** — 301/302/307/308 redirect rules across hostnames
+- **Redirections** — 301/302/307/308 redirect rules across hostnames; path-based rules with `redirect_rules`; sunset-date 410 conversion; wildcard subdomain capture
 - **Advanced Routes** — import raw Caddyfile blocks or write JSON directly for anything the UI can't model
-- **Certificates** — upload and manage custom PEM / path-based certificates; expiry alerts via email or webhook
-- **Managed DNS (Cloudflare)** — create the A / AAAA record for a new proxy host without leaving CaddyUI; zone lookup is automatic from the domain
-- **Paste Caddyfile** — convert a Caddyfile block into a managed advanced route
+- **Certificates** — upload and manage custom PEM / path-based certificates; expiry alerts via email or webhook (covers Caddy-managed ACME / Let's Encrypt certs too via daily TLS dial since *v2.11.14*)
+- **Managed DNS** — create the A record for a new proxy host, redirection, or advanced route without leaving CaddyUI; auto-deleted when the row is removed. Providers: **Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap**. Zone lookup is automatic from the domain.
+- **Paste Caddyfile import** — convert a Caddyfile into managed proxy hosts / redirections / advanced routes; smart classifier auto-routes each block to the right table *(v2.10.7+)*. Re-classify button rescues older imports
 - **Import from Caddy** — pull your existing live Caddy config into the DB on first run
+- **Per-host options surface (~70 fields)** — request / response headers (X-Forwarded-*, security headers, cache hints), path-based upstream overrides, multi-upstream routing, active health checks, upstream TLS settings, request blocking (deny by path / query / user-agent / method)
 - **Branded error pages** — CaddyUI-styled 404 / 502 / 503 / 504 pages are injected into Caddy automatically
 
 ### Multi-server
