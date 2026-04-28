@@ -514,6 +514,10 @@ func (s *Server) Routes() http.Handler {
 		// frontend can hide the floating button when not configured.
 		r.Get("/api/ai/status", s.apiAIStatus)
 		r.Post("/api/ai/chat", s.apiAIChat)
+		// v2.12.11: AI tool calling — model proposes a proxy host or
+		// redirection via tool_calls; user confirms; this endpoint actually
+		// creates it.
+		r.Post("/api/ai/exec-tool", s.apiAIExecTool)
 
 		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
 		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
@@ -8143,7 +8147,17 @@ Rules:
 - Be as detailed as the question warrants: short answers for simple questions; a full Caddyfile + a few sentences of explanation for setup walk-throughs. Skip filler preambles.
 - The user is editing a config in CaddyUI alongside this chat. When relevant, point them at form fields: Domain names, Forward Host/Port, Auto SSL toggle, Managed DNS picker, Upstream Host Header, etc.
 
-If you are NOT sure about a specific Caddy directive or behavior, say so. Hallucinated config is worse than "I don't know."`
+If you are NOT sure about a specific Caddy directive or behavior, say so. Hallucinated config is worse than "I don't know."
+
+TOOLS:
+You can call tools that ACTUALLY CREATE resources in CaddyUI. The user sees a confirmation card with the parameters and clicks Apply before anything happens — you don't have to ask permission, just call the tool when appropriate.
+
+When to call ` + "`" + `create_proxy_host` + "`" + ` or ` + "`" + `create_redirection` + "`" + `:
+- "create a proxy host for X" / "set up X" / "add X" / "make a proxy for X" → create_proxy_host
+- "redirect old.com to new.com" / "set up a 301 from X" → create_redirection
+- "what's the Caddyfile for X" / "explain X" / "show me how X looks" → just write a Caddyfile snippet, DO NOT call a tool
+
+When you call a tool, do not also write a Caddyfile in the same response — the tool call is the response.`
 
 	systemPrompt := defaultSystemPrompt
 	if customPrompt, _ := models.GetSetting(s.DB, settingAISystemPrompt); strings.TrimSpace(customPrompt) != "" {
@@ -8154,10 +8168,17 @@ If you are NOT sure about a specific Caddy directive or behavior, say so. Halluc
 	finalMessages = append(finalMessages, map[string]string{"role": "system", "content": systemPrompt})
 	finalMessages = append(finalMessages, turns...)
 
+	// v2.12.11: tool definitions sent on every chat turn. Models that
+	// don't support tools (older / smaller ones) ignore the field; for
+	// qwen2.5/llama3.1+/gemma2 the model can decide to emit tool_calls
+	// in its response, which the frontend renders as a confirmation card.
+	tools := aiToolDefinitions()
+
 	payload := map[string]any{
 		"model":    model,
 		"stream":   false,
 		"messages": finalMessages,
+		"tools":    tools,
 	}
 	pb, _ := json.Marshal(payload)
 
@@ -8182,17 +8203,265 @@ If you are NOT sure about a specific Caddy directive or behavior, say so. Halluc
 	}
 	var out struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Function struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "decode ollama response: " + err.Error()})
 		return
 	}
+	// v2.12.11: surface tool_calls separately so the frontend can render a
+	// confirmation card. Reply text is whatever the model wrote alongside
+	// (often empty on tool turns; some models still narrate).
+	type frontendTC struct {
+		Name string         `json:"name"`
+		Args map[string]any `json:"args"`
+	}
+	calls := make([]frontendTC, 0, len(out.Message.ToolCalls))
+	for _, tc := range out.Message.ToolCalls {
+		calls = append(calls, frontendTC{Name: tc.Function.Name, Args: tc.Function.Arguments})
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"reply": strings.TrimSpace(out.Message.Content),
-		"model": model,
+		"reply":      strings.TrimSpace(out.Message.Content),
+		"tool_calls": calls,
+		"model":      model,
 	})
+}
+
+// aiToolDefinitions — v2.12.11: schema for every AI-callable tool. Sent on
+// every chat turn so the model knows what's available; models without tool
+// support silently ignore the field.
+func aiToolDefinitions() []map[string]any {
+	return []map[string]any{
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "create_proxy_host",
+				"description": "Create a new proxy host in CaddyUI. Use this when the user asks to actually create / set up / add a proxy host (not just explain or show a config snippet). The user will see a confirmation card with the arguments before this runs.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"domains":        map[string]any{"type": "string", "description": "Comma-separated list of domain names. Wildcards allowed (e.g. '*.example.com,example.com')."},
+						"forward_scheme": map[string]any{"type": "string", "enum": []string{"http", "https"}, "description": "Scheme used when proxying to the upstream. Default 'http'."},
+						"forward_host":   map[string]any{"type": "string", "description": "Upstream hostname or IP (docker service name like 'adguardhome', or an IP)."},
+						"forward_port":   map[string]any{"type": "integer", "description": "Upstream TCP port, 1–65535."},
+						"ssl_enabled":    map[string]any{"type": "boolean", "description": "Enable Caddy automatic HTTPS via Let's Encrypt. Default true."},
+						"ssl_forced":     map[string]any{"type": "boolean", "description": "Redirect plain HTTP requests to HTTPS. Default true."},
+					},
+					"required": []string{"domains", "forward_host", "forward_port"},
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "create_redirection",
+				"description": "Create a new redirection (HTTP 301/302/307/308) in CaddyUI. Use this when the user asks to redirect one hostname to another.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"domains":           map[string]any{"type": "string", "description": "Comma-separated source domains (the old hostnames being redirected away)."},
+						"forward_scheme":    map[string]any{"type": "string", "enum": []string{"auto", "http", "https"}, "description": "Scheme for the redirect target. 'auto' (default) preserves the request scheme."},
+						"forward_domain":    map[string]any{"type": "string", "description": "Target hostname (where the user gets redirected to)."},
+						"forward_http_code": map[string]any{"type": "integer", "enum": []int{301, 302, 307, 308}, "description": "Redirect status code. 301 = permanent (default), 302 = temporary, 307/308 preserve method."},
+						"preserve_path":     map[string]any{"type": "boolean", "description": "Keep the path+query from the request when redirecting. Default true."},
+					},
+					"required": []string{"domains", "forward_domain"},
+				},
+			},
+		},
+	}
+}
+
+// apiAIExecTool — v2.12.11: executes a tool call the AI proposed. Called
+// from the frontend after the user confirms via the chat-bubble card. All
+// resources are created with admin / global ownership (or current user's
+// ownership for non-admins). Every successful exec writes an
+// `ai_tool_call` activity-log row so admins can audit what the AI did.
+func (s *Server) apiAIExecTool(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	enabled, _ := models.GetSetting(s.DB, settingAIEnabled)
+	if enabled != "1" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "AI assist is disabled."})
+		return
+	}
+	cu := s.currentUser(r)
+	if cu == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+		return
+	}
+	var body struct {
+		Name string         `json:"name"`
+		Args map[string]any `json:"args"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "could not parse JSON body"})
+		return
+	}
+	sid := s.currentServerID(r)
+	var ownerID int64
+	if cu.Role != models.RoleAdmin {
+		ownerID = cu.ID
+	}
+
+	switch body.Name {
+	case "create_proxy_host":
+		ph := &models.ProxyHost{
+			Domains:       toolStr(body.Args, "domains"),
+			ForwardScheme: toolStrDefault(body.Args, "forward_scheme", "http"),
+			ForwardHost:   toolStr(body.Args, "forward_host"),
+			ForwardPort:   toolInt(body.Args, "forward_port"),
+			SSLEnabled:    toolBoolDefault(body.Args, "ssl_enabled", true),
+			SSLForced:     toolBoolDefault(body.Args, "ssl_forced", true),
+			Enabled:       true,
+		}
+		if ph.Domains == "" || ph.ForwardHost == "" || ph.ForwardPort == 0 {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing required argument (domains, forward_host, forward_port)"})
+			return
+		}
+		// Domain conflict guard — same as the form path.
+		if conflict, err := models.DomainsConflict(s.DB, sid, ph.DomainList(), 0, 0); err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "validate domains: " + err.Error()})
+			return
+		} else if conflict != "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("domain %q is already used by another proxy or redirect on this server", conflict)})
+			return
+		}
+		id, err := models.CreateProxyHost(s.DB, sid, ownerID, ph)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "create proxy host: " + err.Error()})
+			return
+		}
+		_ = models.LogActivity(s.DB, sid, cu.Email, "ai_tool_call", fmt.Sprintf("proxy:%d", id), "create_proxy_host: "+ph.Domains, true)
+		s.syncCaddy(sid, ph.CertificateID != 0)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"summary": fmt.Sprintf("✓ Created proxy host #%d — %s → %s:%d", id, ph.Domains, ph.ForwardHost, ph.ForwardPort),
+			"url":     fmt.Sprintf("/proxy-hosts/%d/edit", id),
+		})
+
+	case "create_redirection":
+		code := toolIntDefault(body.Args, "forward_http_code", 301)
+		if code != 301 && code != 302 && code != 307 && code != 308 {
+			code = 301
+		}
+		rh := &models.RedirectionHost{
+			Domains:         toolStr(body.Args, "domains"),
+			ForwardScheme:   toolStrDefault(body.Args, "forward_scheme", "auto"),
+			ForwardDomain:   toolStr(body.Args, "forward_domain"),
+			ForwardHTTPCode: code,
+			PreservePath:    toolBoolDefault(body.Args, "preserve_path", true),
+			SSLEnabled:      true,
+			SSLForced:       true,
+			Enabled:         true,
+		}
+		if rh.Domains == "" || rh.ForwardDomain == "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing required argument (domains, forward_domain)"})
+			return
+		}
+		if conflict, err := models.DomainsConflict(s.DB, sid, rh.DomainList(), 0, 0); err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "validate domains: " + err.Error()})
+			return
+		} else if conflict != "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("domain %q is already used by another proxy or redirect on this server", conflict)})
+			return
+		}
+		id, err := models.CreateRedirectionHost(s.DB, sid, ownerID, rh)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "create redirection: " + err.Error()})
+			return
+		}
+		_ = models.LogActivity(s.DB, sid, cu.Email, "ai_tool_call", fmt.Sprintf("redirect:%d", id), "create_redirection: "+rh.Domains+" → "+rh.ForwardDomain, true)
+		s.syncCaddy(sid, false)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"summary": fmt.Sprintf("✓ Created redirection #%d — %s → %s (%d)", id, rh.Domains, rh.ForwardDomain, code),
+			"url":     fmt.Sprintf("/redirection-hosts/%d/edit", id),
+		})
+
+	default:
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unknown tool: " + body.Name})
+	}
+}
+
+// toolStr / toolInt / toolBool — v2.12.11: tiny helpers that pull strongly-
+// typed values out of the model-supplied tool argument map. Models can be
+// loose with types (numbers as strings, booleans as strings, etc.), so
+// these tolerate the common drift cases.
+func toolStr(args map[string]any, key string) string {
+	if args == nil {
+		return ""
+	}
+	if v, ok := args[key]; ok {
+		switch s := v.(type) {
+		case string:
+			return strings.TrimSpace(s)
+		case float64:
+			return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%f", s), "0"), ".")
+		case bool:
+			if s {
+				return "true"
+			}
+			return "false"
+		}
+	}
+	return ""
+}
+func toolStrDefault(args map[string]any, key, def string) string {
+	if v := toolStr(args, key); v != "" {
+		return v
+	}
+	return def
+}
+func toolInt(args map[string]any, key string) int {
+	if args == nil {
+		return 0
+	}
+	if v, ok := args[key]; ok {
+		switch n := v.(type) {
+		case float64:
+			return int(n)
+		case int:
+			return n
+		case string:
+			i, _ := strconv.Atoi(strings.TrimSpace(n))
+			return i
+		}
+	}
+	return 0
+}
+func toolIntDefault(args map[string]any, key string, def int) int {
+	if v := toolInt(args, key); v != 0 {
+		return v
+	}
+	return def
+}
+func toolBoolDefault(args map[string]any, key string, def bool) bool {
+	if args == nil {
+		return def
+	}
+	if v, ok := args[key]; ok {
+		switch b := v.(type) {
+		case bool:
+			return b
+		case string:
+			s := strings.ToLower(strings.TrimSpace(b))
+			if s == "true" || s == "1" || s == "yes" {
+				return true
+			}
+			if s == "false" || s == "0" || s == "no" {
+				return false
+			}
+		}
+	}
+	return def
 }
 
 // apiPreviewProxyHost — v2.11.13: live preview of the route JSON Caddy
