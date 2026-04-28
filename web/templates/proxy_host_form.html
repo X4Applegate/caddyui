@@ -950,33 +950,94 @@
     var hidden = document.getElementById('aur-rules-json');
     var addBtn = document.getElementById('aur-add-rule');
     if (!table || !hidden || !addBtn) return;
-    function rowHTML(rule, idx) {
+    // v2.12.12: build rows via DOM API instead of innerHTML string
+    // concatenation. Closes a CodeQL js/xss-through-dom finding — values
+    // set via .value / .checked are written as DOM properties, never
+    // parsed as HTML, so user-controlled input can't escape into markup.
+    function rowNode(rule, idx) {
       var path   = (rule && rule.path) || '';
       var scheme = (rule && rule.scheme) || 'http';
       var host   = (rule && rule.host) || '';
       var port   = (rule && rule.port) || 80;
       var strip  = !!(rule && rule.strip_prefix);
       var realIP = !!(rule && rule.add_x_real_ip);
-      return '<div class="space-y-1.5 border border-ink-200 rounded-lg p-2.5" data-idx="'+idx+'">' +
-        '<div class="grid grid-cols-12 gap-2 items-center">' +
-          '<input type="text" data-field="path" value="'+escapeAttr(path)+'" placeholder="/push/*" class="col-span-3 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
-          '<select data-field="scheme" class="col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">' +
-            '<option value="http"'+(scheme==="http"?' selected':'')+'>http</option>' +
-            '<option value="https"'+(scheme==="https"?' selected':'')+'>https</option>' +
-          '</select>' +
-          '<input type="text" data-field="host" value="'+escapeAttr(host)+'" placeholder="upstream-host" class="col-span-4 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
-          '<input type="number" data-field="port" value="'+port+'" min="1" max="65535" class="col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
-          '<button type="button" data-action="remove" class="col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center" title="Remove rule">×</button>' +
-        '</div>' +
-        '<div class="flex items-center gap-4 pl-1">' +
-          '<label class="text-xs text-ink-600 inline-flex items-center gap-1.5"><input type="checkbox" data-field="strip_prefix" '+(strip?'checked':'')+' class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Strip prefix (handle_path)</label>' +
-          '<label class="text-xs text-ink-600 inline-flex items-center gap-1.5"><input type="checkbox" data-field="add_x_real_ip" '+(realIP?'checked':'')+' class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Add X-Real-IP</label>' +
-        '</div>' +
-      '</div>';
+
+      var wrap = document.createElement('div');
+      wrap.className = 'space-y-1.5 border border-ink-200 rounded-lg p-2.5';
+      wrap.setAttribute('data-idx', idx);
+
+      var grid = document.createElement('div');
+      grid.className = 'grid grid-cols-12 gap-2 items-center';
+      wrap.appendChild(grid);
+
+      function inputEl(type, field, value, placeholder, span) {
+        var el = document.createElement('input');
+        el.type = type;
+        el.setAttribute('data-field', field);
+        el.value = value;
+        if (placeholder) el.placeholder = placeholder;
+        el.className = 'col-span-' + span + ' rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
+        return el;
+      }
+      grid.appendChild(inputEl('text', 'path', path, '/push/*', 3));
+
+      var sel = document.createElement('select');
+      sel.setAttribute('data-field', 'scheme');
+      sel.className = 'col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
+      ['http', 'https'].forEach(function(s) {
+        var opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        if (scheme === s) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      grid.appendChild(sel);
+
+      grid.appendChild(inputEl('text', 'host', host, 'upstream-host', 4));
+
+      var portIn = inputEl('number', 'port', port, '', 2);
+      portIn.min = '1';
+      portIn.max = '65535';
+      grid.appendChild(portIn);
+
+      var rm = document.createElement('button');
+      rm.type = 'button';
+      rm.setAttribute('data-action', 'remove');
+      rm.className = 'col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center';
+      rm.title = 'Remove rule';
+      rm.textContent = '×';
+      grid.appendChild(rm);
+
+      var flags = document.createElement('div');
+      flags.className = 'flex items-center gap-4 pl-1';
+      wrap.appendChild(flags);
+
+      function flagLabel(field, checked, text) {
+        var lbl = document.createElement('label');
+        lbl.className = 'text-xs text-ink-600 inline-flex items-center gap-1.5';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.setAttribute('data-field', field);
+        cb.checked = !!checked;
+        cb.className = 'rounded border-ink-300 text-brand-600 focus:ring-brand-500';
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(' ' + text));
+        return lbl;
+      }
+      flags.appendChild(flagLabel('strip_prefix', strip, 'Strip prefix (handle_path)'));
+      flags.appendChild(flagLabel('add_x_real_ip', realIP, 'Add X-Real-IP'));
+
+      return wrap;
     }
-    function escapeAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     function render() {
-      table.innerHTML = data.map(rowHTML).join('') || '<p class="text-xs text-ink-400 italic">No rules — every request goes to the main upstream above.</p>';
+      if (!data.length) {
+        var empty = document.createElement('p');
+        empty.className = 'text-xs text-ink-400 italic';
+        empty.textContent = 'No rules — every request goes to the main upstream above.';
+        table.replaceChildren(empty);
+        return;
+      }
+      table.replaceChildren.apply(table, data.map(rowNode));
     }
     function syncHidden() {
       var clean = data.filter(function(r){ return r && (r.path||'').trim() !== '' && (r.host||'').trim() !== ''; });
