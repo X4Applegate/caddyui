@@ -142,7 +142,7 @@
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         {{/* v2.11.6: select-all checkbox for bulk operations. */}}
-        <th class="pl-5 py-3 w-8"><input type="checkbox" id="select-all" class="w-4 h-4 rounded border-gray-300"></th>
+        <th class="pl-5 py-3 w-14"><input type="checkbox" id="select-all" class="w-4 h-4 rounded border-gray-300 ml-6"></th>
         <th class="px-5 py-3 font-medium">Source</th>
         <th class="px-5 py-3 font-medium">Destination</th>
         <th class="px-5 py-3 font-medium">Code</th>
@@ -155,8 +155,18 @@
       {{range .Hosts}}
       {{$canEdit := or (eq $.User.Role "admin") (and .OwnerID.Valid (eq .OwnerID.Int64 $.ViewerID))}}
       {{$isTeam := and (ne $.User.Role "admin") .OwnerID.Valid (ne .OwnerID.Int64 $.ViewerID)}}
-      <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Domains}} {{.ForwardDomain}}" data-tags="{{.Tags}}" data-notes="{{.Notes}}">
-        <td class="pl-5 py-3 w-8">{{if $canEdit}}<input type="checkbox" class="bulk-check w-4 h-4 rounded border-gray-300" value="{{.ID}}">{{end}}</td>
+      <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Domains}} {{.ForwardDomain}}" data-tags="{{.Tags}}" data-notes="{{.Notes}}" data-host-id="{{.ID}}">
+        <td class="pl-5 py-3 w-14">
+          {{if $canEdit}}
+          <div class="flex items-center gap-2">
+            {{/* v2.11.11: drag handle for row reordering. */}}
+            <span class="drag-handle text-ink-300 hover:text-ink-500 cursor-grab" draggable="true" title="Drag to reorder" data-row-id="{{.ID}}">
+              <svg viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+            </span>
+            <input type="checkbox" class="bulk-check w-4 h-4 rounded border-gray-300" value="{{.ID}}">
+          </div>
+          {{end}}
+        </td>
         <td class="px-5 py-3">
           <div class="flex flex-wrap items-center gap-1">
             {{$redirID := .ID}}
@@ -305,6 +315,47 @@
       syncBar();
     });
   }
+})();
+
+// v2.11.11: drag-to-reorder rows in the desktop redirection table.
+(function() {
+  var tbody = document.querySelector('#redir-table tbody');
+  if (!tbody) return;
+  var draggedRow = null;
+  function rowOf(handle) { return handle.closest('tr'); }
+  document.querySelectorAll('.drag-handle').forEach(function(handle) {
+    handle.addEventListener('dragstart', function(e) {
+      draggedRow = rowOf(handle);
+      if (!draggedRow) return;
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', handle.dataset.rowId || ''); } catch (_) {}
+      try { e.dataTransfer.setDragImage(draggedRow, 20, 20); } catch (_) {}
+      draggedRow.classList.add('opacity-50');
+    });
+    handle.addEventListener('dragend', function() {
+      if (draggedRow) draggedRow.classList.remove('opacity-50');
+      draggedRow = null;
+    });
+  });
+  tbody.querySelectorAll('tr[data-host-id]').forEach(function(tr) {
+    tr.addEventListener('dragover', function(e) {
+      if (!draggedRow || draggedRow === tr) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    tr.addEventListener('drop', function(e) {
+      if (!draggedRow || draggedRow === tr) return;
+      e.preventDefault();
+      var rect = tr.getBoundingClientRect();
+      var midY = rect.top + rect.height / 2;
+      if (e.clientY < midY) tbody.insertBefore(draggedRow, tr);
+      else tbody.insertBefore(draggedRow, tr.nextSibling);
+      var ids = Array.from(tbody.querySelectorAll('tr[data-host-id]')).map(function(r) { return r.dataset.hostId; });
+      var fd = new FormData();
+      ids.forEach(function(id) { fd.append('ids[]', id); });
+      fetch('/redirection-hosts/reorder', { method: 'POST', body: fd, credentials: 'same-origin' });
+    });
+  });
 })();
 </script>
 {{end}}
