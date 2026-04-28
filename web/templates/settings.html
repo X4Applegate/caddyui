@@ -100,6 +100,19 @@
         placeholder="0 = keep forever"
         class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
     </div>
+    {{/* v2.12.14: globally stripped response headers — comma-separated list
+         of header names that get deleted from every proxy host's upstream
+         response. Useful when an app like Uptime Kuma / a node helmet
+         middleware insists on adding `X-Frame-Options` or `X-Powered-By`
+         and you want it gone everywhere without touching each host. */}}
+    <div class="pt-4 border-t border-ink-100">
+      <label class="block text-sm font-medium text-ink-800 mb-1">Globally stripped response headers <span class="text-ink-400 font-normal">(optional, comma-separated)</span></label>
+      <p class="text-xs text-ink-500 mb-2">CaddyUI deletes these response headers from every upstream's reply on every proxy host. Concatenated with each host's own <code class="bg-ink-100 px-1 rounded">strip_response_headers</code> field — both apply.</p>
+      <input type="text" name="global_strip_response_headers" value="{{.GlobalStripHeaders}}"
+        placeholder="X-Frame-Options, X-Powered-By, Server"
+        class="w-full max-w-xl rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <p class="text-xs text-ink-400 mt-1">Common candidates: <code class="bg-ink-100 px-1 rounded">X-Frame-Options</code> (when you want to control framing via Content-Security-Policy <code class="bg-ink-100 px-1 rounded">frame-ancestors</code> instead), <code class="bg-ink-100 px-1 rounded">X-Powered-By</code>, <code class="bg-ink-100 px-1 rounded">Server</code>. Applies on next sync.</p>
+    </div>
     {{/* v2.12.6: per-section save button. Submits the parent form (saves
          every setting, same as the bottom button) — just convenient. */}}
     <div class="pt-3 border-t border-ink-100">
