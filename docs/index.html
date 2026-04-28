@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CaddyUI v2.10.9 — Smart Caddyfile import: paste once, get Proxy Hosts</title>
-<meta name="description" content="The v2.10 arc: paste a Caddyfile and CaddyUI now classifies each block into Proxy / Redirection / Advanced automatically — no more 'everything as Advanced'. Plus a re-classify button for old imports, ~70 new per-host options, path-based routing, and baseline security headers on CaddyUI's own responses.">
-<meta property="og:title" content="CaddyUI v2.10.9 — Smart Caddyfile import: paste once, get Proxy Hosts">
-<meta property="og:description" content="Paste a Caddyfile, get Proxy Hosts (not Advanced rows). Re-classify button rescues older imports. Plus ~70 new per-host options, path-based redirect + upstream rules, and baseline security headers on CaddyUI's own responses.">
+<title>CaddyUI v2.11.3 — UX &amp; navigation polish: search, keyboard nav, smart form collapse</title>
+<meta name="description" content="v2.11 is a UX cycle. Eight features in v2.11.0 (live filters on /raw-routes and /certificates, tri-state theme toggle, keyboard-shortcut overlay, Vim-style chord nav, sticky save bar, configured-field badges, richer empty states) plus three iterations refining the proxy-host form to start collapsed by default — only Managed DNS and TLS Certificate stay open.">
+<meta property="og:title" content="CaddyUI v2.11.3 — UX &amp; navigation polish">
+<meta property="og:description" content="Eight UX features in v2.11.0 (live filters, theme toggle, keyboard nav, sticky save, badges, empty states) plus a collapsible proxy-host form refined across v2.11.1 → v2.11.3.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-04-27">
 <style>
@@ -293,18 +293,19 @@
 
 <header class="hero">
   <span class="eyebrow">🚀 Release Roundup</span>
-  <h1>CaddyUI v2.10.9 — Smart Caddyfile import: paste once, get Proxy Hosts</h1>
-  <p class="lead">Paste a Caddyfile and CaddyUI now classifies each site block into a <span class="pill proxy">Proxy Host</span>, <span class="pill redir">Redirection</span>, or <span class="pill advanced">Advanced</span> route automatically — no more "everything ends up as Advanced". Plus a re-classify button for older imports, ~70 new per-host options shipped across the v2.10 arc, path-based routing on proxy hosts, and baseline security headers on CaddyUI's own responses.</p>
+  <h1>CaddyUI v2.11.3 — UX &amp; navigation polish</h1>
+  <p class="lead">v2.11 is a UX cycle. Eight features in v2.11.0 — live filters on <code>/raw-routes</code> and <code>/certificates</code>, a tri-state theme toggle (<em>auto</em> / <em>light</em> / <em>dark</em>), a keyboard-shortcut overlay (<code>?</code>), Vim-style chord nav (<code>g</code> + letter), a sticky save bar on the proxy-host form, configured-field count badges, and richer empty states. v2.11.1 → v2.11.3 then refine the proxy-host form to start collapsed by default — only <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> stay open. The rest of the v2.10 arc (Smart Caddyfile import, ~70 per-host options, baseline security headers) is still covered below.</p>
   <div class="meta">
     <time datetime="2026-04-27">April 27, 2026</time>
-    <span class="tag">v2.10.9</span>
-    <span>☕ ~9 min read</span>
+    <span class="tag">v2.11.3</span>
+    <span>☕ ~10 min read</span>
   </div>
 </header>
 
 <div class="toc">
   <strong>What's in this post</strong>
   <ul>
+    <li><a href="#nav-polish">UX &amp; navigation polish (v2.11.0 → v2.11.3)</a></li>
     <li><a href="#smart-import">Smart Caddyfile import (v2.10.7 → v2.10.9)</a></li>
     <li><a href="#perhost">~70 per-host options + path-based routing (v2.10.0)</a></li>
     <li><a href="#search">Proxy-host form search / filter (v2.10.2)</a></li>
@@ -312,6 +313,52 @@
     <li><a href="#docs">Caddyfile ↔ form-field mapping doc (v2.10.6)</a></li>
     <li><a href="#upgrade">Upgrade</a></li>
   </ul>
+</div>
+
+<hr class="divider">
+
+<h2 id="nav-polish">⚡ UX &amp; navigation polish <span style="color:var(--muted);font-weight:400;font-size:0.7em;">v2.11.0 → v2.11.3</span></h2>
+
+<p>
+  v2.10 added an enormous amount of surface area — ~70 per-host options, four list pages, deep forms. v2.11 makes that surface fast to navigate and forgiving to scroll through.
+</p>
+
+<h3>v2.11.0 — eight features, all UX</h3>
+
+<ul>
+  <li><strong>Live filters on <code>/raw-routes</code> and <code>/certificates</code>.</strong> Same pattern as <code>/proxy-hosts</code> and <code>/redirection-hosts</code>: search input above the table, JS filters rows by host / label / Caddyfile content (raw routes) or name / SAN list / owner email (certificates). Honours <code>?q=…</code> deep-links so a filtered view is bookmarkable.</li>
+  <li><strong>Tri-state theme toggle</strong> (<em>auto</em> / <em>light</em> / <em>dark</em>). The previous binary toggle locked you out of system preference the moment you clicked it. <em>auto</em> is now the default and actively tracks <code>prefers-color-scheme</code> via a <code>matchMedia</code> listener — explicit choices override. Cycles through the three states; icon + tooltip update to show the active mode.</li>
+  <li><strong>Keyboard-shortcut overlay (<code>?</code>).</strong> Press <code>?</code> on any page to open a modal listing every global shortcut. <code>Esc</code> closes; clicks outside dismiss. Bindings ignore key presses while typing in inputs / textareas / contenteditables so <code>/</code>, <code>?</code>, etc. don't fire mid-edit.</li>
+  <li><strong>Quick-nav chord shortcuts</strong> — Vim-style <code>g</code> + letter:
+    <ul style="margin-top:6px;">
+      <li><code>g d</code> → / (dashboard)</li>
+      <li><code>g p</code> → /proxy-hosts</li>
+      <li><code>g r</code> → /redirection-hosts</li>
+      <li><code>g c</code> → /certificates</li>
+      <li><code>g a</code> → /raw-routes</li>
+      <li><code>g n</code> → /analytics</li>
+    </ul>
+    1.2s window for the second key; out-of-window resets the chord.
+  </li>
+  <li><strong>Sticky save bar on the proxy-host form.</strong> With ~70 options plus the form-search row, the in-form Save button is often offscreen. <code>IntersectionObserver</code> shows a floating Save / Cancel pill at the bottom of the viewport whenever the in-form actions row scrolls out of view. Re-uses the same <code>&lt;form&gt;</code> via the <code>form=</code> attribute — no duplicate state.</li>
+  <li><strong>Configured-field badges</strong> on every <code>&lt;details&gt;</code> section of the proxy-host form. Each section's summary carries a small brand-coloured pill counting how many fields inside are non-default — so you can spot what's set without expanding sections one by one.</li>
+  <li><strong>Richer empty states</strong> on <code>/proxy-hosts</code> and <code>/redirection-hosts</code>. Replaces the bare "No proxy hosts yet · + Create your first" with a card that explains what the resource <em>is</em>, offers three on-ramps (manual, paste Caddyfile, import live config), and links to the docs. Brand-tinted (proxy = brand, redir = sky) so the visual identity matches the rest of the app.</li>
+</ul>
+
+<h3>v2.11.1 → v2.11.3 — proxy-host form, collapsed by default</h3>
+
+<p>
+  Three iterations on the same problem: the proxy-host form has so many <code>&lt;details&gt;</code> sections that auto-opening even half of them gives a multi-page scroll on first paint.
+</p>
+
+<ul>
+  <li><strong>v2.11.1</strong> — on <em>create</em>, every section starts collapsed so you can expand a feature, edit it, collapse it back, and move to the next. On edit, sections with configured fields auto-opened (originally).</li>
+  <li><strong>v2.11.2</strong> — wrapped the ~50-field <strong>Options &amp; Forwarded Headers</strong> block in a <code>&lt;details&gt;</code> too. It was a plain <code>&lt;div&gt;</code> so the v2.11.1 collapse logic was skipping it. Also marked <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> with <code>data-keep-open</code> so they stay open regardless — picked on almost every host.</li>
+  <li><strong>v2.11.3</strong> — collapse on <em>edit</em> too. The configured-field badges from v2.11.0 already tell you what's set, so auto-opening on edit was redundant noise. <strong>Managed DNS</strong> and <strong>TLS Certificate</strong> remain auto-open via <code>data-keep-open</code>.</li>
+</ul>
+
+<div class="callout">
+  <strong>Quick test.</strong> Open any existing proxy host: every section starts collapsed except <strong>Managed DNS</strong> and <strong>TLS Certificate</strong>. The brand-coloured number on each section's summary tells you how many fields inside are configured — click to expand and they're already filled.
 </div>
 
 <hr class="divider">
@@ -461,17 +508,17 @@
   Multi-arch on Docker Hub (<code>linux/amd64</code> + <code>linux/arm64</code>, SBOM + provenance attestations, scratch base, non-root UID 10001):
 </p>
 
-<pre><code>docker pull applegater/caddyui:v2.10.9
-# or, for the rolling preview tag (single-arch amd64)
+<pre><code>docker pull applegater/caddyui:v2.11.3
+# or, for the rolling preview tag (multi-arch)
 docker pull applegater/caddyui:preview</code></pre>
 
 <p>
-  Note: <code>:latest</code> still points at v2.10.0 — the <code>:latest</code> retag bundles roughly eight features at a time to keep the rolling tag stable. v2.10.7/8/9 are on <code>:preview</code> and the per-version tags. <code>:latest</code> will move forward once a few more features land.
+  Note: <code>:latest</code> still points at v2.10.0 — the <code>:latest</code> retag bundles roughly eight features at a time to keep the rolling tag stable. v2.10.7 → v2.11.3 (eleven features past v2.10.0) are on <code>:preview</code> and the per-version tags. A <code>:latest</code> retag is on the horizon.
 </p>
 
 <div class="cta">
-  <a href="https://github.com/X4Applegate/caddyui/releases/tag/v2.10.9" class="btn primary">
-    📦 View v2.10.9 release
+  <a href="https://github.com/X4Applegate/caddyui/releases" class="btn primary">
+    📦 View latest release
   </a>
   <a href="https://hub.docker.com/r/applegater/caddyui" class="btn secondary">
     🐳 Docker Hub

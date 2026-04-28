@@ -5,6 +5,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.11.3] — 2026-04-27 · Proxy-form: collapse on edit too
+
+> Preview build (`applegater/caddyui:v2.11.3` and `:preview`). `:latest` still pinned at v2.10.0.
+
+### Changed
+- **All `<details>` sections start collapsed on edit too**, not just create. Section badges (added in v2.11.0) carry the field-count summary so users can see what's configured without expanding. Avoids the form auto-expanding 8+ sections at once when opening a configured host.
+
+### Kept
+- **Managed DNS** and **TLS Certificate** remain auto-open on both create and edit via `data-keep-open` — the two sections users almost always need.
+
+---
+
+## [2.11.2] — 2026-04-27 · Proxy-form: wrap the Options/X-Forwarded block in `<details>`
+
+> Preview build (`applegater/caddyui:v2.11.2`).
+
+### Fixed
+- **Options & Forwarded Headers block is now collapsible.** The ~50-field block of TLS settings, X-Forwarded-* toggles, and blocking flags was a plain `<div>`, so the v2.11.1 collapse-on-create logic didn't apply. Wrapped in a `<details>` so it follows the same pattern as every other section.
+
+### Changed
+- **Managed DNS + TLS Certificate marked `data-keep-open`** — they stay open regardless of the global collapse rule because they're picked on almost every host.
+
+---
+
+## [2.11.1] — 2026-04-27 · Proxy-form: collapse all sections on create
+
+> Preview build (`applegater/caddyui:v2.11.1`).
+
+### Changed
+- On **create**, every `<details>` section starts collapsed so the user can expand one feature, edit it, collapse back, and move to the next without the form scrolling for pages.
+- On **edit**, sections with configured fields still auto-open so users immediately see what's set. (Edit-side auto-open was later reverted in v2.11.3 — badges replaced it.)
+
+---
+
+## [2.11.0] — 2026-04-27 · UX & navigation polish — 8-feature batch
+
+> Preview build (`applegater/caddyui:v2.11.0` and `:preview`). `:latest` still pinned at v2.10.0. Eight features that round off the v2.10 import-classification arc with nav, search, and form-ergonomics improvements.
+
+### Added
+- **Live filter on `/raw-routes`** — search input above the table, JS filters by host / label / Caddyfile content. Honours `?q=…` deep-links. Matches the `/proxy-hosts` and `/redirection-hosts` pattern.
+- **Live filter on `/certificates`** — same pattern; matches by name, domain SAN list, or owner email.
+- **Tri-state theme toggle** (`auto` / `light` / `dark`). Was a binary toggle — once a user clicked it, system preference was permanently overridden. New default is `auto` which actively tracks `prefers-color-scheme` via a `matchMedia` listener; explicit choices override. Cycles through the three states; icon + tooltip update to show the active mode.
+- **Sticky save bar on `proxy_host_form`.** With ~70 per-host options plus the form-search, the in-form Save button is often offscreen. `IntersectionObserver` shows a floating Save / Cancel pill at the bottom of the viewport whenever the in-form actions row scrolls out of view. Re-uses the same `<form>` via the `form=` attribute so there's no duplicate state.
+- **Section badges on `proxy_host_form`.** Each `<details>` section gets a small brand-coloured pill in its `<summary>` showing how many fields inside it are configured (non-default). Defaults: `input.value !== ''` for text, `.checked` for checkboxes, `selectedIndex > 0` for selects. Sections with set fields originally auto-opened (changed in v2.11.3 — badges-only).
+- **Keyboard-shortcut overlay (`?`).** Press `?` on any page to open a modal listing every global shortcut. `Esc` closes; clicks outside dismiss. Bindings ignore key presses while typing in inputs / textareas / contenteditables so `/` etc. don't fire mid-edit.
+- **Quick-nav chord shortcuts** (Vim-style `g` + letter):
+  - `g d` → / (dashboard)
+  - `g p` → /proxy-hosts
+  - `g r` → /redirection-hosts
+  - `g c` → /certificates
+  - `g a` → /raw-routes
+  - `g n` → /analytics
+  - 1.2s window for the second key; out-of-window resets the chord.
+- **Richer empty states on `/proxy-hosts` and `/redirection-hosts`.** Replaces the bare "No proxy hosts yet · + Create your first" with a card that explains what the resource IS, offers three on-ramps (manual / paste Caddyfile / import live config), and links to the docs. Brand-tinted (proxy = brand, redir = sky) so the visual identity matches the rest of the app.
+
+---
+
 ## [2.10.0] — 2026-04-27 · Per-host options expansion + analytics speedup + path-routing + multi-upstream
 
 > **Major release.** Published as `applegater/caddyui:v2.10.0` and `:latest` (multi-arch `linux/amd64` + `linux/arm64`). Consolidates the entire v2.9.1 → v2.9.267 preview cycle into one released entry — the numeric tags in that range were internal-only builds during development. **`:latest` now points at v2.10.0**, replacing the previous v2.9.0 GA build.
