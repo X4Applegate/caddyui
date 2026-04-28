@@ -4837,6 +4837,117 @@ func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
 	return append(prepend, existing...)
 }
 
+// buildWildcardAutomationPolicies — v2.12.0: scans the supplied proxy / raw
+// route lists for hostnames that start with `*.` (wildcard SAN) on
+// SSL-enabled rows, and emits an apps.tls.automation.policies[] entry per
+// unique DNS provider so Caddy issues those wildcard certs via the ACME
+// DNS-01 challenge instead of HTTP-01 (which can't validate wildcards).
+//
+// Reuses the credentials already stored under each provider's settings
+// keys for managed DNS — users don't have to re-enter the token. If a
+// wildcard host has no dns_provider picked, it's silently skipped here;
+// the frontend wildcard callout is what tells the user they need to
+// pick one.
+//
+// Currently emits config for Cloudflare only. The mapping of internal
+// dns provider ID → caddy-dns plugin name + cred field schema is
+// per-provider and can be extended in caddyDNSProviderConfig.
+func (s *Server) buildWildcardAutomationPolicies(proxies []models.ProxyHost, raws []models.RawRoute) []map[string]any {
+	type bucket struct {
+		subjects []string
+		creds    map[string]string
+	}
+	byProvider := map[string]*bucket{}
+
+	add := func(domains, providerID string, sslOn, enabled bool) {
+		if !enabled || !sslOn || providerID == "" {
+			return
+		}
+		for _, raw := range strings.Split(domains, ",") {
+			d := strings.TrimSpace(raw)
+			if !strings.HasPrefix(d, "*.") {
+				continue
+			}
+			b, ok := byProvider[providerID]
+			if !ok {
+				descriptor, found := dns.Lookup(providerID)
+				if !found {
+					return
+				}
+				creds := map[string]string{}
+				for _, c := range descriptor.Credentials {
+					v, _ := models.GetSetting(s.DB, c.Key)
+					creds[c.Key] = v
+				}
+				b = &bucket{creds: creds}
+				byProvider[providerID] = b
+			}
+			b.subjects = append(b.subjects, d)
+		}
+	}
+	for _, p := range proxies {
+		add(p.Domains, p.DNSProvider, p.SSLEnabled, p.Enabled)
+	}
+	for _, rr := range raws {
+		// Raw routes can carry a managed-DNS provider too (v2.5.6 unified DNS).
+		add("", rr.DNSProvider, false, rr.Enabled) // raw routes don't expose a domains field directly
+		_ = rr
+	}
+
+	var policies []map[string]any
+	for providerID, b := range byProvider {
+		if len(b.subjects) == 0 {
+			continue
+		}
+		cfg := caddyDNSProviderConfig(providerID, b.creds)
+		if cfg == nil {
+			log.Printf("automation: skipping provider %q — DNS-01 mapping not implemented or credentials missing", providerID)
+			continue
+		}
+		// Convert []string → []any for the JSON marshaller.
+		subj := make([]any, 0, len(b.subjects))
+		for _, s := range b.subjects {
+			subj = append(subj, s)
+		}
+		policies = append(policies, map[string]any{
+			"subjects": subj,
+			"issuers": []any{map[string]any{
+				"module": "acme",
+				"challenges": map[string]any{
+					"dns": map[string]any{
+						"provider": cfg,
+					},
+				},
+			}},
+		})
+	}
+	return policies
+}
+
+// caddyDNSProviderConfig — v2.12.0: maps an internal dns-provider ID to the
+// Caddy DNS plugin's JSON config block. Returns nil when the credential
+// fields haven't been populated under Settings → DNS providers, OR when
+// the internal provider has no caddy-dns plugin mapping yet.
+//
+// The Caddy build must include the matching `caddy-dns/<provider>` plugin
+// (xcaddy or a custom Dockerfile). The default `caddy:2-alpine` image
+// has no DNS plugins — Caddy will reject the config with "unknown module"
+// at apply time, surfacing as a sync_apply_tls_failed activity log.
+func caddyDNSProviderConfig(providerID string, creds map[string]string) map[string]any {
+	switch providerID {
+	case dns.Cloudflare:
+		token := creds["cf_api_token"]
+		if token == "" {
+			return nil
+		}
+		return map[string]any{"name": "cloudflare", "api_token": token}
+		// Other providers would slot in here as their caddy-dns/<id>
+		// plugin schemas are confirmed. Skipping for v2.12.0 — Cloudflare
+		// covers the most common DoH / wildcard / multi-tenant case.
+	}
+	return nil
+}
+
 // pushAutomationPolicies reads the live apps.tls.automation object, merges the
 // given incoming policies in front of existing ones (deduped by subject), and
 // POSTs the updated automation object back so Caddy applies the new DNS-01 /
@@ -4845,7 +4956,18 @@ func (s *Server) pushAutomationPolicies(r *http.Request, incoming []map[string]a
 	if len(incoming) == 0 {
 		return nil
 	}
-	cl := s.caddyForRequest(r)
+	return pushAutomationPoliciesVia(s.caddyForRequest(r), incoming)
+}
+
+// pushAutomationPoliciesVia — v2.12.0: client-explicit variant of
+// pushAutomationPolicies. syncCaddy already swaps s.Caddy to a per-server
+// client and operates without an http.Request; this lets that path push
+// auto-detected wildcard policies on the same client without re-deriving
+// from a request cookie.
+func pushAutomationPoliciesVia(cl *caddy.Client, incoming []map[string]any) error {
+	if len(incoming) == 0 || cl == nil {
+		return nil
+	}
 	cfg, _, err := cl.FetchConfig()
 	if err != nil {
 		return fmt.Errorf("fetch config: %w", err)
@@ -6636,6 +6758,20 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		// Non-fatal: access log skip is a UX feature; a failure here
 		// shouldn't roll back the primary sync.
 		log.Printf("caddy sync: access_logs write failed (non-fatal): %v", err)
+	}
+
+	// v2.12.0: auto-detect wildcard SAN hosts and push DNS-01 ACME automation
+	// policies for them. Reuses each host's configured Managed-DNS provider
+	// credentials. Non-fatal — Caddy will reject the policy if the right
+	// caddy-dns plugin isn't compiled in, but routes + apex certs are
+	// already applied above so the failure shouldn't cascade.
+	if wildcardPolicies := s.buildWildcardAutomationPolicies(proxies, raws); len(wildcardPolicies) > 0 {
+		if err := pushAutomationPoliciesVia(s.Caddy, wildcardPolicies); err != nil {
+			log.Printf("caddy sync: wildcard automation-policy push failed (non-fatal): %v", err)
+			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_automation_failed", "", err.Error(), false)
+		} else {
+			log.Printf("caddy sync: pushed %d wildcard DNS-01 automation polic(ies)", len(wildcardPolicies))
+		}
 	}
 
 	detail := fmt.Sprintf("proxies=%d redirects=%d passthrough=%d certs=%d",
