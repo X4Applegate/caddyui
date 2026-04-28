@@ -620,6 +620,9 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/certificates/{id}/edit", s.editCertificate)
 			r.Post("/certificates/{id}", s.updateCertificate)
 			r.Post("/certificates/{id}/delete", s.deleteCertificate)
+			// v2.11.10: bulk delete on /certificates — same ownership / in-use
+			// guards as the single-row deleteCertificate handler.
+			r.Post("/certificates/bulk-delete", s.bulkDeleteCertificates)
 
 			r.Get("/raw-routes/new", s.newRawRoute)
 			r.Post("/raw-routes", s.createRawRoute)
@@ -2202,6 +2205,61 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// bulkDeleteCertificates — v2.11.10: deletes a set of certificates in one
+// shot. Honours the same ownership + in-use checks as deleteCertificate:
+// admin can delete any; non-admin can only delete their own AND only when
+// no other user's site still references the cert. Rows that fail any
+// guard are silently skipped so a partial bulk delete still succeeds for
+// the rows that pass.
+func (s *Server) bulkDeleteCertificates(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	_ = r.ParseForm()
+	ids := r.Form["ids[]"]
+	if len(ids) == 0 {
+		http.Redirect(w, r, "/certificates", http.StatusSeeOther)
+		return
+	}
+	sid := s.currentServerID(r)
+	deleted := 0
+	for _, raw := range ids {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			continue
+		}
+		if !isAdmin {
+			cert, err := models.GetCertificate(s.DB, id)
+			if err != nil || cert == nil {
+				continue
+			}
+			if !cert.OwnerID.Valid || cert.OwnerID.Int64 != cu.ID {
+				continue
+			}
+			if foreign, _ := models.CertificateInUseByOthers(s.DB, id, cu.ID); foreign > 0 {
+				continue
+			}
+		}
+		if err := models.DeleteCertificate(s.DB, id); err != nil {
+			log.Printf("bulk-delete cert %d: %v", id, err)
+			continue
+		}
+		deleted++
+		_ = models.LogActivity(s.DB, sid, cu.Email, "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
+	}
+	if deleted > 0 {
+		// forceTLS=true on cert delete (matches deleteCertificate) so any
+		// host that was using the deleted cert reverts to auto-issuance.
+		if err := s.syncCaddy(sid, true); err != nil {
+			log.Printf("bulk-delete cert: sync error: %v", err)
+		}
+	}
+	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
 // bulkToggleRawRoutes — v2.11.9: enables or disables a set of raw routes
