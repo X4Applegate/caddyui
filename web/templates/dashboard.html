@@ -230,6 +230,42 @@
 </div>
 {{end}}
 
+{{/* v2.11.12: "Recently edited" widget — last 8 CRUD events across all
+     resource types (proxy hosts, redirects, raw routes, certs, groups,
+     API tokens), pulled from the activity log. Skips login/sync/snapshot
+     noise. Renders only when there's something to show. */}}
+{{if .RecentEdits}}
+<div class="flex items-center justify-between mb-3 mt-2">
+  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recently edited</h2>
+  <a href="/activity" class="text-xs text-ink-500 hover:text-ink-900 transition">View all &rarr;</a>
+</div>
+<div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100 mb-8">
+  {{range .RecentEdits}}
+  {{$type := "other"}}{{$colour := "bg-ink-100 text-ink-600"}}
+  {{if hasPrefix .Action "proxy_"}}{{$type = "Proxy"}}{{$colour = "bg-brand-100 text-brand-700"}}{{end}}
+  {{if hasPrefix .Action "redirect_"}}{{$type = "Redirect"}}{{$colour = "bg-sky-100 text-sky-700"}}{{end}}
+  {{if hasPrefix .Action "raw_"}}{{$type = "Advanced"}}{{$colour = "bg-purple-100 text-purple-700"}}{{end}}
+  {{if hasPrefix .Action "cert_"}}{{$type = "Cert"}}{{$colour = "bg-emerald-100 text-emerald-700"}}{{end}}
+  {{if hasPrefix .Action "group_"}}{{$type = "Group"}}{{$colour = "bg-amber-100 text-amber-700"}}{{end}}
+  {{if hasPrefix .Action "api_token_"}}{{$type = "API key"}}{{$colour = "bg-rose-100 text-rose-700"}}{{end}}
+  {{$verb := .Action}}
+  {{if hasSuffix .Action "_create"}}{{$verb = "created"}}{{end}}
+  {{if hasSuffix .Action "_update"}}{{$verb = "updated"}}{{end}}
+  {{if hasSuffix .Action "_delete"}}{{$verb = "deleted"}}{{end}}
+  {{if hasSuffix .Action "_revoke"}}{{$verb = "revoked"}}{{end}}
+  {{if hasSuffix .Action "_enable"}}{{$verb = "enabled"}}{{end}}
+  {{if hasSuffix .Action "_disable"}}{{$verb = "disabled"}}{{end}}
+  {{if eq .Action "caddyfile_import"}}{{$verb = "imported"}}{{end}}
+  {{if eq .Action "raw_reclassify"}}{{$verb = "re-classified"}}{{end}}
+  <div class="flex items-center gap-3 px-4 py-2.5 text-sm">
+    <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded {{$colour}} font-medium shrink-0 w-20 text-center">{{$type}}</span>
+    <span class="flex-1 min-w-0 truncate"><span class="font-medium text-ink-700">{{.Actor}}</span> <span class="text-ink-500">{{$verb}}</span> <span class="text-ink-700 font-mono text-xs">{{if .Target}}{{.Target}}{{else}}—{{end}}</span>{{if .Detail}} <span class="text-ink-400 text-xs">({{.Detail}})</span>{{end}}</span>
+    <span class="text-xs text-ink-400 shrink-0" title="{{fmtIn .CreatedAt "Jan 2, 2006 15:04"}}">{{fmtRel .CreatedAt}}</span>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 <div class="flex items-center justify-between mb-3">
   <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recent proxy hosts</h2>
   <a href="/proxy-hosts" class="text-xs text-ink-500 hover:text-ink-900 transition">View all &rarr;</a>

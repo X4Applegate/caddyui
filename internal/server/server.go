@@ -275,6 +275,10 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 			return t.In(activeLocation()).Format(layout)
 		},
 		"tzName": func() string { return activeLocation().String() },
+		// v2.11.12: hasPrefix / hasSuffix exposed for template-side action
+		// string classification on the dashboard "Recently edited" widget.
+		"hasPrefix": strings.HasPrefix,
+		"hasSuffix": strings.HasSuffix,
 		// truncate returns the first n bytes of s, or s itself if shorter.
 		// Used in sessions.html to display a shortened token prefix.
 		"truncate": func(s string, n int) string {
@@ -1766,6 +1770,25 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	globalMaintenance, _ := models.GetSetting(s.DB, settingGlobalMaintenance)
 
+	// v2.11.12: "Recently edited" widget — pulls the last few CRUD events
+	// from the activity log (skips login/sync/snapshot noise) so users
+	// landing on the dashboard see at a glance what just changed.
+	var recentEdits []models.Activity
+	if all, err := models.ListActivity(s.DB, sid, 60); err == nil {
+		for _, a := range all {
+			if !a.Success {
+				continue
+			}
+			if !isEditAction(a.Action) {
+				continue
+			}
+			recentEdits = append(recentEdits, a)
+			if len(recentEdits) >= 8 {
+				break
+			}
+		}
+	}
+
 	s.render(w, r, "dashboard.html", map[string]any{
 		"User":                 s.currentUser(r),
 		"ProxyHosts":           hosts,
@@ -1787,8 +1810,22 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		"GlobalMaintenance":    globalMaintenance,
 		"EnabledHostCount":     enabledHosts,
 		"MaintenanceHostCount": maintenanceCount,
+		"RecentEdits":          recentEdits,
 		"Section":              "dashboard",
 	})
+}
+
+// isEditAction — v2.11.12: returns true when the activity-log action is a
+// resource CRUD event the dashboard's "Recently edited" widget should
+// surface. Skips login/logout, sync_applied, snapshot_*, profile_*, etc.
+func isEditAction(action string) bool {
+	prefixes := []string{"proxy_", "redirect_", "raw_", "cert_", "group_", "api_token_"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(action, p) {
+			return true
+		}
+	}
+	return action == "caddyfile_import" || action == "import"
 }
 
 // --- Proxy Hosts ---
