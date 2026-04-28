@@ -102,6 +102,39 @@
     </div>
   </div>
 
+  {{/* ── v2.11.15: AI assistant (Ollama) ── */}}
+  <div id="settings-ai" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-4">
+    <div>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">AI assistant <span class="text-xs text-ink-400 font-normal">(Ollama)</span></div>
+      <p class="text-xs text-ink-500">Enable a floating chat button (bottom-right) that proxies questions to a local Ollama server. Useful for "explain this proxy host", "convert this Caddyfile snippet", "suggest headers for…" etc. Runs locally on your GPU — no cloud calls.</p>
+    </div>
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800">Enable AI assistant</label>
+        <p class="text-xs text-ink-500 mt-0.5">When off, the floating button is hidden everywhere.</p>
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+        <input type="hidden" name="ai_enabled" value="0">
+        <input type="checkbox" name="ai_enabled" value="1" {{if .AIEnabled}}checked{{end}} class="sr-only peer">
+        <div class="w-10 h-5 bg-ink-200 rounded-full peer peer-checked:bg-brand-500 peer-focus:ring-2 peer-focus:ring-brand-500/30 transition-all after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5"></div>
+      </label>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1">Ollama base URL</label>
+      <input type="text" name="ai_ollama_url" value="{{.AIOllamaURL}}"
+        placeholder="http://ollama:11434"
+        class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <p class="text-xs text-ink-400 mt-1">Default <code class="bg-ink-100 px-1 rounded">http://ollama:11434</code> assumes Ollama is in the same docker network. Use a full URL (e.g. <code class="bg-ink-100 px-1 rounded">http://192.168.1.10:11434</code>) for a remote host.</p>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1">Model</label>
+      <input type="text" name="ai_ollama_model" value="{{.AIOllamaModel}}"
+        placeholder="llama3.2:latest"
+        class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <p class="text-xs text-ink-400 mt-1">Any model you've pulled into Ollama. Smaller is faster; <code class="bg-ink-100 px-1 rounded">llama3.2</code>, <code class="bg-ink-100 px-1 rounded">qwen2.5</code>, and <code class="bg-ink-100 px-1 rounded">mistral</code> work well. Run <code class="bg-ink-100 px-1 rounded">ollama list</code> on the Ollama host to see what's installed.</p>
+    </div>
+  </div>
+
   {{/* ── SMTP ── */}}
   <div id="settings-smtp" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
