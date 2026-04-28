@@ -696,12 +696,23 @@ setInterval(fetchUpstreams, 30000);
     bar.classList.remove('hidden');
     countEl.textContent = checked.length + ' selected';
     var ids = checked.map(function(c) { return c.value; });
-    var hiddenInputs = ids.map(function(id) { return '<input type="hidden" name="ids[]" value="' + id + '">'; }).join('');
-    enableIds.innerHTML = hiddenInputs;
-    disableIds.innerHTML = hiddenInputs;
-    deleteIds.innerHTML = hiddenInputs;
-    maintEnableIds.innerHTML = hiddenInputs;
-    maintDisableIds.innerHTML = hiddenInputs;
+    // v2.12.12: build hidden inputs via DOM API instead of innerHTML
+    // string concatenation. CodeQL flagged the old pattern as
+    // js/xss-through-dom even though `id` always comes from a server-
+    // rendered numeric checkbox value; the DOM-API rewrite is both safer
+    // and silences the alert.
+    function makeInputs() {
+      return ids.map(function(id) {
+        var inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'ids[]';
+        inp.value = id;
+        return inp;
+      });
+    }
+    [enableIds, disableIds, deleteIds, maintEnableIds, maintDisableIds].forEach(function(c) {
+      c.replaceChildren.apply(c, makeInputs());
+    });
   }
 
   document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.addEventListener('change', syncBar); });

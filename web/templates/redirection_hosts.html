@@ -295,10 +295,19 @@
     bar.classList.remove('hidden');
     countEl.textContent = checked.length + ' selected';
     var ids = checked.map(function(c) { return c.value; });
-    var hidden = ids.map(function(id) { return '<input type="hidden" name="ids[]" value="' + id + '">'; }).join('');
-    enableIds.innerHTML = hidden;
-    disableIds.innerHTML = hidden;
-    deleteIds.innerHTML = hidden;
+    // v2.12.12: DOM-API hidden-input building (CodeQL js/xss-through-dom).
+    function makeInputs() {
+      return ids.map(function(id) {
+        var inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'ids[]';
+        inp.value = id;
+        return inp;
+      });
+    }
+    [enableIds, disableIds, deleteIds].forEach(function(c) {
+      c.replaceChildren.apply(c, makeInputs());
+    });
   }
   document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.addEventListener('change', syncBar); });
   if (selectAll) {

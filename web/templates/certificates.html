@@ -283,7 +283,14 @@
     bar.classList.remove('hidden');
     countEl.textContent = checked.length + ' selected';
     var ids = checked.map(function(c) { return c.value; });
-    deleteIds.innerHTML = ids.map(function(id) { return '<input type="hidden" name="ids[]" value="' + id + '">'; }).join('');
+    // v2.12.12: DOM-API hidden-input building (CodeQL js/xss-through-dom).
+    deleteIds.replaceChildren.apply(deleteIds, ids.map(function(id) {
+      var inp = document.createElement('input');
+      inp.type = 'hidden';
+      inp.name = 'ids[]';
+      inp.value = id;
+      return inp;
+    }));
   }
   document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.addEventListener('change', syncBar); });
   if (selectAll) {
