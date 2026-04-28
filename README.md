@@ -49,11 +49,14 @@ See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
 - **Bulk multi-select on every list page** — checkbox + select-all + floating Enable / Disable / Delete bar on `/proxy-hosts`, `/redirection-hosts`, `/raw-routes`, and `/certificates`. *(v2.11.6, .9, .10)*
 - **Drag-to-reorder rows** — HTML5 ⠿ handle on `/proxy-hosts` and `/redirection-hosts`. *(v2.11.11)*
 - **Live route-JSON preview** on the proxy-host edit form — see the exact Caddy route JSON your form would push, refreshing as you type. *(v2.11.13)*
-- **Multi-server health widget** on the dashboard — one card per registered Caddy server with status, host count, version, last seen. Renders only when more than one server is registered. *(v2.11.16)*
-- **AI assistant powered by local Ollama** — opt-in floating chat button. Settings → AI assistant. Runs locally on your GPU, no cloud calls. *(v2.11.15)*
+- **Multi-server health widget** on the dashboard — one card per registered Caddy server with status, host count, version, last seen. *(v2.11.16)*
+- **AI assistant powered by local Ollama** — opt-in floating chat button with **conversation memory** (multi-turn), **markdown rendering** (bold / fenced code / lists), and a **custom system prompt** setting to override the built-in Caddy-flavoured steering text. *(v2.11.15, v2.12.7, v2.12.10)*
+- **AI tool calling** — chat the model into actually creating a proxy host or redirection. The AI emits `create_proxy_host(...)` / `create_redirection(...)` as a structured tool call; the chat panel renders a confirmation card with the exact arguments; you click Apply, and the resource gets created. Every tool exec writes an `ai_tool_call` activity-log entry. *(v2.12.11)*
 - **Wildcard cert auto-issuance via DNS-01** — type `*.example.com` in Domains, CaddyUI emits the `tls.automation.policies` block using your existing Cloudflare token (caveat: needs `caddy-dns/cloudflare` plugin in your Caddy build). *(v2.11.19)*
 - **Per-hostname DNS-record pre-flight** on multi-domain routes — checklist showing which records will be created vs already exist. *(v2.12.1)*
 - **Managed DNS on redirections** — closes the long-standing gap where redirects had no DNS plumbing. Now creates A records per hostname on save, deletes on row removal. *(v2.12.2)*
+- **Per-section Save buttons on Settings** — no more scroll-to-bottom for a one-toggle change. *(v2.12.6)*
+- **Active-server-scoped dashboard cards** — Requests / Visitors / Bandwidth Today now reflect only the server selected in the picker, including traffic to wildcard SAN hostnames. *(v2.12.8, v2.12.9)*
 
 ### Routing
 
