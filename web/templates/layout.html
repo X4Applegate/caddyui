@@ -372,9 +372,15 @@ if ('serviceWorker' in navigator) {
           <h2 class="text-sm font-semibold text-ink-900 dark:text-slate-100">AI assistant</h2>
           <span id="ai-model-pill" class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300 font-medium"></span>
         </div>
-        <button type="button" onclick="document.getElementById('ai-modal').classList.add('hidden')" class="text-ink-400 hover:text-ink-700 dark:hover:text-slate-200 transition" aria-label="Close">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+        <div class="flex items-center gap-2">
+          {{/* v2.12.10: New chat button — clears conversation memory so the
+               assistant starts a fresh topic without prior turns leaking
+               in. */}}
+          <button id="ai-new-chat" type="button" class="text-xs text-ink-500 hover:text-ink-900 dark:text-slate-400 dark:hover:text-slate-100 transition border border-ink-200 dark:border-slate-700 rounded-md px-2 py-1" title="Start a new conversation">New chat</button>
+          <button type="button" onclick="document.getElementById('ai-modal').classList.add('hidden')" class="text-ink-400 hover:text-ink-700 dark:hover:text-slate-200 transition" aria-label="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
       </div>
       <div id="ai-history" class="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
         <div class="text-xs text-ink-400 dark:text-slate-500 text-center">Ask anything about your CaddyUI config — proxy hosts, redirects, certs, Caddyfile snippets…</div>
@@ -675,11 +681,23 @@ if ('serviceWorker' in navigator) {
       e.preventDefault();
     }
   });
+  // v2.12.10: in-memory conversation transcript. Each user/assistant
+  // exchange gets pushed; sent on every request as the multi-turn
+  // messages[] payload. "New chat" clears it.
+  var conversation = [];
+  var newChatBtn = document.getElementById('ai-new-chat');
+  function clearChat() {
+    conversation = [];
+    history.innerHTML = '<div class="text-xs text-ink-400 dark:text-slate-500 text-center">Ask anything about your CaddyUI config — proxy hosts, redirects, certs, Caddyfile snippets…</div>';
+  }
+  if (newChatBtn) newChatBtn.addEventListener('click', clearChat);
+
   form.addEventListener('submit', function(e) {
     e.preventDefault();
     var msg = input.value.trim();
     if (!msg) return;
     appendBubble('user', msg);
+    conversation.push({ role: 'user', content: msg });
     input.value = '';
     submit.disabled = true;
     var thinking = document.createElement('div');
@@ -691,14 +709,20 @@ if ('serviceWorker' in navigator) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ message: msg })
+      body: JSON.stringify({ messages: conversation })
     })
       .then(function(r) { return r.json(); })
       .then(function(d) {
         thinking.remove();
-        if (d.error) appendBubble('assistant', d.error, true);
-        else if (d.reply) appendBubble('assistant', d.reply);
-        else appendBubble('assistant', '(empty response)', true);
+        if (d.error) {
+          appendBubble('assistant', d.error, true);
+          // Don't store error responses in conversation memory.
+        } else if (d.reply) {
+          appendBubble('assistant', d.reply);
+          conversation.push({ role: 'assistant', content: d.reply });
+        } else {
+          appendBubble('assistant', '(empty response)', true);
+        }
       })
       .catch(function(err) {
         thinking.remove();

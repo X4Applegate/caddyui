@@ -148,6 +148,16 @@
         Pull one with <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">ollama pull qwen2.5:14b</code> on the Ollama host, then put the exact tag in the field above.
       </div>
     </div>
+    {{/* v2.12.10: custom system prompt — overrides the built-in CaddyUI
+         system prompt when non-empty. Lets users tune the assistant's
+         voice, persona, or domain knowledge without writing a Modelfile. */}}
+    <div class="pt-3 border-t border-ink-100">
+      <label class="block text-sm font-medium text-ink-800 mb-1">Custom system prompt <span class="text-ink-400 font-normal">(optional)</span></label>
+      <p class="text-xs text-ink-500 mb-2">Overrides the built-in CaddyUI system prompt. Leave blank to use the default (which steers the model toward Caddy v2 syntax with concrete examples). Useful if you want a different persona, want the assistant to know about your in-house naming conventions, or want to make it more / less verbose than the default.</p>
+      <textarea name="ai_system_prompt" rows="6" placeholder="Leave blank to use the built-in default."
+        class="w-full font-mono text-xs rounded-lg border border-ink-200 px-3 py-2 bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.AISystemPrompt}}</textarea>
+      <p class="text-xs text-ink-400 mt-1">Tip: paste the built-in prompt's examples block (Caddyfile snippets for AdGuardHome / Nextcloud / wildcard) into your custom prompt to keep the model anchored on real syntax.</p>
+    </div>
     <div class="pt-3 border-t border-ink-100">
       <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
     </div>
