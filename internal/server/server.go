@@ -626,6 +626,9 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/raw-routes/{id}/edit", s.editRawRoute)
 			r.Post("/raw-routes/{id}", s.updateRawRoute)
 			r.Post("/raw-routes/{id}/delete", s.deleteRawRoute)
+			// v2.11.9: bulk operations on /raw-routes (parallel of /proxy-hosts).
+			r.Post("/raw-routes/bulk-toggle", s.bulkToggleRawRoutes)
+			r.Post("/raw-routes/bulk-delete", s.bulkDeleteRawRoutes)
 			// v2.10.9: bulk re-run the classifier over Advanced routes —
 			// useful for users who imported before v2.10.7 (auto-classify)
 			// shipped, when every block landed in Advanced.
@@ -2199,6 +2202,101 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// bulkToggleRawRoutes — v2.11.9: enables or disables a set of raw routes
+// in one shot. Mirrors bulkToggleProxyHosts.
+// Expects form fields: ids[]={id,...} and action=enable|disable.
+func (s *Server) bulkToggleRawRoutes(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	action := r.FormValue("action")
+	if action != "enable" && action != "disable" {
+		http.Error(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	enabled := action == "enable"
+	rawIDs := r.Form["ids[]"]
+	if len(rawIDs) == 0 {
+		http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
+		return
+	}
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	sid := s.currentServerID(r)
+	changed := 0
+	for _, raw := range rawIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			continue
+		}
+		rr, err := models.GetRawRoute(s.DB, id)
+		if err != nil || rr == nil {
+			continue
+		}
+		if !isAdmin && (cu == nil || !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID) {
+			continue
+		}
+		if rr.Enabled != enabled {
+			rr.Enabled = enabled
+			if err := models.UpdateRawRoute(s.DB, rr); err != nil {
+				log.Printf("bulkToggleRaw: update %d: %v", id, err)
+				continue
+			}
+			changed++
+		}
+	}
+	if changed > 0 {
+		if err := s.syncCaddy(sid, false); err != nil {
+			log.Printf("bulkToggleRaw: syncCaddy: %v", err)
+		}
+	}
+	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
+}
+
+// bulkDeleteRawRoutes — v2.11.9: deletes a set of raw routes in one shot.
+// Admin can delete any; others only their own.
+func (s *Server) bulkDeleteRawRoutes(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	_ = r.ParseForm()
+	ids := r.Form["ids[]"]
+	if len(ids) == 0 {
+		http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
+		return
+	}
+	sid := s.currentServerID(r)
+	deleted := 0
+	for _, raw := range ids {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			continue
+		}
+		if !isAdmin {
+			rr, err := models.GetRawRoute(s.DB, id)
+			if err != nil || rr == nil || !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID {
+				continue
+			}
+		}
+		if err := models.DeleteRawRoute(s.DB, id); err != nil {
+			log.Printf("bulk-delete raw route %d: %v", id, err)
+			continue
+		}
+		deleted++
+		_ = models.LogActivity(s.DB, sid, cu.Email, "raw_route_delete", "id", strconv.FormatInt(id, 10), true)
+	}
+	if deleted > 0 {
+		if err := s.syncCaddy(sid, false); err != nil {
+			log.Printf("bulk-delete raw: sync error: %v", err)
+		}
+	}
+	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
 
 // bulkToggleRedirectionHosts — v2.11.6: enables or disables a set of

@@ -50,10 +50,34 @@
 </div>
 {{end}}
 
+{{/* v2.11.9: bulk action bar (parallel of /proxy-hosts and /redirection-hosts). */}}
+<div id="bulk-bar" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-gray-900 dark:bg-gray-800 text-white px-5 py-3 rounded-2xl shadow-xl text-sm">
+  <span id="bulk-count" class="font-medium">0 selected</span>
+  <div class="w-px h-4 bg-white/20"></div>
+  <form method="post" action="/raw-routes/bulk-toggle" id="bulk-form-enable">
+    <input type="hidden" name="action" value="enable">
+    <div id="bulk-enable-ids"></div>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium transition">Enable</button>
+  </form>
+  <form method="post" action="/raw-routes/bulk-toggle" id="bulk-form-disable">
+    <input type="hidden" name="action" value="disable">
+    <div id="bulk-disable-ids"></div>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium transition">Disable</button>
+  </form>
+  <form method="post" action="/raw-routes/bulk-delete" id="bulk-form-delete"
+        onsubmit="return confirm('Delete selected advanced routes? This cannot be undone.')">
+    <div id="bulk-delete-ids"></div>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white font-medium transition">Delete</button>
+  </form>
+  <button id="bulk-clear" type="button" class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition">Clear</button>
+</div>
+
 <div class="bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden overflow-x-auto">
   <table class="hidden md:table w-full text-sm">
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
+        {{/* v2.11.9: select-all for bulk operations. */}}
+        <th class="pl-5 py-3 w-8"><input type="checkbox" id="select-all" class="w-4 h-4 rounded border-gray-300"></th>
         {{/* v2.7.9: Source column mirrors /proxy-hosts so the table at a
              glance shows the same "what hostname does this serve" anchor
              on both pages. Pulls from match.host[] in the route JSON. */}}
@@ -71,6 +95,7 @@
       {{$isTeam := and (ne $.User.Role "admin") .OwnerID.Valid (ne .OwnerID.Int64 $.ViewerID)}}
       {{$srcHostsTop := rawRouteSourceHosts .JSONData}}
       <tr class="bg-white align-top hover:bg-brand-50/30 transition" data-search="{{range $srcHostsTop}}{{.}} {{end}}{{.Label}} {{.CaddyfileSrc}}">
+        <td class="pl-5 py-3 w-8 align-top pt-4">{{if $canEdit}}<input type="checkbox" class="bulk-check w-4 h-4 rounded border-gray-300" value="{{.ID}}">{{end}}</td>
         {{/* v2.7.9: Source = match.host[] entries pulled from JSONData.
              Path-only / port-only routes have no host matcher — show an
              em-dash hint instead of an empty cell so the table reads
@@ -155,7 +180,7 @@
       </tr>
       {{else}}
       <tr class="bg-white">
-        <td colspan="{{if eq .User.Role "admin"}}6{{else}}5{{end}}" class="px-5 py-16 text-center">
+        <td colspan="{{if eq .User.Role "admin"}}7{{else}}6{{end}}" class="px-5 py-16 text-center">
           <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           </div>
@@ -255,6 +280,45 @@
     var q = params.get('q');
     if (q) { input.value = q; applyFilter(q); }
   } catch (e) {}
+})();
+
+// v2.11.9: bulk-action bar wiring (parallel of proxy_hosts / redirection_hosts).
+(function() {
+  var bar = document.getElementById('bulk-bar');
+  var countEl = document.getElementById('bulk-count');
+  var selectAll = document.getElementById('select-all');
+  var enableIds = document.getElementById('bulk-enable-ids');
+  var disableIds = document.getElementById('bulk-disable-ids');
+  var deleteIds = document.getElementById('bulk-delete-ids');
+  if (!bar || !enableIds || !disableIds || !deleteIds) return;
+
+  function getChecked() { return Array.from(document.querySelectorAll('.bulk-check:checked')); }
+  function syncBar() {
+    var checked = getChecked();
+    if (checked.length === 0) { bar.classList.add('hidden'); return; }
+    bar.classList.remove('hidden');
+    countEl.textContent = checked.length + ' selected';
+    var ids = checked.map(function(c) { return c.value; });
+    var hidden = ids.map(function(id) { return '<input type="hidden" name="ids[]" value="' + id + '">'; }).join('');
+    enableIds.innerHTML = hidden;
+    disableIds.innerHTML = hidden;
+    deleteIds.innerHTML = hidden;
+  }
+  document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.addEventListener('change', syncBar); });
+  if (selectAll) {
+    selectAll.addEventListener('change', function() {
+      document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = selectAll.checked; });
+      syncBar();
+    });
+  }
+  var clearBtn = document.getElementById('bulk-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function() {
+      document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = false; });
+      if (selectAll) selectAll.checked = false;
+      syncBar();
+    });
+  }
 })();
 </script>
 {{end}}
