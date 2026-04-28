@@ -509,6 +509,12 @@ func (s *Server) Routes() http.Handler {
 		// active server in one flat list. Frontend caches per palette open.
 		r.Get("/api/search", s.globalSearch)
 
+		// v2.11.15: AI assistant — proxies prompts to the configured Ollama
+		// instance. /api/ai/status reports whether AI is enabled so the
+		// frontend can hide the floating button when not configured.
+		r.Get("/api/ai/status", s.apiAIStatus)
+		r.Post("/api/ai/chat", s.apiAIChat)
+
 		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
 		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
 		r.Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream)
@@ -7775,6 +7781,103 @@ type upstreamHealthResult struct {
 	AppError     string `json:"app_error,omitempty"`
 }
 
+// apiAIStatus — v2.11.15: reports whether AI assist is enabled and which
+// model is configured. Frontend uses this to decide whether to render the
+// floating AI button at page load.
+func (s *Server) apiAIStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	enabled, _ := models.GetSetting(s.DB, settingAIEnabled)
+	model, _ := models.GetSetting(s.DB, settingAIOllamaModel)
+	if model == "" {
+		model = "llama3.2:latest"
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"enabled": enabled == "1",
+		"model":   model,
+	})
+}
+
+// apiAIChat — v2.11.15: proxies a user prompt to the configured Ollama
+// /api/chat endpoint. Single-shot — no server-side conversation history.
+// Streaming is disabled (stream=false) so we can return the full message
+// in one JSON response.
+//
+// The system prompt frames Ollama as a CaddyUI assistant, so generic
+// model knowledge gets steered toward Caddy / reverse-proxy / DNS / TLS
+// answers without needing a fine-tuned model.
+func (s *Server) apiAIChat(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	enabled, _ := models.GetSetting(s.DB, settingAIEnabled)
+	if enabled != "1" {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "AI assist is disabled — turn it on under Settings."})
+		return
+	}
+	baseURL, _ := models.GetSetting(s.DB, settingAIOllamaURL)
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = "http://ollama:11434"
+	}
+	model, _ := models.GetSetting(s.DB, settingAIOllamaModel)
+	if strings.TrimSpace(model) == "" {
+		model = "llama3.2:latest"
+	}
+
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "send a non-empty {message: ...}"})
+		return
+	}
+
+	systemPrompt := "You are an assistant inside CaddyUI, a web app for managing the Caddy reverse proxy. " +
+		"When the user asks about proxy hosts, redirects, certificates, DNS providers, or TLS, prefer Caddy v2 syntax and concepts. " +
+		"Caddyfile snippets are preferred over JSON when they fit. Keep answers concise (one-paragraph or short list); the user is editing a config alongside this chat."
+
+	payload := map[string]any{
+		"model":  model,
+		"stream": false,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": body.Message},
+		},
+	}
+	pb, _ := json.Marshal(payload)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/chat", bytes.NewReader(pb))
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "build request: " + err.Error()})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ollama: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("ollama %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))})
+		return
+	}
+	var out struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "decode ollama response: " + err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"reply": strings.TrimSpace(out.Message.Content),
+		"model": model,
+	})
+}
+
 // apiPreviewProxyHost — v2.11.13: live preview of the route JSON Caddy
 // would receive for the in-progress proxy-host edit form. Reuses the
 // same parseProxyHostForm + BuildProxyRoute path as createProxyHost so
@@ -8261,6 +8364,14 @@ const (
 	settingSMTPTo         = "smtp_to"
 	settingSMTPSecurity   = "smtp_security"    // "none" | "starttls" | "tls"
 	settingSMTPSkipVerify = "smtp_skip_verify" // "1" to skip TLS cert validation
+
+	// v2.11.15: AI assistant — proxies user prompts to a local Ollama
+	// instance. Default URL points at the docker service name "ollama"
+	// since most users running CaddyUI on a homelab GPU box co-locate
+	// Ollama in the same compose network.
+	settingAIEnabled     = "ai_enabled"      // "1" / "0"
+	settingAIOllamaURL   = "ai_ollama_url"   // base URL, e.g. http://ollama:11434
+	settingAIOllamaModel = "ai_ollama_model" // e.g. llama3.2:latest
 )
 
 // sendEmail delivers a plain-text email via the SMTP settings stored in the DB.
@@ -10425,6 +10536,17 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		daysBefore = d
 	}
 
+	// v2.11.15: AI assistant settings.
+	aiEnabledStr, _ := models.GetSetting(s.DB, settingAIEnabled)
+	aiOllamaURL, _ := models.GetSetting(s.DB, settingAIOllamaURL)
+	if aiOllamaURL == "" {
+		aiOllamaURL = "http://ollama:11434"
+	}
+	aiOllamaModel, _ := models.GetSetting(s.DB, settingAIOllamaModel)
+	if aiOllamaModel == "" {
+		aiOllamaModel = "llama3.2:latest"
+	}
+
 	smtpHost, _ := models.GetSetting(s.DB, settingSMTPHost)
 	smtpPort, _ := models.GetSetting(s.DB, settingSMTPPort)
 	smtpUsername, _ := models.GetSetting(s.DB, settingSMTPUsername)
@@ -10576,6 +10698,9 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"WebhookURL":         webhookURL,
 		"WebhookSecret":      mustGetSetting(s.DB, settingNotifyWebhookSecret),
 		"DaysBefore":         daysBefore,
+		"AIEnabled":          aiEnabledStr == "1",
+		"AIOllamaURL":        aiOllamaURL,
+		"AIOllamaModel":      aiOllamaModel,
 		"SMTPHost":           smtpHost,
 		"SMTPPort":           smtpPort,
 		"SMTPUsername":       smtpUsername,
@@ -10758,7 +10883,18 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingNotifyWebhookURL:    webhookURL,
 		settingNotifyWebhookSecret: webhookSecret,
 		settingNotifyDaysBefore:    strconv.Itoa(daysBefore),
-		settingSMTPHost:           smtpHost,
+		settingSMTPHost: smtpHost,
+		// v2.11.15: AI assistant settings.
+		settingAIEnabled: func() string {
+			for _, v := range r.PostForm["ai_enabled"] {
+				if v == "1" {
+					return "1"
+				}
+			}
+			return "0"
+		}(),
+		settingAIOllamaURL:   strings.TrimSpace(r.FormValue("ai_ollama_url")),
+		settingAIOllamaModel: strings.TrimSpace(r.FormValue("ai_ollama_model")),
 		// v2.9.5: 2FA enforcement policy (checkbox → "on" when checked).
 		settingRequire2FA: func() string {
 			if r.FormValue("require_2fa") == "on" {
