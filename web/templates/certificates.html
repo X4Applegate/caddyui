@@ -88,6 +88,18 @@
   {{end}}
 </div>
 
+{{/* v2.11.10: bulk action bar — Delete only (certs have no enable/disable). */}}
+<div id="bulk-bar" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-gray-900 dark:bg-gray-800 text-white px-5 py-3 rounded-2xl shadow-xl text-sm">
+  <span id="bulk-count" class="font-medium">0 selected</span>
+  <div class="w-px h-4 bg-white/20"></div>
+  <form method="post" action="/certificates/bulk-delete" id="bulk-form-delete"
+        onsubmit="return confirm('Delete selected certificates? Hosts using them revert to auto SSL on next sync. This cannot be undone.')">
+    <div id="bulk-delete-ids"></div>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white font-medium transition">Delete</button>
+  </form>
+  <button id="bulk-clear" type="button" class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition">Clear</button>
+</div>
+
 {{/* ── Desktop table ──
      Actions column is sticky-right so Edit/Delete stay visible at any
      viewport width; wrapper set to overflow-x-auto + min-w so narrow
@@ -97,6 +109,8 @@
   <table class="w-full text-sm min-w-[820px]">
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
+        {{/* v2.11.10: select-all for bulk-delete. */}}
+        <th class="pl-5 py-3 w-8"><input type="checkbox" id="select-all" class="w-4 h-4 rounded border-gray-300"></th>
         <th class="px-5 py-3 font-medium">Name</th>
         <th class="px-5 py-3 font-medium">Domains</th>
         <th class="px-5 py-3 font-medium">Source</th>
@@ -108,6 +122,7 @@
     <tbody class="divide-y divide-ink-200">
       {{range .Certs}}
       <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Name}} {{.Domains}} {{.OwnerEmail}}">
+        <td class="pl-5 py-3 w-8">{{if .CanEdit}}<input type="checkbox" class="bulk-check w-4 h-4 rounded border-gray-300" value="{{.ID}}">{{end}}</td>
         <td class="px-5 py-3">
           <span class="inline-flex items-center gap-1">
             <span class="font-mono text-xs text-ink-800">{{.Name}}</span>
@@ -181,7 +196,7 @@
       </tr>
       {{else}}
       <tr class="bg-white">
-        <td colspan="{{if eq .User.Role "admin"}}6{{else}}5{{end}}" class="px-5 py-16 text-center">
+        <td colspan="{{if eq .User.Role "admin"}}7{{else}}6{{end}}" class="px-5 py-16 text-center">
           <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           </div>
@@ -251,6 +266,40 @@
     });
   }
   input.addEventListener('input', function() { applyFilter(this.value); });
+})();
+
+// v2.11.10: bulk-action bar wiring (Delete only — certs have no toggle state).
+(function() {
+  var bar = document.getElementById('bulk-bar');
+  var countEl = document.getElementById('bulk-count');
+  var selectAll = document.getElementById('select-all');
+  var deleteIds = document.getElementById('bulk-delete-ids');
+  if (!bar || !deleteIds) return;
+
+  function getChecked() { return Array.from(document.querySelectorAll('.bulk-check:checked')); }
+  function syncBar() {
+    var checked = getChecked();
+    if (checked.length === 0) { bar.classList.add('hidden'); return; }
+    bar.classList.remove('hidden');
+    countEl.textContent = checked.length + ' selected';
+    var ids = checked.map(function(c) { return c.value; });
+    deleteIds.innerHTML = ids.map(function(id) { return '<input type="hidden" name="ids[]" value="' + id + '">'; }).join('');
+  }
+  document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.addEventListener('change', syncBar); });
+  if (selectAll) {
+    selectAll.addEventListener('change', function() {
+      document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = selectAll.checked; });
+      syncBar();
+    });
+  }
+  var clearBtn = document.getElementById('bulk-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function() {
+      document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = false; });
+      if (selectAll) selectAll.checked = false;
+      syncBar();
+    });
+  }
 })();
 </script>
 {{end}}
