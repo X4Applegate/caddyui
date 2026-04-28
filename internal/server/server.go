@@ -6758,6 +6758,20 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		return nil
 	}
 
+	// v2.12.14: prepend the global strip-response-headers list to each
+	// proxy host's per-host list so the eventual BuildProxyRoute emits a
+	// header-delete handler covering both. Mutating in-place is safe — the
+	// proxies slice is a fresh ListProxyHosts call, not a long-lived cache.
+	if globalStrip, _ := models.GetSetting(s.DB, settingGlobalStripResponseHeaders); strings.TrimSpace(globalStrip) != "" {
+		for i := range proxies {
+			if strings.TrimSpace(proxies[i].StripResponseHeaders) == "" {
+				proxies[i].StripResponseHeaders = globalStrip
+			} else {
+				proxies[i].StripResponseHeaders = globalStrip + "," + proxies[i].StripResponseHeaders
+			}
+		}
+	}
+
 	routes := s.buildMergedRoutes(proxies, redirs, raws)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws)
@@ -8980,6 +8994,13 @@ const (
 	settingAIOllamaURL    = "ai_ollama_url"    // base URL, e.g. http://ollama:11434
 	settingAIOllamaModel  = "ai_ollama_model"  // e.g. llama3.2:latest
 	settingAISystemPrompt = "ai_system_prompt" // v2.12.10: optional override of the built-in system prompt
+
+	// v2.12.14: comma-separated list of response headers stripped from every
+	// proxy-host's upstream response. Useful for blanket-removing things like
+	// X-Frame-Options or X-Powered-By that an upstream insists on adding.
+	// Concatenated with each proxy_host's own strip_response_headers in
+	// syncCaddy before BuildProxyRoute fires.
+	settingGlobalStripResponseHeaders = "global_strip_response_headers"
 )
 
 // sendEmail delivers a plain-text email via the SMTP settings stored in the DB.
@@ -11184,6 +11205,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		aiOllamaModel = "llama3.2:latest"
 	}
 	aiSystemPrompt, _ := models.GetSetting(s.DB, settingAISystemPrompt)
+	globalStripHdrs, _ := models.GetSetting(s.DB, settingGlobalStripResponseHeaders)
 
 	smtpHost, _ := models.GetSetting(s.DB, settingSMTPHost)
 	smtpPort, _ := models.GetSetting(s.DB, settingSMTPPort)
@@ -11340,6 +11362,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AIOllamaURL":        aiOllamaURL,
 		"AIOllamaModel":      aiOllamaModel,
 		"AISystemPrompt":     aiSystemPrompt,
+		"GlobalStripHeaders": globalStripHdrs,
 		"SMTPHost":           smtpHost,
 		"SMTPPort":           smtpPort,
 		"SMTPUsername":       smtpUsername,
@@ -11534,7 +11557,8 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		}(),
 		settingAIOllamaURL:    strings.TrimSpace(r.FormValue("ai_ollama_url")),
 		settingAIOllamaModel:  strings.TrimSpace(r.FormValue("ai_ollama_model")),
-		settingAISystemPrompt: r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
+		settingAISystemPrompt:             r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
+		settingGlobalStripResponseHeaders: strings.TrimSpace(r.FormValue("global_strip_response_headers")),
 		// v2.9.5: 2FA enforcement policy (checkbox → "on" when checked).
 		settingRequire2FA: func() string {
 			if r.FormValue("require_2fa") == "on" {
