@@ -501,6 +501,10 @@ func (s *Server) Routes() http.Handler {
 		// Feature B: upstream health check API (authenticated, no requireWrite).
 		r.Get("/api/upstream-health", s.apiUpstreamHealth)
 
+		// v2.11.5: ⌘K command palette — returns every visible resource on the
+		// active server in one flat list. Frontend caches per palette open.
+		r.Get("/api/search", s.globalSearch)
+
 		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
 		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
 		r.Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream)
@@ -7394,6 +7398,84 @@ type upstreamHealthResult struct {
 	AppCode      int    `json:"app_code,omitempty"`
 	AppLatencyMS int64  `json:"app_latency_ms,omitempty"`
 	AppError     string `json:"app_error,omitempty"`
+}
+
+// globalSearch — v2.11.5: ⌘K / Ctrl+K command palette. Returns a flat list of
+// every proxy host, redirection, raw route, and certificate visible to the
+// current user on the active server. The frontend caches the result and
+// filters client-side; one fetch per palette open (with a 60-second
+// freshness window).
+func (s *Server) globalSearch(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	viewerID := cu.ID
+	peers := s.groupPeerIDs(r)
+	sid := s.currentServerID(r)
+
+	type item struct {
+		Type  string `json:"type"`
+		ID    int64  `json:"id"`
+		Label string `json:"label"`
+		Sub   string `json:"sub"`
+		URL   string `json:"url"`
+	}
+	items := make([]item, 0, 256)
+
+	if hosts, err := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin, peers); err == nil {
+		for _, h := range hosts {
+			items = append(items, item{
+				Type:  "proxy",
+				ID:    h.ID,
+				Label: h.Domains,
+				Sub:   fmt.Sprintf("→ %s:%d", h.ForwardHost, h.ForwardPort),
+				URL:   fmt.Sprintf("/proxy-hosts/%d/edit", h.ID),
+			})
+		}
+	}
+	if redirs, err := models.ListRedirectionHosts(s.DB, sid, viewerID, isAdmin, peers); err == nil {
+		for _, h := range redirs {
+			items = append(items, item{
+				Type:  "redirect",
+				ID:    h.ID,
+				Label: h.Domains,
+				Sub:   fmt.Sprintf("→ %s://%s (%d)", h.ForwardScheme, h.ForwardDomain, h.ForwardHTTPCode),
+				URL:   fmt.Sprintf("/redirection-hosts/%d/edit", h.ID),
+			})
+		}
+	}
+	if raws, err := models.ListRawRoutes(s.DB, sid, viewerID, isAdmin, peers); err == nil {
+		for _, rr := range raws {
+			label := rr.Label
+			if label == "" {
+				label = fmt.Sprintf("Advanced route #%d", rr.ID)
+			}
+			items = append(items, item{
+				Type:  "raw",
+				ID:    rr.ID,
+				Label: label,
+				Sub:   "Advanced route",
+				URL:   fmt.Sprintf("/raw-routes/%d/edit", rr.ID),
+			})
+		}
+	}
+	if certs, err := models.ListCertificatesForUser(s.DB, sid, viewerID, isAdmin, peers); err == nil {
+		for _, c := range certs {
+			items = append(items, item{
+				Type:  "cert",
+				ID:    c.ID,
+				Label: c.Name,
+				Sub:   c.Domains,
+				URL:   fmt.Sprintf("/certificates/%d/edit", c.ID),
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"results": items})
 }
 
 func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
