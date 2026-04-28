@@ -512,6 +512,9 @@ func (s *Server) Routes() http.Handler {
 		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
 		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
 		r.Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream)
+		// v2.11.13: live Caddyfile/JSON preview — takes the in-progress
+		// proxy-host edit form and returns the route JSON Caddy would see.
+		r.Post("/api/proxy-hosts/preview", s.apiPreviewProxyHost)
 		// v2.9.228: validate a raw-route's Caddyfile/JSON via /load?validate_only=true
 		// before saving the row. Lets the form catch syntax/schema errors at edit
 		// time instead of waiting for the next sync to surface them.
@@ -7770,6 +7773,26 @@ type upstreamHealthResult struct {
 	AppCode      int    `json:"app_code,omitempty"`
 	AppLatencyMS int64  `json:"app_latency_ms,omitempty"`
 	AppError     string `json:"app_error,omitempty"`
+}
+
+// apiPreviewProxyHost — v2.11.13: live preview of the route JSON Caddy
+// would receive for the in-progress proxy-host edit form. Reuses the
+// same parseProxyHostForm + BuildProxyRoute path as createProxyHost so
+// what the user sees here is exactly what gets pushed on save. Lenient
+// on missing required fields — returns {"error": "..."} instead of a
+// 400 so the frontend can surface "fill in port" inline without
+// breaking the preview pane.
+func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	p, err := parseProxyHostForm(r)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	route := caddy.BuildProxyRoute(*p, nil)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(map[string]any{"route": route})
 }
 
 // globalSearch — v2.11.5: ⌘K / Ctrl+K command palette. Returns a flat list of
