@@ -58,6 +58,76 @@
 </div>
   </div>
 
+  {{/* v2.11.8: Forward Scheme + Host + Port hoisted to directly under
+       Domain. These are the "where does this hostname forward to?"
+       essentials and pair naturally with the Domain field — no reason
+       to scroll past Enabled/Auto-SSL/Managed-DNS to set them. */}}
+  <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+    <div class="sm:col-span-3">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Scheme</label>
+      <select name="forward_scheme" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="http" {{if eq .Host.ForwardScheme "http"}}selected{{end}}>http</option>
+        <option value="https" {{if eq .Host.ForwardScheme "https"}}selected{{end}}>https</option>
+      </select>
+    </div>
+    <div class="sm:col-span-6">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Forward Host / IP</label>
+      <input name="forward_host" value="{{.Host.ForwardHost}}" required placeholder="192.168.1.10 or backend-container" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div class="sm:col-span-3">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Port</label>
+      <input name="forward_port" value="{{if .Host.ForwardPort}}{{.Host.ForwardPort}}{{end}}" type="number" min="1" max="65535" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+  </div>
+
+  <div class="flex items-center gap-2 mt-2">
+    <button type="button" id="test-upstream-btn"
+      class="inline-flex items-center gap-1.5 text-xs bg-ink-50 hover:bg-ink-100 border border-ink-200 text-ink-700 font-medium px-3 py-1.5 rounded-lg transition">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      Test upstream
+    </button>
+    <span id="test-upstream-result" class="text-xs"></span>
+  </div>
+  <script>
+  document.getElementById('test-upstream-btn').addEventListener('click', function() {
+    var btn = this;
+    var result = document.getElementById('test-upstream-result');
+    var host = document.querySelector('[name="forward_host"]')?.value?.trim();
+    var port = document.querySelector('[name="forward_port"]')?.value?.trim();
+    var scheme = document.querySelector('[name="forward_scheme"]')?.value?.trim() || 'http';
+    if (!host || !port) { result.textContent = 'Enter host and port first.'; return; }
+    btn.disabled = true;
+    result.textContent = 'Testing…';
+    result.className = 'text-xs text-ink-500';
+    var form = new FormData();
+    form.append('host', host);
+    form.append('port', port);
+    form.append('scheme', scheme);
+    fetch('/api/proxy-hosts/test-upstream', {method:'POST', body: form})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(d.ok){
+          result.textContent = '✓ Reachable' + (d.status ? ' · HTTP '+d.status : '') + ' · '+d.latency_ms+'ms';
+          result.className = 'text-xs text-green-600 font-medium';
+        } else {
+          var line1 = '✗ ' + (d.error || 'Unreachable' + (d.status ? ' ('+d.status+')' : ''));
+          if (d.hint) {
+            result.innerHTML = '<div class="text-red-600 font-medium">' + line1.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</div>' +
+              '<div class="text-ink-600 mt-1 text-[11px] leading-snug">' + d.hint.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</div>';
+            result.className = 'text-xs';
+          } else {
+            result.textContent = line1;
+            result.className = 'text-xs text-red-600 font-medium';
+          }
+        }
+      })
+      .catch(function(e){ result.textContent = '✗ Request failed'; result.className = 'text-xs text-red-600'; })
+      .finally(function(){ btn.disabled = false; });
+  });
+  </script>
+
   {{/* v2.11.4: essential SSL/enabled toggles always-visible at top — pulled out of the collapsed Options & Forwarded Headers section so users don't have to expand it just to enable a host or flip Auto SSL. */}}
   <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-ink-100">
     <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
@@ -271,76 +341,8 @@
 
     </div>
   </details>
-  {{/* v2.11.7: end of Path matching, query string, tags & notes collapse. */}}
-
-  <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
-    <div class="sm:col-span-3">
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">Scheme</label>
-      <select name="forward_scheme" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-        <option value="http" {{if eq .Host.ForwardScheme "http"}}selected{{end}}>http</option>
-        <option value="https" {{if eq .Host.ForwardScheme "https"}}selected{{end}}>https</option>
-      </select>
-    </div>
-    <div class="sm:col-span-6">
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">Forward Host / IP</label>
-      <input name="forward_host" value="{{.Host.ForwardHost}}" required placeholder="192.168.1.10 or backend-container" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-    </div>
-    <div class="sm:col-span-3">
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">Port</label>
-      <input name="forward_port" value="{{if .Host.ForwardPort}}{{.Host.ForwardPort}}{{end}}" type="number" min="1" max="65535" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-    </div>
-  </div>
-
-  <div class="flex items-center gap-2 mt-2">
-    <button type="button" id="test-upstream-btn"
-      class="inline-flex items-center gap-1.5 text-xs bg-ink-50 hover:bg-ink-100 border border-ink-200 text-ink-700 font-medium px-3 py-1.5 rounded-lg transition">
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-      </svg>
-      Test upstream
-    </button>
-    <span id="test-upstream-result" class="text-xs"></span>
-  </div>
-  <script>
-  document.getElementById('test-upstream-btn').addEventListener('click', function() {
-    var btn = this;
-    var result = document.getElementById('test-upstream-result');
-    var host = document.querySelector('[name="forward_host"]')?.value?.trim();
-    var port = document.querySelector('[name="forward_port"]')?.value?.trim();
-    var scheme = document.querySelector('[name="forward_scheme"]')?.value?.trim() || 'http';
-    if (!host || !port) { result.textContent = 'Enter host and port first.'; return; }
-    btn.disabled = true;
-    result.textContent = 'Testing…';
-    result.className = 'text-xs text-ink-500';
-    var form = new FormData();
-    form.append('host', host);
-    form.append('port', port);
-    form.append('scheme', scheme);
-    fetch('/api/proxy-hosts/test-upstream', {method:'POST', body: form})
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        if(d.ok){
-          result.textContent = '✓ Reachable' + (d.status ? ' · HTTP '+d.status : '') + ' · '+d.latency_ms+'ms';
-          result.className = 'text-xs text-green-600 font-medium';
-        } else {
-          // v2.9.212: render multi-line failure with the actionable hint
-          // below the raw error so DNS / TLS / refused get a one-liner the
-          // user can act on instead of "Get \"https://...\": ... no such host".
-          var line1 = '✗ ' + (d.error || 'Unreachable' + (d.status ? ' ('+d.status+')' : ''));
-          if (d.hint) {
-            result.innerHTML = '<div class="text-red-600 font-medium">' + line1.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</div>' +
-              '<div class="text-ink-600 mt-1 text-[11px] leading-snug">' + d.hint.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</div>';
-            result.className = 'text-xs';
-          } else {
-            result.textContent = line1;
-            result.className = 'text-xs text-red-600 font-medium';
-          }
-        }
-      })
-      .catch(function(e){ result.textContent = '✗ Request failed'; result.className = 'text-xs text-red-600'; })
-      .finally(function(){ btn.disabled = false; });
-  });
-  </script>
+  {{/* v2.11.7: end of Path matching, query string, tags & notes collapse.
+       v2.11.8: Forward Scheme/Host/Port + Test upstream hoisted up under Domain. */}}
 
   {{/* v2.11.7: Upstream TLS / advanced upstream settings — collapsed by
        default. Most users never touch SNI, min TLS version, forward proxy
