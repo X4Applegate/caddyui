@@ -192,12 +192,34 @@
   </div>
   {{end}}
   {{if and (not .Hosts) (not .AdvancedRows)}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-16 text-center">
-    <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+  {{/* v2.11.0: richer empty state — explains what a proxy host IS, offers
+       three on-ramps (manual create, paste a Caddyfile, import JSON from
+       a running Caddy), and links to the docs for deeper context. */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-6 py-12 text-center max-w-2xl mx-auto">
+    <div class="w-14 h-14 mx-auto bg-brand-50 rounded-2xl flex items-center justify-center mb-4">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-7 h-7 text-brand-600"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
     </div>
-    <div class="text-ink-600 text-sm font-medium">No proxy hosts yet</div>
-    <a href="/proxy-hosts/new" class="inline-block mt-3 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Create your first</a>
+    <h3 class="text-ink-900 font-semibold text-base">Reverse-proxy a public hostname to an upstream</h3>
+    <p class="text-sm text-ink-500 mt-1.5 max-w-md mx-auto">
+      Your first proxy host points <code class="font-mono text-xs bg-ink-100 px-1 rounded">example.com</code>
+      at something like <code class="font-mono text-xs bg-ink-100 px-1 rounded">localhost:3000</code>
+      with automatic HTTPS. Pick the on-ramp that fits.
+    </p>
+    <div class="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+      <a href="/proxy-hosts/new" class="inline-flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-medium transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>Create one</span>
+      </a>
+      <a href="/caddyfile-import" class="inline-flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg bg-white border border-ink-200 hover:border-brand-300 hover:bg-brand-50/30 text-ink-700 font-medium transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+        <span>Paste Caddyfile</span>
+      </a>
+      <a href="/import" class="inline-flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg bg-white border border-ink-200 hover:border-brand-300 hover:bg-brand-50/30 text-ink-700 font-medium transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Import live config</span>
+      </a>
+    </div>
+    <a href="/docs#proxy-hosts" class="inline-block mt-5 text-xs text-ink-500 hover:text-brand-600 transition">Read the docs →</a>
   </div>
   {{end}}
 </div>

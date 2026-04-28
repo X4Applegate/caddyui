@@ -84,12 +84,28 @@
     </div>
   </div>
   {{else}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-16 text-center">
-    <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/></svg>
+  {{/* v2.11.0: richer empty state — same template as proxy_hosts but
+       sky-tinted to match the redirection-host colour. */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-6 py-12 text-center max-w-2xl mx-auto">
+    <div class="w-14 h-14 mx-auto bg-sky-50 rounded-2xl flex items-center justify-center mb-4">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-7 h-7 text-sky-600"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
     </div>
-    <div class="text-ink-600 text-sm font-medium">No redirections yet</div>
-    <a href="/redirection-hosts/new" class="inline-block mt-3 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Create your first</a>
+    <h3 class="text-ink-900 font-semibold text-base">Redirect a hostname to another URL</h3>
+    <p class="text-sm text-ink-500 mt-1.5 max-w-md mx-auto">
+      Common pattern: send <code class="font-mono text-xs bg-ink-100 px-1 rounded">old.example.com</code> →
+      <code class="font-mono text-xs bg-ink-100 px-1 rounded">https://new.example.com</code> with a 301.
+      Caddy issues HTTPS for the source domain automatically.
+    </p>
+    <div class="mt-6 flex flex-col sm:flex-row items-center justify-center gap-2 text-sm">
+      <a href="/redirection-hosts/new" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-medium transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Create one
+      </a>
+      <a href="/caddyfile-import" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white border border-ink-200 hover:border-sky-300 hover:bg-sky-50/30 text-ink-700 font-medium transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+        Paste Caddyfile
+      </a>
+    </div>
   </div>
   {{end}}
 </div>

@@ -15,6 +15,14 @@
   {{end}}
 </div>
 
+{{/* v2.11.0: live filter input — matches /proxy-hosts pattern. */}}
+{{if .Certs}}
+<div class="mb-3">
+  <input id="cert-search" type="search" placeholder="Filter by name, domain, or owner…" autocomplete="off"
+    class="w-full rounded-lg border border-ink-200 px-3 py-2.5 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+</div>
+{{end}}
+
 {{/* ── Mobile card list ──
      v2.7.2: tap-to-edit follows per-row ownership (.CanEdit), not a blanket
      admin check. User-role sees the card as clickable only for certs they
@@ -22,7 +30,7 @@
      dropdown reference) but are read-only to non-admins. */}}
 <div class="lg:hidden space-y-2">
   {{range .Certs}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-4{{if .CanEdit}} cursor-pointer hover:border-brand-300 transition{{end}}"{{if .CanEdit}} data-edit-href="/certificates/{{.ID}}/edit"{{end}}>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-4{{if .CanEdit}} cursor-pointer hover:border-brand-300 transition{{end}}" data-search="{{.Name}} {{.Domains}} {{.OwnerEmail}}"{{if .CanEdit}} data-edit-href="/certificates/{{.ID}}/edit"{{end}}>
     <div class="flex items-start justify-between gap-2 mb-1">
       <span class="font-mono text-sm font-medium text-ink-800 break-all">{{.Name}}</span>
       {{if .ExpiresAt}}
@@ -99,7 +107,7 @@
     </thead>
     <tbody class="divide-y divide-ink-200">
       {{range .Certs}}
-      <tr class="bg-white hover:bg-brand-50/30 transition">
+      <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Name}} {{.Domains}} {{.OwnerEmail}}">
         <td class="px-5 py-3">
           <span class="inline-flex items-center gap-1">
             <span class="font-mono text-xs text-ink-800">{{.Name}}</span>
@@ -229,4 +237,20 @@
   </div>
 </div>
 {{end}}
+
+{{/* v2.11.0: live filter — same pattern as proxy_hosts. */}}
+<script>
+(function() {
+  var input = document.getElementById('cert-search');
+  if (!input) return;
+  function applyFilter(q) {
+    q = (q || '').toLowerCase().trim();
+    document.querySelectorAll('[data-search]').forEach(function(el) {
+      var text = (el.dataset.search || '').toLowerCase();
+      el.style.display = (!q || text.includes(q)) ? '' : 'none';
+    });
+  }
+  input.addEventListener('input', function() { applyFilter(this.value); });
+})();
+</script>
 {{end}}
