@@ -5,6 +5,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.11.6] — 2026-04-28 · Bulk multi-select on /redirection-hosts
+
+> Preview build (`applegater/caddyui:v2.11.6` and `:preview`). `:latest` still pinned at v2.10.0.
+
+### Added
+- **Bulk action bar on `/redirection-hosts`** — same floating bottom-bar pattern `/proxy-hosts` has had. Per-row checkbox, select-all in the header, and Enable / Disable / Delete buttons that act on every selected row in one shot. Each successful batch triggers a single `syncCaddy` call instead of one-per-row.
+
+### Internal
+- New routes: `POST /redirection-hosts/bulk-toggle` (action=enable|disable) and `POST /redirection-hosts/bulk-delete`. Both honour per-row ownership — non-admins can only toggle / delete their own rows.
+- Mobile card view stays checkbox-free; bulk select is rare on a phone screen and matches the `/proxy-hosts` decision.
+
+---
+
+## [2.11.5] — 2026-04-28 · ⌘K / Ctrl+K command palette — global resource search
+
+> Preview build (`applegater/caddyui:v2.11.5` and `:preview`).
+
+### Added
+- **Global command palette.** Press `⌘K` (macOS) or `Ctrl+K` (everywhere else) on any page to open a modal that searches across every proxy host, redirection, raw route, and certificate visible to the current user on the active server. `↑/↓` navigates results, `Enter` opens the highlighted item, `Esc` or backdrop-click closes.
+- **Type pills** colour-code results: <span style="color:#1d4ed8">Proxy</span> · <span style="color:#0369a1">Redirect</span> · <span style="color:#7e22ce">Advanced</span> · <span style="color:#047857">Cert</span> — same brand colours used elsewhere in the app.
+- **Keyboard-shortcut overlay (`?`)** updated to list the new binding.
+
+### Internal
+- New endpoint `GET /api/search` returns a flat list of `{type, id, label, sub, url}` items, scoped through the same viewer / peer / admin permission filtering the list pages already use.
+- Frontend caches the response per palette open with a 60-second freshness window — reopening the palette is instant; a stale cache silently re-fetches in the background.
+
+---
+
+## [2.11.4] — 2026-04-28 · Proxy-form: hoist Enabled / Auto SSL / Force SSL to top
+
+> Preview build (`applegater/caddyui:v2.11.4` and `:preview`).
+
+### Changed
+- **Three essential toggles** (`Enabled`, `Auto SSL (Let's Encrypt)`, `Force SSL (HTTPS redirect)`) now sit in their own always-visible row directly under the Domain names input — alongside Managed DNS and TLS Certificate as the form's "essentials" area. Previously they were buried inside the collapsed `Options & Forwarded Headers` section after v2.11.2, so flipping them required expanding a 50-field block first.
+
+### Kept
+- The `Options & Forwarded Headers` section keeps the rest (Verify Upstream TLS, X-Forwarded-* headers, blocking toggles, ~50 fields) collapsed by default — same `data-keep-open` / collapse pattern as before.
+
+---
+
 ## [2.11.3] — 2026-04-27 · Proxy-form: collapse on edit too
 
 > Preview build (`applegater/caddyui:v2.11.3` and `:preview`). `:latest` still pinned at v2.10.0.
