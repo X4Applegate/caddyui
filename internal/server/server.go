@@ -7928,10 +7928,12 @@ func (s *Server) apiAIChat(w http.ResponseWriter, r *http.Request) {
 // the panel before filling in Forward port.
 func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := r.ParseForm(); err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "could not parse form: " + err.Error()})
-		return
-	}
+	// v2.11.18: the frontend sends FormData (multipart). r.ParseForm only
+	// handles application/x-www-form-urlencoded bodies; for multipart we
+	// also need ParseMultipartForm. Calling both means r.Form is populated
+	// regardless of how the JS chose to encode the request.
+	_ = r.ParseForm()
+	_ = r.ParseMultipartForm(32 << 20)
 	pad := func(key, fallback string) {
 		if strings.TrimSpace(r.Form.Get(key)) == "" {
 			r.Form.Set(key, fallback)
