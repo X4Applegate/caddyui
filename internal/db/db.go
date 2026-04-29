@@ -744,6 +744,14 @@ func migrate(db *sql.DB) error {
 		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN totp_backup_codes TEXT NOT NULL DEFAULT ''`)
 	}
 
+	// v2.12.27: per-user color theme. Empty string = use the default
+	// slate-blue palette; "orange" = the carbon-orange palette added in
+	// v2.12.22. Stored on users so the preference follows the account
+	// across devices instead of being trapped in per-browser localStorage.
+	if !columnExists2(db, "users", "color_theme") {
+		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN color_theme TEXT NOT NULL DEFAULT ''`)
+	}
+
 	if !columnExists2(db, "proxy_hosts", "error_page_html") {
 		_, err = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN error_page_html TEXT NOT NULL DEFAULT ''`)
 		if err != nil {
