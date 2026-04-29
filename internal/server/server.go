@@ -2726,7 +2726,7 @@ func (s *Server) toggleRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		action = "redirect_disable"
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), action, fmt.Sprintf("redirect:%d", id), "", true)
-	s.syncCaddy(s.currentServerID(r), false)
+	s.trySyncCaddy(s.currentServerID(r), false)
 	ref := r.Header.Get("Referer")
 	if ref == "" {
 		ref = "/redirection-hosts"
@@ -3732,7 +3732,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		dnsCreated = true
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
-	s.syncCaddy(s.currentServerID(r), p.CertificateID != 0)
+	s.trySyncCaddy(s.currentServerID(r), p.CertificateID != 0)
 	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" {
 		domains := p.Domains
 		db := s.DB
@@ -3906,7 +3906,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
-	s.syncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" {
 		domains := p.Domains
 		db := s.DB
@@ -3955,7 +3955,7 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
-	s.syncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" && old != nil {
 		domains := old.Domains
 		db := s.DB
@@ -4191,7 +4191,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.dnsCreateRecordForRedirection(s.currentServerID(r), id, rh)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_create", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
-	s.syncCaddy(s.currentServerID(r), rh.CertificateID != 0)
+	s.trySyncCaddy(s.currentServerID(r), rh.CertificateID != 0)
 	if len(deployTo) > 0 {
 		s.crossDeployRedirectionHost(s.currentUserEmail(r), rh, deployTo)
 	}
@@ -4297,7 +4297,7 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_update", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
 	forceTLS := old != nil && old.CertificateID != rh.CertificateID
-	s.syncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	if len(deployTo) > 0 {
 		s.crossDeployRedirectionHost(s.currentUserEmail(r), rh, deployTo)
 	}
@@ -4325,7 +4325,7 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redirect:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
-	s.syncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
 }
 
@@ -5914,7 +5914,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), c.Name, true)
-	s.syncCaddy(s.currentServerID(r), true)
+	s.trySyncCaddy(s.currentServerID(r), true)
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
@@ -6003,7 +6003,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
-	s.syncCaddy(s.currentServerID(r), true)
+	s.trySyncCaddy(s.currentServerID(r), true)
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
@@ -6058,7 +6058,7 @@ func (s *Server) deleteCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
-	s.syncCaddy(s.currentServerID(r), true)
+	s.trySyncCaddy(s.currentServerID(r), true)
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
@@ -6306,7 +6306,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.dnsCreateRecordForRaw(s.currentServerID(r), id, rr)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_create", fmt.Sprintf("raw:%d", id), rr.Label, true)
-	s.syncCaddy(s.currentServerID(r), rr.CertificateID != 0)
+	s.trySyncCaddy(s.currentServerID(r), rr.CertificateID != 0)
 	// v2.5.5: park the user on the deploying checklist when the route has
 	// a host matcher we can probe. Path-only / port-only routes have no
 	// fqdn to verify, so we skip the page and bounce to the list like before.
@@ -6476,7 +6476,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.dnsCreateRecordForRaw(s.currentServerID(r), rr.ID, rr)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_update", fmt.Sprintf("raw:%d", id), rr.Label, true)
-	s.syncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	// v2.5.5: show the deploying checklist on edits too — changing the
 	// host matcher or the backing service is the same "did it come back
 	// up on HTTPS?" question the create flow asks. Routes without a host
@@ -6524,7 +6524,7 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_delete", fmt.Sprintf("raw:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
-	s.syncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
 
@@ -6766,6 +6766,21 @@ func (s *Server) pruneActivityLog() {
 // assignment changed, since the skip-when-unchanged optimization would otherwise
 // mask the change from Caddy. Otherwise we skip tls/auto_https writes when
 // effectively unchanged (avoids cancelling in-flight ACME challenges).
+//
+// trySyncCaddy is the fire-and-forget variant: calls syncCaddy and logs on
+// error instead of returning it. v2.12.35: previously, ~18 handlers (proxy/
+// redirect/cert/raw-route create/update/delete + AI tool calls + bulk
+// actions) silently dropped the sync error. If Caddy rejected the new
+// config (e.g. an unknown-field bug like the v2.12.20 `network` issue),
+// the DB write succeeded but the live config never updated AND nothing
+// was logged. Now every silent caller funnels through this helper so the
+// failure at least lands in `docker logs caddyui`.
+func (s *Server) trySyncCaddy(serverID int64, forceTLS bool) {
+	if err := s.syncCaddy(serverID, forceTLS); err != nil {
+		log.Printf("trySyncCaddy(server=%d, forceTLS=%v): %v", serverID, forceTLS, err)
+	}
+}
+
 func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	// Load the target server so we can use its AdminURL for the Caddy client.
 	srv, err := models.GetCaddyServer(s.DB, serverID)
@@ -8629,7 +8644,7 @@ func (s *Server) apiAIExecTool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = models.LogActivity(s.DB, sid, cu.Email, "ai_tool_call", fmt.Sprintf("proxy:%d", id), "create_proxy_host: "+ph.Domains, true)
-		s.syncCaddy(sid, ph.CertificateID != 0)
+		s.trySyncCaddy(sid, ph.CertificateID != 0)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true,
 			"summary": fmt.Sprintf("✓ Created proxy host #%d — %s → %s:%d", id, ph.Domains, ph.ForwardHost, ph.ForwardPort),
@@ -8668,7 +8683,7 @@ func (s *Server) apiAIExecTool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = models.LogActivity(s.DB, sid, cu.Email, "ai_tool_call", fmt.Sprintf("redirect:%d", id), "create_redirection: "+rh.Domains+" → "+rh.ForwardDomain, true)
-		s.syncCaddy(sid, false)
+		s.trySyncCaddy(sid, false)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true,
 			"summary": fmt.Sprintf("✓ Created redirection #%d — %s → %s (%d)", id, rh.Domains, rh.ForwardDomain, code),
@@ -12623,7 +12638,7 @@ func (s *Server) apiV1CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 	ph.ID = newID
 	ph.ServerID = serverID
 	_ = models.LogActivity(s.DB, serverID, cu.Email, "proxy_create", fmt.Sprintf("proxy:%d", newID), ph.Domains, true)
-	s.syncCaddy(serverID, false)
+	s.trySyncCaddy(serverID, false)
 	created, _ := models.GetProxyHost(s.DB, newID)
 	if created == nil {
 		created = ph
@@ -12675,7 +12690,7 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.LogActivity(s.DB, existing.ServerID, s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), existing.Domains, true)
-	s.syncCaddy(existing.ServerID, existing.CertificateID != 0)
+	s.trySyncCaddy(existing.ServerID, existing.CertificateID != 0)
 	updated, _ := models.GetProxyHost(s.DB, id)
 	if updated == nil { updated = existing }
 	writeJSON(w, http.StatusOK, proxyHostToAPIMap(updated))
@@ -12706,7 +12721,7 @@ func (s *Server) apiV1DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.LogActivity(s.DB, ph.ServerID, s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), ph.Domains, true)
-	s.syncCaddy(ph.ServerID, false)
+	s.trySyncCaddy(ph.ServerID, false)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 
@@ -12727,7 +12742,7 @@ func (s *Server) apiV1ToggleProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.syncCaddy(ph.ServerID, false)
+	s.trySyncCaddy(ph.ServerID, false)
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "enabled": ph.Enabled})
 }
 
@@ -12757,7 +12772,7 @@ func (s *Server) apiV1ToggleMaintenanceProxyHost(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.syncCaddy(ph.ServerID, false)
+	s.trySyncCaddy(ph.ServerID, false)
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "maintenance_mode": ph.MaintenanceMode})
 }
 
@@ -12863,7 +12878,7 @@ func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	_ = models.LogActivity(s.DB, serverID, cu.Email, "redirect_create", fmt.Sprintf("redir:%d", newID), rh.Domains, true)
-	s.syncCaddy(serverID, false)
+	s.trySyncCaddy(serverID, false)
 	created, _ := models.GetRedirectionHost(s.DB, newID)
 	if created == nil { created = rh; created.ID = newID }
 	writeJSON(w, http.StatusCreated, redirectionHostToAPIMap(created))
@@ -12912,7 +12927,7 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_update", fmt.Sprintf("redir:%d", id), existing.Domains, true)
-	s.syncCaddy(s.currentServerID(r), false)
+	s.trySyncCaddy(s.currentServerID(r), false)
 	updated, _ := models.GetRedirectionHost(s.DB, id)
 	if updated == nil { updated = existing }
 	writeJSON(w, http.StatusOK, redirectionHostToAPIMap(updated))
@@ -12930,7 +12945,7 @@ func (s *Server) apiV1DeleteRedirectionHost(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redir:%d", id), "", true)
-	s.syncCaddy(s.currentServerID(r), false)
+	s.trySyncCaddy(s.currentServerID(r), false)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 
