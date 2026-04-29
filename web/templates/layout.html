@@ -409,10 +409,16 @@ if ('serviceWorker' in navigator) {
           <form method="post" action="/logout" class="inline-flex">
             <button class="text-[11px] text-ink-400 hover:text-red-500 transition">Sign out</button>
           </form>
-          <a href="/search" title="Search" class="text-ink-400 hover:text-ink-700 transition shrink-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          {{/* v2.12.24: cleaner pill-style icon buttons in the persistent
+               top bar — w-8/h-8 hit area, rounded-full, soft hover bg.
+               The theme toggle is now `hidden lg:inline-flex` so on
+               mobile only the top header's moon (in <header lg:hidden>
+               above) is visible — fixes the duplicate stacked-moons
+               issue users saw when squeezing the viewport narrow. */}}
+          <a href="/search" title="Search" class="inline-flex items-center justify-center w-8 h-8 rounded-full text-ink-500 hover:text-ink-800 hover:bg-ink-100 dark:hover:bg-slate-800 dark:hover:text-slate-100 transition shrink-0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           </a>
-          <button data-theme-toggle type="button" title="Theme: auto" class="p-1 rounded text-ink-400 hover:text-ink-700 dark:text-slate-400 dark:hover:text-slate-100 transition shrink-0">
+          <button data-theme-toggle type="button" title="Theme: auto" class="hidden lg:inline-flex items-center justify-center w-8 h-8 rounded-full text-ink-500 hover:text-ink-800 hover:bg-ink-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 transition shrink-0">
             <svg data-theme-icon="auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12a9 9 0 0 0 18 0"/></svg>
             <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><circle cx="12" cy="12" r="4"/><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>
             <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
