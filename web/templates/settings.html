@@ -135,11 +135,12 @@
     </div>
   </div>
 
-  {{/* ── v2.11.15: AI assistant (Ollama) ── */}}
+  {{/* ── v2.11.15: AI assistant. v2.12.36: multi-provider — Ollama (local),
+       Ollama Cloud, Claude (Anthropic), or any OpenAI-compatible API. ── */}}
   <div id="settings-ai" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-4">
     <div>
-      <div class="text-sm font-semibold text-ink-900 mb-0.5">AI assistant <span class="text-xs text-ink-400 font-normal">(Ollama)</span></div>
-      <p class="text-xs text-ink-500">Enable a floating chat button (bottom-right) that proxies questions to a local Ollama server. Useful for "explain this proxy host", "convert this Caddyfile snippet", "suggest headers for…" etc. Runs locally on your GPU — no cloud calls.</p>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">AI assistant</div>
+      <p class="text-xs text-ink-500">Enables a floating chat button (bottom-right) that answers Caddy/TLS/DNS questions and can create proxy hosts &amp; redirections via tool calling. Pick any backend — local Ollama for fully-offline, Ollama Cloud / Anthropic Claude / OpenAI for stronger reasoning.</p>
     </div>
     <div class="flex items-start justify-between gap-4">
       <div>
@@ -152,30 +153,122 @@
         <div class="w-10 h-5 bg-ink-200 rounded-full peer peer-checked:bg-brand-500 peer-focus:ring-2 peer-focus:ring-brand-500/30 transition-all after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5"></div>
       </label>
     </div>
+
+    {{/* v2.12.36: provider selector. The JS at the bottom of this section
+         shows/hides the matching provider's field group based on the
+         selected value. Inactive providers' values are still POSTed (kept
+         as hidden inputs by being part of the same form), so switching
+         doesn't wipe credentials you typed earlier. */}}
     <div>
-      <label class="block text-xs font-medium text-ink-700 mb-1">Ollama base URL</label>
-      <input type="text" name="ai_ollama_url" value="{{.AIOllamaURL}}"
-        placeholder="http://ollama:11434"
-        class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <p class="text-xs text-ink-400 mt-1">Default <code class="bg-ink-100 px-1 rounded">http://ollama:11434</code> assumes Ollama is in the same docker network. Use a full URL (e.g. <code class="bg-ink-100 px-1 rounded">http://192.168.1.10:11434</code>) for a remote host.</p>
+      <label class="block text-xs font-medium text-ink-700 mb-1">AI provider</label>
+      <select name="ai_provider" id="ai-provider-select"
+        class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="ollama"        {{if eq .AIProvider "ollama"}}selected{{end}}>Ollama — local (runs on your GPU, no cloud calls)</option>
+        <option value="ollama_cloud"  {{if eq .AIProvider "ollama_cloud"}}selected{{end}}>Ollama Cloud — managed, pay-per-token via ollama.com</option>
+        <option value="anthropic"     {{if eq .AIProvider "anthropic"}}selected{{end}}>Anthropic Claude — Haiku/Sonnet/Opus 4.x</option>
+        <option value="openai"        {{if eq .AIProvider "openai"}}selected{{end}}>OpenAI / OpenAI-compatible — also OpenRouter, Groq, Together, vLLM, LM Studio</option>
+      </select>
+      <p class="text-xs text-ink-400 mt-1">All four backends share the same chat panel and tool-calling. Switching providers only changes who answers — your prompts and conversation history stay client-side.</p>
     </div>
-    <div>
-      <label class="block text-xs font-medium text-ink-700 mb-1">Model</label>
-      <input type="text" name="ai_ollama_model" value="{{.AIOllamaModel}}"
-        placeholder="llama3.2:latest"
-        class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <p class="text-xs text-ink-400 mt-1">Any model you've pulled into Ollama. Run <code class="bg-ink-100 px-1 rounded">ollama list</code> on the Ollama host to see what's installed.</p>
-      <div class="mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-        <strong>Pick a big enough model.</strong> The 3B-class default (<code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">llama3.2</code>) is fast but tends to hallucinate Caddy-specific syntax — directives that don't exist, mixing up v1/v2, etc. Recommended models for actually-correct Caddy answers:
-        <ul class="mt-1.5 ml-5 list-disc space-y-0.5">
-          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">qwen2.5:14b</code> — best balance of accuracy + speed on most setups</li>
-          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">qwen2.5-coder:14b</code> — sharper at config-file generation</li>
-          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">gemma2:9b</code> — solid mid-range alternative</li>
-          <li><code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">llama3.1:8b</code> — minimum viable for technical Q&amp;A</li>
-        </ul>
-        Pull one with <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">ollama pull qwen2.5:14b</code> on the Ollama host, then put the exact tag in the field above.
+
+    {{/* ── Provider: Ollama (local) ── */}}
+    <div data-ai-provider-block="ollama" class="space-y-4 pt-2 {{if ne .AIProvider "ollama"}}hidden{{end}}">
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Ollama base URL</label>
+        <input type="text" name="ai_ollama_url" value="{{.AIOllamaURL}}"
+          placeholder="http://ollama:11434"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Default <code class="bg-ink-100 px-1 rounded">http://ollama:11434</code> assumes Ollama is in the same docker network. Use a full URL (e.g. <code class="bg-ink-100 px-1 rounded">http://192.168.1.10:11434</code>) for a remote host.</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Model</label>
+        <input type="text" name="ai_ollama_model" value="{{.AIOllamaModel}}"
+          placeholder="llama3.2:latest"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Any model you've pulled into Ollama. Run <code class="bg-ink-100 px-1 rounded">ollama list</code> on the Ollama host to see what's installed.</p>
+        <div class="mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <strong>Pick a big enough model.</strong> The 3B-class default (<code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">llama3.2</code>) is fast but tends to hallucinate Caddy syntax. For accurate Caddy answers, use <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">qwen2.5:14b</code> / <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">qwen2.5-coder:14b</code> / <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">gemma2:9b</code> / <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">llama3.1:8b</code>. Pull with <code class="bg-amber-100/50 dark:bg-amber-900/50 px-1 rounded">ollama pull qwen2.5:14b</code>.
+        </div>
       </div>
     </div>
+
+    {{/* ── Provider: Ollama Cloud ── */}}
+    <div data-ai-provider-block="ollama_cloud" class="space-y-4 pt-2 {{if ne .AIProvider "ollama_cloud"}}hidden{{end}}">
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Ollama Cloud API key</label>
+        <input type="password" name="ai_ollama_cloud_api_key" value="{{.AIOllamaCloudKey}}"
+          placeholder="ollama_..."
+          autocomplete="off" spellcheck="false"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Generate at <code class="bg-ink-100 px-1 rounded">ollama.com/settings/keys</code>. Sent as a Bearer token to <code class="bg-ink-100 px-1 rounded">https://ollama.com/api/chat</code>.</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Model</label>
+        <input type="text" name="ai_ollama_cloud_model" value="{{.AIOllamaCloudModel}}"
+          placeholder="qwen3-coder:480b-cloud"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Hosted models from ollama.com — large MoE models that won't fit on your GPU. Examples: <code class="bg-ink-100 px-1 rounded">qwen3-coder:480b-cloud</code>, <code class="bg-ink-100 px-1 rounded">gpt-oss:120b</code>, <code class="bg-ink-100 px-1 rounded">deepseek-v3.1:671b</code>.</p>
+      </div>
+    </div>
+
+    {{/* ── Provider: Anthropic Claude ── */}}
+    <div data-ai-provider-block="anthropic" class="space-y-4 pt-2 {{if ne .AIProvider "anthropic"}}hidden{{end}}">
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Anthropic API key</label>
+        <input type="password" name="ai_anthropic_api_key" value="{{.AIAnthropicKey}}"
+          placeholder="sk-ant-..."
+          autocomplete="off" spellcheck="false"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Generate at <code class="bg-ink-100 px-1 rounded">console.anthropic.com</code>. Sent as <code class="bg-ink-100 px-1 rounded">x-api-key</code> to <code class="bg-ink-100 px-1 rounded">api.anthropic.com/v1/messages</code>.</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Model</label>
+        <input type="text" name="ai_anthropic_model" value="{{.AIAnthropicModel}}"
+          placeholder="claude-haiku-4-5-20251001"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Pinned snapshot ID. Recommended: <code class="bg-ink-100 px-1 rounded">claude-haiku-4-5-20251001</code> (fastest, cheapest), <code class="bg-ink-100 px-1 rounded">claude-sonnet-4-6</code> (best balance), or <code class="bg-ink-100 px-1 rounded">claude-opus-4-7</code> (most capable). Aliases without dates also work.</p>
+      </div>
+    </div>
+
+    {{/* ── Provider: OpenAI / OpenAI-compatible ── */}}
+    <div data-ai-provider-block="openai" class="space-y-4 pt-2 {{if ne .AIProvider "openai"}}hidden{{end}}">
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Base URL</label>
+        <input type="text" name="ai_openai_base_url" value="{{.AIOpenAIBaseURL}}"
+          placeholder="https://api.openai.com/v1"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Default talks to OpenAI. Swap to <code class="bg-ink-100 px-1 rounded">https://openrouter.ai/api/v1</code>, <code class="bg-ink-100 px-1 rounded">https://api.groq.com/openai/v1</code>, <code class="bg-ink-100 px-1 rounded">https://api.together.xyz/v1</code>, or any self-hosted vLLM / LM Studio endpoint that speaks the OpenAI <code class="bg-ink-100 px-1 rounded">/chat/completions</code> schema.</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">API key</label>
+        <input type="password" name="ai_openai_api_key" value="{{.AIOpenAIKey}}"
+          placeholder="sk-..."
+          autocomplete="off" spellcheck="false"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Sent as a Bearer token. For self-hosted vLLM / LM Studio that don't require auth, put any non-empty placeholder.</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Model</label>
+        <input type="text" name="ai_openai_model" value="{{.AIOpenAIModel}}"
+          placeholder="gpt-4o-mini"
+          class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <p class="text-xs text-ink-400 mt-1">Examples: <code class="bg-ink-100 px-1 rounded">gpt-4o-mini</code>, <code class="bg-ink-100 px-1 rounded">gpt-4o</code>, <code class="bg-ink-100 px-1 rounded">o3-mini</code>. For OpenRouter use the <code class="bg-ink-100 px-1 rounded">vendor/model</code> form (e.g. <code class="bg-ink-100 px-1 rounded">anthropic/claude-3.5-sonnet</code>).</p>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        var sel = document.getElementById('ai-provider-select');
+        if (!sel) return;
+        var blocks = document.querySelectorAll('[data-ai-provider-block]');
+        sel.addEventListener('change', function() {
+          var v = sel.value;
+          blocks.forEach(function(b) {
+            b.classList.toggle('hidden', b.getAttribute('data-ai-provider-block') !== v);
+          });
+        });
+      })();
+    </script>
     {{/* v2.12.10: custom system prompt — overrides the built-in CaddyUI
          system prompt when non-empty. Lets users tune the assistant's
          voice, persona, or domain knowledge without writing a Modelfile. */}}
