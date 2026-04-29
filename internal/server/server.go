@@ -8163,17 +8163,50 @@ func (s *Server) postMyColorTheme(w http.ResponseWriter, r *http.Request) {
 // apiAIStatus — v2.11.15: reports whether AI assist is enabled and which
 // model is configured. Frontend uses this to decide whether to render the
 // floating AI button at page load.
+//
+// v2.12.36: model now reflects the active provider's selected model so the
+// chat-panel header reads "Claude (Sonnet)" / "OpenAI (gpt-4o)" / etc.
+// instead of always showing the Ollama model name.
 func (s *Server) apiAIStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	enabled, _ := models.GetSetting(s.DB, settingAIEnabled)
-	model, _ := models.GetSetting(s.DB, settingAIOllamaModel)
-	if model == "" {
-		model = "llama3.2:latest"
-	}
+	provider, model := activeAIProviderModel(s.DB)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"enabled": enabled == "1",
-		"model":   model,
+		"enabled":  enabled == "1",
+		"provider": provider,
+		"model":    model,
 	})
+}
+
+// activeAIProviderModel — v2.12.36: read the AI provider selector and return
+// the provider name + the model name for that provider (with fallbacks).
+// Used by /api/ai/status and by /api/ai/chat dispatch.
+func activeAIProviderModel(db *sql.DB) (provider, model string) {
+	provider, _ = models.GetSetting(db, settingAIProvider)
+	switch provider {
+	case "ollama_cloud":
+		model, _ = models.GetSetting(db, settingAIOllamaCloudModel)
+		if strings.TrimSpace(model) == "" {
+			model = "qwen3-coder:480b-cloud"
+		}
+	case "anthropic":
+		model, _ = models.GetSetting(db, settingAIAnthropicModel)
+		if strings.TrimSpace(model) == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+	case "openai":
+		model, _ = models.GetSetting(db, settingAIOpenAIModel)
+		if strings.TrimSpace(model) == "" {
+			model = "gpt-4o-mini"
+		}
+	default: // "ollama" or "" (legacy installs default to local Ollama)
+		provider = "ollama"
+		model, _ = models.GetSetting(db, settingAIOllamaModel)
+		if strings.TrimSpace(model) == "" {
+			model = "llama3.2:latest"
+		}
+	}
+	return
 }
 
 // apiAIChat — v2.11.15: proxies a user prompt to the configured Ollama
@@ -8191,14 +8224,6 @@ func (s *Server) apiAIChat(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "AI assist is disabled — turn it on under Settings."})
 		return
-	}
-	baseURL, _ := models.GetSetting(s.DB, settingAIOllamaURL)
-	if strings.TrimSpace(baseURL) == "" {
-		baseURL = "http://ollama:11434"
-	}
-	model, _ := models.GetSetting(s.DB, settingAIOllamaModel)
-	if strings.TrimSpace(model) == "" {
-		model = "llama3.2:latest"
 	}
 
 	// v2.12.10: accept multi-turn message arrays for conversation memory
@@ -8380,7 +8405,7 @@ PAGES (left sidebar nav):
 
 SETTINGS SECTIONS (/settings — anchor links: #settings-general etc.):
 - General: site title, favicon URL, custom 404 HTML, global maintenance mode, periodic auto-sync interval, activity log retention days, globally stripped response headers, color theme (default / Carbon Orange — v2.12.22+, per-account v2.12.27+)
-- AI Assistant (Ollama): enable toggle, base URL, model name, max history turns, custom system prompt (this is where the prompt YOU are reading lives — Settings → AI → Custom system prompt)
+- AI Assistant: enable toggle, AI provider selector (Ollama local / Ollama Cloud / Anthropic Claude / OpenAI-compatible), per-provider URL/key/model, custom system prompt (this is where the prompt YOU are reading lives — Settings → AI → Custom system prompt)
 - SMTP: outbound email for password reset / invite
 - Notifications: webhook URL for state-change events
 - Time zone: display tz for activity log
@@ -8412,7 +8437,7 @@ FEATURES (broader than just proxy hosts):
 - ⌘K / Ctrl+K global command palette: search across hosts, redirects, certs, raw routes
 - ? keyboard shortcut overlay
 - Public REST API at /api/v1/* with token auth (admin generates tokens)
-- AI Assistant (this) — Ollama-backed, with tool calling that proposes proxy_host / redirection creates and shows a confirmation card before applying
+- AI Assistant (this) — backed by your choice of Ollama (local), Ollama Cloud, Anthropic Claude, or any OpenAI-compatible API; supports tool calling that proposes proxy_host / redirection creates and shows a confirmation card before applying
 
 PROXY HOST FORM (form structure roughly mirrored by collapsible <details> sections):
 - Identity & SSL: Domain names, Forward Scheme (HTTP/HTTPS), Forward Host, Forward Port, Auto SSL, Force SSL, HTTP/2, www redirect (to_www / to_bare), Certificate (auto-ACME or pick uploaded), Owner, Color tag
@@ -8468,15 +8493,90 @@ When you call a tool, do not also write a Caddyfile in the same response — the
 		systemPrompt = customPrompt
 	}
 
+	// v2.12.11: tool definitions sent on every chat turn. Models that
+	// don't support tools (older / smaller ones) ignore the field; for
+	// qwen2.5/llama3.1+/gemma2 / Claude / GPT-4 the model can decide to
+	// emit tool_calls in its response, which the frontend renders as a
+	// confirmation card.
+	tools := aiToolDefinitions()
+
+	// v2.12.36: dispatch to the configured provider's adapter. Adapters
+	// normalize back to the existing {reply, tool_calls, model} contract
+	// so the frontend doesn't need to know which backend answered.
+	provider, model := activeAIProviderModel(s.DB)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	var (
+		reply   string
+		calls   []frontendTC
+		callErr error
+	)
+	switch provider {
+	case "anthropic":
+		apiKey, _ := models.GetSetting(s.DB, settingAIAnthropicAPIKey)
+		if strings.TrimSpace(apiKey) == "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Anthropic API key is empty — set one under Settings → AI assistant."})
+			return
+		}
+		reply, calls, callErr = aiCallAnthropic(ctx, apiKey, model, systemPrompt, turns, tools)
+	case "openai":
+		apiKey, _ := models.GetSetting(s.DB, settingAIOpenAIAPIKey)
+		if strings.TrimSpace(apiKey) == "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "OpenAI API key is empty — set one under Settings → AI assistant."})
+			return
+		}
+		base, _ := models.GetSetting(s.DB, settingAIOpenAIBaseURL)
+		if strings.TrimSpace(base) == "" {
+			base = "https://api.openai.com/v1"
+		}
+		reply, calls, callErr = aiCallOpenAI(ctx, base, apiKey, model, systemPrompt, turns, tools)
+	case "ollama_cloud":
+		apiKey, _ := models.GetSetting(s.DB, settingAIOllamaCloudAPIKey)
+		if strings.TrimSpace(apiKey) == "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Ollama Cloud API key is empty — set one under Settings → AI assistant."})
+			return
+		}
+		reply, calls, callErr = aiCallOllama(ctx, "https://ollama.com", apiKey, model, systemPrompt, turns, tools)
+	default: // ollama (local)
+		baseURL, _ := models.GetSetting(s.DB, settingAIOllamaURL)
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = "http://ollama:11434"
+		}
+		reply, calls, callErr = aiCallOllama(ctx, baseURL, "", model, systemPrompt, turns, tools)
+	}
+
+	if callErr != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": callErr.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"reply":      strings.TrimSpace(reply),
+		"tool_calls": calls,
+		"model":      model,
+		"provider":   provider,
+	})
+}
+
+// frontendTC — v2.12.11: tool-call shape returned to the chat panel for the
+// confirmation-card render. Hoisted out of apiAIChat in v2.12.36 so the
+// per-provider adapters can return it directly.
+type frontendTC struct {
+	Name string         `json:"name"`
+	Args map[string]any `json:"args"`
+}
+
+// aiCallOllama — v2.12.36: send a chat turn to an Ollama-compatible /api/chat
+// endpoint. apiKey is empty for local Ollama and a bearer token for Ollama
+// Cloud (https://ollama.com). The on-the-wire schema is identical otherwise.
+//
+// Returns the assistant's text reply, any tool calls the model emitted, and
+// an error normalized to mention the upstream by name.
+func aiCallOllama(ctx context.Context, baseURL, apiKey, model, systemPrompt string, turns []map[string]string, tools []map[string]any) (string, []frontendTC, error) {
 	finalMessages := make([]map[string]string, 0, len(turns)+1)
 	finalMessages = append(finalMessages, map[string]string{"role": "system", "content": systemPrompt})
 	finalMessages = append(finalMessages, turns...)
-
-	// v2.12.11: tool definitions sent on every chat turn. Models that
-	// don't support tools (older / smaller ones) ignore the field; for
-	// qwen2.5/llama3.1+/gemma2 the model can decide to emit tool_calls
-	// in its response, which the frontend renders as a confirmation card.
-	tools := aiToolDefinitions()
 
 	payload := map[string]any{
 		"model":    model,
@@ -8486,24 +8586,22 @@ When you call a tool, do not also write a Caddyfile in the same response — the
 	}
 	pb, _ := json.Marshal(payload)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/chat", bytes.NewReader(pb))
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "build request: " + err.Error()})
-		return
+		return "", nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ollama: " + err.Error()})
-		return
+		return "", nil, fmt.Errorf("ollama: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("ollama %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))})
-		return
+		return "", nil, fmt.Errorf("ollama %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var out struct {
 		Message struct {
@@ -8517,25 +8615,157 @@ When you call a tool, do not also write a Caddyfile in the same response — the
 		} `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "decode ollama response: " + err.Error()})
-		return
-	}
-	// v2.12.11: surface tool_calls separately so the frontend can render a
-	// confirmation card. Reply text is whatever the model wrote alongside
-	// (often empty on tool turns; some models still narrate).
-	type frontendTC struct {
-		Name string         `json:"name"`
-		Args map[string]any `json:"args"`
+		return "", nil, fmt.Errorf("decode ollama response: %w", err)
 	}
 	calls := make([]frontendTC, 0, len(out.Message.ToolCalls))
 	for _, tc := range out.Message.ToolCalls {
 		calls = append(calls, frontendTC{Name: tc.Function.Name, Args: tc.Function.Arguments})
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"reply":      strings.TrimSpace(out.Message.Content),
-		"tool_calls": calls,
+	return out.Message.Content, calls, nil
+}
+
+// aiCallAnthropic — v2.12.36: send a chat turn to the Anthropic Messages API.
+// Anthropic's schema differs from Ollama/OpenAI in three notable ways:
+//   - system prompt is a TOP-LEVEL field, not a system message
+//   - tools use `input_schema` not `parameters`, and have no outer `function`
+//     wrapper
+//   - tool calls come back as content blocks of type "tool_use"
+func aiCallAnthropic(ctx context.Context, apiKey, model, systemPrompt string, turns []map[string]string, tools []map[string]any) (string, []frontendTC, error) {
+	// Translate the Ollama-flavoured tool definitions to Anthropic's shape.
+	anthroTools := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		fn, ok := t["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		anthroTools = append(anthroTools, map[string]any{
+			"name":         fn["name"],
+			"description":  fn["description"],
+			"input_schema": fn["parameters"],
+		})
+	}
+
+	payload := map[string]any{
 		"model":      model,
-	})
+		"max_tokens": 4096,
+		"system":     systemPrompt,
+		"messages":   turns,
+	}
+	if len(anthroTools) > 0 {
+		payload["tools"] = anthroTools
+	}
+	pb, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(pb))
+	if err != nil {
+		return "", nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("anthropic: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var out struct {
+		Content []struct {
+			Type  string         `json:"type"`
+			Text  string         `json:"text"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", nil, fmt.Errorf("decode anthropic response: %w", err)
+	}
+	var (
+		textParts []string
+		calls     []frontendTC
+	)
+	for _, c := range out.Content {
+		switch c.Type {
+		case "text":
+			textParts = append(textParts, c.Text)
+		case "tool_use":
+			calls = append(calls, frontendTC{Name: c.Name, Args: c.Input})
+		}
+	}
+	return strings.Join(textParts, "\n"), calls, nil
+}
+
+// aiCallOpenAI — v2.12.36: send a chat turn to an OpenAI-compatible
+// /chat/completions endpoint (also covers OpenRouter, Groq, Together, vLLM,
+// LM Studio — anything that exposes the OpenAI schema).
+//
+// The tool-definition shape matches Ollama's so we reuse it as-is. The
+// quirk: tool_calls.function.arguments comes back as a JSON STRING, not an
+// object — needs an extra Unmarshal pass.
+func aiCallOpenAI(ctx context.Context, baseURL, apiKey, model, systemPrompt string, turns []map[string]string, tools []map[string]any) (string, []frontendTC, error) {
+	finalMessages := make([]map[string]string, 0, len(turns)+1)
+	finalMessages = append(finalMessages, map[string]string{"role": "system", "content": systemPrompt})
+	finalMessages = append(finalMessages, turns...)
+
+	payload := map[string]any{
+		"model":    model,
+		"messages": finalMessages,
+	}
+	if len(tools) > 0 {
+		payload["tools"] = tools
+	}
+	pb, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/chat/completions", bytes.NewReader(pb))
+	if err != nil {
+		return "", nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("openai: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("openai %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"` // JSON-encoded string per OpenAI spec
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", nil, fmt.Errorf("decode openai response: %w", err)
+	}
+	if len(out.Choices) == 0 {
+		return "", nil, nil
+	}
+	msg := out.Choices[0].Message
+	calls := make([]frontendTC, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		var args map[string]any
+		if tc.Function.Arguments != "" {
+			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		}
+		if args == nil {
+			args = map[string]any{}
+		}
+		calls = append(calls, frontendTC{Name: tc.Function.Name, Args: args})
+	}
+	return msg.Content, calls, nil
 }
 
 // aiToolDefinitions — v2.12.11: schema for every AI-callable tool. Sent on
@@ -9284,6 +9514,18 @@ const (
 	settingAIOllamaURL    = "ai_ollama_url"    // base URL, e.g. http://ollama:11434
 	settingAIOllamaModel  = "ai_ollama_model"  // e.g. llama3.2:latest
 	settingAISystemPrompt = "ai_system_prompt" // v2.12.10: optional override of the built-in system prompt
+
+	// v2.12.36: multi-provider AI assistant. Provider selector picks one of
+	// the four backends below; only the credentials for the active provider
+	// are read on each chat turn.
+	settingAIProvider           = "ai_provider"             // "ollama" | "ollama_cloud" | "anthropic" | "openai"; default "ollama"
+	settingAIOllamaCloudAPIKey  = "ai_ollama_cloud_api_key" // bearer token from ollama.com
+	settingAIOllamaCloudModel   = "ai_ollama_cloud_model"   // e.g. gpt-oss:20b, qwen3-coder:480b-cloud
+	settingAIAnthropicAPIKey    = "ai_anthropic_api_key"    // sk-ant-...
+	settingAIAnthropicModel     = "ai_anthropic_model"      // e.g. claude-haiku-4-5-20251001
+	settingAIOpenAIBaseURL      = "ai_openai_base_url"      // OpenAI-compatible endpoint root, defaults to https://api.openai.com/v1
+	settingAIOpenAIAPIKey       = "ai_openai_api_key"       // bearer token (works with OpenAI, OpenRouter, Groq, Together, vLLM, LM Studio, etc.)
+	settingAIOpenAIModel        = "ai_openai_model"         // e.g. gpt-4o-mini
 
 	// v2.12.14: comma-separated list of response headers stripped from every
 	// proxy-host's upstream response. Useful for blanket-removing things like
@@ -11484,8 +11726,14 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		daysBefore = d
 	}
 
-	// v2.11.15: AI assistant settings.
+	// v2.11.15: AI assistant settings. v2.12.36: multi-provider — load
+	// every provider's credentials so the form can swap visible fields
+	// without losing the inactive providers' values on save.
 	aiEnabledStr, _ := models.GetSetting(s.DB, settingAIEnabled)
+	aiProvider, _ := models.GetSetting(s.DB, settingAIProvider)
+	if aiProvider == "" {
+		aiProvider = "ollama"
+	}
 	aiOllamaURL, _ := models.GetSetting(s.DB, settingAIOllamaURL)
 	if aiOllamaURL == "" {
 		aiOllamaURL = "http://ollama:11434"
@@ -11493,6 +11741,25 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	aiOllamaModel, _ := models.GetSetting(s.DB, settingAIOllamaModel)
 	if aiOllamaModel == "" {
 		aiOllamaModel = "llama3.2:latest"
+	}
+	aiOllamaCloudKey, _ := models.GetSetting(s.DB, settingAIOllamaCloudAPIKey)
+	aiOllamaCloudModel, _ := models.GetSetting(s.DB, settingAIOllamaCloudModel)
+	if aiOllamaCloudModel == "" {
+		aiOllamaCloudModel = "qwen3-coder:480b-cloud"
+	}
+	aiAnthropicKey, _ := models.GetSetting(s.DB, settingAIAnthropicAPIKey)
+	aiAnthropicModel, _ := models.GetSetting(s.DB, settingAIAnthropicModel)
+	if aiAnthropicModel == "" {
+		aiAnthropicModel = "claude-haiku-4-5-20251001"
+	}
+	aiOpenAIBase, _ := models.GetSetting(s.DB, settingAIOpenAIBaseURL)
+	if aiOpenAIBase == "" {
+		aiOpenAIBase = "https://api.openai.com/v1"
+	}
+	aiOpenAIKey, _ := models.GetSetting(s.DB, settingAIOpenAIAPIKey)
+	aiOpenAIModel, _ := models.GetSetting(s.DB, settingAIOpenAIModel)
+	if aiOpenAIModel == "" {
+		aiOpenAIModel = "gpt-4o-mini"
 	}
 	aiSystemPrompt, _ := models.GetSetting(s.DB, settingAISystemPrompt)
 	globalStripHdrs, _ := models.GetSetting(s.DB, settingGlobalStripResponseHeaders)
@@ -11649,8 +11916,16 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"WebhookSecret":      mustGetSetting(s.DB, settingNotifyWebhookSecret),
 		"DaysBefore":         daysBefore,
 		"AIEnabled":          aiEnabledStr == "1",
+		"AIProvider":         aiProvider,
 		"AIOllamaURL":        aiOllamaURL,
 		"AIOllamaModel":      aiOllamaModel,
+		"AIOllamaCloudKey":   aiOllamaCloudKey,
+		"AIOllamaCloudModel": aiOllamaCloudModel,
+		"AIAnthropicKey":     aiAnthropicKey,
+		"AIAnthropicModel":   aiAnthropicModel,
+		"AIOpenAIBaseURL":    aiOpenAIBase,
+		"AIOpenAIKey":        aiOpenAIKey,
+		"AIOpenAIModel":      aiOpenAIModel,
 		"AISystemPrompt":     aiSystemPrompt,
 		"GlobalStripHeaders": globalStripHdrs,
 		"SMTPHost":           smtpHost,
@@ -11845,8 +12120,29 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			return "0"
 		}(),
-		settingAIOllamaURL:    strings.TrimSpace(r.FormValue("ai_ollama_url")),
-		settingAIOllamaModel:  strings.TrimSpace(r.FormValue("ai_ollama_model")),
+		settingAIProvider: func() string {
+			// v2.12.36: clamp to known provider names so a hand-crafted POST
+			// can't poison the dispatch with an unknown value.
+			switch strings.TrimSpace(r.FormValue("ai_provider")) {
+			case "ollama_cloud":
+				return "ollama_cloud"
+			case "anthropic":
+				return "anthropic"
+			case "openai":
+				return "openai"
+			default:
+				return "ollama"
+			}
+		}(),
+		settingAIOllamaURL:         strings.TrimSpace(r.FormValue("ai_ollama_url")),
+		settingAIOllamaModel:       strings.TrimSpace(r.FormValue("ai_ollama_model")),
+		settingAIOllamaCloudAPIKey: strings.TrimSpace(r.FormValue("ai_ollama_cloud_api_key")),
+		settingAIOllamaCloudModel:  strings.TrimSpace(r.FormValue("ai_ollama_cloud_model")),
+		settingAIAnthropicAPIKey:   strings.TrimSpace(r.FormValue("ai_anthropic_api_key")),
+		settingAIAnthropicModel:    strings.TrimSpace(r.FormValue("ai_anthropic_model")),
+		settingAIOpenAIBaseURL:     strings.TrimSpace(r.FormValue("ai_openai_base_url")),
+		settingAIOpenAIAPIKey:      strings.TrimSpace(r.FormValue("ai_openai_api_key")),
+		settingAIOpenAIModel:       strings.TrimSpace(r.FormValue("ai_openai_model")),
 		settingAISystemPrompt:             r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
 		settingGlobalStripResponseHeaders: strings.TrimSpace(r.FormValue("global_strip_response_headers")),
 		// v2.9.5: 2FA enforcement policy (checkbox → "on" when checked).
