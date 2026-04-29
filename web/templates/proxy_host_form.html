@@ -4064,28 +4064,48 @@
     fields.push({ block: block, text: pieces.join(' ').toLowerCase() });
   });
 
+  // v2.12.30: also hide <details> sections that don't contain any match.
+  // Previously, searching "X-Frame" would hide the non-matching fields but
+  // leave every section's collapsed header still visible — so the form
+  // turned into a list of empty section labels with the actual hit buried
+  // somewhere inside one of them. Now non-matching <details> fully
+  // disappear; only sections that contain hits remain (and they're
+  // auto-opened so the hit is immediately visible).
   function applyFilter(rawQ) {
+    var allDetails = form.querySelectorAll('details');
     var q = (rawQ || '').toLowerCase().trim();
     if (q === '') {
-      // Reset: show all fields. Don't touch <details> open state — leave
-      // whatever the user had open before searching.
+      // Reset: show every field + every <details>. Don't touch open state —
+      // leave whatever the user had open before searching.
       fields.forEach(function(f) { f.block.style.display = ''; });
+      allDetails.forEach(function(d) { d.style.display = ''; });
       counter.classList.add('hidden');
       return;
     }
     var hits = 0;
+    var matchedDetails = new Set();
     fields.forEach(function(f) {
       var match = f.text.indexOf(q) !== -1;
       f.block.style.display = match ? '' : 'none';
       if (match) {
         hits++;
-        // Ensure every <details> ancestor is open so the match is visible.
+        // Walk up: open every <details> ancestor AND mark it as containing
+        // a match so it survives the visibility cull below.
         var n = f.block.parentElement;
         while (n && n !== form) {
-          if (n.tagName === 'DETAILS' && !n.open) n.open = true;
+          if (n.tagName === 'DETAILS') {
+            if (!n.open) n.open = true;
+            matchedDetails.add(n);
+          }
           n = n.parentElement;
         }
       }
+    });
+    // Cull empty sections: hide every <details> that doesn't contain a
+    // matched field. This is what removes the noisy "row of empty
+    // section headers" effect.
+    allDetails.forEach(function(d) {
+      d.style.display = matchedDetails.has(d) ? '' : 'none';
     });
     counter.textContent = hits + ' match' + (hits === 1 ? '' : 'es');
     counter.classList.remove('hidden');
