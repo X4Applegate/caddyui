@@ -195,10 +195,13 @@
     {{/* ── Provider: Ollama Cloud ── */}}
     <div data-ai-provider-block="ollama_cloud" class="space-y-4 pt-2 {{if ne .AIProvider "ollama_cloud"}}hidden{{end}}">
       <div>
-        <label class="block text-xs font-medium text-ink-700 mb-1">Ollama Cloud API key</label>
-        <input type="password" name="ai_ollama_cloud_api_key" value="{{.AIOllamaCloudKey}}"
-          placeholder="ollama_..."
-          autocomplete="off" spellcheck="false"
+        <label class="block text-xs font-medium text-ink-700 mb-1">
+          Ollama Cloud API key
+          {{if .AIOllamaCloudKeySet}}<span class="text-ink-400 font-normal ml-1">(leave blank to keep existing)</span>{{end}}
+        </label>
+        <input type="password" name="ai_ollama_cloud_api_key" value=""
+          placeholder="{{if .AIOllamaCloudKeySet}}•••••••• (key set){{else}}ollama_...{{end}}"
+          autocomplete="new-password" spellcheck="false"
           class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         <p class="text-xs text-ink-400 mt-1">Generate at <code class="bg-ink-100 px-1 rounded">ollama.com/settings/keys</code>. Sent as a Bearer token to <code class="bg-ink-100 px-1 rounded">https://ollama.com/api/chat</code>.</p>
       </div>
@@ -214,10 +217,13 @@
     {{/* ── Provider: Anthropic Claude ── */}}
     <div data-ai-provider-block="anthropic" class="space-y-4 pt-2 {{if ne .AIProvider "anthropic"}}hidden{{end}}">
       <div>
-        <label class="block text-xs font-medium text-ink-700 mb-1">Anthropic API key</label>
-        <input type="password" name="ai_anthropic_api_key" value="{{.AIAnthropicKey}}"
-          placeholder="sk-ant-..."
-          autocomplete="off" spellcheck="false"
+        <label class="block text-xs font-medium text-ink-700 mb-1">
+          Anthropic API key
+          {{if .AIAnthropicKeySet}}<span class="text-ink-400 font-normal ml-1">(leave blank to keep existing)</span>{{end}}
+        </label>
+        <input type="password" name="ai_anthropic_api_key" value=""
+          placeholder="{{if .AIAnthropicKeySet}}•••••••• (key set){{else}}sk-ant-...{{end}}"
+          autocomplete="new-password" spellcheck="false"
           class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         <p class="text-xs text-ink-400 mt-1">Generate at <code class="bg-ink-100 px-1 rounded">console.anthropic.com</code>. Sent as <code class="bg-ink-100 px-1 rounded">x-api-key</code> to <code class="bg-ink-100 px-1 rounded">api.anthropic.com/v1/messages</code>.</p>
       </div>
@@ -240,10 +246,13 @@
         <p class="text-xs text-ink-400 mt-1">Default talks to OpenAI. Swap to <code class="bg-ink-100 px-1 rounded">https://openrouter.ai/api/v1</code>, <code class="bg-ink-100 px-1 rounded">https://api.groq.com/openai/v1</code>, <code class="bg-ink-100 px-1 rounded">https://api.together.xyz/v1</code>, or any self-hosted vLLM / LM Studio endpoint that speaks the OpenAI <code class="bg-ink-100 px-1 rounded">/chat/completions</code> schema.</p>
       </div>
       <div>
-        <label class="block text-xs font-medium text-ink-700 mb-1">API key</label>
-        <input type="password" name="ai_openai_api_key" value="{{.AIOpenAIKey}}"
-          placeholder="sk-..."
-          autocomplete="off" spellcheck="false"
+        <label class="block text-xs font-medium text-ink-700 mb-1">
+          API key
+          {{if .AIOpenAIKeySet}}<span class="text-ink-400 font-normal ml-1">(leave blank to keep existing)</span>{{end}}
+        </label>
+        <input type="password" name="ai_openai_api_key" value=""
+          placeholder="{{if .AIOpenAIKeySet}}•••••••• (key set){{else}}sk-...{{end}}"
+          autocomplete="new-password" spellcheck="false"
           class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         <p class="text-xs text-ink-400 mt-1">Sent as a Bearer token. For self-hosted vLLM / LM Studio that don't require auth, put any non-empty placeholder.</p>
       </div>

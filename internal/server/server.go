@@ -11915,19 +11915,19 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"WebhookURL":         webhookURL,
 		"WebhookSecret":      mustGetSetting(s.DB, settingNotifyWebhookSecret),
 		"DaysBefore":         daysBefore,
-		"AIEnabled":          aiEnabledStr == "1",
-		"AIProvider":         aiProvider,
-		"AIOllamaURL":        aiOllamaURL,
-		"AIOllamaModel":      aiOllamaModel,
-		"AIOllamaCloudKey":   aiOllamaCloudKey,
-		"AIOllamaCloudModel": aiOllamaCloudModel,
-		"AIAnthropicKey":     aiAnthropicKey,
-		"AIAnthropicModel":   aiAnthropicModel,
-		"AIOpenAIBaseURL":    aiOpenAIBase,
-		"AIOpenAIKey":        aiOpenAIKey,
-		"AIOpenAIModel":      aiOpenAIModel,
-		"AISystemPrompt":     aiSystemPrompt,
-		"GlobalStripHeaders": globalStripHdrs,
+		"AIEnabled":           aiEnabledStr == "1",
+		"AIProvider":          aiProvider,
+		"AIOllamaURL":         aiOllamaURL,
+		"AIOllamaModel":       aiOllamaModel,
+		"AIOllamaCloudKeySet": strings.TrimSpace(aiOllamaCloudKey) != "",
+		"AIOllamaCloudModel":  aiOllamaCloudModel,
+		"AIAnthropicKeySet":   strings.TrimSpace(aiAnthropicKey) != "",
+		"AIAnthropicModel":    aiAnthropicModel,
+		"AIOpenAIBaseURL":     aiOpenAIBase,
+		"AIOpenAIKeySet":      strings.TrimSpace(aiOpenAIKey) != "",
+		"AIOpenAIModel":       aiOpenAIModel,
+		"AISystemPrompt":      aiSystemPrompt,
+		"GlobalStripHeaders":  globalStripHdrs,
 		"SMTPHost":           smtpHost,
 		"SMTPPort":           smtpPort,
 		"SMTPUsername":       smtpUsername,
@@ -12134,15 +12134,16 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 				return "ollama"
 			}
 		}(),
-		settingAIOllamaURL:         strings.TrimSpace(r.FormValue("ai_ollama_url")),
-		settingAIOllamaModel:       strings.TrimSpace(r.FormValue("ai_ollama_model")),
-		settingAIOllamaCloudAPIKey: strings.TrimSpace(r.FormValue("ai_ollama_cloud_api_key")),
-		settingAIOllamaCloudModel:  strings.TrimSpace(r.FormValue("ai_ollama_cloud_model")),
-		settingAIAnthropicAPIKey:   strings.TrimSpace(r.FormValue("ai_anthropic_api_key")),
-		settingAIAnthropicModel:    strings.TrimSpace(r.FormValue("ai_anthropic_model")),
-		settingAIOpenAIBaseURL:     strings.TrimSpace(r.FormValue("ai_openai_base_url")),
-		settingAIOpenAIAPIKey:      strings.TrimSpace(r.FormValue("ai_openai_api_key")),
-		settingAIOpenAIModel:       strings.TrimSpace(r.FormValue("ai_openai_model")),
+		settingAIOllamaURL:        strings.TrimSpace(r.FormValue("ai_ollama_url")),
+		settingAIOllamaModel:      strings.TrimSpace(r.FormValue("ai_ollama_model")),
+		settingAIOllamaCloudModel: strings.TrimSpace(r.FormValue("ai_ollama_cloud_model")),
+		settingAIAnthropicModel:   strings.TrimSpace(r.FormValue("ai_anthropic_model")),
+		settingAIOpenAIBaseURL:    strings.TrimSpace(r.FormValue("ai_openai_base_url")),
+		settingAIOpenAIModel:      strings.TrimSpace(r.FormValue("ai_openai_model")),
+		// v2.12.37: API keys deliberately handled below (not in this map) so an
+		// empty submission leaves the existing key intact — same pattern as
+		// settingSMTPPassword. Rendering the actual key into the form (as
+		// v2.12.36 did) leaked it via F12 → Elements even with type="password".
 		settingAISystemPrompt:             r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
 		settingGlobalStripResponseHeaders: strings.TrimSpace(r.FormValue("global_strip_response_headers")),
 		// v2.9.5: 2FA enforcement policy (checkbox → "on" when checked).
@@ -12253,6 +12254,19 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// SMTP password stays keep-blank-to-preserve.
 	if smtpPassword != "" {
 		kv[settingSMTPPassword] = smtpPassword
+	}
+	// v2.12.37: AI provider API keys — same keep-blank-to-preserve pattern.
+	// Only persist when the user typed a fresh value; an empty submission
+	// means "keep what's already stored." The Settings template never
+	// renders the saved key into the form (F12 leak fix from v2.12.36).
+	if k := strings.TrimSpace(r.FormValue("ai_ollama_cloud_api_key")); k != "" {
+		kv[settingAIOllamaCloudAPIKey] = k
+	}
+	if k := strings.TrimSpace(r.FormValue("ai_anthropic_api_key")); k != "" {
+		kv[settingAIAnthropicAPIKey] = k
+	}
+	if k := strings.TrimSpace(r.FormValue("ai_openai_api_key")); k != "" {
+		kv[settingAIOpenAIAPIKey] = k
 	}
 	for k, v := range kv {
 		if err := models.SetSetting(s.DB, k, v); err != nil {
