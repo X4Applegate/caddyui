@@ -62,7 +62,13 @@
             sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'sans-serif'],
           },
           boxShadow: {
-            card: '0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06)',
+            // v2.12.25: softer card shadow — single hairline + barely-there
+            // 1px lift. Replaces the previous double-shadow stack which
+            // started to look "heavy" once we put many cards on a page
+            // (Settings, Dashboard). Pairs with a 1px ink-200 border to
+            // hold the edge cleanly.
+            card: '0 1px 2px 0 rgb(15 23 42 / 0.04)',
+            'card-hover': '0 4px 12px -2px rgb(15 23 42 / 0.08), 0 2px 4px -1px rgb(15 23 42 / 0.04)',
           },
         },
       },
@@ -71,6 +77,36 @@
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <link rel="stylesheet" href="/static/app.css" />
   <style>
+    /* v2.12.25: typography polish.
+       - Optical sizing: Inter has variable opsz axis (14–32). 'auto'
+         lets the browser pick the right glyph variant per size, so
+         large headers get tighter, more characterful display weights
+         while body text stays readable.
+       - Stylistic sets: cv11 (single-storey 'a') gives headers a
+         cleaner geometric feel without changing body text. ss03
+         tightens punctuation. Both opt-in via font-feature-settings.
+       - Tighter tracking on display sizes (≥ text-2xl) — Inter's
+         default is too generous for big text. */
+    body {
+      font-optical-sizing: auto;
+      font-feature-settings: "ss03", "cv11";
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    h1, h2, .text-2xl, .text-3xl, .text-4xl, .text-5xl,
+    .font-semibold.text-xl, .font-bold.text-xl {
+      letter-spacing: -0.022em;
+    }
+    h3, .text-xl, .text-lg.font-semibold {
+      letter-spacing: -0.014em;
+    }
+    /* v2.12.25: every card gets a hairline border + the new soft shadow.
+       Pairs cleanly: shadow alone looks floaty, border alone looks flat,
+       both together has the "Linear / Vercel / Stripe" surface feel. */
+    .shadow-card {
+      transition: box-shadow 200ms ease, border-color 200ms ease;
+    }
+
     /* ── Dark mode overrides ──
        These target Tailwind utility classes via CSS specificity so we don't
        need dark: variants on every element. The .dark class is toggled on
@@ -314,17 +350,29 @@ if ('serviceWorker' in navigator) {
         {{$sec := .Section}}
         {{template "navItem" (dict "Section" $sec "Active" "dashboard" "Href" "/" "Label" "Dashboard" "Icon" "dashboard")}}
 
-        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Routes</div>
+        {{/* v2.12.25: hairline divider with inline label — replaces the
+             standalone caps text that previously floated in space.
+             Reads as a quieter, more elegant section break. */}}
+        <div class="flex items-center gap-2.5 mt-7 mb-2 px-2">
+          <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 shrink-0">Routes</div>
+          <div class="flex-1 h-px bg-slate-700/50"></div>
+        </div>
         {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" "Proxy Hosts" "Icon" "proxy")}}
         {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" "Redirections" "Icon" "redirect")}}
         {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" "Advanced" "Icon" "code")}}
 
-        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Config</div>
+        <div class="flex items-center gap-2.5 mt-7 mb-2 px-2">
+          <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 shrink-0">Config</div>
+          <div class="flex-1 h-px bg-slate-700/50"></div>
+        </div>
         {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" "Certificates" "Icon" "lock")}}
         {{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}
         {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
 
-        <div class="px-2 mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">System</div>
+        <div class="flex items-center gap-2.5 mt-7 mb-2 px-2">
+          <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 shrink-0">System</div>
+          <div class="flex-1 h-px bg-slate-700/50"></div>
+        </div>
         {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" "Analytics" "Icon" "chart")}}
         {{template "navItem" (dict "Section" $sec "Active" "live_traffic" "Href" "/live-traffic" "Label" "Live Traffic" "Icon" "lightning")}}
         {{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}
@@ -395,26 +443,14 @@ if ('serviceWorker' in navigator) {
              removed: the sidebar server picker (shown only when >1 server
              is registered) already covers that flow, and the link was
              dead weight for single-server deployments. */}}
-        <div class="ml-auto flex items-center gap-2 shrink-0 text-xs">
-          <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-ink-100 text-ink-600 font-medium text-[11px] shrink-0" title="{{.User.Email}}">
-            {{if .User.Email}}{{slice .User.Email 0 1}}{{else}}?{{end}}
-          </span>
-          <span class="hidden md:inline text-ink-700 font-medium truncate max-w-[180px]">{{.User.Email}}</span>
-          <span class="hidden sm:inline text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
-            {{if eq .User.Role "admin"}}bg-purple-100 text-purple-700
-            {{else if eq .User.Role "user"}}bg-blue-50 text-blue-700
-            {{else}}bg-ink-100 text-ink-600{{end}}">{{.User.Role}}</span>
-          <a href="/profile" class="text-[11px] text-ink-400 hover:text-brand-600 transition">Profile</a>
-          <a href="/totp/setup" class="text-[11px] text-ink-400 hover:text-brand-600 transition">2FA</a>
-          <form method="post" action="/logout" class="inline-flex">
-            <button class="text-[11px] text-ink-400 hover:text-red-500 transition">Sign out</button>
-          </form>
-          {{/* v2.12.24: cleaner pill-style icon buttons in the persistent
-               top bar — w-8/h-8 hit area, rounded-full, soft hover bg.
-               The theme toggle is now `hidden lg:inline-flex` so on
-               mobile only the top header's moon (in <header lg:hidden>
-               above) is visible — fixes the duplicate stacked-moons
-               issue users saw when squeezing the viewport narrow. */}}
+        {{/* v2.12.25: collapsed user menu. Email/role/Profile/2FA/Sign out
+             previously took 5 visible slots and the bar got cramped on
+             narrow screens. Now: search + theme as standalone icons,
+             then a single avatar+chevron button that opens a dropdown
+             with the user-related actions. Dropdown is plain CSS toggle
+             via .hidden — JS handler at the bottom of layout.html
+             closes it on outside-click and on Esc. */}}
+        <div class="ml-auto flex items-center gap-1 shrink-0">
           <a href="/search" title="Search" class="inline-flex items-center justify-center w-8 h-8 rounded-full text-ink-500 hover:text-ink-800 hover:bg-ink-100 dark:hover:bg-slate-800 dark:hover:text-slate-100 transition shrink-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           </a>
@@ -423,6 +459,39 @@ if ('serviceWorker' in navigator) {
             <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><circle cx="12" cy="12" r="4"/><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>
             <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           </button>
+          <div class="relative ml-1" data-user-menu>
+            <button type="button" data-user-menu-toggle aria-haspopup="menu" aria-expanded="false"
+                    class="inline-flex items-center gap-1.5 p-1 pr-2 rounded-full hover:bg-ink-100 dark:hover:bg-slate-800 transition shrink-0">
+              <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-brand-500 text-white font-semibold text-[11px] shrink-0" title="{{.User.Email}}">
+                {{if .User.Email}}{{slice .User.Email 0 1}}{{else}}?{{end}}
+              </span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3 text-ink-400 shrink-0"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div data-user-menu-panel class="hidden absolute right-0 top-full mt-2 w-60 rounded-xl bg-white border border-ink-200 shadow-card-hover overflow-hidden z-30 dark:bg-slate-800 dark:border-slate-700">
+              <div class="px-3.5 py-3 border-b border-ink-100 dark:border-slate-700">
+                <div class="text-xs font-semibold text-ink-900 truncate" title="{{.User.Email}}">{{.User.Email}}</div>
+                <div class="mt-1 inline-flex items-center text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded
+                  {{if eq .User.Role "admin"}}bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300
+                  {{else if eq .User.Role "user"}}bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300
+                  {{else}}bg-ink-100 text-ink-600 dark:bg-slate-700 dark:text-slate-300{{end}}">{{.User.Role}}</div>
+              </div>
+              <a href="/profile" class="flex items-center gap-2.5 px-3.5 py-2 text-xs text-ink-700 hover:bg-ink-50 dark:hover:bg-slate-700/50 transition">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-ink-400"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                Profile settings
+              </a>
+              <a href="/totp/setup" class="flex items-center gap-2.5 px-3.5 py-2 text-xs text-ink-700 hover:bg-ink-50 dark:hover:bg-slate-700/50 transition">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-ink-400"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                Two-factor auth
+              </a>
+              <div class="border-t border-ink-100 dark:border-slate-700"></div>
+              <form method="post" action="/logout">
+                <button type="submit" class="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 transition text-left">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                  Sign out
+                </button>
+              </form>
+            </div>
+          </div>
         </div>
       </div>
       {{end}}
@@ -943,6 +1012,51 @@ if ('serviceWorker' in navigator) {
       var next = STATES[(STATES.indexOf(cur) + 1) % STATES.length];
       applyMode(next);
     });
+  });
+})();
+
+// v2.12.25: collapsible user menu in the persistent top bar.
+// One [data-user-menu] per page, with a [data-user-menu-toggle] button
+// and a [data-user-menu-panel] flyout. Click opens, Esc / outside-click
+// closes. Replaces the previous flat row of Profile/2FA/Sign out text
+// links with a single avatar+chevron control.
+(function() {
+  function close(panel, btn) {
+    panel.classList.add('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  document.querySelectorAll('[data-user-menu]').forEach(function(menu) {
+    var btn = menu.querySelector('[data-user-menu-toggle]');
+    var panel = menu.querySelector('[data-user-menu-panel]');
+    if (!btn || !panel) return;
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var open = !panel.classList.contains('hidden');
+      // Close any other open menus first
+      document.querySelectorAll('[data-user-menu-panel]').forEach(function(p) {
+        if (p !== panel) p.classList.add('hidden');
+      });
+      panel.classList.toggle('hidden');
+      btn.setAttribute('aria-expanded', String(!open));
+    });
+  });
+  document.addEventListener('click', function(e) {
+    document.querySelectorAll('[data-user-menu]').forEach(function(menu) {
+      if (!menu.contains(e.target)) {
+        var panel = menu.querySelector('[data-user-menu-panel]');
+        var btn = menu.querySelector('[data-user-menu-toggle]');
+        if (panel && !panel.classList.contains('hidden')) close(panel, btn);
+      }
+    });
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      document.querySelectorAll('[data-user-menu]').forEach(function(menu) {
+        var panel = menu.querySelector('[data-user-menu-panel]');
+        var btn = menu.querySelector('[data-user-menu-toggle]');
+        if (panel && !panel.classList.contains('hidden')) close(panel, btn);
+      });
+    }
   });
 })();
 
