@@ -27,7 +27,7 @@
 
 {{/* ── Today's analytics stats ── */}}
 {{if or .TodayViews .TodayVisitors}}
-<div class="grid grid-cols-3 gap-3 mb-6">
+<div class="grid grid-cols-3 gap-3 mb-8">
   <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card">
     <div class="text-xs uppercase tracking-wider text-ink-400 font-medium">Requests today</div>
     <div class="mt-1 text-2xl font-semibold text-ink-900">{{.TodayViews}}</div>
@@ -103,7 +103,7 @@
 {{end}}
 
 {{if .CurrentServer}}
-<div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-6">
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-8">
   <div class="flex items-start justify-between gap-4 flex-wrap">
     <div class="flex items-center gap-3 min-w-0">
       {{if eq .CurrentServer.Status "online"}}
