@@ -2196,7 +2196,15 @@ func (s *Server) toggleProxyHost(w http.ResponseWriter, r *http.Request) {
 		action = "proxy_disable"
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), action, fmt.Sprintf("proxy:%d", id), "", true)
-	s.syncCaddy(s.currentServerID(r), false)
+	// v2.12.29: capture + log the sync error instead of swallowing it. If
+	// Caddy rejects the new config (e.g. an unknown-field validation
+	// error like the v2.12.20 `network` bug) the toggle still flips in
+	// the DB but Caddy never sees the change — and the user previously
+	// got zero feedback that anything went wrong. Logging it at least
+	// surfaces the failure in the container logs.
+	if err := s.syncCaddy(s.currentServerID(r), false); err != nil {
+		log.Printf("toggleProxyHost: auto-sync failed (toggle persisted but Caddy not updated): %v", err)
+	}
 	ref := r.Header.Get("Referer")
 	if ref == "" {
 		ref = "/proxy-hosts"
@@ -8249,6 +8257,21 @@ Rules:
 - Treat earlier messages in the conversation as binding context — when the user says "make one here" or "add to that", refer back to what was discussed instead of inventing an unrelated example.
 - Be as detailed as the question warrants: short answers for simple questions; a full Caddyfile + a few sentences of explanation for setup walk-throughs. Skip filler preambles.
 - The user is editing a config in CaddyUI alongside this chat. When relevant, point them at form fields: Domain names, Forward Host/Port, Auto SSL toggle, Managed DNS picker, Upstream Host Header, etc.
+
+Most Caddy directives ARE configurable through CaddyUI's proxy host form — do NOT tell the user "you have to manually edit the Caddyfile." Specifically these are all UI-supported:
+  - encode (compression): toggle "Enable compression" + zstd/gzip/brotli sub-toggles + min size + level
+  - Security path blocking (/.env, /wp-admin, /.git, etc.): "Block common exploits" toggle (always on by default in CaddyUI)
+  - Security headers bundle (HSTS / X-Content-Type-Options / X-Frame-Options / Referrer-Policy / X-XSS-Protection / Permissions-Policy / CSP): "Security headers" bundle toggle on the host
+  - Strip / set custom request and response headers: "Custom request headers" + "Custom response headers" + "Strip request headers" + "Strip response headers" fields
+  - Upstream Host header override: "Upstream Host Header" field (header_up Host XYZ)
+  - X-Real-IP / X-Forwarded-Host / X-Forwarded-Proto: enabled by default; toggles in the Forwarded Headers section
+  - Upstream TLS (https:// upstreams): "Forward Scheme: HTTPS" + "Verify upstream TLS cert" toggle + "Upstream TLS server name from host" + custom CA PEM
+  - Keepalive: "Keepalive max idle conns" + "Keepalive idle timeout sec" + "Disable keepalive" + "Max idle conns per host"
+  - Timeouts: "Dial timeout sec" + "Response header timeout sec" + "Request body read timeout sec" + "Read header timeout sec" + "TLS handshake timeout sec" + "Expect-continue timeout sec" + "Stream flush interval ms"
+  - Buffering / streaming: "Stream flush interval ms" (use -1 for SSE/streaming, 0 for default buffering)
+  - Health check + load balancing: "Extra upstreams" + "LB policy" + active/passive health check fields
+
+When the user asks for "this Caddyfile" → produce form values, not "edit the file manually." If a feature genuinely isn't UI-supported (rare), say so explicitly and point them at the "Advanced config" raw-Caddyfile field as the escape hatch.
 
 If you are NOT sure about a specific Caddy directive or behavior, say so. Hallucinated config is worse than "I don't know."
 
