@@ -30,6 +30,7 @@ type User struct {
 	TOTPSecret   string
 	TOTPEnabled  bool
 	BackupCodes  string // JSON array of SHA-256 hex hashes; empty means no backup codes set
+	ColorTheme   string // v2.12.27: "" = default | "orange" — synced across devices via DB
 }
 
 const (
@@ -988,14 +989,15 @@ func (r RedirectionHost) CustomRespHeaderMap() map[string]string {
 
 const userCols = `id, email, password_hash, COALESCE(name,''), is_admin,
     COALESCE(role, CASE WHEN is_admin=1 THEN 'admin' ELSE 'view' END), created_at,
-    COALESCE(totp_secret,''), COALESCE(totp_enabled,0), COALESCE(totp_backup_codes,'')`
+    COALESCE(totp_secret,''), COALESCE(totp_enabled,0), COALESCE(totp_backup_codes,''),
+    COALESCE(color_theme,'')`
 
 func scanUser(s interface {
 	Scan(dest ...any) error
 }) (*User, error) {
 	u := &User{}
 	var isAdmin, totpEnabled int
-	if err := s.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &isAdmin, &u.Role, &u.CreatedAt, &u.TOTPSecret, &totpEnabled, &u.BackupCodes); err != nil {
+	if err := s.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &isAdmin, &u.Role, &u.CreatedAt, &u.TOTPSecret, &totpEnabled, &u.BackupCodes, &u.ColorTheme); err != nil {
 		return nil, err
 	}
 	u.IsAdmin = isAdmin == 1
@@ -1008,6 +1010,14 @@ func scanUser(s interface {
 		}
 	}
 	return u, nil
+}
+
+// UpdateUserColorTheme stores the user's preferred color theme so it
+// follows them across devices. Accepts "" (default), "orange", or any
+// future palette names — caller should validate before calling. v2.12.27.
+func UpdateUserColorTheme(db *sql.DB, userID int64, theme string) error {
+	_, err := db.Exec(`UPDATE users SET color_theme = ? WHERE id = ?`, theme, userID)
+	return err
 }
 
 // GenerateBackupCodes creates n single-use backup codes as uppercase alphanumeric strings.

@@ -519,6 +519,11 @@ func (s *Server) Routes() http.Handler {
 		// creates it.
 		r.Post("/api/ai/exec-tool", s.apiAIExecTool)
 
+		// v2.12.27: per-user color-theme persistence so the picker in
+		// Settings follows the account across devices instead of being
+		// trapped in per-browser localStorage.
+		r.Post("/api/me/color-theme", s.postMyColorTheme)
+
 		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
 		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
 		r.Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream)
@@ -8093,6 +8098,43 @@ type upstreamHealthResult struct {
 	AppCode      int    `json:"app_code,omitempty"`
 	AppLatencyMS int64  `json:"app_latency_ms,omitempty"`
 	AppError     string `json:"app_error,omitempty"`
+}
+
+// postMyColorTheme — v2.12.27: persist the signed-in user's preferred
+// color theme to the DB so it follows the account across devices. The
+// picker in Settings POSTs here on change. Body is form-encoded with a
+// single `theme` field. Empty string and "default" both clear the
+// preference (use the default palette); "orange" picks the carbon-orange
+// palette. Anything else returns 400 so we don't store junk that the
+// CSS layer wouldn't recognise.
+func (s *Server) postMyColorTheme(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(r)
+	if u == nil {
+		http.Error(w, "not signed in", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	theme := strings.TrimSpace(r.FormValue("theme"))
+	// Normalise "default" to empty string in storage so the column reads
+	// as "no opinion" by default and we don't carry a magic value around.
+	if theme == "default" {
+		theme = ""
+	}
+	switch theme {
+	case "", "orange":
+		// allowed
+	default:
+		http.Error(w, "unknown theme", http.StatusBadRequest)
+		return
+	}
+	if err := models.UpdateUserColorTheme(s.DB, u.ID, theme); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // apiAIStatus — v2.11.15: reports whether AI assist is enabled and which

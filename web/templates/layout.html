@@ -1,16 +1,39 @@
 {{define "layout"}}<!doctype html>
-<html lang="en">
+{{/* v2.12.27: server-render the color theme attribute when the signed-in
+     user has one stored on their account. This is the cross-device sync
+     hook — when you log into a new browser, the rendered HTML already
+     carries the right palette before first paint, no flash, no localStorage
+     dance required. The bootstrap script below still falls back to
+     localStorage for the logged-out / first-load case. */}}
+<html lang="en"{{if and .User .User.ColorTheme}} data-color-theme="{{.User.ColorTheme}}"{{end}}>
 <head>
   {{/* v2.11.0: tri-state theme — 'light' | 'dark' | 'auto' (default).
        The toggle button cycles auto → light → dark → auto. 'auto' tracks
        the OS via prefers-color-scheme; explicit values override. */}}
   <script>(function(){try{var t=localStorage.getItem('caddyui-theme')||'auto';var dark=t==='dark'||(t==='auto'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(dark){document.documentElement.classList.add('dark')}document.documentElement.dataset.themeMode=t;if(t==='auto'&&window.matchMedia){window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(e){if(document.documentElement.dataset.themeMode==='auto'){document.documentElement.classList.toggle('dark',e.matches)}})}}catch(e){}})();</script>
-  {{/* v2.12.22: color theme — orthogonal to light/dark. 'default' (slate
-       blue, no attribute) | 'orange' (carbon-orange, sets data-color-theme).
-       Stored per-device in localStorage so each browser keeps its own
-       preference, same pattern as the light/dark toggle above. Bootstrap
-       runs synchronously in <head> to avoid a paint flash. */}}
-  <script>(function(){try{var c=localStorage.getItem('caddyui-color-theme')||'default';if(c&&c!=='default'){document.documentElement.setAttribute('data-color-theme',c);}}catch(e){}})();</script>
+  {{/* v2.12.22: color theme bootstrap — runs synchronously in <head> to
+       avoid a paint flash.
+       v2.12.27: server-rendered data-color-theme on <html> (above) is now
+       the source of truth when signed in. We just sync localStorage to
+       it so the value persists across logged-out reloads too. If there's
+       no server value (logged-out or no preference set), fall back to
+       localStorage. */}}
+  <script>(function(){try{
+    var serverTheme = document.documentElement.getAttribute('data-color-theme') || '';
+    var localTheme = localStorage.getItem('caddyui-color-theme') || '';
+    var effective = serverTheme || localTheme || 'default';
+    if (effective && effective !== 'default') {
+      document.documentElement.setAttribute('data-color-theme', effective);
+    } else {
+      document.documentElement.removeAttribute('data-color-theme');
+    }
+    // Keep localStorage in sync with the server value when they diverge —
+    // covers the "logged into a new browser" case where the server-rendered
+    // attribute is the only signal we had.
+    if (serverTheme && serverTheme !== localTheme) {
+      try { localStorage.setItem('caddyui-color-theme', serverTheme); } catch(e){}
+    }
+  }catch(e){}})();</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>{{block "title" .}}{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}{{end}}</title>
@@ -1087,10 +1110,11 @@ if ('serviceWorker' in navigator) {
 })();
 
 // v2.12.22: color theme picker (default | orange).
-// Bound to any <select data-color-theme-select>. Per-device localStorage,
-// applied instantly on change without a page reload — same UX pattern as
-// the light/dark toggle. Bootstrap in <head> already pre-paints so the
-// page never flashes the wrong palette.
+// v2.12.27: also POSTs the change to /api/me/color-theme so the
+// preference syncs across devices. Local apply is instant; the network
+// call is fire-and-forget — if it fails, localStorage still keeps the
+// theme on this device. Server-rendered attribute on <html> is the
+// authoritative source on next page load (see bootstrap in <head>).
 (function() {
   function apply(theme) {
     if (!theme || theme === 'default') {
@@ -1099,13 +1123,33 @@ if ('serviceWorker' in navigator) {
       document.documentElement.setAttribute('data-color-theme', theme);
     }
     try { localStorage.setItem('caddyui-color-theme', theme || 'default'); } catch(e) {}
+    // Sync to server — fire-and-forget. credentials:'same-origin' so the
+    // session cookie tags along; without it the handler 401s.
+    if (typeof fetch === 'function') {
+      try {
+        fetch('/api/me/color-theme', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: 'theme=' + encodeURIComponent(theme || 'default'),
+        }).catch(function(err) {
+          // Non-fatal: device-local storage still holds the value.
+          if (window.console) console.warn('color theme sync failed:', err);
+        });
+      } catch(e) {}
+    }
   }
   // Expose for any future programmatic access (theme switcher in chat, etc.)
   window.caddyuiSetColorTheme = apply;
   document.querySelectorAll('select[data-color-theme-select]').forEach(function(sel) {
-    var current = 'default';
-    try { current = localStorage.getItem('caddyui-color-theme') || 'default'; } catch(e) {}
-    sel.value = current;
+    // Initial value: prefer the actual rendered <html> attribute (which
+    // includes the server-side preference if signed in), then fall back to
+    // localStorage. Either way, the dropdown reflects what's actually painted.
+    var current = document.documentElement.getAttribute('data-color-theme') || '';
+    if (!current) {
+      try { current = localStorage.getItem('caddyui-color-theme') || ''; } catch(e) {}
+    }
+    sel.value = current || 'default';
     sel.addEventListener('change', function() { apply(sel.value); });
   });
 })();
