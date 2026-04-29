@@ -692,9 +692,21 @@ if ('serviceWorker' in navigator) {
       <div id="ai-history" class="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
         <div class="text-xs text-ink-400 dark:text-slate-500 text-center">Ask anything about your CaddyUI config — proxy hosts, redirects, certs, Caddyfile snippets…</div>
       </div>
-      <form id="ai-form" class="flex items-center gap-2 p-3 border-t border-ink-100 dark:border-slate-700">
-        <input id="ai-input" type="text" placeholder="Type your question…" autocomplete="off" class="flex-1 rounded-lg border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink-900 dark:text-slate-100 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-        <button type="submit" id="ai-submit" class="px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium transition disabled:opacity-50">Send</button>
+      {{/* v2.12.32: chat input is now a textarea instead of a single-line
+           <input>. Pasting a multi-line Caddyfile previously rendered as
+           one horizontally-scrolling line — most of the paste was invisible
+           until you arrow-keyed through it. The textarea wraps long lines,
+           grows vertically up to 6 rows then scrolls, and ships:
+           - Enter alone → submit (matches input behaviour)
+           - Shift+Enter → newline (so multi-line edits still work)
+           - rows=1 default → looks like a single-line input on first paint
+           - max-height via CSS so the chat panel doesn't grow infinitely
+             on a giant paste. */}}
+      <form id="ai-form" class="flex items-end gap-2 p-3 border-t border-ink-100 dark:border-slate-700">
+        <textarea id="ai-input" rows="1" placeholder="Type your question — Shift+Enter for newline" autocomplete="off"
+                  class="flex-1 rounded-lg border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-ink-900 dark:text-slate-100 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition font-sans resize-none leading-relaxed"
+                  style="max-height: 8rem; min-height: 2.4rem; overflow-y:auto;"></textarea>
+        <button type="submit" id="ai-submit" class="shrink-0 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium transition disabled:opacity-50">Send</button>
       </form>
     </div>
   </div>
@@ -1069,6 +1081,28 @@ if ('serviceWorker' in navigator) {
   }
   if (newChatBtn) newChatBtn.addEventListener('click', clearChat);
 
+  // v2.12.32: textarea auto-grow. Re-measure height on input so the box
+  // expands as the user types/pastes; the inline max-height (8rem) caps
+  // it before it eats the chat panel. Enter alone submits; Shift+Enter
+  // inserts a newline like every other modern chat UI.
+  function autosize() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 128) + 'px';
+  }
+  input.addEventListener('input', autosize);
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      if (typeof form.requestSubmit === 'function') {
+        form.requestSubmit();
+      } else {
+        // Older browsers (Safari < 16): synthesise a submit.
+        var ev = new Event('submit', { cancelable: true, bubbles: true });
+        form.dispatchEvent(ev);
+      }
+    }
+  });
+
   form.addEventListener('submit', function(e) {
     e.preventDefault();
     var msg = input.value.trim();
@@ -1076,6 +1110,7 @@ if ('serviceWorker' in navigator) {
     appendBubble('user', msg);
     conversation.push({ role: 'user', content: msg });
     input.value = '';
+    autosize();
     submit.disabled = true;
     var thinking = document.createElement('div');
     thinking.className = 'flex justify-start';
