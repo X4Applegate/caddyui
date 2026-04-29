@@ -50,8 +50,8 @@ See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
 - **Drag-to-reorder rows** — HTML5 ⠿ handle on `/proxy-hosts` and `/redirection-hosts`. *(v2.11.11)*
 - **Live route-JSON preview** on the proxy-host edit form — see the exact Caddy route JSON your form would push, refreshing as you type. *(v2.11.13)*
 - **Multi-server health widget** on the dashboard — one card per registered Caddy server with status, host count, version, last seen. *(v2.11.16)*
-- **AI assistant powered by local Ollama** — opt-in floating chat button with **conversation memory** (multi-turn), **markdown rendering** (bold / fenced code / lists), and a **custom system prompt** setting to override the built-in Caddy-flavoured steering text. *(v2.11.15, v2.12.7, v2.12.10)*
-- **AI tool calling** — chat the model into actually creating a proxy host or redirection. The AI emits `create_proxy_host(...)` / `create_redirection(...)` as a structured tool call; the chat panel renders a confirmation card with the exact arguments; you click Apply, and the resource gets created. Every tool exec writes an `ai_tool_call` activity-log entry. *(v2.12.11)*
+- **AI assistant — bring your own backend** *(v2.11.15, v2.12.36+)* — opt-in floating chat button that answers Caddy / TLS / DNS questions and writes production-grade Caddyfile snippets on demand. Pick any backend in Settings → AI assistant: **Ollama (local)** for fully-offline on your GPU, **Ollama Cloud** for hosted MoE models that won't fit on a homelab card (qwen3-coder:480b, gpt-oss:120b, etc.), **Anthropic Claude** (Haiku 4.5 / Sonnet 4.6 / Opus 4.7), or **any OpenAI-compatible API** (also covers OpenRouter, Groq, Together, vLLM, LM Studio). Conversation memory (multi-turn), markdown rendering, and a custom system prompt setting are shared by every backend.
+- **AI auto-fill — chat your hosts into existence** *(v2.12.11+)* — describe what you want in plain English (*"set up nextcloud at cloud.example.com pointing to nextcloud:80"*, *"redirect old.example.com to new.example.com permanently"*) and the assistant emits a structured `create_proxy_host(...)` / `create_redirection(...)` tool call. The chat panel renders a confirmation card with the exact arguments — click **Apply** and the resource is created, the form is filled in for you, and Caddy is auto-synced. Every AI-driven exec writes an `ai_tool_call` activity-log entry so admins can audit what the AI did. Works on Claude 4.x, GPT-4, qwen2.5+, llama3.1+, and gemma2.
 - **Wildcard cert auto-issuance via DNS-01** — type `*.example.com` in Domains, CaddyUI emits the `tls.automation.policies` block using your existing Cloudflare token (caveat: needs `caddy-dns/cloudflare` plugin in your Caddy build). *(v2.11.19)*
 - **Per-hostname DNS-record pre-flight** on multi-domain routes — checklist showing which records will be created vs already exist. *(v2.12.1)*
 - **Managed DNS on redirections** — closes the long-standing gap where redirects had no DNS plumbing. Now creates A records per hostname on save, deletes on row removal. *(v2.12.2)*
@@ -98,6 +98,65 @@ See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
 - **Update notifications** — sidebar badge when a newer Docker Hub release is available
 - **Dark mode** — toggleable, remembers your choice; system preference respected on first visit
 - **PWA** — installable on desktop and mobile; offline-capable service worker
+
+---
+
+## AI Assistant
+
+CaddyUI ships an opt-in chat assistant that knows the entire CaddyUI surface area — every page, every Settings field, every proxy-host form section — and can both **answer questions** about Caddy / TLS / DNS and **auto-fill new resources for you** via tool calling.
+
+### Pick a backend
+
+Go to **Settings → AI assistant** and choose one of:
+
+| Backend | Best for | What you need |
+|---|---|---|
+| **Ollama (local)** | Fully-offline, runs on your GPU, no cloud calls | An Ollama container reachable from CaddyUI; recommended models: `qwen2.5:14b`, `qwen2.5-coder:14b`, `gemma2:9b`, `llama3.1:8b` |
+| **Ollama Cloud** | Hosted MoE models that won't fit on a homelab GPU | API key from [ollama.com/settings/keys](https://ollama.com/settings/keys); models: `qwen3-coder:480b-cloud`, `gpt-oss:120b`, `deepseek-v3.1:671b` |
+| **Anthropic Claude** | Strongest reasoning + Caddy knowledge out of the box | API key from [console.anthropic.com](https://console.anthropic.com); models: `claude-haiku-4-5-20251001` (fast), `claude-sonnet-4-6` (balanced), `claude-opus-4-7` (max) |
+| **OpenAI-compatible** | OpenAI itself, OpenRouter, Groq, Together, self-hosted vLLM, LM Studio | Base URL + API key + model name |
+
+Switching providers preserves the inactive providers' credentials, so you can flip back and forth without re-entering keys.
+
+### What you can ask
+
+**Knowledge questions** — the assistant has the full CaddyUI app map in its system prompt, so it points you at the *exact page → section → field* for whatever you're trying to do:
+
+> *"How do I strip the X-Powered-By header globally?"*  
+> → Settings → General → Globally stripped response headers.
+
+> *"Where do I configure SSE flushing?"*  
+> → Proxy host form → Timeouts → Stream flush interval ms (use `-1`).
+
+**Caddyfile help** — production-grade snippets, not 3-line stubs. The default system prompt steers the model toward `encode zstd gzip` + path blocking + security headers + the `X-Forwarded-*` trio. Strip back to minimum only when you ask for *"just the basics"*.
+
+### AI auto-fill (tool calling)
+
+Describe what you want and the assistant calls a tool to create it:
+
+> *"Set up nextcloud at cloud.example.com pointing to nextcloud:80 with auto-SSL"*  
+> → emits `create_proxy_host(domains="cloud.example.com", forward_host="nextcloud", forward_port=80, ssl_enabled=true, ssl_forced=true)`.
+
+The chat panel renders a **confirmation card** with the exact arguments. You click **Apply** and CaddyUI:
+
+1. Creates the proxy host (or redirection).
+2. Auto-syncs Caddy with the new config.
+3. Writes an `ai_tool_call` row to the activity log so admins can see exactly what happened.
+
+Tools currently available:
+
+- `create_proxy_host(domains, forward_scheme, forward_host, forward_port, ssl_enabled, ssl_forced)`
+- `create_redirection(domains, forward_scheme, forward_domain, forward_http_code, preserve_path)`
+
+Models with native tool support — Claude 4.x, GPT-4 / GPT-4o, qwen2.5+, llama3.1+, gemma2 — will use these. Older or smaller models silently ignore the tools field and just chat.
+
+### Custom system prompt
+
+If you want a different persona, in-house naming conventions, or a leaner / chattier voice, paste your own steering text into **Settings → AI assistant → Custom system prompt**. Leaving it blank uses the built-in default that has the full CaddyUI knowledge map and the production-grade Caddyfile examples.
+
+### Privacy
+
+API keys are stored in CaddyUI's SQLite database. The Settings UI never renders saved keys back to the form (a `••••••••` placeholder shows when one is set; leave the field blank to keep the existing key). Local Ollama means the conversation never leaves your machine; cloud backends send the conversation to your chosen provider per their respective terms.
 
 ---
 
