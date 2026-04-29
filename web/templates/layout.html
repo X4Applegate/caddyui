@@ -946,7 +946,10 @@ if ('serviceWorker' in navigator) {
     html = '<p>' + html + '</p>';
     // Re-inject the code blocks.
     html = html.replace(/ CB(\d+) /g, function(_, idx) {
-      return '<pre class="bg-slate-900 dark:bg-black/50 text-slate-100 p-2.5 rounded-lg overflow-x-auto text-xs my-2 font-mono leading-relaxed"><code>' + codeBlocks[parseInt(idx, 10)] + '</code></pre>';
+      // v2.12.31: code blocks now wrap long lines (whitespace-pre-wrap +
+      // break-all) instead of overflowing off the bubble. spellcheck=false
+      // kills the red squiggles browsers draw on Caddyfile keywords.
+      return '<pre class="bg-slate-900 dark:bg-black/50 text-slate-100 p-3 rounded-lg text-xs my-2 font-mono leading-relaxed whitespace-pre-wrap break-all max-w-full" spellcheck="false"><code>' + codeBlocks[parseInt(idx, 10)] + '</code></pre>';
     });
     return html;
   }
@@ -963,7 +966,10 @@ if ('serviceWorker' in navigator) {
       // pre-wrap class is dropped here since renderMarkdown emits real
       // <p>/<br> tags; pre-wrap would double up the spacing.
       div.className = 'flex justify-start';
-      div.innerHTML = '<div class="bg-ink-100 dark:bg-slate-700 text-ink-900 dark:text-slate-100 px-3 py-2 rounded-lg max-w-[85%] leading-relaxed text-sm ai-md">' + renderMarkdown(text) + '</div>';
+      // v2.12.31: widened assistant bubble from 85% to 95% — when the AI
+      // returns a Caddyfile, every extra column reduces the wrap density
+      // for long directives like reverse_proxy + transport blocks.
+      div.innerHTML = '<div class="bg-ink-100 dark:bg-slate-700 text-ink-900 dark:text-slate-100 px-3 py-2 rounded-lg max-w-[95%] leading-relaxed text-sm ai-md">' + renderMarkdown(text) + '</div>';
     }
     history.appendChild(div);
     history.scrollTop = history.scrollHeight;
