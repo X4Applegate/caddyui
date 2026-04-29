@@ -549,10 +549,16 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		if p.DialFallbackDelayMS > 0 {
 			transport["dial_fallback_delay"] = fmt.Sprintf("%dms", p.DialFallbackDelayMS)
 		}
-		// v2.9.63: upstream_network — force IPv4 or IPv6 for upstream TCP connections.
-		if p.UpstreamNetwork != "" {
-			transport["network"] = p.UpstreamNetwork
-		}
+		// v2.9.63 ATTEMPTED to force IPv4/IPv6 by emitting `"network": "tcp4"`
+		// into the transport. Turns out Caddy's http transport schema has no
+		// `network` field — Caddy used to silently ignore it; current Caddy
+		// versions reject the config with `json: unknown field "network"` at
+		// /load validation, breaking every sync. The UpstreamNetwork field is
+		// preserved on the model + form so the user's existing setting isn't
+		// lost, but it's a no-op until we wire a working alternative (likely
+		// via dial_address with explicit-family resolver or a custom dialer
+		// module). v2.12.20.
+		_ = p.UpstreamNetwork
 		// v2.9.64: dns_resolver — custom DNS server for upstream hostname resolution.
 		// v2.9.69: upstream_resolve_timeout_sec — timeout added to the resolver map.
 		if p.DNSResolver != "" || p.UpstreamResolveTimeoutSec > 0 {
