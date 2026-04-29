@@ -181,6 +181,24 @@
     [data-color-theme="orange"] .hover\:text-brand-700:hover { color: #b86d08 !important; }
     [data-color-theme="orange"] .hover\:border-brand-300:hover { border-color: #f4a85e !important; }
 
+    /* v2.12.23: also re-paint raw Tailwind `blue-*` utility classes —
+       not every nav/icon/button in the codebase uses brand-*, some use
+       blue-* directly (e.g. the active sidebar nav-item icon at line
+       984 of this file). Without these overrides the active icon stays
+       Tailwind's default blue while the rest of the page goes orange. */
+    [data-color-theme="orange"] .bg-blue-50  { background-color: #fef3e2 !important; }
+    [data-color-theme="orange"] .bg-blue-100 { background-color: #fce4be !important; }
+    [data-color-theme="orange"] .bg-blue-400 { background-color: #f4a85e !important; }
+    [data-color-theme="orange"] .bg-blue-500 { background-color: #e8890a !important; }
+    [data-color-theme="orange"] .bg-blue-600 { background-color: #b86d08 !important; }
+    [data-color-theme="orange"] .bg-blue-700 { background-color: #8c5306 !important; }
+    [data-color-theme="orange"] .bg-blue-900 { background-color: #4a2d04 !important; }
+    [data-color-theme="orange"] .text-blue-400 { color: #f4a85e !important; }
+    [data-color-theme="orange"] .text-blue-500 { color: #e8890a !important; }
+    [data-color-theme="orange"] .text-blue-600 { color: #b86d08 !important; }
+    [data-color-theme="orange"] .text-blue-700 { color: #8c5306 !important; }
+    [data-color-theme="orange"] .ring-blue-500 { --tw-ring-color: #e8890a !important; }
+
     /* Light + Orange — subtle warmth on the page background, cream sidebar */
     :root[data-color-theme="orange"]:not(.dark) body { background-color: #fbf7ee; }
     :root[data-color-theme="orange"]:not(.dark) main { background-color: #fbf7ee; }
@@ -204,6 +222,9 @@
     .dark[data-color-theme="orange"] .text-ink-600 { color: #807966 !important; }
     .dark[data-color-theme="orange"] .text-ink-500 { color: #5a5446 !important; }
     .dark[data-color-theme="orange"] #sidebar { background-color: #131210 !important; border-color: #2a2720 !important; }
+    /* Active sidebar nav-item — replace slate-700/60 with an orange-tinted overlay */
+    [data-color-theme="orange"] .bg-slate-700\/60 { background-color: rgba(232,137,10,0.18) !important; }
+    [data-color-theme="orange"] .hover\:bg-slate-800:hover { background-color: rgba(232,137,10,0.08) !important; }
     .dark[data-color-theme="orange"] header { background-color: #131210 !important; border-color: #2a2720 !important; }
     .dark[data-color-theme="orange"] thead,
     .dark[data-color-theme="orange"] .bg-ink-50.border-b { background-color: #0c0b09 !important; border-color: #2a2720 !important; }
