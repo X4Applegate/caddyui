@@ -5,6 +5,12 @@
        The toggle button cycles auto → light → dark → auto. 'auto' tracks
        the OS via prefers-color-scheme; explicit values override. */}}
   <script>(function(){try{var t=localStorage.getItem('caddyui-theme')||'auto';var dark=t==='dark'||(t==='auto'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(dark){document.documentElement.classList.add('dark')}document.documentElement.dataset.themeMode=t;if(t==='auto'&&window.matchMedia){window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(e){if(document.documentElement.dataset.themeMode==='auto'){document.documentElement.classList.toggle('dark',e.matches)}})}}catch(e){}})();</script>
+  {{/* v2.12.22: color theme — orthogonal to light/dark. 'default' (slate
+       blue, no attribute) | 'orange' (carbon-orange, sets data-color-theme).
+       Stored per-device in localStorage so each browser keeps its own
+       preference, same pattern as the light/dark toggle above. Bootstrap
+       runs synchronously in <head> to avoid a paint flash. */}}
+  <script>(function(){try{var c=localStorage.getItem('caddyui-color-theme')||'default';if(c&&c!=='default'){document.documentElement.setAttribute('data-color-theme',c);}}catch(e){}})();</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>{{block "title" .}}{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}{{end}}</title>
@@ -143,6 +149,78 @@
     .dark ::-webkit-scrollbar-track { background: #0f172a; }
     .dark ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
     .dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    /* ── Orange theme overrides (v2.12.22) ──
+       Activated by data-color-theme="orange" on <html>. Re-paints the
+       brand blue with a warm orange (#e8890a) and shifts surfaces to a
+       warm carbon-black palette in dark mode. Layered AFTER the .dark
+       rules so the orange variant wins when both are active.
+       Palette inspired by the BNN Label Automation aesthetic. */
+
+    /* Brand blue → orange (applies in both light + dark) */
+    [data-color-theme="orange"] .bg-brand-50  { background-color: #fef3e2 !important; }
+    [data-color-theme="orange"] .bg-brand-100 { background-color: #fce4be !important; }
+    [data-color-theme="orange"] .bg-brand-200 { background-color: #f9c994 !important; }
+    [data-color-theme="orange"] .bg-brand-300 { background-color: #f4a85e !important; }
+    [data-color-theme="orange"] .bg-brand-500 { background-color: #e8890a !important; }
+    [data-color-theme="orange"] .bg-brand-600 { background-color: #b86d08 !important; }
+    [data-color-theme="orange"] .bg-brand-700 { background-color: #8c5306 !important; }
+    [data-color-theme="orange"] .text-brand-300 { color: #f4a85e !important; }
+    [data-color-theme="orange"] .text-brand-500 { color: #e8890a !important; }
+    [data-color-theme="orange"] .text-brand-600 { color: #b86d08 !important; }
+    [data-color-theme="orange"] .text-brand-700 { color: #8c5306 !important; }
+    [data-color-theme="orange"] .border-brand-300 { border-color: #f4a85e !important; }
+    [data-color-theme="orange"] .border-brand-500 { border-color: #e8890a !important; }
+    [data-color-theme="orange"] .border-brand-600 { border-color: #b86d08 !important; }
+    [data-color-theme="orange"] .ring-brand-500 { --tw-ring-color: #e8890a !important; }
+    [data-color-theme="orange"] .ring-brand-500\/20 { --tw-ring-color: rgba(232,137,10,0.2) !important; }
+    [data-color-theme="orange"] .focus\:border-brand-500:focus { border-color: #e8890a !important; }
+    [data-color-theme="orange"] .focus\:ring-brand-500\/20:focus { --tw-ring-color: rgba(232,137,10,0.2) !important; }
+    [data-color-theme="orange"] .hover\:bg-brand-700:hover { background-color: #8c5306 !important; }
+    [data-color-theme="orange"] .hover\:bg-brand-600:hover { background-color: #b86d08 !important; }
+    [data-color-theme="orange"] .hover\:text-brand-700:hover { color: #b86d08 !important; }
+    [data-color-theme="orange"] .hover\:border-brand-300:hover { border-color: #f4a85e !important; }
+
+    /* Light + Orange — subtle warmth on the page background, cream sidebar */
+    :root[data-color-theme="orange"]:not(.dark) body { background-color: #fbf7ee; }
+    :root[data-color-theme="orange"]:not(.dark) main { background-color: #fbf7ee; }
+
+    /* Dark + Orange — full carbon palette */
+    .dark[data-color-theme="orange"] body { background-color: #0c0b09 !important; color: #f0ece3 !important; }
+    .dark[data-color-theme="orange"] main { background-color: #0c0b09 !important; }
+    .dark[data-color-theme="orange"] .bg-white { background-color: #131210 !important; }
+    .dark[data-color-theme="orange"] .bg-ink-50 { background-color: #0c0b09 !important; }
+    .dark[data-color-theme="orange"] .bg-ink-100 { background-color: #131210 !important; }
+    .dark[data-color-theme="orange"] .bg-ink-200 { background-color: #1a1814 !important; }
+    .dark[data-color-theme="orange"] .bg-ink-50\/50,
+    .dark[data-color-theme="orange"] .bg-ink-50\/60 { background-color: rgba(12,11,9,0.5) !important; }
+    .dark[data-color-theme="orange"] .border-ink-100 { border-color: #2a2720 !important; }
+    .dark[data-color-theme="orange"] .border-ink-200 { border-color: #2a2720 !important; }
+    .dark[data-color-theme="orange"] .border-ink-300 { border-color: #3d3a32 !important; }
+    .dark[data-color-theme="orange"] .divide-ink-100 > * + * { border-color: #2a2720 !important; }
+    .dark[data-color-theme="orange"] .text-ink-900 { color: #f0ece3 !important; }
+    .dark[data-color-theme="orange"] .text-ink-800 { color: #f0ece3 !important; }
+    .dark[data-color-theme="orange"] .text-ink-700 { color: #b0a98f !important; }
+    .dark[data-color-theme="orange"] .text-ink-600 { color: #807966 !important; }
+    .dark[data-color-theme="orange"] .text-ink-500 { color: #5a5446 !important; }
+    .dark[data-color-theme="orange"] #sidebar { background-color: #131210 !important; border-color: #2a2720 !important; }
+    .dark[data-color-theme="orange"] header { background-color: #131210 !important; border-color: #2a2720 !important; }
+    .dark[data-color-theme="orange"] thead,
+    .dark[data-color-theme="orange"] .bg-ink-50.border-b { background-color: #0c0b09 !important; border-color: #2a2720 !important; }
+    .dark[data-color-theme="orange"] input:not([type=checkbox]):not([type=radio]),
+    .dark[data-color-theme="orange"] select,
+    .dark[data-color-theme="orange"] textarea {
+      background-color: #0c0b09 !important;
+      border-color: #3d3a32 !important;
+      color: #f0ece3 !important;
+    }
+    .dark[data-color-theme="orange"] input::placeholder,
+    .dark[data-color-theme="orange"] textarea::placeholder { color: #5a5446 !important; }
+    .dark[data-color-theme="orange"] code { background-color: #0c0b09 !important; color: #e8890a !important; }
+    .dark[data-color-theme="orange"] pre { background-color: #0c0b09 !important; border-color: #2a2720 !important; }
+    .dark[data-color-theme="orange"] ::-webkit-scrollbar-track { background: #0c0b09 !important; }
+    .dark[data-color-theme="orange"] ::-webkit-scrollbar-thumb { background: #3d3a32 !important; }
+    .dark[data-color-theme="orange"] .shadow-card { box-shadow: 0 0 0 1px rgba(42,39,32,0.8) !important; }
   </style>
 </head>
 <body class="min-h-screen bg-ink-50 text-ink-800 antialiased font-sans">
@@ -838,6 +916,30 @@ if ('serviceWorker' in navigator) {
       var next = STATES[(STATES.indexOf(cur) + 1) % STATES.length];
       applyMode(next);
     });
+  });
+})();
+
+// v2.12.22: color theme picker (default | orange).
+// Bound to any <select data-color-theme-select>. Per-device localStorage,
+// applied instantly on change without a page reload — same UX pattern as
+// the light/dark toggle. Bootstrap in <head> already pre-paints so the
+// page never flashes the wrong palette.
+(function() {
+  function apply(theme) {
+    if (!theme || theme === 'default') {
+      document.documentElement.removeAttribute('data-color-theme');
+    } else {
+      document.documentElement.setAttribute('data-color-theme', theme);
+    }
+    try { localStorage.setItem('caddyui-color-theme', theme || 'default'); } catch(e) {}
+  }
+  // Expose for any future programmatic access (theme switcher in chat, etc.)
+  window.caddyuiSetColorTheme = apply;
+  document.querySelectorAll('select[data-color-theme-select]').forEach(function(sel) {
+    var current = 'default';
+    try { current = localStorage.getItem('caddyui-color-theme') || 'default'; } catch(e) {}
+    sel.value = current;
+    sel.addEventListener('change', function() { apply(sel.value); });
   });
 })();
 
