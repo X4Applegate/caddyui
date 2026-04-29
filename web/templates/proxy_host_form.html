@@ -1867,17 +1867,15 @@
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Time in ms to wait before trying the next upstream after a dial failure (0 = Caddy default 300ms).</p>
       </div>
 
-      <!-- v2.9.63: upstream_network -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream Network</label>
-        <select name="upstream_network"
-          class="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
-          <option value="" {{if eq .Host.UpstreamNetwork ""}}selected{{end}}>Default (tcp)</option>
-          <option value="tcp4" {{if eq .Host.UpstreamNetwork "tcp4"}}selected{{end}}>tcp4 (IPv4 only)</option>
-          <option value="tcp6" {{if eq .Host.UpstreamNetwork "tcp6"}}selected{{end}}>tcp6 (IPv6 only)</option>
-        </select>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Force IPv4 or IPv6 for upstream TCP connections. Useful in dual-stack environments.</p>
-      </div>
+      {{/* v2.9.63 added an "Upstream Network" toggle (tcp/tcp4/tcp6).
+           v2.12.20 disabled the underlying emission because Caddy's
+           http transport schema has no `network` field — current Caddy
+           validates and rejects the config. v2.12.35 removes the form
+           field entirely so users don't see a dead control. The DB
+           column + model field stay for backwards-compat with existing
+           rows; if a host has a non-empty value it's a no-op. To force
+           IPv4/IPv6 on a particular upstream, set OS-level resolution
+           or use a family-pinned DNS resolver via "DNS Resolver" below. */}}
 
       <!-- v2.9.64: dns_resolver -->
       <div class="mb-4">
