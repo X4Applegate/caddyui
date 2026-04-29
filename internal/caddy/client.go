@@ -3775,6 +3775,30 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			}
 		}
 	}
+	// v2.12.21: every response-side `headers` operation must be deferred so
+	// it runs AFTER the next handler (typically reverse_proxy) writes its
+	// response. Caddy's default is request-side: a non-deferred
+	// `response.delete` fires BEFORE the upstream is even called, so the
+	// header doesn't exist yet and the delete is a no-op — the upstream's
+	// value then flows through to the client unchanged. Same gotcha for
+	// `response.set`: it lands in the empty response, then the upstream's
+	// value arrives and (depending on Caddy's writer impl) either overrides
+	// or duplicates ours. Deferring is the universally correct choice for
+	// response ops on a reverse-proxy route, so apply it post hoc instead
+	// of re-wiring every emitter throughout this 1500-line function.
+	// Concrete bug this fixes: Settings → "Globally stripped response
+	// headers" with `X-Frame-Options` was emitting the right handler shape
+	// but the upstream's `X-Frame-Options: SAMEORIGIN` still leaked through
+	// to the client, breaking iframe embedding for every host this affects.
+	for _, h := range handlers {
+		hMap, ok := h.(map[string]any)
+		if !ok || hMap["handler"] != "headers" {
+			continue
+		}
+		if resp, ok := hMap["response"].(map[string]any); ok && resp != nil {
+			resp["deferred"] = true
+		}
+	}
 	return map[string]any{
 		"match":    []any{matchObj},
 		"handle":   handlers,
