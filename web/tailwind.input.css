@@ -1,0 +1,6 @@
+/* v2.12.39: input file for the build-time Tailwind CLI compile.
+   Output lands at web/static/tailwind.css (see Dockerfile) and is served
+   from the embedded FS via the existing /static/* handler. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
