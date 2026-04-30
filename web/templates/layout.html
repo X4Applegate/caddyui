@@ -49,25 +49,60 @@
   {{else}}
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
   {{end}}
-  {{/* v2.12.41: zero external CDNs. All four previous CDN deps now
-       come from the embedded FS:
+  {{/* v2.12.40 perf hints — preload the self-hosted Inter font so its
+       fetch starts in parallel with HTML parse (breaks the
+       CSS→@font-face critical chain), and warm the Tailwind CDN
+       connection early.
 
-       - Inter variable font  → /static/fonts/InterVariable.woff2  (v2.12.39)
-       - htmx                 → /static/htmx.min.js                (v2.12.39)
-       - Tailwind CSS         → /static/tailwind.css               (v2.12.41)
-                                build-time compile via the CLI in
-                                Dockerfile, theme.colors overridden
-                                to only the 17 palettes used in
-                                templates → 58 KB minified output,
-                                4× smaller than the CDN JIT runtime
-                                this replaces.
-
-       Page paint blocks only on /static/tailwind.css + /static/app.css
-       (both same-origin, both Cache-Control: max-age=86400). Inter font
-       is preloaded so its fetch starts in parallel with HTML parse,
-       breaking the critical-path waterfall PageSpeed flagged. */}}
+       Tailwind self-host was attempted in v2.12.41 (commit 7751ee3)
+       but reverted: the build-time CSS is 4× smaller than the CDN
+       runtime BUT for residential / homelab installs the global CDN
+       wins on PageSpeed because its TTFB from Google's test-server
+       geography is way better than a home connection. Self-host code
+       stays on git main but isn't built into the image. Move CaddyUI
+       to a low-latency VPS and we can re-enable. */}}
   <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="/static/tailwind.css" />
+  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#eff6ff',
+              100: '#dbeafe',
+              200: '#bfdbfe',
+              300: '#93c5fd',
+              500: '#3b82f6',
+              600: '#2563eb',
+              700: '#1d4ed8',
+            },
+            ink: {
+              50:  '#f8fafc',
+              100: '#f1f5f9',
+              200: '#e2e8f0',
+              300: '#cbd5e1',
+              400: '#94a3b8',
+              500: '#64748b',
+              600: '#475569',
+              700: '#334155',
+              800: '#1e293b',
+              900: '#0f172a',
+            },
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'sans-serif'],
+          },
+          boxShadow: {
+            card: '0 1px 2px 0 rgb(15 23 42 / 0.04)',
+            'card-hover': '0 4px 12px -2px rgb(15 23 42 / 0.08), 0 2px 4px -1px rgb(15 23 42 / 0.04)',
+          },
+        },
+      },
+    }
+  </script>
   {{/* v2.12.39: htmx is now vendored to /static/htmx.min.js (downloaded
        at Docker build time from unpkg). `defer` is safe — htmx attaches
        its event listeners on DOMContentLoaded. */}}
