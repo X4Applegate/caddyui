@@ -37,6 +37,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>{{block "title" .}}{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}{{end}}</title>
+  {{/* v2.12.48: meta description for SEO. Defaults to a generic
+       CaddyUI summary; individual pages override via the "description"
+       template block when they want something more specific. */}}
+  <meta name="description" content="{{block "description" .}}CaddyUI — fast, accessible web UI for managing Caddy reverse proxy hosts, redirects, certificates, and DNS. Multi-server, RBAC, AI assistant, real-time analytics.{{end}}" />
   <meta name="theme-color" content="#2563eb" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
