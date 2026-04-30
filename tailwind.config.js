@@ -65,21 +65,25 @@ module.exports = {
   // Safelist: classes that the CLI's static scanner can't see because they
   // get assembled at runtime. Most CaddyUI JS uses static-string class
   // branches (e.g. `u.healthy ? 'bg-green-500' : 'bg-red-500'`) which DO
-  // get scanned, so this list is intentionally short — only the cases
-  // where class names get genuinely concatenated from variables.
+  // get scanned and don't need to be here.
+  //
+  // History: a v2.12.39-rc1 build had a generous regex safelist covering
+  // every {color × shade × hover/dark/focus} combination, which produced
+  // a ~3.76 MB tailwind.css — bigger than the CDN runtime it replaced.
+  // Trimmed to specific known-dynamic classes only.
   safelist: [
-    // Brand pill on the AI model name (assembled in renderToolCallCard JS)
-    'bg-brand-100',
-    'text-brand-700',
-    'dark:bg-brand-900/40',
-    'dark:text-brand-300',
-    // Update badge variants
-    'bg-amber-100',
-    'text-amber-700',
-    // Color tag pill — brand color is set per-host from a string variable
+    // Brand pill on the AI model name (assembled in renderToolCallCard JS).
+    'bg-brand-100', 'text-brand-700',
+    'dark:bg-brand-900/40', 'dark:text-brand-300',
+    // Update-available badge in the footer (built from a string).
+    'bg-amber-100', 'text-amber-700',
+    // Color tag pill — the per-host color tag class is concatenated from
+    // a string column in the DB (proxy_hosts.color_tag). The full set of
+    // valid options is fixed (red/orange/amber/yellow/green/teal/cyan/
+    // blue/indigo/purple/pink/slate). Only the {bg-100, text-700,
+    // border-200} triples are used; no hover/dark variants.
     {
-      pattern: /(bg|text|border)-(red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone)-(50|100|200|300|400|500|600|700|800|900)/,
-      variants: ['hover', 'dark', 'focus'],
+      pattern: /(bg|text|border)-(red|orange|amber|yellow|green|teal|cyan|blue|indigo|purple|pink|slate)-(100|200|700)/,
     },
   ],
 }
