@@ -3165,6 +3165,35 @@
   </div>
 </details>
 
+{{/* v2.12.38: wire up the "Add request header" / "Add response header" "+"
+     buttons inside the Custom Headers section. The buttons existed in the
+     DOM but had no click handler before now — pressing them did nothing.
+     Pattern matches rw-add / eu-add / ba-add elsewhere in this file. */}}
+<script>
+(function() {
+  function wireAdd(btnId, listId, keyName, valName) {
+    var btn = document.getElementById(btnId);
+    var list = document.getElementById(listId);
+    if (!btn || !list) return;
+    btn.addEventListener('click', function() {
+      var div = document.createElement('div');
+      div.className = 'hdr-row flex items-center gap-2';
+      div.innerHTML =
+        '<input type="text" name="' + keyName + '" placeholder="Header-Name" '
+        + 'class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />'
+        + '<input type="text" name="' + valName + '" placeholder="value (blank = delete)" '
+        + 'class="flex-1 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />'
+        + '<button type="button" onclick="this.closest(\'.hdr-row\').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">✕</button>';
+      list.appendChild(div);
+      var firstInput = div.querySelector('input');
+      if (firstInput) firstInput.focus();
+    });
+  }
+  wireAdd('req-hdr-add',  'req-headers-list',  'header_req_key',  'header_req_val');
+  wireAdd('resp-hdr-add', 'resp-headers-list', 'header_resp_key', 'header_resp_val');
+})();
+</script>
+
   {{/* Feature C: IP Allowlist */}}
   <details class="pt-4 border-t border-ink-100"{{if or .Host.AccessList .Host.IPBlocklist .Host.TrustedProxies}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">

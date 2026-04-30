@@ -434,7 +434,23 @@ func (s *Server) Routes() http.Handler {
 
 	staticSub, err := fs.Sub(s.Static, ".")
 	if err == nil {
-		r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+		// v2.12.38: wrap the static FileServer with a Cache-Control header.
+		// Without this, browsers refused to cache /static/app.css, the PWA
+		// icons, etc. and re-fetched them on every cold navigation.
+		//
+		// 1 day (not 1 year) because the URLs aren't versioned — if we said
+		// `immutable, max-age=31536000` then a docker pull to a newer
+		// CaddyUI build wouldn't show up until users hard-refreshed. 86400
+		// is the sweet spot: repeat visits within the same day are instant,
+		// upgrades take effect within a day, and Ctrl-Shift-R always works.
+		// (The PWA service worker does a separate cache-first pass at the
+		// JS layer for assets it precaches — this header is the safety net
+		// for first-visit / SW-not-yet-installed cases.)
+		staticHandler := http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))
+		r.Handle("/static/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			staticHandler.ServeHTTP(w, req)
+		}))
 	}
 
 	// PWA root files — must be served from / scope for the service worker to control the whole app.
