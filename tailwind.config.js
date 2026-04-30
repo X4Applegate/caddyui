@@ -13,13 +13,15 @@ module.exports = {
   content: [
     // Every Go template renders directly to HTML — class names live here.
     './web/templates/**/*.html',
-    // The Go server has class names baked into a few error pages, the AI
-    // assistant's system prompt knowledge dump, and a couple of HTMX
-    // fragments. Scanning catches them so they don't get tree-shaken.
-    './internal/server/*.go',
-    // The static service worker + manifest reference no Tailwind classes
-    // today, but include for future-proofing.
-    './web/static/sw.js',
+    // NOTE: deliberately NOT scanning internal/server/*.go — the AI
+    // assistant's system prompt knowledge dump (~150 lines of CaddyUI
+    // page descriptions) contains literal text that matches Tailwind
+    // class regex patterns ("bg-blue-50", "text-emerald-600", etc.)
+    // even though they're just English explanations to the AI, not
+    // actual DOM classes. Scanning that file added ~50,000 unused
+    // classes and bloated the output to 3.76 MB. Templates have all
+    // the real classes; if a server-side fragment ever needs a class
+    // that's NOT also in a template, add it to the safelist below.
   ],
   theme: {
     extend: {
@@ -67,23 +69,16 @@ module.exports = {
   // branches (e.g. `u.healthy ? 'bg-green-500' : 'bg-red-500'`) which DO
   // get scanned and don't need to be here.
   //
-  // History: a v2.12.39-rc1 build had a generous regex safelist covering
-  // every {color × shade × hover/dark/focus} combination, which produced
-  // a ~3.76 MB tailwind.css — bigger than the CDN runtime it replaced.
-  // Trimmed to specific known-dynamic classes only.
+  // CRITICAL: do NOT use regex patterns here. Tailwind 3 expands every
+  // pattern match into all 21 opacity-modifier variants automatically
+  // (bg-amber-100/0, /5, /10, ... /100). A naive pattern like
+  // /(bg|text|border)-\w+-(100|200|700)/ produced 58,000+ classes and
+  // bloated tailwind.css to 3.76 MB. Stick to literal class names.
   safelist: [
     // Brand pill on the AI model name (assembled in renderToolCallCard JS).
     'bg-brand-100', 'text-brand-700',
     'dark:bg-brand-900/40', 'dark:text-brand-300',
-    // Update-available badge in the footer (built from a string).
+    // Update-available badge in the footer.
     'bg-amber-100', 'text-amber-700',
-    // Color tag pill — the per-host color tag class is concatenated from
-    // a string column in the DB (proxy_hosts.color_tag). The full set of
-    // valid options is fixed (red/orange/amber/yellow/green/teal/cyan/
-    // blue/indigo/purple/pink/slate). Only the {bg-100, text-700,
-    // border-200} triples are used; no hover/dark variants.
-    {
-      pattern: /(bg|text|border)-(red|orange|amber|yellow|green|teal|cyan|blue|indigo|purple|pink|slate)-(100|200|700)/,
-    },
   ],
 }
