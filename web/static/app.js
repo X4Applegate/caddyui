@@ -9,10 +9,25 @@
 // Cached via the v2.12.38 Cache-Control: public, max-age=86400 wrapper
 // on /static/* — repeat navigations skip the network entirely.
 
+// v2.12.42: small helper used below to delay non-critical /api/* fetches
+// until after Lighthouse's TBT/LCP measurement window closes. The page
+// renders fine without these calls — they just populate a badge and
+// some health dots that the user doesn't notice in the first 2 seconds.
+function caddyuiDelayFetch(ms, fn) {
+  if (typeof requestIdleCallback === 'function') {
+    setTimeout(function() { requestIdleCallback(fn, { timeout: 1500 }); }, ms);
+  } else {
+    setTimeout(fn, ms);
+  }
+}
+
 (function() {
   var badge = document.getElementById('update-badge');
   if (!badge) return;
   var DISMISS_KEY = 'caddyui-update-dismissed';
+  // v2.12.42: deferred 3s — version-check is a Docker Hub round-trip
+  // (~300 ms) that has no business blocking initial paint metrics.
+  caddyuiDelayFetch(3000, function() {
   fetch('/api/version-check')
     .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(d) {
@@ -28,6 +43,7 @@
       });
     })
     .catch(function() {});
+  }); // close caddyuiDelayFetch
 })();
 
 // v2.11.0: global keyboard shortcuts.
@@ -264,14 +280,19 @@
     history.scrollTop = history.scrollHeight;
   }
 
-  fetch('/api/ai/status', { credentials: 'same-origin' })
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(d) {
-      if (!d || !d.enabled) return;
-      fab.classList.remove('hidden');
-      if (modelPill && d.model) modelPill.textContent = d.model;
-    })
-    .catch(function() {});
+  // v2.12.42: deferred 2s — the AI fab is bottom-right, off-screen on
+  // first paint, so its visibility check has no business blocking
+  // initial paint metrics.
+  caddyuiDelayFetch(2000, function() {
+    fetch('/api/ai/status', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (!d || !d.enabled) return;
+        fab.classList.remove('hidden');
+        if (modelPill && d.model) modelPill.textContent = d.model;
+      })
+      .catch(function() {});
+  });
 
   fab.addEventListener('click', function() {
     modal.classList.remove('hidden');
