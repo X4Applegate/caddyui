@@ -18,20 +18,20 @@
 
     <form method="post" action="/setup" class="space-y-4">
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
-        <input name="name" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <label for="setup-name" class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
+        <input id="setup-name" name="name" autocomplete="name" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Email</label>
-        <input name="email" type="email" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <label for="setup-email" class="block text-sm font-medium text-ink-800 mb-1.5">Email</label>
+        <input id="setup-email" name="email" type="email" autocomplete="email" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Password</label>
-        <input name="password" type="password" required minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <label for="setup-password" class="block text-sm font-medium text-ink-800 mb-1.5">Password</label>
+        <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Confirm password</label>
-        <input name="password_confirm" type="password" required minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <label for="setup-password-confirm" class="block text-sm font-medium text-ink-800 mb-1.5">Confirm password</label>
+        <input id="setup-password-confirm" name="password_confirm" type="password" autocomplete="new-password" required minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <button class="w-full inline-flex items-center justify-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm py-2.5 rounded-lg shadow-sm transition">Create admin</button>
     </form>
