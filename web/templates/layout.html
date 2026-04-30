@@ -49,9 +49,10 @@
   {{else}}
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
   {{end}}
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet" />
+  {{/* v2.12.39: Inter variable font is now self-hosted from the embedded
+       FS — see the @font-face rule in /static/app.css. Removed the
+       fonts.googleapis.com + fonts.gstatic.com preconnect / stylesheet
+       trio that previously cost ~150 ms on cold loads. */}}
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -97,7 +98,10 @@
       },
     }
   </script>
-  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  {{/* v2.12.39: htmx is now vendored to /static/htmx.min.js (downloaded
+       at Docker build time from unpkg). `defer` is safe — htmx attaches
+       its event listeners on DOMContentLoaded. */}}
+  <script src="/static/htmx.min.js" defer></script>
   <link rel="stylesheet" href="/static/app.css" />
   <style>
     /* v2.12.25: typography polish.

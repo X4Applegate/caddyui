@@ -1,13 +1,30 @@
 FROM golang:1.24-alpine AS build
 
 # Install ca-certificates and tzdata in the build stage so they can be
-# copied into the scratch final image. Create a dedicated non-root user.
-RUN apk add --no-cache ca-certificates tzdata && \
+# copied into the scratch final image. curl is needed for the v2.12.39
+# vendored-asset downloads (Inter variable font + htmx) below.
+# Create a dedicated non-root user.
+RUN apk add --no-cache ca-certificates tzdata curl && \
     addgroup -S -g 10001 caddyui && \
     adduser  -S -G caddyui -u 10001 caddyui
 
 WORKDIR /src
 COPY . .
+
+# v2.12.39: vendor third-party assets at build time so the runtime UI no
+# longer fetches them from external CDNs. Removes three cold-load round-
+# trips (fonts.googleapis.com, fonts.gstatic.com, unpkg.com) and keeps
+# the UI usable on networks that block any of those domains.
+#
+# Both files end up under web/static/ where Go's embed.FS picks them up
+# at compile time, served by the existing /static/* handler with the
+# v2.12.38 Cache-Control: max-age=86400 wrapper.
+RUN mkdir -p web/static/fonts && \
+    curl -fsSL https://rsms.me/inter/font-files/InterVariable.woff2 \
+      -o web/static/fonts/InterVariable.woff2 && \
+    curl -fsSL https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js \
+      -o web/static/htmx.min.js
+
 ARG VERSION=dev
 RUN go mod tidy && \
     CGO_ENABLED=0 GOOS=linux go build \

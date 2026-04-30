@@ -1,4 +1,24 @@
 /* CaddyUI base styles — tokens are in layout.html's tailwind.config */
+
+/* v2.12.39: Inter variable font, self-hosted instead of Google Fonts.
+   The woff2 file is downloaded at Docker build time (see Dockerfile)
+   and embedded into the binary via web/embed.go. font-display: swap
+   means the browser renders text immediately in the system fallback
+   font, then swaps to Inter when the woff2 finishes loading — no
+   "invisible text" flash even on cold caches.
+
+   Single variable font covers weights 100–900 and the 14–32 optical
+   size axis used by the layout (see font-optical-sizing: auto in the
+   <style> block of layout.html). */
+@font-face {
+  font-family: 'Inter';
+  src: url('/static/fonts/InterVariable.woff2') format('woff2-variations'),
+       url('/static/fonts/InterVariable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 html {
   /* Smooth-scroll for in-page anchor jumps (settings TOC, docs TOC, etc.).
      Users who prefer reduced motion fall back to instant jumps via the
