@@ -49,12 +49,24 @@
   {{else}}
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
   {{end}}
-  {{/* v2.12.39: Inter variable font + htmx are self-hosted (see app.css
-       @font-face and the /static/htmx.min.js script tag below). Tailwind
-       stays on the CDN for v2.12.39 — build-time compile produced a
-       3.76 MB tailwind.css due to opacity-variant expansion across the
-       default theme.colors palette. Proper self-host queued for
-       v2.12.40. */}}
+  {{/* v2.12.40: Two perf hints to break the critical-path waterfall
+       PageSpeed flagged on the login page (1,298 ms chain).
+
+       1. <link rel="preload"> for Inter — without this, the browser
+          only discovers the font AFTER /static/app.css finishes
+          parsing the @font-face rule (~880 ms in). With preload,
+          the font fetch starts in parallel with the CSS, removing
+          ~400 ms from the critical chain.
+
+       2. <link rel="preconnect"> to cdn.tailwindcss.com — establishes
+          the DNS+TLS to the Tailwind CDN early so when the <script>
+          below kicks in, the connection is already warm. Saves
+          ~100–200 ms on cold loads. (Tailwind self-host is queued
+          for v2.12.41 — see history note in v2.12.39 about the
+          3.76 MB blowup that needs careful theme.colors override
+          to avoid repeating.) */}}
+  <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
