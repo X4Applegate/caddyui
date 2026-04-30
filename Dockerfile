@@ -11,13 +11,20 @@ RUN apk add --no-cache ca-certificates tzdata curl && \
 WORKDIR /src
 COPY . .
 
-# v2.12.39: vendor third-party assets at build time so the runtime UI no
-# longer fetches them from external CDNs. Removes four cold-load round-
-# trips (fonts.googleapis.com, fonts.gstatic.com, unpkg.com,
-# cdn.tailwindcss.com) and keeps the UI usable on networks that block
-# any of those domains.
+# v2.12.39: vendor Inter variable font + htmx at build time so the
+# runtime UI no longer fetches them from external CDNs. Removes three
+# cold-load round-trips (fonts.googleapis.com, fonts.gstatic.com,
+# unpkg.com).
 #
-# All vendored files end up under web/static/ where Go's embed.FS picks
+# Tailwind self-host was attempted in v2.12.39 development but produced
+# a 3.76 MB tailwind.css (Tailwind 3 auto-expands every color × shade ×
+# opacity × hover/focus/dark variant for any opacity-modifier class
+# found in templates — the default theme.colors set is too broad to
+# build-time-compile cheaply). Reverted; cdn.tailwindcss.com stays for
+# now. Proper self-host with a trimmed theme.colors palette is queued
+# for v2.12.40.
+#
+# Both vendored files end up under web/static/ where Go's embed.FS picks
 # them up at compile time, served by the existing /static/* handler with
 # v2.12.38's Cache-Control: max-age=86400 wrapper.
 RUN mkdir -p web/static/fonts && \
@@ -25,22 +32,6 @@ RUN mkdir -p web/static/fonts && \
       -o web/static/fonts/InterVariable.woff2 && \
     curl -fsSL https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js \
       -o web/static/htmx.min.js
-
-# Compile Tailwind CSS from web/templates/**/*.html using the standalone
-# CLI binary. TARGETARCH is set automatically by buildx (amd64 / arm64);
-# Tailwind's release naming uses x64 instead of amd64 so we map. Output
-# replaces the previous JIT runtime that v2.11.15 → v2.12.38 loaded from
-# cdn.tailwindcss.com — the JIT runtime alone was ~250 KB of JS and
-# recompiled classes on every cold load. The build-time CSS is ~25–35 KB.
-ARG TARGETARCH
-RUN ARCH=$([ "$TARGETARCH" = "amd64" ] && echo "x64" || echo "$TARGETARCH") && \
-    curl -fsSL "https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.15/tailwindcss-linux-${ARCH}" \
-      -o /usr/local/bin/tailwindcss && \
-    chmod +x /usr/local/bin/tailwindcss && \
-    tailwindcss -c tailwind.config.js \
-      -i web/tailwind.input.css \
-      -o web/static/tailwind.css \
-      --minify
 
 ARG VERSION=dev
 RUN go mod tidy && \
