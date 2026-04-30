@@ -30,6 +30,13 @@ RUN mkdir -p web/static/fonts && \
     curl -fsSL https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js \
       -o web/static/htmx.min.js
 
+# Note: BuildKit's docker-container driver (the multi-arch builder)
+# has a bug where some web/static/ files don't make it into Go's
+# embed.FS resolution. Reproduces with `docker buildx build --builder
+# multiplatform` (buildkit v0.29.0) but NOT with the default docker
+# driver. For now, build single-arch with the default builder until
+# the bug is upstream-fixed. Multi-arch retag is on hold.
+
 ARG VERSION=dev
 RUN go mod tidy && \
     CGO_ENABLED=0 GOOS=linux go build \
