@@ -280,946 +280,6 @@
   {{/* v2.11.7: Path matching + metadata bundled into one collapsed section.
        Most users won't touch path prefix / strip query / tags / notes on
        routine hosts; the badge tells them how many fields are configured. */}}
-  <details id="ph-tags" class="pt-4 border-t border-ink-100">
-    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-      Path matching, query string, tags &amp; notes <span class="font-normal normal-case">(optional)</span>
-    </summary>
-    <div class="mt-3 space-y-4">
-
-  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
-    <div>
-      <label class="block text-xs font-medium text-ink-700 mb-1">Path prefix <span class="text-ink-400 font-normal">(optional — leave blank to match all paths)</span></label>
-      <input type="text" name="path_matcher" value="{{.Host.PathMatcher}}"
-        placeholder="/api"
-        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <p class="text-xs text-ink-400 mt-1">Restricts this route to requests whose path starts with the given prefix (e.g. <code class="bg-ink-100 px-1 rounded">/api</code>). Matches both exact and sub-paths.</p>
-    </div>
-    <div class="pb-6">
-      <label class="flex items-center gap-2.5 cursor-pointer">
-        <input type="checkbox" name="strip_path_prefix" {{if .Host.StripPathPrefix}}checked{{end}}
-          class="rounded border-ink-300 text-brand-600 focus:ring-brand-500">
-        <span class="text-sm text-ink-700">Strip prefix before forwarding</span>
-      </label>
-      <p class="text-xs text-ink-400 mt-1 ml-6.5">Removes the path prefix before sending the request to the upstream (requires Path prefix to be set).</p>
-    </div>
-  </div>
-
-      <div>
-        <label class="flex items-center gap-2.5 cursor-pointer select-none">
-          <input type="checkbox" name="strip_query_string" {{if .Host.StripQueryString}}checked{{end}} class="h-4 w-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-          <span class="text-sm font-medium text-ink-800">Strip query string</span>
-        </label>
-        <p class="text-xs text-ink-400 mt-1.5 ml-6.5">Remove the entire query string from requests before forwarding to the upstream. Useful when the backend doesn't support or should not see query parameters.</p>
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Delete query params <span class="text-ink-400 font-normal">(optional)</span></label>
-        <input type="text" name="delete_query_params" value="{{.Host.DeleteQueryParams}}" placeholder="utm_source,utm_medium,fbclid,gclid" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-        <p class="text-xs text-ink-400 mt-1.5">Comma-separated query parameter names to remove before forwarding. Ignored when "Strip query string" is checked.</p>
-      </div>
-
-<!-- v2.9.57: add_req_query_params -->
-<div class="mb-4">
-  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Query Params</label>
-  <input type="text" name="add_req_query_params" value="{{.Host.AddReqQueryParams}}"
-    class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-    placeholder="key=value,key2=value2">
-  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated <code>key=value</code> pairs appended to the upstream query string. Useful for adding API version markers or tracking params.</p>
-</div>
-
-  <div>
-    <label class="block text-sm font-medium text-ink-800 mb-1.5">Tags <span class="text-ink-400 font-normal">(optional, comma-separated)</span></label>
-    <input type="text" name="tags" value="{{.Host.Tags}}"
-      placeholder="production, api, wordpress"
-      class="w-full text-sm px-3 py-2 rounded-lg border border-ink-200 bg-white text-ink-900 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-  </div>
-
-  <div>
-    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Notes
-      <span class="text-gray-400 font-normal">(optional, internal only)</span>
-    </label>
-    <textarea name="notes" rows="2"
-      placeholder="Internal documentation, deployment notes, etc."
-      class="w-full text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none">{{.Host.Notes}}</textarea>
-  </div>
-
-  <div>
-    <label class="block text-sm font-medium text-ink-800 mb-2">Color label <span class="text-ink-400 font-normal">(optional, for visual grouping)</span></label>
-    <div class="flex items-center gap-2 flex-wrap">
-      <label class="cursor-pointer" title="No color">
-        <input type="radio" name="color" value="" {{if eq .Host.Color ""}}checked{{end}} class="sr-only peer" />
-        <span class="inline-flex items-center justify-center w-7 h-7 rounded-full border-2 border-ink-300 peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 bg-white text-ink-400 text-xs transition">✕</span>
-      </label>
-      <label class="cursor-pointer" title="Red">
-        <input type="radio" name="color" value="red" {{if eq .Host.Color "red"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-red-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Orange">
-        <input type="radio" name="color" value="orange" {{if eq .Host.Color "orange"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-orange-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Yellow">
-        <input type="radio" name="color" value="yellow" {{if eq .Host.Color "yellow"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-yellow-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Green">
-        <input type="radio" name="color" value="green" {{if eq .Host.Color "green"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-green-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Teal">
-        <input type="radio" name="color" value="teal" {{if eq .Host.Color "teal"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-teal-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Blue">
-        <input type="radio" name="color" value="blue" {{if eq .Host.Color "blue"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-blue-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Purple">
-        <input type="radio" name="color" value="purple" {{if eq .Host.Color "purple"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-purple-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Pink">
-        <input type="radio" name="color" value="pink" {{if eq .Host.Color "pink"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-pink-400"></span>
-      </label>
-      <label class="cursor-pointer" title="Gray">
-        <input type="radio" name="color" value="gray" {{if eq .Host.Color "gray"}}checked{{end}} class="sr-only peer" />
-        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-gray-400"></span>
-      </label>
-    </div>
-  </div>
-
-  <!-- v2.9.39: sort order -->
-  <div class="mb-4">
-    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Sort Order</label>
-    <input type="number" name="sort_order" value="{{.Host.SortOrder}}"
-      class="w-32 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm"
-      min="0" max="9999" placeholder="0">
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Lower values appear first in the list (0 = default).</p>
-  </div>
-
-    </div>
-  </details>
-  {{/* v2.11.7: end of Path matching, query string, tags & notes collapse.
-       v2.11.8: Forward Scheme/Host/Port + Test upstream hoisted up under Domain. */}}
-
-  {{/* v2.11.7: Upstream TLS / advanced upstream settings — collapsed by
-       default. Most users never touch SNI, min TLS version, forward proxy
-       URL, path prefix munging, or Host header overrides. */}}
-  <details id="ph-upstream-tls" class="pt-4 border-t border-ink-100">
-    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-      Upstream TLS &amp; advanced settings <span class="font-normal normal-case">(optional)</span>
-    </summary>
-    <div class="mt-3 space-y-4">
-
-  <div id="upstream-sni-row">
-    <label class="block text-xs font-medium text-ink-700 mb-1">Upstream TLS SNI <span class="text-ink-400 font-normal">(only for HTTPS upstream with different hostname)</span></label>
-    <input type="text" name="upstream_sni" value="{{.Host.UpstreamSNI}}"
-      placeholder="e.g. internal.example.com"
-      class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-  </div>
-
-      <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Upstream TLS minimum version</label>
-        <select name="upstream_tls_min_version" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-          <option value="" {{if eq .Host.UpstreamTLSMinVersion ""}}selected{{end}}>Use default</option>
-          <option value="1.2" {{if eq .Host.UpstreamTLSMinVersion "1.2"}}selected{{end}}>TLS 1.2+</option>
-          <option value="1.3" {{if eq .Host.UpstreamTLSMinVersion "1.3"}}selected{{end}}>TLS 1.3 only</option>
-        </select>
-        <p class="text-xs text-ink-400 mt-1.5">Minimum TLS protocol version for connections <em>to</em> the upstream. Only applies when the upstream scheme is <span class="font-mono">https</span>.</p>
-      </div>
-
-      <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Forward proxy URL <span class="text-ink-400 font-normal">(optional)</span></label>
-        <input type="text" name="forward_proxy_url" value="{{.Host.ForwardProxyURL}}" placeholder="http://squid.internal:3128" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-        <p class="text-xs text-ink-400 mt-1.5">Route upstream requests through this HTTP proxy (e.g. a corporate Squid proxy). Leave blank to connect directly.</p>
-      </div>
-
-      <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Upstream path prefix</label>
-        <input type="text" name="upstream_path_prefix" value="{{.Host.UpstreamPathPrefix}}" placeholder="/v2" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-        <p class="text-xs text-ink-400 mt-1.5">Prepend this path prefix to every upstream request. Example: prefix <code class="bg-ink-100 px-1 rounded">/v2</code> converts <code class="bg-ink-100 px-1 rounded">/users</code> → <code class="bg-ink-100 px-1 rounded">/v2/users</code>.</p>
-      </div>
-
-<!-- v2.9.56: strip_path_suffix -->
-<div class="mb-4">
-  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Strip Path Suffix</label>
-  <input type="text" name="strip_path_suffix" value="{{.Host.StripPathSuffix}}"
-    class="w-48 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-    placeholder="e.g. .html">
-  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Strip this static suffix from the request path before proxying (e.g. <code>.html</code> enables extensionless URLs).</p>
-</div>
-
-  <div>
-    <label class="block text-xs font-medium text-ink-700 mb-1">Upstream Host Header</label>
-    <input type="text" name="upstream_host_override" value="{{.Host.UpstreamHostOverride}}"
-      placeholder="backend.internal.example.com"
-      class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-    <p class="text-xs text-ink-500 mt-1">Override the Host header sent to the upstream (leave blank to forward the original)</p>
-  </div>
-
-    </div>
-  </details>
-  {{/* v2.11.7: end of Upstream TLS & advanced settings collapse. */}}
-
-  <details id="ph-options" class="pt-4 border-t border-ink-100">
-    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">Options &amp; Forwarded Headers</summary>
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-      {{/* v2.11.4: Enabled / Auto SSL / Force SSL hoisted to the always-visible top of the form. */}}
-      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2">
-        <input type="checkbox" name="ssl_verify_upstream" {{if .Host.SSLVerifyUpstream}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-        <span>Verify Upstream TLS Certificate<span class="block text-xs text-ink-500 mt-0.5 font-normal">When enabled, validates the upstream TLS certificate against the system trust store (only applies when Forward Scheme is HTTPS)</span></span>
-      </label>
-      <!-- v2.9.59: upstream_tls_ca_pem_file -->
-<div class="mb-4">
-  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS CA Bundle File</label>
-  <input type="text" name="upstream_tls_ca_pem_file" value="{{.Host.UpstreamTLSCAPEMFile}}"
-    class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-    placeholder="/etc/ssl/certs/internal-ca.pem">
-  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Path to a PEM CA bundle for verifying the upstream TLS certificate. Leave empty to use the system trust store. Only active when "Verify Upstream SSL" is enabled.</p>
-</div>
-      <!-- v2.9.160: upstream_tls_ca_pem_inline -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS CA Certificate (inline PEM)</label>
-        <textarea name="upstream_tls_ca_pem_inline" rows="4"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="-----BEGIN CERTIFICATE-----&#10;...">{{.Host.UpstreamTLSCAPEMInline}}</textarea>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Inline PEM-encoded CA certificate for verifying the upstream TLS connection. Alternative to the file-path option above.</p>
-      </div>
-      <!-- v2.9.86: upstream_tls_client_cert_file -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream mTLS Client Certificate File</label>
-        <input type="text" name="upstream_tls_client_cert_file" value="{{.Host.UpstreamTLSClientCertFile}}"
-          class="w-full max-w-lg rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="/etc/ssl/client.crt">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Path to the PEM-encoded client certificate for mutual TLS (mTLS) to the upstream. Leave empty to disable client-certificate authentication.</p>
-      </div>
-      <!-- v2.9.87: upstream_tls_client_key_file -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream mTLS Client Key File</label>
-        <input type="text" name="upstream_tls_client_key_file" value="{{.Host.UpstreamTLSClientKeyFile}}"
-          class="w-full max-w-lg rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="/etc/ssl/client.key">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Path to the PEM-encoded private key matching the Client Certificate above.</p>
-      </div>
-      <!-- v2.9.95: upstream_tls_renegotiation -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Renegotiation</label>
-        <select name="upstream_tls_renegotiation"
-          class="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
-          <option value="" {{if eq .Host.UpstreamTLSRenegotiation ""}}selected{{end}}>Never (default)</option>
-          <option value="once" {{if eq .Host.UpstreamTLSRenegotiation "once"}}selected{{end}}>Once</option>
-          <option value="freely" {{if eq .Host.UpstreamTLSRenegotiation "freely"}}selected{{end}}>Freely</option>
-        </select>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">TLS renegotiation policy for upstream connections. <em>Once</em> allows the server to request renegotiation once per connection; <em>Freely</em> allows unlimited renegotiations (legacy compatibility only).</p>
-      </div>
-      <!-- v2.9.96: upstream_tls_curves -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Curves</label>
-        <input type="text" name="upstream_tls_curves" value="{{.Host.UpstreamTLSCurves}}"
-          class="w-full max-w-md rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="x25519, p256, p384">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated TLS curve preferences for upstream connections (e.g. <code>x25519, p256</code>). Leave empty to use Caddy's defaults.</p>
-      </div>
-      <!-- v2.9.97: upstream_tls_max_version -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Maximum Version</label>
-        <select name="upstream_tls_max_version"
-          class="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
-          <option value="" {{if eq .Host.UpstreamTLSMaxVersion ""}}selected{{end}}>No limit (default)</option>
-          <option value="1.2" {{if eq .Host.UpstreamTLSMaxVersion "1.2"}}selected{{end}}>TLS 1.2</option>
-          <option value="1.3" {{if eq .Host.UpstreamTLSMaxVersion "1.3"}}selected{{end}}>TLS 1.3</option>
-        </select>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Maximum TLS protocol version for upstream connections. Leave as default unless the upstream doesn't support TLS 1.3.</p>
-      </div>
-      <!-- v2.9.98: upstream_tls_pins -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Certificate Pins</label>
-        <textarea name="upstream_tls_pins" rows="3"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="One SHA-256 SPKI fingerprint per line">{{.Host.UpstreamTLSPins}}</textarea>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">One Base64-encoded SHA-256 SPKI fingerprint per line to pin the upstream certificate. Requests to upstreams whose certificate does not match will fail. Leave empty to disable pinning.</p>
-      </div>
-      <!-- v2.9.119: upstream_tls_cipher_suites -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">TLS Cipher Suites</label>
-        <input type="text" name="upstream_tls_cipher_suites" value="{{.Host.UpstreamTLSCipherSuites}}" placeholder="TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256" class="mt-1 block w-full rounded border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm text-sm">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated TLS cipher suite names for upstream connections. Leave empty to use defaults.</p>
-      </div>
-      <!-- v2.9.153: upstream_tls_alpn -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS ALPN Protocols</label>
-        <input type="text" name="upstream_tls_alpn" value="{{.Host.UpstreamTLSALPN}}"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="e.g. h2,http/1.1">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated list of ALPN protocols advertised to the upstream during TLS handshake. Leave empty for defaults.</p>
-      </div>
-      <!-- v2.9.166: upstream_tls_server_name_from_host -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="upstream_tls_server_name_from_host" {{if .Host.UpstreamTLSServerNameFromHost}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">TLS SNI from Host Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Uses the incoming Host header value as the upstream TLS server name (SNI), instead of a static name.</p>
-      </div>
-      <!-- v2.9.125: upstream_tls_early_data -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="upstream_tls_early_data" value="on" {{if .Host.UpstreamTLSEarlyData}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">TLS Early Data (0-RTT)</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Enable TLS 1.3 early data (0-RTT) for upstream connections. May reduce latency for repeated connections.</p>
-      </div>
-      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="http2_support" {{if .Host.HTTP2Support}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> HTTP/2</label>
-      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="websocket_support" {{if .Host.WebsocketSupport}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> WebSocket support</label>
-      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2"><input type="checkbox" name="forward_client_ip" {{if .Host.ForwardClientIP}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> <span>Forward client IP (X-Real-IP)<span class="block text-xs text-ink-500 mt-0.5 font-normal">Adds an X-Real-IP header with the actual client IP address to every upstream request</span></span></label>
-      <!-- v2.9.82: add_forwarded_header -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_forwarded_header" {{if .Host.AddForwardedHeader}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add Forwarded Header (RFC 7239)</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Inject the standard <code>Forwarded: for=…;proto=…;host=…</code> header on upstream requests (RFC 7239 complement to <code>X-Forwarded-For</code>).</p>
-      </div>
-      <!-- v2.9.110: real_ip_from_header -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Real IP Source Header <span class="text-gray-400 font-normal">(optional)</span></label>
-        <input type="text" name="real_ip_from_header" value="{{.Host.RealIPFromHeader}}"
-          class="w-56 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="CF-Connecting-IP">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">When set, copy the value of this request header into <code>X-Real-IP</code> before forwarding. Useful behind Cloudflare (<code>CF-Connecting-IP</code>) or other CDNs that supply the real client IP in a custom header.</p>
-      </div>
-      <!-- v2.9.112: add_x_forwarded_port -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_forwarded_port" {{if .Host.AddXForwardedPort}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Forwarded-Port Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Forwarded-Port</code> with the port of the incoming request (e.g. <code>443</code>). Helps backends reconstruct the original URL for redirects and absolute links.</p>
-      </div>
-      <!-- v2.9.117: add_x_forwarded_host -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_forwarded_host" {{if .Host.AddXForwardedHost}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Forwarded-Host</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Forwarded-Host</code> request header with the original Host value before proxying.</p>
-      </div>
-      <!-- v2.9.143: add_x_forwarded_scheme -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_forwarded_scheme" {{if .Host.AddXForwardedScheme}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Forwarded-Scheme Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Forwarded-Scheme</code> request header (<code>http</code> or <code>https</code>) showing the client-facing scheme.</p>
-      </div>
-      <!-- v2.9.199: add_x_forwarded_uri -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_forwarded_uri" {{if .Host.AddXForwardedURI}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-URI Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Forwarded-URI</code> request header containing the full request URI (path + query) when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.149: add_x_real_ip -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_real_ip" {{if .Host.AddXRealIP}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Real-IP Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Real-IP</code> request header with the direct client IP address (useful for backends that read this header instead of <code>X-Forwarded-For</code>).</p>
-      </div>
-      <!-- v2.9.150: strip_incoming_x_forwarded_for -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="strip_incoming_x_forwarded_for" {{if .Host.StripIncomingXForwardedFor}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Strip Incoming X-Forwarded-For</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Delete the <code>X-Forwarded-For</code> header from incoming requests before proxying. Prevents clients from spoofing their IP when the proxy is directly internet-facing.</p>
-      </div>
-      <!-- v2.9.181: add_x_request_path -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_path" {{if .Host.AddXRequestPath}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Path Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Path</code> request header containing the request URI path when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.188: add_x_request_method -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_method" {{if .Host.AddXRequestMethod}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Method Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Method</code> request header containing the HTTP method (GET/POST/etc.) when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.251: add_x_forwarded_method -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_forwarded_method" {{if .Host.AddXForwardedMethod}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-Method Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Forwarded-Method</code> containing the HTTP method (GET / POST / etc.) to upstream calls.</p>
-      </div>
-      <!-- v2.9.252: add_x_request_original_host -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_original_host" {{if .Host.AddXRequestOriginalHost}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Original-Host Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Preserves the original Host header (before any rewrites) and forwards it to the upstream.</p>
-      </div>
-      <!-- v2.9.253: add_x_request_dnt -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_dnt" {{if .Host.AddXRequestDNT}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-DNT Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Forwards the client's DNT (Do Not Track) header to the upstream as <code>X-Request-DNT</code>.</p>
-      </div>
-      <!-- v2.9.255: add_x_request_secure -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_secure" {{if .Host.AddXRequestSecure}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Secure Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-Secure</code> header indicating whether TLS was used (the TLS version when present, empty for plain HTTP).</p>
-      </div>
-      <!-- v2.9.256: add_x_request_query_count -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_query_count" {{if .Host.AddXRequestQueryCount}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Query-Count Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Query-Count</code> header with the raw query string for debugging (multiple proxies can stack their own copies).</p>
-      </div>
-      <!-- v2.9.189: add_x_request_query -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_query" {{if .Host.AddXRequestQuery}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Query Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Query</code> request header containing the original query string when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.201: add_x_request_hostname -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_hostname" {{if .Host.AddXRequestHostname}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Hostname Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Hostname</code> request header containing the request hostname when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.191: add_x_real_scheme -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_real_scheme" {{if .Host.AddXRealScheme}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Real-Scheme Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Real-Scheme</code> request header containing the request scheme (<code>http</code> or <code>https</code>) when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.197: add_x_request_referer -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_referer" {{if .Host.AddXRequestReferer}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Referer Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Referer</code> request header containing the original Referer header value when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.198: add_x_request_origin -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_origin" {{if .Host.AddXRequestOrigin}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Origin Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Origin</code> request header containing the original Origin header value when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.212: add_x_request_remote_port -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_remote_port" {{if .Host.AddXRequestRemotePort}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Remote-Port Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Remote-Port</code> request header containing the client's TCP port when forwarding to the upstream.</p>
-      </div>
-      <!-- v2.9.213: add_x_request_protocol -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_protocol" {{if .Host.AddXRequestProtocol}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Protocol Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Protocol</code> request header containing the HTTP version (HTTP/1.1, HTTP/2) used by the client.</p>
-      </div>
-      <!-- v2.9.218: add_x_trace_id -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_trace_id" {{if .Host.AddXTraceID}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Trace-ID Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Trace-ID</code> containing Caddy's per-request UUID to upstream requests for distributed tracing.</p>
-      </div>
-      <!-- v2.9.220: add_x_session_id -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_session_id" {{if .Host.AddXSessionID}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Session-ID Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Session-ID</code> containing Caddy's per-request UUID to upstream requests.</p>
-      </div>
-      <!-- v2.9.222: add_x_request_local_addr -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_local_addr" {{if .Host.AddXRequestLocalAddr}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Local-Addr Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Local-Addr</code> containing Caddy's listening interface IP to upstream requests.</p>
-      </div>
-      <!-- v2.9.223: add_x_request_local_port -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_local_port" {{if .Host.AddXRequestLocalPort}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Local-Port Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Local-Port</code> containing Caddy's listening port to upstream requests.</p>
-      </div>
-      <!-- v2.9.224: add_x_request_path_info -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_path_info" {{if .Host.AddXRequestPathInfo}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-PathInfo Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-PathInfo</code> containing the request URI path (CGI-style PATH_INFO) to upstream requests.</p>
-      </div>
-      <!-- v2.9.242: add_x_real_ssl_protocol -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_real_ssl_protocol" {{if .Host.AddXRealSSLProtocol}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Real-SSL-Protocol Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Real-SSL-Protocol</code> containing the TLS version (TLS 1.2 / TLS 1.3) to upstream requests.</p>
-      </div>
-      <!-- v2.9.243: add_x_real_ssl_cipher -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_real_ssl_cipher" {{if .Host.AddXRealSSLCipher}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Real-SSL-Cipher Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Real-SSL-Cipher</code> containing the negotiated cipher suite to upstream requests.</p>
-      </div>
-      <!-- v2.9.246: add_x_request_user_agent -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_user_agent" {{if .Host.AddXRequestUserAgent}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-User-Agent Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-User-Agent</code> containing the original User-Agent value to upstream calls (debug / multi-proxy chain visibility).</p>
-      </div>
-      <!-- v2.9.248: add_x_request_byte_count -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_byte_count" {{if .Host.AddXRequestByteCount}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Byte-Count Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-Byte-Count</code> containing the request Content-Length to upstream calls.</p>
-      </div>
-      <!-- v2.9.249: add_x_request_received_at -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_request_received_at" {{if .Host.AddXRequestReceivedAt}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Received-At Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-Received-At</code> containing Caddy's timestamp when the request was received (for request tracing / latency attribution).</p>
-      </div>
-      <!-- v2.9.190: add_x_forwarded_user -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-User Header</label>
-        <input type="text" name="add_x_forwarded_user" value="{{.Host.AddXForwardedUser}}"
-          placeholder="e.g. service-account-name"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-User</code> request header value forwarded to the upstream (useful for impersonation in trusted networks).</p>
-      </div>
-      <!-- v2.9.234: add_x_authenticated_user -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Authenticated-User Header</label>
-        <input type="text" name="add_x_authenticated_user" value="{{.Host.AddXAuthenticatedUser}}"
-          placeholder="e.g. service-account@example.com"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Authenticated-User</code> request header forwarded to the upstream.</p>
-      </div>
-      <!-- v2.9.237: add_x_remote_user -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Remote-User Header</label>
-        <input type="text" name="add_x_remote_user" value="{{.Host.AddXRemoteUser}}"
-          placeholder="e.g. alice"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Remote-User</code> request header (Nginx/Apache CGI convention).</p>
-      </div>
-      <!-- v2.9.238: add_x_forwarded_path -->
-      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" name="add_x_forwarded_path" {{if .Host.AddXForwardedPath}}checked{{end}}
-            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-Path Header</span>
-        </label>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Forwarded-Path</code> containing the request URI path to upstream calls.</p>
-      </div>
-      <!-- v2.9.239: add_x_geo_country_code -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Geo-Country Header</label>
-        <input type="text" name="add_x_geo_country_code" value="{{.Host.AddXGeoCountryCode}}"
-          placeholder="e.g. US"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Geo-Country</code> request header (CDN convention; useful for geo-restricted upstream behavior testing).</p>
-      </div>
-      <!-- v2.9.254: add_x_geo_region -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Geo-Region Header</label>
-        <input type="text" name="add_x_geo_region" value="{{.Host.AddXGeoRegion}}"
-          placeholder="e.g. US-CA, GB-LND"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Geo-Region</code> request header (ISO 3166-2 region code).</p>
-      </div>
-      <!-- v2.9.193: add_x_forwarded_groups -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-Groups Header</label>
-        <input type="text" name="add_x_forwarded_groups" value="{{.Host.AddXForwardedGroups}}"
-          placeholder="e.g. admins,operators"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-Groups</code> request header value forwarded to the upstream.</p>
-      </div>
-      <!-- v2.9.194: add_x_forwarded_email -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-Email Header</label>
-        <input type="text" name="add_x_forwarded_email" value="{{.Host.AddXForwardedEmail}}"
-          placeholder="e.g. user@example.com"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-Email</code> request header value forwarded to the upstream.</p>
-      </div>
-      <!-- v2.9.195: add_x_forwarded_roles -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-Roles Header</label>
-        <input type="text" name="add_x_forwarded_roles" value="{{.Host.AddXForwardedRoles}}"
-          placeholder="e.g. admin,editor"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-Roles</code> request header value forwarded to the upstream.</p>
-      </div>
-      <!-- v2.9.217: add_x_environment -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Environment Header</label>
-        <input type="text" name="add_x_environment" value="{{.Host.AddXEnvironment}}"
-          placeholder="e.g. production, staging, dev"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Environment</code> request header value forwarded to the upstream.</p>
-      </div>
-      <!-- v2.9.159: add_origin_header -->
-      <div class="mb-4 sm:col-span-2">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Origin Header</label>
-        <input type="text" name="add_origin_header" value="{{.Host.AddOriginHeader}}"
-          placeholder="https://example.com"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Set the <code>Origin</code> request header to this value before forwarding. Useful for upstream APIs that require a specific origin.</p>
-      </div>
-      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="block_common_exploits" {{if .Host.BlockCommonExploits}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Block common exploits</label>
-      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2">
-        <input type="checkbox" name="deny_dotfiles" {{if .Host.DenyDotfiles}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-        <span>Block Dotfiles (403)<span class="block text-xs text-ink-500 mt-0.5 font-normal">Block requests to hidden files and directories (paths starting with a dot, e.g. .env, .git)</span></span>
-      </label>
-    </div>
-  </details>
-
-  {{/* v2.11.7: Managed DNS + TLS Certificate were moved to the top of the
-       form (right after the Enabled / Auto SSL / Force SSL essentials row).
-       They used to live here, between Options and the path-based upstream
-       overrides. */}}
-
-  {{/* Optional / power-user sections below — collapsed by default so the
-       core form stays compact. Each <details> auto-opens on edit when the
-       underlying field has a saved value, so users editing an existing
-       host never have to hunt for their own config. */}}
-
-  {{/* v2.9.267: path-based upstream overrides — each rule sends matching
-       paths to a different upstream than the host's main forward_*. Common
-       use: Nextcloud + notify_push on /push/* + AppAPI on /exapps/* on a
-       single hostname. Strip Prefix mirrors Caddyfile's `handle_path`. */}}
-  <details id="ph-path-upstream" class="pt-4 border-t border-ink-100"{{if .Host.AdditionalUpstreamRules}} open{{end}}>
-    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-      Path-based upstream overrides <span class="font-normal normal-case">(optional, route specific paths to different upstreams)</span>
-    </summary>
-    <div class="mt-3 space-y-3">
-      <p class="text-xs text-ink-500">Each rule routes matching paths to a different upstream <strong>before</strong> the host's main upstream above. Use Caddy path patterns: <code class="font-mono bg-ink-100 px-1 rounded">/push/*</code> matches a prefix, <code class="font-mono bg-ink-100 px-1 rounded">/exact</code> matches just that. <strong>Strip Prefix</strong> = Caddyfile's <code class="font-mono bg-ink-100 px-1 rounded">handle_path</code> (drops the matched prefix from the upstream URI). <strong>X-Real-IP</strong> = injects X-Real-IP independently of the host-wide setting.</p>
-      <div id="aur-rules-table" class="space-y-2"></div>
-      <button type="button" id="aur-add-rule" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Add upstream rule
-      </button>
-      <input type="hidden" name="additional_upstream_rules" id="aur-rules-json" value="{{.Host.AdditionalUpstreamRules}}" />
-    </div>
-  </details>
-  <script>
-  (function(){
-    var data = [];
-    try { var raw = document.getElementById('aur-rules-json').value; if (raw) data = JSON.parse(raw); } catch(e){}
-    if (!Array.isArray(data)) data = [];
-    var table  = document.getElementById('aur-rules-table');
-    var hidden = document.getElementById('aur-rules-json');
-    var addBtn = document.getElementById('aur-add-rule');
-    if (!table || !hidden || !addBtn) return;
-    // v2.12.12: build rows via DOM API instead of innerHTML string
-    // concatenation. Closes a CodeQL js/xss-through-dom finding — values
-    // set via .value / .checked are written as DOM properties, never
-    // parsed as HTML, so user-controlled input can't escape into markup.
-    function rowNode(rule, idx) {
-      var path   = (rule && rule.path) || '';
-      var scheme = (rule && rule.scheme) || 'http';
-      var host   = (rule && rule.host) || '';
-      var port   = (rule && rule.port) || 80;
-      var strip  = !!(rule && rule.strip_prefix);
-      var realIP = !!(rule && rule.add_x_real_ip);
-
-      var wrap = document.createElement('div');
-      wrap.className = 'space-y-1.5 border border-ink-200 rounded-lg p-2.5';
-      wrap.setAttribute('data-idx', idx);
-
-      var grid = document.createElement('div');
-      grid.className = 'grid grid-cols-12 gap-2 items-center';
-      wrap.appendChild(grid);
-
-      function inputEl(type, field, value, placeholder, span) {
-        var el = document.createElement('input');
-        el.type = type;
-        el.setAttribute('data-field', field);
-        el.value = value;
-        if (placeholder) el.placeholder = placeholder;
-        el.className = 'col-span-' + span + ' rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
-        return el;
-      }
-      grid.appendChild(inputEl('text', 'path', path, '/push/*', 3));
-
-      var sel = document.createElement('select');
-      sel.setAttribute('data-field', 'scheme');
-      sel.className = 'col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
-      ['http', 'https'].forEach(function(s) {
-        var opt = document.createElement('option');
-        opt.value = s;
-        opt.textContent = s;
-        if (scheme === s) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      grid.appendChild(sel);
-
-      grid.appendChild(inputEl('text', 'host', host, 'upstream-host', 4));
-
-      var portIn = inputEl('number', 'port', port, '', 2);
-      portIn.min = '1';
-      portIn.max = '65535';
-      grid.appendChild(portIn);
-
-      var rm = document.createElement('button');
-      rm.type = 'button';
-      rm.setAttribute('data-action', 'remove');
-      rm.className = 'col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center';
-      rm.title = 'Remove rule';
-      rm.textContent = '×';
-      grid.appendChild(rm);
-
-      var flags = document.createElement('div');
-      flags.className = 'flex items-center gap-4 pl-1';
-      wrap.appendChild(flags);
-
-      function flagLabel(field, checked, text) {
-        var lbl = document.createElement('label');
-        lbl.className = 'text-xs text-ink-600 inline-flex items-center gap-1.5';
-        var cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.setAttribute('data-field', field);
-        cb.checked = !!checked;
-        cb.className = 'rounded border-ink-300 text-brand-600 focus:ring-brand-500';
-        lbl.appendChild(cb);
-        lbl.appendChild(document.createTextNode(' ' + text));
-        return lbl;
-      }
-      flags.appendChild(flagLabel('strip_prefix', strip, 'Strip prefix (handle_path)'));
-      flags.appendChild(flagLabel('add_x_real_ip', realIP, 'Add X-Real-IP'));
-
-      return wrap;
-    }
-    function render() {
-      if (!data.length) {
-        var empty = document.createElement('p');
-        empty.className = 'text-xs text-ink-400 italic';
-        empty.textContent = 'No rules — every request goes to the main upstream above.';
-        table.replaceChildren(empty);
-        return;
-      }
-      table.replaceChildren.apply(table, data.map(rowNode));
-    }
-    function syncHidden() {
-      var clean = data.filter(function(r){ return r && (r.path||'').trim() !== '' && (r.host||'').trim() !== ''; });
-      hidden.value = clean.length ? JSON.stringify(clean) : '';
-    }
-    function readRows() {
-      data = Array.prototype.map.call(table.querySelectorAll('[data-idx]'), function(row) {
-        return {
-          path:          row.querySelector('[data-field="path"]').value.trim(),
-          scheme:        row.querySelector('[data-field="scheme"]').value,
-          host:          row.querySelector('[data-field="host"]').value.trim(),
-          port:          parseInt(row.querySelector('[data-field="port"]').value, 10) || 80,
-          strip_prefix:  row.querySelector('[data-field="strip_prefix"]').checked,
-          add_x_real_ip: row.querySelector('[data-field="add_x_real_ip"]').checked,
-        };
-      });
-    }
-    addBtn.addEventListener('click', function(){
-      readRows();
-      data.push({path:'', scheme:'http', host:'', port:80, strip_prefix:false, add_x_real_ip:false});
-      render();
-      syncHidden();
-    });
-    table.addEventListener('click', function(e){
-      if (e.target.matches('[data-action="remove"]')) {
-        var row = e.target.closest('[data-idx]');
-        readRows();
-        data.splice(parseInt(row.dataset.idx,10), 1);
-        render();
-        syncHidden();
-      }
-    });
-    table.addEventListener('input', function(){ readRows(); syncHidden(); });
-    table.addEventListener('change', function(){ readRows(); syncHidden(); });
-    render();
-    syncHidden();
-  })();
-  </script>
-
-  {{/* v2.9.266: path-based redirect rules on proxy hosts. Mirrors the
-       redirect-host feature from v2.9.229 but on the proxy-host form.
-       When set, each rule's matcher fires BEFORE the reverse_proxy.
-       Common case: redirect / → /webmail (302) while still proxying
-       every other path normally. Auto-opens when rules are configured. */}}
-  <details id="ph-path-redirect" class="pt-4 border-t border-ink-100"{{if .Host.ProxyRedirectRules}} open{{end}}>
-    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-      Path redirects <span class="font-normal normal-case">(optional, fires before reverse_proxy)</span>
-    </summary>
-    <div class="mt-3 space-y-3">
-      <p class="text-xs text-ink-500">Each rule overrides the reverse_proxy for paths that match. Use Caddy path patterns: <code class="font-mono bg-ink-100 px-1 rounded">/old-blog/*</code> matches a prefix, <code class="font-mono bg-ink-100 px-1 rounded">/</code> matches just the root. In the destination, <code class="font-mono bg-ink-100 px-1 rounded">{uri}</code> is the original path+query. Leave Destination empty to return the status code without redirecting (e.g. <strong>410 Gone</strong> for retired URLs). Equivalent to <code class="font-mono bg-ink-100 px-1 rounded">@root path / + redir @root /webmail 302</code> in a Caddyfile.</p>
-      <div id="prr-rules-table" class="space-y-2"></div>
-      <button type="button" id="prr-add-rule" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Add rule
-      </button>
-      <input type="hidden" name="proxy_redirect_rules" id="prr-rules-json" value="{{.Host.ProxyRedirectRules}}" />
-    </div>
-  </details>
-  <script>
-  (function(){
-    var data = [];
-    try { var raw = document.getElementById('prr-rules-json').value; if (raw) data = JSON.parse(raw); } catch(e){}
-    if (!Array.isArray(data)) data = [];
-    var table  = document.getElementById('prr-rules-table');
-    var hidden = document.getElementById('prr-rules-json');
-    var addBtn = document.getElementById('prr-add-rule');
-    if (!table || !hidden || !addBtn) return;
-    function rowHTML(rule, idx) {
-      var path = (rule && rule.path) || '';
-      var code = (rule && rule.code) || 302;
-      var dest = (rule && rule.destination) || '';
-      return '<div class="grid grid-cols-12 gap-2 items-start" data-idx="'+idx+'">' +
-        '<input type="text" data-field="path" value="'+escapeAttr(path)+'" placeholder="/" class="col-span-4 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
-        '<select data-field="code" class="col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">' +
-          opt(code, 301, '301') + opt(code, 302, '302') + opt(code, 307, '307') + opt(code, 308, '308') + opt(code, 410, '410 Gone') + opt(code, 451, '451') +
-        '</select>' +
-        '<input type="text" data-field="destination" value="'+escapeAttr(dest)+'" placeholder="/webmail" class="col-span-5 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
-        '<button type="button" data-action="remove" class="col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center" title="Remove rule">×</button>' +
-      '</div>';
-    }
-    function opt(cur, val, label) { return '<option value="'+val+'"'+(cur==val?' selected':'')+'>'+label+'</option>'; }
-    function escapeAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-    function render() {
-      table.innerHTML = data.map(rowHTML).join('') || '<p class="text-xs text-ink-400 italic">No rules — every request will hit the reverse_proxy.</p>';
-    }
-    function syncHidden() {
-      var clean = data.filter(function(r){ return r && (r.path||'').trim() !== ''; });
-      hidden.value = clean.length ? JSON.stringify(clean) : '';
-    }
-    function readRows() {
-      data = Array.prototype.map.call(table.querySelectorAll('[data-idx]'), function(row) {
-        return {
-          path:        row.querySelector('[data-field="path"]').value.trim(),
-          code:        parseInt(row.querySelector('[data-field="code"]').value, 10) || 302,
-          destination: row.querySelector('[data-field="destination"]').value.trim(),
-        };
-      });
-    }
-    addBtn.addEventListener('click', function(){
-      readRows();
-      data.push({path:'', code:302, destination:''});
-      render();
-      syncHidden();
-    });
-    table.addEventListener('click', function(e){
-      if (e.target.matches('[data-action="remove"]')) {
-        var row = e.target.closest('[data-idx]');
-        readRows();
-        data.splice(parseInt(row.dataset.idx,10), 1);
-        render();
-        syncHidden();
-      }
-    });
-    table.addEventListener('input', function(){ readRows(); syncHidden(); });
-    table.addEventListener('change', function(){ readRows(); syncHidden(); });
-    render();
-    syncHidden();
-  })();
-  </script>
-
-  <details id="ph-advanced" class="pt-4 border-t border-ink-100"{{if .Host.AdvancedConfig}} open{{end}}>
-    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-      Advanced config <span class="font-normal normal-case">(optional Caddyfile directives)</span>
-    </summary>
-    <div class="mt-3">
-      <textarea name="advanced_config" rows="6" spellcheck="false" placeholder="header X-Frame-Options DENY&#10;encode gzip zstd&#10;request_body {&#10;    max_size 100MB&#10;}" class="w-full rounded-lg border border-ink-200 px-3 py-2 font-mono text-xs bg-ink-50 focus:bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.Host.AdvancedConfig}}</textarea>
-      <p class="text-xs text-ink-500 mt-1.5">
-        Extra Caddyfile directives that run before <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code> — headers, compression,
-        body limits, matchers, etc. Validated via Caddy's <code class="font-mono bg-ink-100 px-1 rounded">/adapt</code> on save.
-        Terminal handlers are rejected: <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code>, <code class="font-mono bg-ink-100 px-1 rounded">redir</code>,
-        <code class="font-mono bg-ink-100 px-1 rounded">respond</code>, <code class="font-mono bg-ink-100 px-1 rounded">file_server</code> can't be used here —
-        create an <a href="/raw-routes/new" class="text-brand-600 hover:text-brand-700">Advanced route</a> for those.
-      </p>
-    </div>
-  </details>
-
-  {{/* v2.9.0: Security — compression + response headers + TLS min version */}}
   <details id="ph-security" class="pt-4 border-t border-ink-100"{{if or .Host.CompressionEnabled .Host.SecurityHeadersEnabled .Host.TLSMinVersion .Host.MaintenanceMode .Host.MaxRequestBodyMB .Host.StickySessions .Host.CORSEnabled .Host.HealthCheckURI .Host.KeepaliveConns .Host.DisableAccessLog .Host.AddRequestID .Host.BlockedAgents .Host.ForceHTTP1 .Host.ProxyProtocol .Host.H2CEnabled .Host.FlushImmediate .Host.BufferResponses .Host.APIKeyHeader .Host.APIKeyValue .Host.BlockEmptyUserAgent .Host.MaxConnDurationSec .Host.DecompressResponse .Host.StripReqHeaders .Host.UpstreamPathPrefix .Host.CompressionLevel .Host.CompressionPreferGzip}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Security &amp; Performance <span class="font-normal normal-case">(compression, headers, TLS)</span>
@@ -2719,67 +1779,6 @@
   </details>
 
   {{/* v2.9.2: URL Rewrites */}}
-<details id="ph-rewrites" class="pt-4 border-t border-ink-100"{{if .Host.URLRewriteList}} open{{end}}>
-  <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-    URL Rewrites
-  </summary>
-  <div class="mt-3 space-y-3">
-    <p class="text-xs text-ink-400">Rewrite request paths before they reach the upstream. Rules are applied in order.</p>
-
-    <div id="rewrite-rows" class="space-y-2">
-      {{range .Host.URLRewriteList}}
-      <div class="rw-row flex items-center gap-2">
-        <select name="rewrite_type[]" class="text-sm px-2 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 w-36 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-          <option value="strip_prefix"{{if eq .Type "strip_prefix"}} selected{{end}}>Strip prefix</option>
-          <option value="add_prefix"{{if eq .Type "add_prefix"}} selected{{end}}>Add prefix</option>
-          <option value="regex"{{if eq .Type "regex"}} selected{{end}}>Regex</option>
-        </select>
-        <input type="text" name="rewrite_from[]" placeholder="From (e.g. /api or ^/old)" value="{{.From}}"
-          class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-        <input type="text" name="rewrite_to[]" placeholder="To (regex only)" value="{{.To}}"
-          class="w-40 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-        <button type="button" onclick="this.closest('.rw-row').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">&#x2715;</button>
-      </div>
-      {{end}}
-    </div>
-
-    <button type="button" id="rw-add" class="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700 font-medium mt-2 transition">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      Add rewrite rule
-    </button>
-
-    <p class="text-xs text-ink-400 mt-1">
-      <strong>strip_prefix</strong>: remove a leading path prefix (e.g. <code class="font-mono bg-ink-100 px-1 rounded">/api</code> strips <code class="font-mono bg-ink-100 px-1 rounded">/api</code> from every request path).<br>
-      <strong>add_prefix</strong>: prepend a path segment to every request.<br>
-      <strong>regex</strong>: regexp find &rarr; replace on the request path.
-    </p>
-  </div>
-</details>
-
-<script>
-(function() {
-  var rwAdd = document.getElementById('rw-add');
-  var rwContainer = document.getElementById('rewrite-rows');
-  if (!rwAdd || !rwContainer) return;
-  rwAdd.addEventListener('click', function() {
-    var div = document.createElement('div');
-    div.className = 'rw-row flex items-center gap-2';
-    div.innerHTML =
-      '<select name="rewrite_type[]" class="text-sm px-2 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 w-36 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">'
-      + '<option value="strip_prefix">Strip prefix</option>'
-      + '<option value="add_prefix">Add prefix</option>'
-      + '<option value="regex">Regex</option>'
-      + '</select>'
-      + '<input type="text" name="rewrite_from[]" placeholder="From (e.g. /api or ^/old)" class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">'
-      + '<input type="text" name="rewrite_to[]" placeholder="To (regex only)" class="w-40 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">'
-      + '<button type="button" onclick="this.closest(\'.rw-row\').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">✕</button>';
-    rwContainer.appendChild(div);
-    div.querySelector('input[name="rewrite_from[]"]').focus();
-  });
-})();
-</script>
-
-  {{/* v2.9.1: Custom Headers */}}
 <details id="ph-headers" class="pt-4 border-t border-ink-100"{{if or .Host.CustomReqHeaderMap .Host.CustomRespHeaderMap}} open{{end}}>
   <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
     Custom Headers <span class="font-normal normal-case">(request &amp; response)</span>
@@ -3240,6 +2239,748 @@
 </script>
 
   {{/* Feature C: IP Allowlist */}}
+  <details id="ph-options" class="pt-4 border-t border-ink-100">
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">Options &amp; Forwarded Headers</summary>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+      {{/* v2.11.4: Enabled / Auto SSL / Force SSL hoisted to the always-visible top of the form. */}}
+      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2">
+        <input type="checkbox" name="ssl_verify_upstream" {{if .Host.SSLVerifyUpstream}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span>Verify Upstream TLS Certificate<span class="block text-xs text-ink-500 mt-0.5 font-normal">When enabled, validates the upstream TLS certificate against the system trust store (only applies when Forward Scheme is HTTPS)</span></span>
+      </label>
+      <!-- v2.9.59: upstream_tls_ca_pem_file -->
+<div class="mb-4">
+  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS CA Bundle File</label>
+  <input type="text" name="upstream_tls_ca_pem_file" value="{{.Host.UpstreamTLSCAPEMFile}}"
+    class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+    placeholder="/etc/ssl/certs/internal-ca.pem">
+  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Path to a PEM CA bundle for verifying the upstream TLS certificate. Leave empty to use the system trust store. Only active when "Verify Upstream SSL" is enabled.</p>
+</div>
+      <!-- v2.9.160: upstream_tls_ca_pem_inline -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS CA Certificate (inline PEM)</label>
+        <textarea name="upstream_tls_ca_pem_inline" rows="4"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="-----BEGIN CERTIFICATE-----&#10;...">{{.Host.UpstreamTLSCAPEMInline}}</textarea>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Inline PEM-encoded CA certificate for verifying the upstream TLS connection. Alternative to the file-path option above.</p>
+      </div>
+      <!-- v2.9.86: upstream_tls_client_cert_file -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream mTLS Client Certificate File</label>
+        <input type="text" name="upstream_tls_client_cert_file" value="{{.Host.UpstreamTLSClientCertFile}}"
+          class="w-full max-w-lg rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="/etc/ssl/client.crt">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Path to the PEM-encoded client certificate for mutual TLS (mTLS) to the upstream. Leave empty to disable client-certificate authentication.</p>
+      </div>
+      <!-- v2.9.87: upstream_tls_client_key_file -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream mTLS Client Key File</label>
+        <input type="text" name="upstream_tls_client_key_file" value="{{.Host.UpstreamTLSClientKeyFile}}"
+          class="w-full max-w-lg rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="/etc/ssl/client.key">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Path to the PEM-encoded private key matching the Client Certificate above.</p>
+      </div>
+      <!-- v2.9.95: upstream_tls_renegotiation -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Renegotiation</label>
+        <select name="upstream_tls_renegotiation"
+          class="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
+          <option value="" {{if eq .Host.UpstreamTLSRenegotiation ""}}selected{{end}}>Never (default)</option>
+          <option value="once" {{if eq .Host.UpstreamTLSRenegotiation "once"}}selected{{end}}>Once</option>
+          <option value="freely" {{if eq .Host.UpstreamTLSRenegotiation "freely"}}selected{{end}}>Freely</option>
+        </select>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">TLS renegotiation policy for upstream connections. <em>Once</em> allows the server to request renegotiation once per connection; <em>Freely</em> allows unlimited renegotiations (legacy compatibility only).</p>
+      </div>
+      <!-- v2.9.96: upstream_tls_curves -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Curves</label>
+        <input type="text" name="upstream_tls_curves" value="{{.Host.UpstreamTLSCurves}}"
+          class="w-full max-w-md rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="x25519, p256, p384">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated TLS curve preferences for upstream connections (e.g. <code>x25519, p256</code>). Leave empty to use Caddy's defaults.</p>
+      </div>
+      <!-- v2.9.97: upstream_tls_max_version -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Maximum Version</label>
+        <select name="upstream_tls_max_version"
+          class="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
+          <option value="" {{if eq .Host.UpstreamTLSMaxVersion ""}}selected{{end}}>No limit (default)</option>
+          <option value="1.2" {{if eq .Host.UpstreamTLSMaxVersion "1.2"}}selected{{end}}>TLS 1.2</option>
+          <option value="1.3" {{if eq .Host.UpstreamTLSMaxVersion "1.3"}}selected{{end}}>TLS 1.3</option>
+        </select>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Maximum TLS protocol version for upstream connections. Leave as default unless the upstream doesn't support TLS 1.3.</p>
+      </div>
+      <!-- v2.9.98: upstream_tls_pins -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS Certificate Pins</label>
+        <textarea name="upstream_tls_pins" rows="3"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="One SHA-256 SPKI fingerprint per line">{{.Host.UpstreamTLSPins}}</textarea>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">One Base64-encoded SHA-256 SPKI fingerprint per line to pin the upstream certificate. Requests to upstreams whose certificate does not match will fail. Leave empty to disable pinning.</p>
+      </div>
+      <!-- v2.9.119: upstream_tls_cipher_suites -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">TLS Cipher Suites</label>
+        <input type="text" name="upstream_tls_cipher_suites" value="{{.Host.UpstreamTLSCipherSuites}}" placeholder="TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256" class="mt-1 block w-full rounded border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm text-sm">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated TLS cipher suite names for upstream connections. Leave empty to use defaults.</p>
+      </div>
+      <!-- v2.9.153: upstream_tls_alpn -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS ALPN Protocols</label>
+        <input type="text" name="upstream_tls_alpn" value="{{.Host.UpstreamTLSALPN}}"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="e.g. h2,http/1.1">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated list of ALPN protocols advertised to the upstream during TLS handshake. Leave empty for defaults.</p>
+      </div>
+      <!-- v2.9.166: upstream_tls_server_name_from_host -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="upstream_tls_server_name_from_host" {{if .Host.UpstreamTLSServerNameFromHost}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">TLS SNI from Host Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Uses the incoming Host header value as the upstream TLS server name (SNI), instead of a static name.</p>
+      </div>
+      <!-- v2.9.125: upstream_tls_early_data -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="upstream_tls_early_data" value="on" {{if .Host.UpstreamTLSEarlyData}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">TLS Early Data (0-RTT)</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Enable TLS 1.3 early data (0-RTT) for upstream connections. May reduce latency for repeated connections.</p>
+      </div>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="http2_support" {{if .Host.HTTP2Support}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> HTTP/2</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="websocket_support" {{if .Host.WebsocketSupport}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> WebSocket support</label>
+      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2"><input type="checkbox" name="forward_client_ip" {{if .Host.ForwardClientIP}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> <span>Forward client IP (X-Real-IP)<span class="block text-xs text-ink-500 mt-0.5 font-normal">Adds an X-Real-IP header with the actual client IP address to every upstream request</span></span></label>
+      <!-- v2.9.82: add_forwarded_header -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_forwarded_header" {{if .Host.AddForwardedHeader}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add Forwarded Header (RFC 7239)</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Inject the standard <code>Forwarded: for=…;proto=…;host=…</code> header on upstream requests (RFC 7239 complement to <code>X-Forwarded-For</code>).</p>
+      </div>
+      <!-- v2.9.110: real_ip_from_header -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Real IP Source Header <span class="text-gray-400 font-normal">(optional)</span></label>
+        <input type="text" name="real_ip_from_header" value="{{.Host.RealIPFromHeader}}"
+          class="w-56 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+          placeholder="CF-Connecting-IP">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">When set, copy the value of this request header into <code>X-Real-IP</code> before forwarding. Useful behind Cloudflare (<code>CF-Connecting-IP</code>) or other CDNs that supply the real client IP in a custom header.</p>
+      </div>
+      <!-- v2.9.112: add_x_forwarded_port -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_port" {{if .Host.AddXForwardedPort}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Forwarded-Port Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Forwarded-Port</code> with the port of the incoming request (e.g. <code>443</code>). Helps backends reconstruct the original URL for redirects and absolute links.</p>
+      </div>
+      <!-- v2.9.117: add_x_forwarded_host -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_host" {{if .Host.AddXForwardedHost}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Forwarded-Host</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Forwarded-Host</code> request header with the original Host value before proxying.</p>
+      </div>
+      <!-- v2.9.143: add_x_forwarded_scheme -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_scheme" {{if .Host.AddXForwardedScheme}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Forwarded-Scheme Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Forwarded-Scheme</code> request header (<code>http</code> or <code>https</code>) showing the client-facing scheme.</p>
+      </div>
+      <!-- v2.9.199: add_x_forwarded_uri -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_uri" {{if .Host.AddXForwardedURI}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-URI Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Forwarded-URI</code> request header containing the full request URI (path + query) when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.149: add_x_real_ip -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_real_ip" {{if .Host.AddXRealIP}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Add X-Real-IP Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Inject <code>X-Real-IP</code> request header with the direct client IP address (useful for backends that read this header instead of <code>X-Forwarded-For</code>).</p>
+      </div>
+      <!-- v2.9.150: strip_incoming_x_forwarded_for -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="strip_incoming_x_forwarded_for" {{if .Host.StripIncomingXForwardedFor}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Strip Incoming X-Forwarded-For</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Delete the <code>X-Forwarded-For</code> header from incoming requests before proxying. Prevents clients from spoofing their IP when the proxy is directly internet-facing.</p>
+      </div>
+      <!-- v2.9.181: add_x_request_path -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_path" {{if .Host.AddXRequestPath}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Path Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Path</code> request header containing the request URI path when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.188: add_x_request_method -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_method" {{if .Host.AddXRequestMethod}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Method Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Method</code> request header containing the HTTP method (GET/POST/etc.) when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.251: add_x_forwarded_method -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_method" {{if .Host.AddXForwardedMethod}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-Method Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Forwarded-Method</code> containing the HTTP method (GET / POST / etc.) to upstream calls.</p>
+      </div>
+      <!-- v2.9.252: add_x_request_original_host -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_original_host" {{if .Host.AddXRequestOriginalHost}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Original-Host Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Preserves the original Host header (before any rewrites) and forwards it to the upstream.</p>
+      </div>
+      <!-- v2.9.253: add_x_request_dnt -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_dnt" {{if .Host.AddXRequestDNT}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-DNT Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Forwards the client's DNT (Do Not Track) header to the upstream as <code>X-Request-DNT</code>.</p>
+      </div>
+      <!-- v2.9.255: add_x_request_secure -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_secure" {{if .Host.AddXRequestSecure}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Secure Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-Secure</code> header indicating whether TLS was used (the TLS version when present, empty for plain HTTP).</p>
+      </div>
+      <!-- v2.9.256: add_x_request_query_count -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_query_count" {{if .Host.AddXRequestQueryCount}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Query-Count Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Query-Count</code> header with the raw query string for debugging (multiple proxies can stack their own copies).</p>
+      </div>
+      <!-- v2.9.189: add_x_request_query -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_query" {{if .Host.AddXRequestQuery}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Query Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Query</code> request header containing the original query string when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.201: add_x_request_hostname -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_hostname" {{if .Host.AddXRequestHostname}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Hostname Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Hostname</code> request header containing the request hostname when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.191: add_x_real_scheme -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_real_scheme" {{if .Host.AddXRealScheme}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Real-Scheme Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Real-Scheme</code> request header containing the request scheme (<code>http</code> or <code>https</code>) when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.197: add_x_request_referer -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_referer" {{if .Host.AddXRequestReferer}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Referer Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Referer</code> request header containing the original Referer header value when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.198: add_x_request_origin -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_origin" {{if .Host.AddXRequestOrigin}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Origin Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Origin</code> request header containing the original Origin header value when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.212: add_x_request_remote_port -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_remote_port" {{if .Host.AddXRequestRemotePort}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Remote-Port Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Remote-Port</code> request header containing the client's TCP port when forwarding to the upstream.</p>
+      </div>
+      <!-- v2.9.213: add_x_request_protocol -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_protocol" {{if .Host.AddXRequestProtocol}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Protocol Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds an <code>X-Request-Protocol</code> request header containing the HTTP version (HTTP/1.1, HTTP/2) used by the client.</p>
+      </div>
+      <!-- v2.9.218: add_x_trace_id -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_trace_id" {{if .Host.AddXTraceID}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Trace-ID Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Trace-ID</code> containing Caddy's per-request UUID to upstream requests for distributed tracing.</p>
+      </div>
+      <!-- v2.9.220: add_x_session_id -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_session_id" {{if .Host.AddXSessionID}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Session-ID Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Session-ID</code> containing Caddy's per-request UUID to upstream requests.</p>
+      </div>
+      <!-- v2.9.222: add_x_request_local_addr -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_local_addr" {{if .Host.AddXRequestLocalAddr}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Local-Addr Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Local-Addr</code> containing Caddy's listening interface IP to upstream requests.</p>
+      </div>
+      <!-- v2.9.223: add_x_request_local_port -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_local_port" {{if .Host.AddXRequestLocalPort}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Local-Port Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Local-Port</code> containing Caddy's listening port to upstream requests.</p>
+      </div>
+      <!-- v2.9.224: add_x_request_path_info -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_path_info" {{if .Host.AddXRequestPathInfo}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-PathInfo Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-PathInfo</code> containing the request URI path (CGI-style PATH_INFO) to upstream requests.</p>
+      </div>
+      <!-- v2.9.242: add_x_real_ssl_protocol -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_real_ssl_protocol" {{if .Host.AddXRealSSLProtocol}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Real-SSL-Protocol Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Real-SSL-Protocol</code> containing the TLS version (TLS 1.2 / TLS 1.3) to upstream requests.</p>
+      </div>
+      <!-- v2.9.243: add_x_real_ssl_cipher -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_real_ssl_cipher" {{if .Host.AddXRealSSLCipher}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Real-SSL-Cipher Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Real-SSL-Cipher</code> containing the negotiated cipher suite to upstream requests.</p>
+      </div>
+      <!-- v2.9.246: add_x_request_user_agent -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_user_agent" {{if .Host.AddXRequestUserAgent}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-User-Agent Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-User-Agent</code> containing the original User-Agent value to upstream calls (debug / multi-proxy chain visibility).</p>
+      </div>
+      <!-- v2.9.248: add_x_request_byte_count -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_byte_count" {{if .Host.AddXRequestByteCount}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Byte-Count Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-Byte-Count</code> containing the request Content-Length to upstream calls.</p>
+      </div>
+      <!-- v2.9.249: add_x_request_received_at -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_request_received_at" {{if .Host.AddXRequestReceivedAt}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Request-Received-At Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Request-Received-At</code> containing Caddy's timestamp when the request was received (for request tracing / latency attribution).</p>
+      </div>
+      <!-- v2.9.190: add_x_forwarded_user -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-User Header</label>
+        <input type="text" name="add_x_forwarded_user" value="{{.Host.AddXForwardedUser}}"
+          placeholder="e.g. service-account-name"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-User</code> request header value forwarded to the upstream (useful for impersonation in trusted networks).</p>
+      </div>
+      <!-- v2.9.234: add_x_authenticated_user -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Authenticated-User Header</label>
+        <input type="text" name="add_x_authenticated_user" value="{{.Host.AddXAuthenticatedUser}}"
+          placeholder="e.g. service-account@example.com"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Authenticated-User</code> request header forwarded to the upstream.</p>
+      </div>
+      <!-- v2.9.237: add_x_remote_user -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Remote-User Header</label>
+        <input type="text" name="add_x_remote_user" value="{{.Host.AddXRemoteUser}}"
+          placeholder="e.g. alice"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Remote-User</code> request header (Nginx/Apache CGI convention).</p>
+      </div>
+      <!-- v2.9.238: add_x_forwarded_path -->
+      <div class="mb-4 flex items-center gap-3 sm:col-span-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="add_x_forwarded_path" {{if .Host.AddXForwardedPath}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Forward X-Forwarded-Path Header</span>
+        </label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Adds <code>X-Forwarded-Path</code> containing the request URI path to upstream calls.</p>
+      </div>
+      <!-- v2.9.239: add_x_geo_country_code -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Geo-Country Header</label>
+        <input type="text" name="add_x_geo_country_code" value="{{.Host.AddXGeoCountryCode}}"
+          placeholder="e.g. US"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Geo-Country</code> request header (CDN convention; useful for geo-restricted upstream behavior testing).</p>
+      </div>
+      <!-- v2.9.254: add_x_geo_region -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Geo-Region Header</label>
+        <input type="text" name="add_x_geo_region" value="{{.Host.AddXGeoRegion}}"
+          placeholder="e.g. US-CA, GB-LND"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Geo-Region</code> request header (ISO 3166-2 region code).</p>
+      </div>
+      <!-- v2.9.193: add_x_forwarded_groups -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-Groups Header</label>
+        <input type="text" name="add_x_forwarded_groups" value="{{.Host.AddXForwardedGroups}}"
+          placeholder="e.g. admins,operators"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-Groups</code> request header value forwarded to the upstream.</p>
+      </div>
+      <!-- v2.9.194: add_x_forwarded_email -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-Email Header</label>
+        <input type="text" name="add_x_forwarded_email" value="{{.Host.AddXForwardedEmail}}"
+          placeholder="e.g. user@example.com"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-Email</code> request header value forwarded to the upstream.</p>
+      </div>
+      <!-- v2.9.195: add_x_forwarded_roles -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Forwarded-Roles Header</label>
+        <input type="text" name="add_x_forwarded_roles" value="{{.Host.AddXForwardedRoles}}"
+          placeholder="e.g. admin,editor"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Forwarded-Roles</code> request header value forwarded to the upstream.</p>
+      </div>
+      <!-- v2.9.217: add_x_environment -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">X-Environment Header</label>
+        <input type="text" name="add_x_environment" value="{{.Host.AddXEnvironment}}"
+          placeholder="e.g. production, staging, dev"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a static <code>X-Environment</code> request header value forwarded to the upstream.</p>
+      </div>
+      <!-- v2.9.159: add_origin_header -->
+      <div class="mb-4 sm:col-span-2">
+        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Origin Header</label>
+        <input type="text" name="add_origin_header" value="{{.Host.AddOriginHeader}}"
+          placeholder="https://example.com"
+          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Set the <code>Origin</code> request header to this value before forwarding. Useful for upstream APIs that require a specific origin.</p>
+      </div>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="block_common_exploits" {{if .Host.BlockCommonExploits}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Block common exploits</label>
+      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2">
+        <input type="checkbox" name="deny_dotfiles" {{if .Host.DenyDotfiles}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span>Block Dotfiles (403)<span class="block text-xs text-ink-500 mt-0.5 font-normal">Block requests to hidden files and directories (paths starting with a dot, e.g. .env, .git)</span></span>
+      </label>
+    </div>
+  </details>
+
+  {{/* v2.11.7: Managed DNS + TLS Certificate were moved to the top of the
+       form (right after the Enabled / Auto SSL / Force SSL essentials row).
+       They used to live here, between Options and the path-based upstream
+       overrides. */}}
+
+  {{/* Optional / power-user sections below — collapsed by default so the
+       core form stays compact. Each <details> auto-opens on edit when the
+       underlying field has a saved value, so users editing an existing
+       host never have to hunt for their own config. */}}
+
+  {{/* v2.9.267: path-based upstream overrides — each rule sends matching
+       paths to a different upstream than the host's main forward_*. Common
+       use: Nextcloud + notify_push on /push/* + AppAPI on /exapps/* on a
+       single hostname. Strip Prefix mirrors Caddyfile's `handle_path`. */}}
+  <details id="ph-path-upstream" class="pt-4 border-t border-ink-100"{{if .Host.AdditionalUpstreamRules}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Path-based upstream overrides <span class="font-normal normal-case">(optional, route specific paths to different upstreams)</span>
+    </summary>
+    <div class="mt-3 space-y-3">
+      <p class="text-xs text-ink-500">Each rule routes matching paths to a different upstream <strong>before</strong> the host's main upstream above. Use Caddy path patterns: <code class="font-mono bg-ink-100 px-1 rounded">/push/*</code> matches a prefix, <code class="font-mono bg-ink-100 px-1 rounded">/exact</code> matches just that. <strong>Strip Prefix</strong> = Caddyfile's <code class="font-mono bg-ink-100 px-1 rounded">handle_path</code> (drops the matched prefix from the upstream URI). <strong>X-Real-IP</strong> = injects X-Real-IP independently of the host-wide setting.</p>
+      <div id="aur-rules-table" class="space-y-2"></div>
+      <button type="button" id="aur-add-rule" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add upstream rule
+      </button>
+      <input type="hidden" name="additional_upstream_rules" id="aur-rules-json" value="{{.Host.AdditionalUpstreamRules}}" />
+    </div>
+  </details>
+  <script>
+  (function(){
+    var data = [];
+    try { var raw = document.getElementById('aur-rules-json').value; if (raw) data = JSON.parse(raw); } catch(e){}
+    if (!Array.isArray(data)) data = [];
+    var table  = document.getElementById('aur-rules-table');
+    var hidden = document.getElementById('aur-rules-json');
+    var addBtn = document.getElementById('aur-add-rule');
+    if (!table || !hidden || !addBtn) return;
+    // v2.12.12: build rows via DOM API instead of innerHTML string
+    // concatenation. Closes a CodeQL js/xss-through-dom finding — values
+    // set via .value / .checked are written as DOM properties, never
+    // parsed as HTML, so user-controlled input can't escape into markup.
+    function rowNode(rule, idx) {
+      var path   = (rule && rule.path) || '';
+      var scheme = (rule && rule.scheme) || 'http';
+      var host   = (rule && rule.host) || '';
+      var port   = (rule && rule.port) || 80;
+      var strip  = !!(rule && rule.strip_prefix);
+      var realIP = !!(rule && rule.add_x_real_ip);
+
+      var wrap = document.createElement('div');
+      wrap.className = 'space-y-1.5 border border-ink-200 rounded-lg p-2.5';
+      wrap.setAttribute('data-idx', idx);
+
+      var grid = document.createElement('div');
+      grid.className = 'grid grid-cols-12 gap-2 items-center';
+      wrap.appendChild(grid);
+
+      function inputEl(type, field, value, placeholder, span) {
+        var el = document.createElement('input');
+        el.type = type;
+        el.setAttribute('data-field', field);
+        el.value = value;
+        if (placeholder) el.placeholder = placeholder;
+        el.className = 'col-span-' + span + ' rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
+        return el;
+      }
+      grid.appendChild(inputEl('text', 'path', path, '/push/*', 3));
+
+      var sel = document.createElement('select');
+      sel.setAttribute('data-field', 'scheme');
+      sel.className = 'col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
+      ['http', 'https'].forEach(function(s) {
+        var opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        if (scheme === s) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      grid.appendChild(sel);
+
+      grid.appendChild(inputEl('text', 'host', host, 'upstream-host', 4));
+
+      var portIn = inputEl('number', 'port', port, '', 2);
+      portIn.min = '1';
+      portIn.max = '65535';
+      grid.appendChild(portIn);
+
+      var rm = document.createElement('button');
+      rm.type = 'button';
+      rm.setAttribute('data-action', 'remove');
+      rm.className = 'col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center';
+      rm.title = 'Remove rule';
+      rm.textContent = '×';
+      grid.appendChild(rm);
+
+      var flags = document.createElement('div');
+      flags.className = 'flex items-center gap-4 pl-1';
+      wrap.appendChild(flags);
+
+      function flagLabel(field, checked, text) {
+        var lbl = document.createElement('label');
+        lbl.className = 'text-xs text-ink-600 inline-flex items-center gap-1.5';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.setAttribute('data-field', field);
+        cb.checked = !!checked;
+        cb.className = 'rounded border-ink-300 text-brand-600 focus:ring-brand-500';
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(' ' + text));
+        return lbl;
+      }
+      flags.appendChild(flagLabel('strip_prefix', strip, 'Strip prefix (handle_path)'));
+      flags.appendChild(flagLabel('add_x_real_ip', realIP, 'Add X-Real-IP'));
+
+      return wrap;
+    }
+    function render() {
+      if (!data.length) {
+        var empty = document.createElement('p');
+        empty.className = 'text-xs text-ink-400 italic';
+        empty.textContent = 'No rules — every request goes to the main upstream above.';
+        table.replaceChildren(empty);
+        return;
+      }
+      table.replaceChildren.apply(table, data.map(rowNode));
+    }
+    function syncHidden() {
+      var clean = data.filter(function(r){ return r && (r.path||'').trim() !== '' && (r.host||'').trim() !== ''; });
+      hidden.value = clean.length ? JSON.stringify(clean) : '';
+    }
+    function readRows() {
+      data = Array.prototype.map.call(table.querySelectorAll('[data-idx]'), function(row) {
+        return {
+          path:          row.querySelector('[data-field="path"]').value.trim(),
+          scheme:        row.querySelector('[data-field="scheme"]').value,
+          host:          row.querySelector('[data-field="host"]').value.trim(),
+          port:          parseInt(row.querySelector('[data-field="port"]').value, 10) || 80,
+          strip_prefix:  row.querySelector('[data-field="strip_prefix"]').checked,
+          add_x_real_ip: row.querySelector('[data-field="add_x_real_ip"]').checked,
+        };
+      });
+    }
+    addBtn.addEventListener('click', function(){
+      readRows();
+      data.push({path:'', scheme:'http', host:'', port:80, strip_prefix:false, add_x_real_ip:false});
+      render();
+      syncHidden();
+    });
+    table.addEventListener('click', function(e){
+      if (e.target.matches('[data-action="remove"]')) {
+        var row = e.target.closest('[data-idx]');
+        readRows();
+        data.splice(parseInt(row.dataset.idx,10), 1);
+        render();
+        syncHidden();
+      }
+    });
+    table.addEventListener('input', function(){ readRows(); syncHidden(); });
+    table.addEventListener('change', function(){ readRows(); syncHidden(); });
+    render();
+    syncHidden();
+  })();
+  </script>
+
+  {{/* v2.9.266: path-based redirect rules on proxy hosts. Mirrors the
+       redirect-host feature from v2.9.229 but on the proxy-host form.
+       When set, each rule's matcher fires BEFORE the reverse_proxy.
+       Common case: redirect / → /webmail (302) while still proxying
+       every other path normally. Auto-opens when rules are configured. */}}
+  <details id="ph-path-redirect" class="pt-4 border-t border-ink-100"{{if .Host.ProxyRedirectRules}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Path redirects <span class="font-normal normal-case">(optional, fires before reverse_proxy)</span>
+    </summary>
+    <div class="mt-3 space-y-3">
+      <p class="text-xs text-ink-500">Each rule overrides the reverse_proxy for paths that match. Use Caddy path patterns: <code class="font-mono bg-ink-100 px-1 rounded">/old-blog/*</code> matches a prefix, <code class="font-mono bg-ink-100 px-1 rounded">/</code> matches just the root. In the destination, <code class="font-mono bg-ink-100 px-1 rounded">{uri}</code> is the original path+query. Leave Destination empty to return the status code without redirecting (e.g. <strong>410 Gone</strong> for retired URLs). Equivalent to <code class="font-mono bg-ink-100 px-1 rounded">@root path / + redir @root /webmail 302</code> in a Caddyfile.</p>
+      <div id="prr-rules-table" class="space-y-2"></div>
+      <button type="button" id="prr-add-rule" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add rule
+      </button>
+      <input type="hidden" name="proxy_redirect_rules" id="prr-rules-json" value="{{.Host.ProxyRedirectRules}}" />
+    </div>
+  </details>
+  <script>
+  (function(){
+    var data = [];
+    try { var raw = document.getElementById('prr-rules-json').value; if (raw) data = JSON.parse(raw); } catch(e){}
+    if (!Array.isArray(data)) data = [];
+    var table  = document.getElementById('prr-rules-table');
+    var hidden = document.getElementById('prr-rules-json');
+    var addBtn = document.getElementById('prr-add-rule');
+    if (!table || !hidden || !addBtn) return;
+    function rowHTML(rule, idx) {
+      var path = (rule && rule.path) || '';
+      var code = (rule && rule.code) || 302;
+      var dest = (rule && rule.destination) || '';
+      return '<div class="grid grid-cols-12 gap-2 items-start" data-idx="'+idx+'">' +
+        '<input type="text" data-field="path" value="'+escapeAttr(path)+'" placeholder="/" class="col-span-4 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
+        '<select data-field="code" class="col-span-2 rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">' +
+          opt(code, 301, '301') + opt(code, 302, '302') + opt(code, 307, '307') + opt(code, 308, '308') + opt(code, 410, '410 Gone') + opt(code, 451, '451') +
+        '</select>' +
+        '<input type="text" data-field="destination" value="'+escapeAttr(dest)+'" placeholder="/webmail" class="col-span-5 rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none" />' +
+        '<button type="button" data-action="remove" class="col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center" title="Remove rule">×</button>' +
+      '</div>';
+    }
+    function opt(cur, val, label) { return '<option value="'+val+'"'+(cur==val?' selected':'')+'>'+label+'</option>'; }
+    function escapeAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function render() {
+      table.innerHTML = data.map(rowHTML).join('') || '<p class="text-xs text-ink-400 italic">No rules — every request will hit the reverse_proxy.</p>';
+    }
+    function syncHidden() {
+      var clean = data.filter(function(r){ return r && (r.path||'').trim() !== ''; });
+      hidden.value = clean.length ? JSON.stringify(clean) : '';
+    }
+    function readRows() {
+      data = Array.prototype.map.call(table.querySelectorAll('[data-idx]'), function(row) {
+        return {
+          path:        row.querySelector('[data-field="path"]').value.trim(),
+          code:        parseInt(row.querySelector('[data-field="code"]').value, 10) || 302,
+          destination: row.querySelector('[data-field="destination"]').value.trim(),
+        };
+      });
+    }
+    addBtn.addEventListener('click', function(){
+      readRows();
+      data.push({path:'', code:302, destination:''});
+      render();
+      syncHidden();
+    });
+    table.addEventListener('click', function(e){
+      if (e.target.matches('[data-action="remove"]')) {
+        var row = e.target.closest('[data-idx]');
+        readRows();
+        data.splice(parseInt(row.dataset.idx,10), 1);
+        render();
+        syncHidden();
+      }
+    });
+    table.addEventListener('input', function(){ readRows(); syncHidden(); });
+    table.addEventListener('change', function(){ readRows(); syncHidden(); });
+    render();
+    syncHidden();
+  })();
+  </script>
+
   <details id="ph-ip-list" class="pt-4 border-t border-ink-100"{{if or .Host.AccessList .Host.IPBlocklist .Host.TrustedProxies}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       IP Allowlist / Blocklist <span class="font-normal normal-case">(optional, comma-separated CIDRs)</span>
@@ -3422,6 +3163,123 @@
   </details>
 
   {{/* Feature D: Extra Upstreams */}}
+<details id="ph-rewrites" class="pt-4 border-t border-ink-100"{{if .Host.URLRewriteList}} open{{end}}>
+  <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+    URL Rewrites
+  </summary>
+  <div class="mt-3 space-y-3">
+    <p class="text-xs text-ink-400">Rewrite request paths before they reach the upstream. Rules are applied in order.</p>
+
+    <div id="rewrite-rows" class="space-y-2">
+      {{range .Host.URLRewriteList}}
+      <div class="rw-row flex items-center gap-2">
+        <select name="rewrite_type[]" class="text-sm px-2 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 w-36 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="strip_prefix"{{if eq .Type "strip_prefix"}} selected{{end}}>Strip prefix</option>
+          <option value="add_prefix"{{if eq .Type "add_prefix"}} selected{{end}}>Add prefix</option>
+          <option value="regex"{{if eq .Type "regex"}} selected{{end}}>Regex</option>
+        </select>
+        <input type="text" name="rewrite_from[]" placeholder="From (e.g. /api or ^/old)" value="{{.From}}"
+          class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <input type="text" name="rewrite_to[]" placeholder="To (regex only)" value="{{.To}}"
+          class="w-40 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <button type="button" onclick="this.closest('.rw-row').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">&#x2715;</button>
+      </div>
+      {{end}}
+    </div>
+
+    <button type="button" id="rw-add" class="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700 font-medium mt-2 transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add rewrite rule
+    </button>
+
+    <p class="text-xs text-ink-400 mt-1">
+      <strong>strip_prefix</strong>: remove a leading path prefix (e.g. <code class="font-mono bg-ink-100 px-1 rounded">/api</code> strips <code class="font-mono bg-ink-100 px-1 rounded">/api</code> from every request path).<br>
+      <strong>add_prefix</strong>: prepend a path segment to every request.<br>
+      <strong>regex</strong>: regexp find &rarr; replace on the request path.
+    </p>
+  </div>
+</details>
+
+<script>
+(function() {
+  var rwAdd = document.getElementById('rw-add');
+  var rwContainer = document.getElementById('rewrite-rows');
+  if (!rwAdd || !rwContainer) return;
+  rwAdd.addEventListener('click', function() {
+    var div = document.createElement('div');
+    div.className = 'rw-row flex items-center gap-2';
+    div.innerHTML =
+      '<select name="rewrite_type[]" class="text-sm px-2 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 w-36 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">'
+      + '<option value="strip_prefix">Strip prefix</option>'
+      + '<option value="add_prefix">Add prefix</option>'
+      + '<option value="regex">Regex</option>'
+      + '</select>'
+      + '<input type="text" name="rewrite_from[]" placeholder="From (e.g. /api or ^/old)" class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">'
+      + '<input type="text" name="rewrite_to[]" placeholder="To (regex only)" class="w-40 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">'
+      + '<button type="button" onclick="this.closest(\'.rw-row\').remove()" class="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded transition shrink-0">✕</button>';
+    rwContainer.appendChild(div);
+    div.querySelector('input[name="rewrite_from[]"]').focus();
+  });
+})();
+</script>
+
+  {{/* v2.9.1: Custom Headers */}}
+  <details id="ph-upstream-tls" class="pt-4 border-t border-ink-100">
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Upstream TLS &amp; advanced settings <span class="font-normal normal-case">(optional)</span>
+    </summary>
+    <div class="mt-3 space-y-4">
+
+  <div id="upstream-sni-row">
+    <label class="block text-xs font-medium text-ink-700 mb-1">Upstream TLS SNI <span class="text-ink-400 font-normal">(only for HTTPS upstream with different hostname)</span></label>
+    <input type="text" name="upstream_sni" value="{{.Host.UpstreamSNI}}"
+      placeholder="e.g. internal.example.com"
+      class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+  </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Upstream TLS minimum version</label>
+        <select name="upstream_tls_min_version" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="" {{if eq .Host.UpstreamTLSMinVersion ""}}selected{{end}}>Use default</option>
+          <option value="1.2" {{if eq .Host.UpstreamTLSMinVersion "1.2"}}selected{{end}}>TLS 1.2+</option>
+          <option value="1.3" {{if eq .Host.UpstreamTLSMinVersion "1.3"}}selected{{end}}>TLS 1.3 only</option>
+        </select>
+        <p class="text-xs text-ink-400 mt-1.5">Minimum TLS protocol version for connections <em>to</em> the upstream. Only applies when the upstream scheme is <span class="font-mono">https</span>.</p>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Forward proxy URL <span class="text-ink-400 font-normal">(optional)</span></label>
+        <input type="text" name="forward_proxy_url" value="{{.Host.ForwardProxyURL}}" placeholder="http://squid.internal:3128" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-400 mt-1.5">Route upstream requests through this HTTP proxy (e.g. a corporate Squid proxy). Leave blank to connect directly.</p>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Upstream path prefix</label>
+        <input type="text" name="upstream_path_prefix" value="{{.Host.UpstreamPathPrefix}}" placeholder="/v2" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-400 mt-1.5">Prepend this path prefix to every upstream request. Example: prefix <code class="bg-ink-100 px-1 rounded">/v2</code> converts <code class="bg-ink-100 px-1 rounded">/users</code> → <code class="bg-ink-100 px-1 rounded">/v2/users</code>.</p>
+      </div>
+
+<!-- v2.9.56: strip_path_suffix -->
+<div class="mb-4">
+  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Strip Path Suffix</label>
+  <input type="text" name="strip_path_suffix" value="{{.Host.StripPathSuffix}}"
+    class="w-48 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+    placeholder="e.g. .html">
+  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Strip this static suffix from the request path before proxying (e.g. <code>.html</code> enables extensionless URLs).</p>
+</div>
+
+  <div>
+    <label class="block text-xs font-medium text-ink-700 mb-1">Upstream Host Header</label>
+    <input type="text" name="upstream_host_override" value="{{.Host.UpstreamHostOverride}}"
+      placeholder="backend.internal.example.com"
+      class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    <p class="text-xs text-ink-500 mt-1">Override the Host header sent to the upstream (leave blank to forward the original)</p>
+  </div>
+
+    </div>
+  </details>
+  {{/* v2.11.7: end of Upstream TLS & advanced settings collapse. */}}
+
   <details id="ph-upstreams" class="pt-4 border-t border-ink-100"{{if .Host.ExtraUpstreamList}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Extra Upstreams <span class="font-normal normal-case">(load balancing)</span>
@@ -3555,6 +3413,148 @@
        the exact Caddy route JSON the in-progress form would generate.
        Updates ~500ms after the last form change. Useful for debugging
        why a header isn't being added or why path matching isn't firing. */}}
+  <details id="ph-tags" class="pt-4 border-t border-ink-100">
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Path matching, query string, tags &amp; notes <span class="font-normal normal-case">(optional)</span>
+    </summary>
+    <div class="mt-3 space-y-4">
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1">Path prefix <span class="text-ink-400 font-normal">(optional — leave blank to match all paths)</span></label>
+      <input type="text" name="path_matcher" value="{{.Host.PathMatcher}}"
+        placeholder="/api"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <p class="text-xs text-ink-400 mt-1">Restricts this route to requests whose path starts with the given prefix (e.g. <code class="bg-ink-100 px-1 rounded">/api</code>). Matches both exact and sub-paths.</p>
+    </div>
+    <div class="pb-6">
+      <label class="flex items-center gap-2.5 cursor-pointer">
+        <input type="checkbox" name="strip_path_prefix" {{if .Host.StripPathPrefix}}checked{{end}}
+          class="rounded border-ink-300 text-brand-600 focus:ring-brand-500">
+        <span class="text-sm text-ink-700">Strip prefix before forwarding</span>
+      </label>
+      <p class="text-xs text-ink-400 mt-1 ml-6.5">Removes the path prefix before sending the request to the upstream (requires Path prefix to be set).</p>
+    </div>
+  </div>
+
+      <div>
+        <label class="flex items-center gap-2.5 cursor-pointer select-none">
+          <input type="checkbox" name="strip_query_string" {{if .Host.StripQueryString}}checked{{end}} class="h-4 w-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          <span class="text-sm font-medium text-ink-800">Strip query string</span>
+        </label>
+        <p class="text-xs text-ink-400 mt-1.5 ml-6.5">Remove the entire query string from requests before forwarding to the upstream. Useful when the backend doesn't support or should not see query parameters.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Delete query params <span class="text-ink-400 font-normal">(optional)</span></label>
+        <input type="text" name="delete_query_params" value="{{.Host.DeleteQueryParams}}" placeholder="utm_source,utm_medium,fbclid,gclid" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-400 mt-1.5">Comma-separated query parameter names to remove before forwarding. Ignored when "Strip query string" is checked.</p>
+      </div>
+
+<!-- v2.9.57: add_req_query_params -->
+<div class="mb-4">
+  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Query Params</label>
+  <input type="text" name="add_req_query_params" value="{{.Host.AddReqQueryParams}}"
+    class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
+    placeholder="key=value,key2=value2">
+  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated <code>key=value</code> pairs appended to the upstream query string. Useful for adding API version markers or tracking params.</p>
+</div>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Tags <span class="text-ink-400 font-normal">(optional, comma-separated)</span></label>
+    <input type="text" name="tags" value="{{.Host.Tags}}"
+      placeholder="production, api, wordpress"
+      class="w-full text-sm px-3 py-2 rounded-lg border border-ink-200 bg-white text-ink-900 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Notes
+      <span class="text-gray-400 font-normal">(optional, internal only)</span>
+    </label>
+    <textarea name="notes" rows="2"
+      placeholder="Internal documentation, deployment notes, etc."
+      class="w-full text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none">{{.Host.Notes}}</textarea>
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-2">Color label <span class="text-ink-400 font-normal">(optional, for visual grouping)</span></label>
+    <div class="flex items-center gap-2 flex-wrap">
+      <label class="cursor-pointer" title="No color">
+        <input type="radio" name="color" value="" {{if eq .Host.Color ""}}checked{{end}} class="sr-only peer" />
+        <span class="inline-flex items-center justify-center w-7 h-7 rounded-full border-2 border-ink-300 peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 bg-white text-ink-400 text-xs transition">✕</span>
+      </label>
+      <label class="cursor-pointer" title="Red">
+        <input type="radio" name="color" value="red" {{if eq .Host.Color "red"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-red-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Orange">
+        <input type="radio" name="color" value="orange" {{if eq .Host.Color "orange"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-orange-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Yellow">
+        <input type="radio" name="color" value="yellow" {{if eq .Host.Color "yellow"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-yellow-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Green">
+        <input type="radio" name="color" value="green" {{if eq .Host.Color "green"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-green-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Teal">
+        <input type="radio" name="color" value="teal" {{if eq .Host.Color "teal"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-teal-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Blue">
+        <input type="radio" name="color" value="blue" {{if eq .Host.Color "blue"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-blue-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Purple">
+        <input type="radio" name="color" value="purple" {{if eq .Host.Color "purple"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-purple-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Pink">
+        <input type="radio" name="color" value="pink" {{if eq .Host.Color "pink"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-pink-400"></span>
+      </label>
+      <label class="cursor-pointer" title="Gray">
+        <input type="radio" name="color" value="gray" {{if eq .Host.Color "gray"}}checked{{end}} class="sr-only peer" />
+        <span class="inline-block w-7 h-7 rounded-full border-2 border-transparent peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 transition bg-gray-400"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- v2.9.39: sort order -->
+  <div class="mb-4">
+    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Sort Order</label>
+    <input type="number" name="sort_order" value="{{.Host.SortOrder}}"
+      class="w-32 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm"
+      min="0" max="9999" placeholder="0">
+    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Lower values appear first in the list (0 = default).</p>
+  </div>
+
+    </div>
+  </details>
+  {{/* v2.11.7: end of Path matching, query string, tags & notes collapse.
+       v2.11.8: Forward Scheme/Host/Port + Test upstream hoisted up under Domain. */}}
+
+  {{/* v2.11.7: Upstream TLS / advanced upstream settings — collapsed by
+       default. Most users never touch SNI, min TLS version, forward proxy
+       URL, path prefix munging, or Host header overrides. */}}
+  <details id="ph-advanced" class="pt-4 border-t border-ink-100"{{if .Host.AdvancedConfig}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Advanced config <span class="font-normal normal-case">(optional Caddyfile directives)</span>
+    </summary>
+    <div class="mt-3">
+      <textarea name="advanced_config" rows="6" spellcheck="false" placeholder="header X-Frame-Options DENY&#10;encode gzip zstd&#10;request_body {&#10;    max_size 100MB&#10;}" class="w-full rounded-lg border border-ink-200 px-3 py-2 font-mono text-xs bg-ink-50 focus:bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.Host.AdvancedConfig}}</textarea>
+      <p class="text-xs text-ink-500 mt-1.5">
+        Extra Caddyfile directives that run before <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code> — headers, compression,
+        body limits, matchers, etc. Validated via Caddy's <code class="font-mono bg-ink-100 px-1 rounded">/adapt</code> on save.
+        Terminal handlers are rejected: <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code>, <code class="font-mono bg-ink-100 px-1 rounded">redir</code>,
+        <code class="font-mono bg-ink-100 px-1 rounded">respond</code>, <code class="font-mono bg-ink-100 px-1 rounded">file_server</code> can't be used here —
+        create an <a href="/raw-routes/new" class="text-brand-600 hover:text-brand-700">Advanced route</a> for those.
+      </p>
+    </div>
+  </details>
+
+  {{/* v2.9.0: Security — compression + response headers + TLS min version */}}
   <details class="pt-4 border-t border-ink-100" id="ph-preview">
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Live route JSON preview <span class="font-normal normal-case">(what Caddy will see)</span>
