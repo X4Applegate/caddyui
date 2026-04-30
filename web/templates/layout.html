@@ -71,6 +71,20 @@
   {{if .User}}
   <link rel="preload" href="/static/app.js" as="script" />
   {{end}}
+  {{/* v2.12.43: split the Tailwind delivery by auth state.
+
+       Authenticated pages have a wide class surface (300+ unique
+       classes across the form, lists, dashboard, command palette,
+       etc.) — the CDN's JIT runtime makes sense there.
+
+       Unauthenticated pages (/login, /setup, /reset-password,
+       /forgot-password, /accept-invite) only use ~63 classes. For
+       those, ship the precompiled web/static/auth.css (~24 KB
+       minified, ~5 KB gzipped) instead of pulling 124 KB of JIT
+       runtime that gets parsed on a 4× CPU-throttled mobile.
+       Lighthouse mobile FCP / LCP wins big from this — that's the
+       page Google's PageSpeed test always lands on. */}}
+  {{if .User}}
   <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -112,6 +126,14 @@
       },
     }
   </script>
+  {{else}}
+  {{/* v2.12.43: precompiled auth-page CSS (24 KB minified, ~5 KB gzipped).
+       Replaces cdn.tailwindcss.com for unauthenticated pages where the
+       full JIT runtime is overkill. Built from tailwind.unauth.config.js
+       — re-run the compile step in Dockerfile if a new auth template
+       gets a new class. */}}
+  <link rel="stylesheet" href="/static/auth.css" />
+  {{end}}
   {{/* v2.12.39: htmx is now vendored to /static/htmx.min.js (downloaded
        at Docker build time from unpkg). `defer` is safe — htmx attaches
        its event listeners on DOMContentLoaded. */}}
