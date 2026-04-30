@@ -49,64 +49,25 @@
   {{else}}
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
   {{end}}
-  {{/* v2.12.40: Two perf hints to break the critical-path waterfall
-       PageSpeed flagged on the login page (1,298 ms chain).
+  {{/* v2.12.41: zero external CDNs. All four previous CDN deps now
+       come from the embedded FS:
 
-       1. <link rel="preload"> for Inter — without this, the browser
-          only discovers the font AFTER /static/app.css finishes
-          parsing the @font-face rule (~880 ms in). With preload,
-          the font fetch starts in parallel with the CSS, removing
-          ~400 ms from the critical chain.
+       - Inter variable font  → /static/fonts/InterVariable.woff2  (v2.12.39)
+       - htmx                 → /static/htmx.min.js                (v2.12.39)
+       - Tailwind CSS         → /static/tailwind.css               (v2.12.41)
+                                build-time compile via the CLI in
+                                Dockerfile, theme.colors overridden
+                                to only the 17 palettes used in
+                                templates → 58 KB minified output,
+                                4× smaller than the CDN JIT runtime
+                                this replaces.
 
-       2. <link rel="preconnect"> to cdn.tailwindcss.com — establishes
-          the DNS+TLS to the Tailwind CDN early so when the <script>
-          below kicks in, the connection is already warm. Saves
-          ~100–200 ms on cold loads. (Tailwind self-host is queued
-          for v2.12.41 — see history note in v2.12.39 about the
-          3.76 MB blowup that needs careful theme.colors override
-          to avoid repeating.) */}}
+       Page paint blocks only on /static/tailwind.css + /static/app.css
+       (both same-origin, both Cache-Control: max-age=86400). Inter font
+       is preloaded so its fetch starts in parallel with HTML parse,
+       breaking the critical-path waterfall PageSpeed flagged. */}}
   <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              50:  '#eff6ff',
-              100: '#dbeafe',
-              200: '#bfdbfe',
-              300: '#93c5fd',
-              500: '#3b82f6',
-              600: '#2563eb',
-              700: '#1d4ed8',
-            },
-            ink: {
-              50:  '#f8fafc',
-              100: '#f1f5f9',
-              200: '#e2e8f0',
-              300: '#cbd5e1',
-              400: '#94a3b8',
-              500: '#64748b',
-              600: '#475569',
-              700: '#334155',
-              800: '#1e293b',
-              900: '#0f172a',
-            },
-          },
-          fontFamily: {
-            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'sans-serif'],
-          },
-          boxShadow: {
-            card: '0 1px 2px 0 rgb(15 23 42 / 0.04)',
-            'card-hover': '0 4px 12px -2px rgb(15 23 42 / 0.08), 0 2px 4px -1px rgb(15 23 42 / 0.04)',
-          },
-        },
-      },
-    }
-  </script>
+  <link rel="stylesheet" href="/static/tailwind.css" />
   {{/* v2.12.39: htmx is now vendored to /static/htmx.min.js (downloaded
        at Docker build time from unpkg). `defer` is safe — htmx attaches
        its event listeners on DOMContentLoaded. */}}
