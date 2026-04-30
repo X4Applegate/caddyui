@@ -7,6 +7,8 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 [![Docker Pulls](https://img.shields.io/docker/pulls/applegater/caddyui?label=pulls)](https://hub.docker.com/r/applegater/caddyui)
 [![Go 1.24](https://img.shields.io/badge/Go-1.24-00ADD8)](https://go.dev/)
 
+**Lighthouse:** Performance **99** · Accessibility **100** · Best Practices **100** · SEO **100** *(measured on `/login` from Google's PageSpeed Insights against a residential-ISP install — `:v2.12.48` and later)*
+
 ---
 
 ## 🐳 Install
