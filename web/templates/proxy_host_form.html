@@ -30,6 +30,51 @@
   </p>
 </div>
 
+{{/* v2.12.44: section anchor pills — ordered by frequency-of-use, not
+     by where the section physically lives in the form. The most common
+     proxy-host customizations (DNS, TLS, Security headers, custom
+     headers, path routing) come first; advanced / debug-only sections
+     (Advanced raw config, Live JSON Preview) come last so they're not
+     visually competing with the bread-and-butter stuff.
+
+     The two groups are separated by a thin vertical divider so the
+     "essentials vs. advanced" split is visible at a glance.
+
+     The IIFE at the bottom of this file expands the corresponding
+     <details> on click, so the user lands on an open section. */}}
+<nav aria-label="Form sections" class="mb-4 max-w-3xl flex flex-wrap items-center gap-1.5">
+  {{/* Tier 1 — used on most proxy hosts */}}
+  <a href="#ph-dns"            class="inline-flex items-center text-xs font-medium text-ink-700 hover:text-brand-700 bg-brand-50/50 hover:bg-brand-50 border border-brand-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Managed DNS</a>
+  <a href="#ph-tls"            class="inline-flex items-center text-xs font-medium text-ink-700 hover:text-brand-700 bg-brand-50/50 hover:bg-brand-50 border border-brand-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">TLS</a>
+  <a href="#ph-security"       class="inline-flex items-center text-xs font-medium text-ink-700 hover:text-brand-700 bg-brand-50/50 hover:bg-brand-50 border border-brand-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Security &amp; Perf</a>
+  <a href="#ph-headers"        class="inline-flex items-center text-xs font-medium text-ink-700 hover:text-brand-700 bg-brand-50/50 hover:bg-brand-50 border border-brand-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Custom Headers</a>
+  <a href="#ph-options"        class="inline-flex items-center text-xs font-medium text-ink-700 hover:text-brand-700 bg-brand-50/50 hover:bg-brand-50 border border-brand-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Forwarded Headers</a>
+
+  <span aria-hidden="true" class="inline-block w-px h-4 bg-ink-200 mx-1"></span>
+
+  {{/* Tier 2 — common-ish */}}
+  <a href="#ph-path-upstream"  class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Path → Upstream</a>
+  <a href="#ph-path-redirect"  class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Path Redirects</a>
+  <a href="#ph-ip-list"        class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">IP Allow / Block</a>
+  <a href="#ph-rewrites"       class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">URL Rewrites</a>
+  <a href="#ph-upstream-tls"   class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Upstream TLS</a>
+  <a href="#ph-upstreams"      class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Extra Upstreams</a>
+  <a href="#ph-tags"           class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Path / Tags / Notes</a>
+
+  <span aria-hidden="true" class="inline-block w-px h-4 bg-ink-200 mx-1"></span>
+
+  {{/* Tier 3 — advanced / debug */}}
+  <a href="#ph-advanced"       class="inline-flex items-center text-xs font-medium text-ink-500 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Advanced</a>
+  <a href="#ph-preview"        class="inline-flex items-center text-xs font-medium text-ink-500 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Live JSON Preview</a>
+</nav>
+
+<style>
+  /* v2.12.44: scroll-margin-top so the section heading lands below the
+     sticky search input when jumping via anchor click. Smooth scroll
+     itself is the html { scroll-behavior: smooth } from app.css. */
+  details[id^="ph-"] { scroll-margin-top: 80px; }
+</style>
+
 <form id="proxy-host-form" method="post" action="{{if .Host.ID}}/proxy-hosts/{{.Host.ID}}{{else}}/proxy-hosts{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
   <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
     <div class="sm:col-span-2">
@@ -155,7 +200,7 @@
        open. */}}
   {{if .AnyDNSEnabled}}
   {{$provider := .Host.DNSProvider}}
-  <details class="pt-4 border-t border-ink-100" data-keep-open open>
+  <details id="ph-dns" class="pt-4 border-t border-ink-100" data-keep-open open>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
     </summary>
@@ -217,7 +262,7 @@
   </details>
   {{end}}
 
-  <details class="pt-4 border-t border-ink-100" data-keep-open open>
+  <details id="ph-tls" class="pt-4 border-t border-ink-100" data-keep-open open>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       TLS Certificate <span class="font-normal normal-case">(optional, defaults to auto Let's Encrypt)</span>
     </summary>
@@ -235,7 +280,7 @@
   {{/* v2.11.7: Path matching + metadata bundled into one collapsed section.
        Most users won't touch path prefix / strip query / tags / notes on
        routine hosts; the badge tells them how many fields are configured. */}}
-  <details class="pt-4 border-t border-ink-100">
+  <details id="ph-tags" class="pt-4 border-t border-ink-100">
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Path matching, query string, tags &amp; notes <span class="font-normal normal-case">(optional)</span>
     </summary>
@@ -360,7 +405,7 @@
   {{/* v2.11.7: Upstream TLS / advanced upstream settings — collapsed by
        default. Most users never touch SNI, min TLS version, forward proxy
        URL, path prefix munging, or Host header overrides. */}}
-  <details class="pt-4 border-t border-ink-100">
+  <details id="ph-upstream-tls" class="pt-4 border-t border-ink-100">
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Upstream TLS &amp; advanced settings <span class="font-normal normal-case">(optional)</span>
     </summary>
@@ -416,7 +461,7 @@
   </details>
   {{/* v2.11.7: end of Upstream TLS & advanced settings collapse. */}}
 
-  <details class="pt-4 border-t border-ink-100">
+  <details id="ph-options" class="pt-4 border-t border-ink-100">
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">Options &amp; Forwarded Headers</summary>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
       {{/* v2.11.4: Enabled / Auto SSL / Force SSL hoisted to the always-visible top of the form. */}}
@@ -927,7 +972,7 @@
        paths to a different upstream than the host's main forward_*. Common
        use: Nextcloud + notify_push on /push/* + AppAPI on /exapps/* on a
        single hostname. Strip Prefix mirrors Caddyfile's `handle_path`. */}}
-  <details class="pt-4 border-t border-ink-100"{{if .Host.AdditionalUpstreamRules}} open{{end}}>
+  <details id="ph-path-upstream" class="pt-4 border-t border-ink-100"{{if .Host.AdditionalUpstreamRules}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Path-based upstream overrides <span class="font-normal normal-case">(optional, route specific paths to different upstreams)</span>
     </summary>
@@ -1082,7 +1127,7 @@
        When set, each rule's matcher fires BEFORE the reverse_proxy.
        Common case: redirect / → /webmail (302) while still proxying
        every other path normally. Auto-opens when rules are configured. */}}
-  <details class="pt-4 border-t border-ink-100"{{if .Host.ProxyRedirectRules}} open{{end}}>
+  <details id="ph-path-redirect" class="pt-4 border-t border-ink-100"{{if .Host.ProxyRedirectRules}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Path redirects <span class="font-normal normal-case">(optional, fires before reverse_proxy)</span>
     </summary>
@@ -1158,7 +1203,7 @@
   })();
   </script>
 
-  <details class="pt-4 border-t border-ink-100"{{if .Host.AdvancedConfig}} open{{end}}>
+  <details id="ph-advanced" class="pt-4 border-t border-ink-100"{{if .Host.AdvancedConfig}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Advanced config <span class="font-normal normal-case">(optional Caddyfile directives)</span>
     </summary>
@@ -1175,7 +1220,7 @@
   </details>
 
   {{/* v2.9.0: Security — compression + response headers + TLS min version */}}
-  <details class="pt-4 border-t border-ink-100"{{if or .Host.CompressionEnabled .Host.SecurityHeadersEnabled .Host.TLSMinVersion .Host.MaintenanceMode .Host.MaxRequestBodyMB .Host.StickySessions .Host.CORSEnabled .Host.HealthCheckURI .Host.KeepaliveConns .Host.DisableAccessLog .Host.AddRequestID .Host.BlockedAgents .Host.ForceHTTP1 .Host.ProxyProtocol .Host.H2CEnabled .Host.FlushImmediate .Host.BufferResponses .Host.APIKeyHeader .Host.APIKeyValue .Host.BlockEmptyUserAgent .Host.MaxConnDurationSec .Host.DecompressResponse .Host.StripReqHeaders .Host.UpstreamPathPrefix .Host.CompressionLevel .Host.CompressionPreferGzip}} open{{end}}>
+  <details id="ph-security" class="pt-4 border-t border-ink-100"{{if or .Host.CompressionEnabled .Host.SecurityHeadersEnabled .Host.TLSMinVersion .Host.MaintenanceMode .Host.MaxRequestBodyMB .Host.StickySessions .Host.CORSEnabled .Host.HealthCheckURI .Host.KeepaliveConns .Host.DisableAccessLog .Host.AddRequestID .Host.BlockedAgents .Host.ForceHTTP1 .Host.ProxyProtocol .Host.H2CEnabled .Host.FlushImmediate .Host.BufferResponses .Host.APIKeyHeader .Host.APIKeyValue .Host.BlockEmptyUserAgent .Host.MaxConnDurationSec .Host.DecompressResponse .Host.StripReqHeaders .Host.UpstreamPathPrefix .Host.CompressionLevel .Host.CompressionPreferGzip}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Security &amp; Performance <span class="font-normal normal-case">(compression, headers, TLS)</span>
     </summary>
@@ -2674,7 +2719,7 @@
   </details>
 
   {{/* v2.9.2: URL Rewrites */}}
-<details class="pt-4 border-t border-ink-100"{{if .Host.URLRewriteList}} open{{end}}>
+<details id="ph-rewrites" class="pt-4 border-t border-ink-100"{{if .Host.URLRewriteList}} open{{end}}>
   <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
     URL Rewrites
   </summary>
@@ -2735,7 +2780,7 @@
 </script>
 
   {{/* v2.9.1: Custom Headers */}}
-<details class="pt-4 border-t border-ink-100"{{if or .Host.CustomReqHeaderMap .Host.CustomRespHeaderMap}} open{{end}}>
+<details id="ph-headers" class="pt-4 border-t border-ink-100"{{if or .Host.CustomReqHeaderMap .Host.CustomRespHeaderMap}} open{{end}}>
   <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
     Custom Headers <span class="font-normal normal-case">(request &amp; response)</span>
   </summary>
@@ -3195,7 +3240,7 @@
 </script>
 
   {{/* Feature C: IP Allowlist */}}
-  <details class="pt-4 border-t border-ink-100"{{if or .Host.AccessList .Host.IPBlocklist .Host.TrustedProxies}} open{{end}}>
+  <details id="ph-ip-list" class="pt-4 border-t border-ink-100"{{if or .Host.AccessList .Host.IPBlocklist .Host.TrustedProxies}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       IP Allowlist / Blocklist <span class="font-normal normal-case">(optional, comma-separated CIDRs)</span>
     </summary>
@@ -3377,7 +3422,7 @@
   </details>
 
   {{/* Feature D: Extra Upstreams */}}
-  <details class="pt-4 border-t border-ink-100"{{if .Host.ExtraUpstreamList}} open{{end}}>
+  <details id="ph-upstreams" class="pt-4 border-t border-ink-100"{{if .Host.ExtraUpstreamList}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Extra Upstreams <span class="font-normal normal-case">(load balancing)</span>
     </summary>
@@ -3510,7 +3555,7 @@
        the exact Caddy route JSON the in-progress form would generate.
        Updates ~500ms after the last form change. Useful for debugging
        why a header isn't being added or why path matching isn't firing. */}}
-  <details class="pt-4 border-t border-ink-100" id="ph-preview-details">
+  <details class="pt-4 border-t border-ink-100" id="ph-preview">
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Live route JSON preview <span class="font-normal normal-case">(what Caddy will see)</span>
     </summary>
@@ -4142,6 +4187,26 @@
   input.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') { input.value = ''; applyFilter(''); input.blur(); }
   });
+})();
+
+// v2.12.44: anchor-pill helper — when a #ph-X pill is clicked, expand
+// the matching <details> if it's collapsed so the user lands on an
+// open section instead of just on the section's <summary> header.
+// Also runs once on initial page load to honour deep-links like
+// /proxy-hosts/42/edit#ph-security.
+(function() {
+  function openTarget(hash) {
+    if (!hash || hash.charAt(0) !== '#') return;
+    var el = document.getElementById(hash.slice(1));
+    if (el && el.tagName === 'DETAILS' && !el.open) el.open = true;
+  }
+  // Initial hash on page load (e.g., bookmarked deep link).
+  if (window.location.hash) {
+    // Slight delay so the smooth scroll picks up the now-expanded section.
+    setTimeout(function() { openTarget(window.location.hash); }, 0);
+  }
+  // Pill clicks (and any other in-page anchor) — listen on hashchange.
+  window.addEventListener('hashchange', function() { openTarget(window.location.hash); });
 })();
 </script>
 {{end}}
