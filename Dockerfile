@@ -17,13 +17,28 @@ COPY . .
 # them up at compile time, served by the existing /static/* handler
 # with v2.12.38's Cache-Control: max-age=86400 wrapper.
 #
-# Tailwind self-host was tried in v2.12.41 (commit 7751ee3 + the
-# tailwind.config.js / web/tailwind.input.css files still on main) but
-# reverted at the Docker layer for residential-ISP installs where the
-# CDN's global edge beats the home server's TTFB. The self-host code
-# is still on main; uncomment the CLI download + compile step below
-# and update layout.html to re-enable when running on a low-latency
-# VPS.
+# v2.12.43: also vendor a precompiled auth.css for unauthenticated
+# pages — drops cdn.tailwindcss.com from /login / /setup /
+# /reset-password / /forgot-password / /accept-invite. Authenticated
+# pages still use the CDN runtime (300+ classes need the JIT). The
+# auth.css file is committed pre-built (see tailwind.unauth.config.js
+# + web/tailwind.input.css for the source). Re-run this command to
+# refresh it after adding new classes to those pages:
+#
+#   docker run --rm -v "$PWD":/src -w /src alpine sh -c '
+#     apk add --no-cache curl && \
+#     curl -fsSL https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.15/tailwindcss-linux-x64 \
+#       -o /usr/local/bin/tailwindcss && chmod +x /usr/local/bin/tailwindcss && \
+#     tailwindcss -c tailwind.unauth.config.js -i web/tailwind.input.css \
+#       -o web/static/auth.css --minify
+#   '
+#
+# Full self-host of Tailwind (replacing the CDN on authenticated pages
+# too) was attempted in v2.12.41 but reverted: on residential-ISP
+# installs the global CDN's TTFB from Google's PageSpeed test geography
+# beats a home server. If you move CaddyUI to a low-latency VPS, the
+# trade-off flips and re-enabling becomes worthwhile — see git history
+# (commit 7751ee3) for the original config.
 RUN mkdir -p web/static/fonts && \
     curl -fsSL https://rsms.me/inter/font-files/InterVariable.woff2 \
       -o web/static/fonts/InterVariable.woff2 && \
