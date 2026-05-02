@@ -599,6 +599,8 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/proxy-hosts", s.createProxyHost)
 			r.Get("/proxy-hosts/{id}/export.json", s.exportProxyHost)
 			r.Get("/proxy-hosts/export-all.json", s.exportAllProxyHosts)
+			// v2.12.49: Caddyfile export — inverse of /caddyfile-import paste flow.
+			r.Get("/proxy-hosts/export-all.caddyfile", s.exportServerCaddyfile)
 			r.Post("/proxy-hosts/import", s.importProxyHost)
 			r.Get("/proxy-hosts/{id}/edit", s.editProxyHost)
 			r.Post("/proxy-hosts/{id}", s.updateProxyHost)
@@ -10089,6 +10091,59 @@ func (s *Server) exportAllProxyHosts(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(hosts)
+}
+
+// exportServerCaddyfile — v2.12.49: download every enabled proxy host,
+// redirection, and raw route for the current server as a single Caddyfile
+// snapshot. Inverse of the existing /caddyfile-import paste flow. Admin
+// gets the full server config; non-admin gets only their own resources
+// (same scoping the JSON exports use).
+func (s *Server) exportServerCaddyfile(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	var viewerID int64
+	if !isAdmin {
+		viewerID = cu.ID
+	}
+	sid := s.currentServerID(r)
+	peerIDs := s.groupPeerIDs(r)
+
+	hosts, err := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin, peerIDs)
+	if err != nil {
+		http.Error(w, "list proxy hosts: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	redirects, err := models.ListRedirectionHosts(s.DB, sid, viewerID, isAdmin, peerIDs)
+	if err != nil {
+		http.Error(w, "list redirections: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	raws, err := models.ListRawRoutes(s.DB, sid, viewerID, isAdmin, peerIDs)
+	if err != nil {
+		http.Error(w, "list raw routes: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	serverName := ""
+	if srv, _ := models.GetCaddyServer(s.DB, sid); srv != nil {
+		serverName = srv.Name
+	}
+
+	body := caddy.RenderServerCaddyfile(serverName, hosts, redirects, raws)
+	ts := time.Now().Format("20060102-150405")
+	fname := "Caddyfile"
+	if serverName != "" {
+		fname = fmt.Sprintf("Caddyfile-%s-%s", strings.ReplaceAll(serverName, " ", "_"), ts)
+	} else {
+		fname = fmt.Sprintf("Caddyfile-%s", ts)
+	}
+	w.Header().Set("Content-Type", "text/caddyfile; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, fname))
+	_, _ = w.Write([]byte(body))
 }
 
 // importProxyHost creates a new proxy host from an uploaded JSON file.
