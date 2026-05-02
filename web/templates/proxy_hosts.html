@@ -19,12 +19,25 @@
       <input type="file" accept=".json" class="hidden" onchange="document.getElementById('import-ph-form').submit()"
         name="config_file" form="import-ph-form">
     </label>
-    <a href="/proxy-hosts/export-all.json" download
+    <a href="/proxy-hosts/export-all.json" download title="Download every proxy host on this server as a JSON array (use Import JSON to restore)"
        class="inline-flex items-center gap-1.5 text-sm text-ink-600 hover:text-ink-800 border border-ink-200 hover:border-ink-300 px-3 py-2 rounded-lg transition">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
       </svg>
-      Export all
+      Export JSON
+    </a>
+    {{/* v2.12.49: Caddyfile export — round-trips through the existing
+         /caddyfile-import paste flow for the directives it contains.
+         Includes proxy hosts + redirections + raw routes for the active
+         server, with non-Caddyfile-representable settings (maintenance
+         windows, basic-auth users, etc.) listed as a # Notes block per
+         site so the user can re-set them after a round-trip. */}}
+    <a href="/proxy-hosts/export-all.caddyfile" download title="Download every enabled proxy host, redirection, and raw route on this server as a Caddyfile"
+       class="inline-flex items-center gap-1.5 text-sm text-ink-600 hover:text-ink-800 border border-ink-200 hover:border-ink-300 px-3 py-2 rounded-lg transition">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+      </svg>
+      Export Caddyfile
     </a>
     <form id="import-ph-form" method="post" action="/proxy-hosts/import" enctype="multipart/form-data" class="hidden"></form>
     <a href="/proxy-hosts/new" class="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
