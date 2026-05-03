@@ -601,6 +601,8 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/proxy-hosts/export-all.json", s.exportAllProxyHosts)
 			// v2.12.49: Caddyfile export — inverse of /caddyfile-import paste flow.
 			r.Get("/proxy-hosts/export-all.caddyfile", s.exportServerCaddyfile)
+			// v2.12.50: per-host Caddyfile export.
+			r.Get("/proxy-hosts/{id}/export.caddyfile", s.exportProxyHostCaddyfile)
 			r.Post("/proxy-hosts/import", s.importProxyHost)
 			r.Get("/proxy-hosts/{id}/edit", s.editProxyHost)
 			r.Post("/proxy-hosts/{id}", s.updateProxyHost)
@@ -10064,6 +10066,35 @@ func (s *Server) exportProxyHost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.json"`, strings.TrimSpace(fname)))
 	_, _ = w.Write(data)
+}
+
+// exportProxyHostCaddyfile — v2.12.50: download a single proxy host as a
+// Caddyfile snippet (just the one site block, no banner). Useful for
+// hand-off to other Caddy deployments or pasting into a colleague's
+// Caddyfile without the rest of the server's config tagging along.
+//
+// Same RBAC visibility as the JSON variant — anyone who can view the
+// host (admin, owner, or group peer) can export it.
+func (s *Server) exportProxyHostCaddyfile(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	ph, err := models.GetProxyHost(s.DB, id)
+	if err != nil || ph == nil {
+		http.NotFound(w, r)
+		return
+	}
+	body := caddy.RenderProxyHostCaddyfile(*ph)
+	fname := strings.ReplaceAll(strings.SplitN(ph.Domains, ",", 2)[0], "*", "_")
+	fname = strings.TrimSpace(fname)
+	if fname == "" {
+		fname = fmt.Sprintf("proxy-host-%d", id)
+	}
+	w.Header().Set("Content-Type", "text/caddyfile; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.caddyfile"`, fname))
+	_, _ = w.Write([]byte(body))
 }
 
 // exportAllProxyHosts downloads all proxy hosts for the current server as a JSON array.
