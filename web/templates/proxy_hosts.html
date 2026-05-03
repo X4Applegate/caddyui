@@ -436,9 +436,19 @@
             </form>
             <a href="/proxy-hosts/{{.ID}}/export.json" download
                class="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg transition"
-               title="Export as JSON">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               title="Export as JSON" aria-label="Export as JSON">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+              </svg>
+            </a>
+            {{/* v2.12.50: per-host Caddyfile export — single site block,
+                 no banner. Useful for hand-off / paste into a colleague's
+                 Caddyfile without the rest of the server going along. */}}
+            <a href="/proxy-hosts/{{.ID}}/export.caddyfile" download
+               class="p-1.5 text-gray-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20 rounded-lg transition"
+               title="Export as Caddyfile" aria-label="Export as Caddyfile">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
               </svg>
             </a>
             <form method="post" action="/proxy-hosts/{{.ID}}/delete" onsubmit="return confirm('Delete this proxy host?')">
