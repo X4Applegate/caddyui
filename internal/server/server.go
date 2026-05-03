@@ -3632,6 +3632,8 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.AddXCSPDisabled = r.FormValue("add_x_csp_disabled") == "on"
 	// v2.9.265: add_x_request_method_override — honor X-HTTP-Method-Override.
 	ph.AddXRequestMethodOverride = r.FormValue("add_x_request_method_override") == "on"
+	// v2.12.52: disable upstream compression toggle.
+	ph.DisableUpstreamCompression = r.FormValue("disable_upstream_compression") == "on"
 	// v2.9.266: proxy_redirect_rules — JSON array of path-based redirects
 	// fired before the reverse_proxy. Same shape as redirection_hosts.
 	ph.ProxyRedirectRules = func() string {
