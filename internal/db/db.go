@@ -2043,6 +2043,13 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "additional_upstream_rules") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN additional_upstream_rules TEXT NOT NULL DEFAULT ''`)
 	}
+	// v2.12.52: disable_upstream_compression — emit `transport http { compression off }`
+	// in the reverse_proxy block. Useful when the upstream double-compresses
+	// already-compressed responses (e.g., a node app behind Caddy where Caddy
+	// will encode anyway).
+	if !columnExists2(db, "proxy_hosts", "disable_upstream_compression") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN disable_upstream_compression INTEGER NOT NULL DEFAULT 0`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

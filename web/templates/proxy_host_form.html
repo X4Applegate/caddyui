@@ -1597,6 +1597,20 @@
     <span class="text-xs font-normal text-gray-500 dark:text-gray-400 ml-1">— each upstream request gets a new connection (required for NTLM auth)</span>
   </label>
 </div>
+      {{/* v2.12.52: disable_upstream_compression — emit
+           `transport http { compression off }` so Caddy doesn't ask the
+           upstream to send compressed responses. Useful when this host
+           has `encode zstd gzip` enabled and you'd rather Caddy compress
+           than have the upstream do it (saves upstream CPU; Caddy can
+           still encode the response). */}}
+<div class="flex items-center mb-4">
+  <input type="checkbox" name="disable_upstream_compression" id="disable_upstream_compression" value="on" {{if .Host.DisableUpstreamCompression}}checked{{end}}
+    class="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 mr-2">
+  <label for="disable_upstream_compression" class="text-sm font-medium text-gray-700 dark:text-gray-300">
+    Disable upstream compression
+    <span class="text-xs font-normal text-gray-500 dark:text-gray-400 ml-1">— send <code class="bg-ink-100 px-1 rounded">Accept-Encoding: identity</code> to the upstream so Caddy does the compression instead (pairs well with the host's <strong>Compression</strong> toggle)</span>
+  </label>
+</div>
       {{/* v2.9.4: Keepalive connection pooling */}}
       <div class="flex items-center gap-3">
         <label class="text-sm text-gray-700 dark:text-gray-300 w-48 shrink-0">Keepalive pool</label>

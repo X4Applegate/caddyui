@@ -335,9 +335,18 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		p.UpstreamTLSRenegotiation != "" || p.UpstreamTLSCurves != "" || p.UpstreamTLSMaxVersion != "" ||
 		p.UpstreamTLSPins != "" || p.UpstreamTLSCipherSuites != "" || p.UpstreamTLSEarlyData ||
 		p.UpstreamTLSALPN != "" || p.UpstreamTLSCAPEMInline != "" ||
-		p.UpstreamTLSServerNameFromHost
+		p.UpstreamTLSServerNameFromHost ||
+		p.DisableUpstreamCompression // v2.12.52
 	if needsTransport {
 		transport := map[string]any{"protocol": "http"}
+		// v2.12.52: emit `compression: false` to tell Caddy NOT to ask
+		// the upstream for compressed responses. Useful when Caddy is
+		// itself going to encode the response (e.g., the host has
+		// `encode zstd gzip` set), so the upstream doesn't waste CPU
+		// double-compressing already-compressed payloads.
+		if p.DisableUpstreamCompression {
+			transport["compression"] = false
+		}
 		if p.ForwardScheme == "https" {
 			// v2.9.9: ssl_verify_upstream — when false (the default), skip TLS
 			// verification so self-signed or internal CA certs are accepted.

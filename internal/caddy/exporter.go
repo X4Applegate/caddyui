@@ -254,7 +254,7 @@ func RenderProxyHostCaddyfile(p models.ProxyHost) string {
 	}
 
 	// Transport block — only emit if anything inside is non-default.
-	if p.ForwardScheme == "https" || p.UpstreamSNI != "" || p.KeepaliveConns > 0 || p.UpstreamTimeoutSec > 0 {
+	if p.ForwardScheme == "https" || p.UpstreamSNI != "" || p.KeepaliveConns > 0 || p.UpstreamTimeoutSec > 0 || p.DisableUpstreamCompression {
 		b.WriteString("\t\ttransport http {\n")
 		if p.ForwardScheme == "https" {
 			b.WriteString("\t\t\ttls\n")
@@ -268,6 +268,9 @@ func RenderProxyHostCaddyfile(p models.ProxyHost) string {
 		if p.UpstreamTimeoutSec > 0 {
 			fmt.Fprintf(&b, "\t\t\tdial_timeout %ds\n", p.UpstreamTimeoutSec)
 			fmt.Fprintf(&b, "\t\t\tresponse_header_timeout %ds\n", p.UpstreamTimeoutSec)
+		}
+		if p.DisableUpstreamCompression {
+			b.WriteString("\t\t\tcompression off\n") // v2.12.52
 		}
 		b.WriteString("\t\t}\n")
 	}
