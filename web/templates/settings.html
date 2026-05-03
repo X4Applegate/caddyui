@@ -412,10 +412,34 @@
     </div>
 
     <div>
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">Webhook Secret <span class="text-ink-400 font-normal">(optional)</span></label>
-      <input name="webhook_secret" value="{{.WebhookSecret}}" type="password" placeholder=""
+      <label for="webhook-secret" class="block text-sm font-medium text-ink-800 mb-1.5">Webhook Secret <span class="text-ink-400 font-normal">(optional)</span></label>
+      <input id="webhook-secret" name="webhook_secret" value="{{.WebhookSecret}}" type="password" placeholder=""
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       <p class="text-xs text-ink-500 mt-1.5">If set, each webhook POST includes an X-Signature-256 header with HMAC-SHA256 of the payload (compatible with GitHub's webhook format)</p>
+    </div>
+
+    {{/* v2.12.51: ntfy.sh push channel. Free, no account needed for
+         public topics on ntfy.sh; self-hostable for private topics.
+         Sent ALONGSIDE email + generic webhook — not a replacement. */}}
+    <div class="pt-3 border-t border-ink-100">
+      <div class="text-sm font-semibold text-ink-900 mb-1">ntfy.sh push <span class="text-xs text-ink-400 font-normal">(optional)</span></div>
+      <p class="text-xs text-ink-500 mb-3">Free push notifications to your phone via the <a href="https://ntfy.sh" target="_blank" rel="noopener" class="text-brand-600 hover:text-brand-700">ntfy.sh app</a>. Public ntfy.sh topics need no account; for private alerts, self-host or use a paid reserved topic with a bearer token.</p>
+    </div>
+    <div>
+      <label for="notify-ntfy-url" class="block text-sm font-medium text-ink-800 mb-1.5">ntfy URL</label>
+      <input id="notify-ntfy-url" name="notify_ntfy_url" value="{{.NtfyURL}}" type="url" placeholder="https://ntfy.sh/your-topic-name"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Full URL with topic. Examples: <code class="bg-ink-100 px-1 rounded">https://ntfy.sh/cert-alerts-jK3xPq</code> (public) or <code class="bg-ink-100 px-1 rounded">https://ntfy.example.com/caddyui</code> (self-hosted).</p>
+    </div>
+    <div>
+      <label for="notify-ntfy-token" class="block text-sm font-medium text-ink-800 mb-1.5">
+        Bearer Token <span class="text-ink-400 font-normal">(optional)</span>
+        {{if .NtfyTokenSet}}<span class="text-ink-400 font-normal ml-1">(leave blank to keep existing)</span>{{end}}
+      </label>
+      <input id="notify-ntfy-token" name="notify_ntfy_token" value="" type="password" autocomplete="new-password"
+        placeholder="{{if .NtfyTokenSet}}•••••••• (token set){{else}}tk_AAAAAAAAAAAAAAAAAAAAAAAA{{end}}"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Required for protected topics on a self-hosted ntfy or paid reserved topics. Sent as <code class="bg-ink-100 px-1 rounded">Authorization: Bearer ...</code> header.</p>
     </div>
 
     {{/* Save + Test webhook buttons — same pattern as the SMTP card. */}}

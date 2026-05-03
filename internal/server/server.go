@@ -3753,17 +3753,17 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.trySyncCaddy(s.currentServerID(r), p.CertificateID != 0)
-	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" {
-		domains := p.Domains
-		db := s.DB
-		go func() {
-			payload, _ := json.Marshal(map[string]any{
-				"event":   "proxy_host_created",
-				"message": "Proxy host created: " + domains,
-				"domains": domains,
-			})
-			sendWebhookPayload(db, whURL, payload)
-		}()
+	{
+		// v2.12.51: sendNotification fans out to every configured channel
+		// (generic webhook + ntfy + future Telegram/Discord/Gotify) and
+		// runs each in its own goroutine, replacing the per-channel
+		// `if URL { go func() }` pattern that used to live here.
+		payload, _ := json.Marshal(map[string]any{
+			"event":   "proxy_host_created",
+			"message": "Proxy host created: " + p.Domains,
+			"domains": p.Domains,
+		})
+		sendNotification(s.DB, payload)
 	}
 	if len(deployTo) > 0 {
 		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
@@ -3927,17 +3927,13 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
-	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" {
-		domains := p.Domains
-		db := s.DB
-		go func() {
-			payload, _ := json.Marshal(map[string]any{
-				"event":   "proxy_host_updated",
-				"message": "Proxy host updated: " + domains,
-				"domains": domains,
-			})
-			sendWebhookPayload(db, whURL, payload)
-		}()
+	{
+		payload, _ := json.Marshal(map[string]any{
+			"event":   "proxy_host_updated",
+			"message": "Proxy host updated: " + p.Domains,
+			"domains": p.Domains,
+		})
+		sendNotification(s.DB, payload)
 	}
 	if len(deployTo) > 0 {
 		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
@@ -3976,17 +3972,13 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
-	if whURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL); whURL != "" && old != nil {
-		domains := old.Domains
-		db := s.DB
-		go func() {
-			payload, _ := json.Marshal(map[string]any{
-				"event":   "proxy_host_deleted",
-				"message": "Proxy host deleted: " + domains,
-				"domains": domains,
-			})
-			sendWebhookPayload(db, whURL, payload)
-		}()
+	if old != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"event":   "proxy_host_deleted",
+			"message": "Proxy host deleted: " + old.Domains,
+			"domains": old.Domains,
+		})
+		sendNotification(s.DB, payload)
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
 }
@@ -9516,6 +9508,12 @@ const (
 	settingNotifyDaysBefore    = "notify_days_before"
 	defaultNotifyDaysBefore    = 14
 
+	// v2.12.51: ntfy.sh push channel. Free, no account needed for public
+	// topics on ntfy.sh; self-hostable for private topics. Most popular
+	// notification channel in the homelab community.
+	settingNotifyNtfyURL   = "notify_ntfy_url"   // full URL e.g. https://ntfy.sh/cert-alerts
+	settingNotifyNtfyToken = "notify_ntfy_token" // optional bearer token for protected/self-hosted topics
+
 	// SMTP settings (stored in the key-value settings table).
 	settingSMTPHost       = "smtp_host"
 	settingSMTPPort       = "smtp_port"
@@ -10374,15 +10372,15 @@ func runUpstreamCheck(db *sql.DB) {
 				srv.Name, srv.AdminURL, addr, event, time.Now().UTC().Format(time.RFC3339),
 			)
 
-			// Send webhook.
-			if webhookURL != "" {
-				payload, _ := json.Marshal(map[string]any{
-					"event":    "upstream_" + event,
-					"server":   srv.Name,
-					"upstream": addr,
-				})
-				sendWebhookPayload(db, webhookURL, payload)
-			}
+			// v2.12.51: sendNotification fans out to webhook + ntfy + future
+			// channels. Includes a "message" field so ntfy gets readable text.
+			payload, _ := json.Marshal(map[string]any{
+				"event":    "upstream_" + event,
+				"message":  fmt.Sprintf("%s upstream %s on server %s", event, addr, srv.Name),
+				"server":   srv.Name,
+				"upstream": addr,
+			})
+			sendNotification(db, payload)
 			// Send email.
 			if emailOK {
 				if err := sendEmail(db, subject, body); err != nil {
@@ -10501,14 +10499,21 @@ func runNotifierCheck(db *sql.DB) {
 
 		sent := false
 
-		// Webhook notification.
-		if webhookURL != "" {
+		// v2.12.51: webhook + ntfy + future channels via sendNotification.
+		// `sent` is still set so the email branch knows whether anything
+		// went out (it tracks whether a dedup entry should be written).
+		hasChannel := webhookURL != ""
+		if u, _ := models.GetSetting(db, settingNotifyNtfyURL); u != "" {
+			hasChannel = true
+		}
+		if hasChannel {
 			payload, _ := json.Marshal(map[string]any{
 				"event":     "cert_expiring",
+				"message":   fmt.Sprintf("Certificate %s expires in %d days", domain, daysLeft),
 				"domain":    domain,
 				"days_left": daysLeft,
 			})
-			sendWebhookPayload(db, webhookURL, payload)
+			sendNotification(db, payload)
 			sent = true
 		}
 
@@ -10603,14 +10608,19 @@ func runProxyHostCertExpiryCheck(db *sql.DB, webhookURL string, emailOK bool, da
 			daysLeft := int(remaining.Hours() / 24)
 
 			sent := false
-			if webhookURL != "" {
+			hasChannel := webhookURL != ""
+			if u, _ := models.GetSetting(db, settingNotifyNtfyURL); u != "" {
+				hasChannel = true
+			}
+			if hasChannel {
 				payload, _ := json.Marshal(map[string]any{
 					"event":     "proxy_cert_expiring",
+					"message":   fmt.Sprintf("Live cert for %s expires in %d days (issuer: %s)", first, daysLeft, leaf.Issuer.CommonName),
 					"domain":    first,
 					"days_left": daysLeft,
 					"issuer":    leaf.Issuer.CommonName,
 				})
-				sendWebhookPayload(db, webhookURL, payload)
+				sendNotification(db, payload)
 				sent = true
 			}
 			if emailOK {
@@ -10634,6 +10644,83 @@ func runProxyHostCertExpiryCheck(db *sql.DB, webhookURL string, emailOK bool, da
 				log.Printf("notifier: sent live-cert-expiry notification for %q (%d days left, issuer %q)", first, daysLeft, leaf.Issuer.CommonName)
 			}
 		}
+	}
+}
+
+// sendNotification — v2.12.51: fan-out wrapper that dispatches a single
+// notification event to every channel the user has configured. Replaces
+// the bare `if whURL := models.GetSetting...; sendWebhookPayload(...)`
+// pattern that was duplicated at every call site, and adds ntfy.sh
+// alongside the existing generic-webhook path.
+//
+// The payload is the same canonical JSON every call site already builds:
+//   {"event": "...", "message": "...", ...event-specific fields}
+//
+// For ntfy, "event" becomes the title and "message" becomes the body.
+// For the generic webhook, the full JSON is POSTed verbatim (back-compat
+// with anything users have wired up to it). Future channels (Telegram,
+// Discord, Gotify) get added here.
+//
+// Each channel runs in its own goroutine so a slow / hung remote can't
+// block the request handler — same fire-and-forget shape the old
+// per-site `go func() { sendWebhookPayload(...) }()` pattern used.
+func sendNotification(db *sql.DB, payload []byte) {
+	// Extract title + body from the canonical payload shape for the
+	// channels that need plain text (ntfy / future Telegram / Discord).
+	var meta struct {
+		Event   string `json:"event"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(payload, &meta)
+	title := meta.Event
+	if title == "" {
+		title = "CaddyUI alert"
+	}
+	body := meta.Message
+	if body == "" {
+		// Fall back to the raw JSON if no message field — better than empty.
+		body = string(payload)
+	}
+
+	if whURL, _ := models.GetSetting(db, settingNotifyWebhookURL); whURL != "" {
+		go sendWebhookPayload(db, whURL, payload)
+	}
+	if ntfyURL, _ := models.GetSetting(db, settingNotifyNtfyURL); ntfyURL != "" {
+		go sendNtfyMessage(db, ntfyURL, title, body)
+	}
+}
+
+// sendNtfyMessage POSTs a notification to an ntfy.sh-compatible endpoint.
+// Body goes as plain text; X-Title carries the event name. If a bearer
+// token is configured (for self-hosted ntfy with auth, or ntfy.sh paid
+// reserved topics), it's sent as Authorization: Bearer.
+//
+// ntfy.sh API: https://docs.ntfy.sh/publish/
+func sendNtfyMessage(db *sql.DB, ntfyURL, title, body string) {
+	req, err := http.NewRequest(http.MethodPost, ntfyURL, strings.NewReader(body))
+	if err != nil {
+		log.Printf("sendNtfy: create request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	if title != "" {
+		req.Header.Set("X-Title", title)
+	}
+	// Tag CaddyUI events with a recognisable icon — ntfy renders X-Tags as
+	// emoji shortcodes (https://docs.ntfy.sh/publish/#tags-emojis).
+	req.Header.Set("X-Tags", "shield")
+	if token, _ := models.GetSetting(db, settingNotifyNtfyToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("sendNtfy: POST %s: %v", ntfyURL, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		log.Printf("sendNtfy: %s returned %d: %s", ntfyURL, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 }
 
@@ -11822,6 +11909,9 @@ func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	webhookURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL)
+	// v2.12.51: ntfy.sh push channel — load alongside the existing webhook.
+	ntfyURL, _ := models.GetSetting(s.DB, settingNotifyNtfyURL)
+	ntfyToken, _ := models.GetSetting(s.DB, settingNotifyNtfyToken)
 	daysBeforeStr, _ := models.GetSetting(s.DB, settingNotifyDaysBefore)
 	daysBefore := defaultNotifyDaysBefore
 	if d, err := strconv.Atoi(daysBeforeStr); err == nil && d > 0 {
@@ -12016,6 +12106,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"User":               s.currentUser(r),
 		"WebhookURL":         webhookURL,
 		"WebhookSecret":      mustGetSetting(s.DB, settingNotifyWebhookSecret),
+		// v2.12.51: ntfy.sh — token uses *Set boolean (not the value) so
+		// it never re-renders into the form, same pattern as the v2.12.37
+		// API-key fields. URL is fine to render — it's not secret.
+		"NtfyURL":            ntfyURL,
+		"NtfyTokenSet":       strings.TrimSpace(ntfyToken) != "",
 		"DaysBefore":         daysBefore,
 		"AIEnabled":           aiEnabledStr == "1",
 		"AIProvider":          aiProvider,
@@ -12095,6 +12190,9 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	webhookURL := strings.TrimSpace(r.FormValue("webhook_url"))
 	webhookSecret := strings.TrimSpace(r.FormValue("webhook_secret"))
+	// v2.12.51: ntfy.sh URL stored verbatim; token uses keep-blank-to-preserve
+	// (handled below alongside SMTP password to avoid the F12 leak fix from v2.12.37).
+	ntfyURL := strings.TrimSpace(r.FormValue("notify_ntfy_url"))
 	daysBeforeStr := strings.TrimSpace(r.FormValue("days_before"))
 	daysBefore := defaultNotifyDaysBefore
 	if d, err := strconv.Atoi(daysBeforeStr); err == nil && d > 0 {
@@ -12211,6 +12309,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	kv := map[string]string{
 		settingNotifyWebhookURL:    webhookURL,
 		settingNotifyWebhookSecret: webhookSecret,
+		settingNotifyNtfyURL:       ntfyURL, // v2.12.51
 		settingNotifyDaysBefore:    strconv.Itoa(daysBefore),
 		settingSMTPHost: smtpHost,
 		// v2.11.15: AI assistant settings.
@@ -12369,6 +12468,11 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if k := strings.TrimSpace(r.FormValue("ai_openai_api_key")); k != "" {
 		kv[settingAIOpenAIAPIKey] = k
+	}
+	// v2.12.51: ntfy bearer token — same keep-blank-to-preserve pattern
+	// so the value never re-renders into the form.
+	if t := strings.TrimSpace(r.FormValue("notify_ntfy_token")); t != "" {
+		kv[settingNotifyNtfyToken] = t
 	}
 	for k, v := range kv {
 		if err := models.SetSetting(s.DB, k, v); err != nil {
