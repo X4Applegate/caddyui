@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +36,21 @@ func main() {
 	// by default — the admin endpoint is assumed to be on an internal network.
 	caddyAdminUser := os.Getenv("CADDY_ADMIN_USER")
 	caddyAdminPass := os.Getenv("CADDY_ADMIN_PASS")
+
+	// v2.12.53: friendly error if the data directory isn't writable.
+	// Bind-mount users sometimes hit "unable to open database file (1)"
+	// because the host directory is owned by root (mount default) but
+	// the binary runs as uid 10001. Probe with a temp-file write BEFORE
+	// db.Open so the error message is actionable.
+	if err := probeDataDir(dbPath); err != nil {
+		log.Fatalf(`data directory is not writable by uid 10001 (%v)
+
+CaddyUI runs as non-root uid 10001 inside the container. Fix by:
+  • chown the bind-mount on the host:
+        sudo chown -R 10001:10001 /path/to/caddyui_data
+  • OR run the container as root with --user 0:0 (less secure)
+  • OR use a named docker volume instead of a bind mount`, err)
+	}
 
 	conn, err := db.Open(dbPath)
 	if err != nil {
@@ -129,6 +146,35 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// probeDataDir — v2.12.53: write-test the parent directory of the SQLite
+// DB path so we can produce an actionable "your bind-mount isn't writable
+// by uid 10001" error, instead of the cryptic "unable to open database
+// file (1)" SQLite returns when the dir isn't writable. Returns nil if
+// the directory is writable, error otherwise.
+func probeDataDir(dbPath string) error {
+	dir := dbPath
+	if i := strings.LastIndex(dir, "/"); i >= 0 {
+		dir = dir[:i]
+	}
+	if dir == "" {
+		dir = "."
+	}
+	// Ensure the directory exists. This is a no-op if it does.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	// Try to create + remove a sentinel file. If we can't, the bind-mount
+	// is owned by some other UID and the container's uid 10001 can't write.
+	probe := dir + "/.caddyui-write-probe"
+	f, err := os.Create(probe)
+	if err != nil {
+		return fmt.Errorf("write %s: %w", dir, err)
+	}
+	f.Close()
+	_ = os.Remove(probe)
+	return nil
 }
 
 // initialSync waits for the Caddy admin API to become reachable, then calls
