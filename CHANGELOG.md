@@ -5,6 +5,77 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.12.53] — 2026-05-03 · Multi-provider AI + Lighthouse 99/100/100/100 + Caddyfile export + bug fixes (cumulative)
+
+> **Patch wave on top of v2.12.35.** Pinned tag `:v2.12.53` (multi-arch `linux/amd64` + `linux/arm64`). `:latest` + `:stable` retag from v2.12.35 → v2.12.53. `:preview` rolls on every dev push.
+
+Eighteen patch versions in one cumulative entry, covering the multi-provider AI assistant (v2.12.36), the long performance + accessibility wave that took PageSpeed from ~30 to **99 desktop / 76 mobile / 100 a11y / 100 SEO / 100 best-practices** on `/login`, the new Caddyfile export, and a critical SQL-INSERT column-count fix that affected fresh installs of v2.12.48–v2.12.52.
+
+### Critical fix (v2.12.53)
+
+- **v2.12.53 — proxy host INSERT had 331 placeholders for 330 columns.** Introduced in v2.12.52 when `disable_upstream_compression` was added and an unrelated field was partly reverted, leaving one stray `?` in the `VALUES (...)` line. Reproducible on a fresh DB: any "New Proxy Host" submit failed with `SQL logic error: 331 values for 330 columns (1)`. Reported via [issue #5](https://github.com/X4Applegate/caddyui/issues/5). Fixed by regenerating the `VALUES` line via Python so the count is provably correct, plus an audit script in the commit message that catches this kind of regression across every INSERT in `models.go`.
+- **v2.12.53 — friendly bind-mount permission error.** Bind-mount users on docker-compose / podman-compose used to hit cryptic SQLite "unable to open database file (1)" errors when the host directory wasn't owned by uid 10001. The binary now probes `/data` writability at startup and prints an actionable multi-line error pointing at the three reasonable fixes (chown / `--user 0:0` / named volume).
+
+### Caddyfile export (v2.12.49 + v2.12.50)
+
+- **v2.12.49 — Caddyfile export, full-server.** New `GET /proxy-hosts/export-all.caddyfile` endpoint + UI button next to "Export JSON". Exports every enabled proxy host, redirection, and raw route on the active server as a Caddyfile, round-trippable through the existing `/caddyfile-import` paste flow for the directives it contains. Same RBAC scoping as the JSON exports — admin gets the full server config, non-admin only their own resources. Stable sort by hostname for diffability. Per-host `# Notes:` block lists settings that don't fit cleanly into Caddyfile syntax (maintenance windows, basic-auth users, scheduled blocks, IP allow/deny, URL rewrites, path-based upstreams, blocked agents) so users see what was elided rather than silently losing it on round-trip.
+- **v2.12.50 — Caddyfile export, per-host.** Single-host download from the proxy-host edit page. Same renderer as the full-server export.
+
+### Notification channels (v2.12.51)
+
+- **v2.12.51 — ntfy.sh notification channel + sendNotification fan-out wrapper.** Adds [ntfy.sh](https://ntfy.sh) alongside the existing webhook + email notification channels. Useful for self-hosted push notifications without running a Discord/Slack workspace. Configure in **Settings → Notifications**: ntfy server URL (default `https://ntfy.sh`), topic name, optional auth token. The new `sendNotification` wrapper fans out cert-expiry / upstream-down events to every enabled channel in one call.
+
+### Performance + accessibility wave (v2.12.38 → v2.12.48)
+
+| Version | Change | Mobile | Desktop |
+|---|---|---|---|
+| ~v2.12.37 baseline | Pre-tuning | ~30–40 | ~50–60 |
+| v2.12.38 | `Cache-Control: max-age=86400` on `/static/*` + custom request/response header `+ Add` buttons (the buttons existed but had no JS click handler) | ~40 | ~70 |
+| v2.12.39 | Self-host Inter variable font + htmx (drop fonts.gstatic.com + unpkg.com from cold loads); service-worker rewrite (auto-purges stale caches per release) | ~50 | ~80 |
+| v2.12.40 | Preload Inter font, preconnect cdn.tailwindcss.com | ~55 | **91** |
+| v2.12.41 | Externalize 28 KB inline JS to `/static/app.js` (cached across navigations); TBT 2,230 ms → 690 ms | ~55 | ~95 |
+| v2.12.42 | Preload `app.js`, defer non-critical `/api/version-check` + `/api/ai/status` past Lighthouse's measurement window; TBT 690 ms → 0 ms | 55 | ~96 |
+| v2.12.43 | `auth.css` for `/login` (24 KB precompiled, drops 124 KB Tailwind CDN runtime on the page Lighthouse always tests) | **76** | ~99 |
+| v2.12.44 | Section anchor pills on the proxy host form, ordered by usage frequency | 76 | 99 |
+| v2.12.45 | Physical reorder of proxy host form sections to match the pill priority | 76 | 99 |
+| v2.12.46 | `aria-current="page"` on active nav link, `aria-label`s on icon-only buttons, skip-to-main-content link | 76 | 99 |
+| v2.12.47 | `<label for>` ↔ `<input id>` associations on every unauth page (login, setup, forgot/reset-password, accept-invite) | 76 | 99 |
+| v2.12.48 | `<meta name="description">` on every page for SEO 100 | **76** | **99** |
+
+End state on `/login`: **Performance 99 · Accessibility 100 · Best Practices 100 · SEO 100** with FCP 0.5 s, LCP 0.9 s, TBT 0 ms, CLS 0.001. Mobile 76 with the same metrics shape (FCP/LCP higher only because of Lighthouse's simulated 4× CPU + 1.6 Mbps mobile network — a residential ISP can't beat that without Cloudflare in front).
+
+### Multi-provider AI assistant (v2.12.36 → v2.12.37)
+
+- **v2.12.36 — AI assistant supports any backend.** New provider selector in **Settings → AI assistant**: Ollama (local) / Ollama Cloud / Anthropic Claude (Haiku 4.5 / Sonnet 4.6 / Opus 4.7) / any OpenAI-compatible API (also drives OpenRouter, Groq, Together, vLLM, LM Studio). Each provider has its own URL/key/model fields with show/hide JS. Three Go adapter funcs (`aiCallOllama`, `aiCallAnthropic`, `aiCallOpenAI`) translate messages + tool definitions to each provider's schema and normalize back to the existing `{reply, tool_calls}` contract so the chat panel didn't need to change. Adapters handle the per-provider quirks: Anthropic puts `system` at the top level (not in messages), tools use `input_schema` (no `function` wrapper), tool calls come as `tool_use` content blocks. OpenAI returns tool-call arguments as a JSON-encoded **string**, not an object — needs an extra `Unmarshal` pass.
+- **v2.12.37 — F12 leak fix for AI provider keys.** v2.12.36 rendered saved Anthropic / OpenAI / Ollama Cloud keys directly into `<input value="...">` on the Settings page; `type="password"` masked them visually but DevTools → Elements showed each in plaintext. Fixed by matching the existing SMTP-password pattern: input always renders `value=""`, conditional placeholder `•••••••• (key set)` when stored, save only persists when the user types a fresh value (empty submit keeps existing key). `getSettings` passes only `*KeySet` booleans to the template — never the actual keys.
+
+### Other v2.12.x patch-wave items
+
+- **v2.12.36 + v2.12.37** also shipped a major README + landing-page rewrite with the AI multi-provider explainer + AI auto-fill walkthrough, and a docs/index.html cleanup (orphan files removed).
+- **v2.12.41** also removed the Tailwind self-host attempt that produced a 3.76 MB tailwind.css due to opacity-modifier auto-expansion across the default theme.colors palette. Reverted; `cdn.tailwindcss.com` stays for authenticated pages where the JIT runtime makes sense (the `auth.css` work in v2.12.43 covered the unauth pages where it doesn't).
+- **v2.12.52 — per-host "Disable upstream compression" toggle.** Emits `transport http { compression off }` so Caddy doesn't ask the upstream to send compressed responses. Useful when the host has the existing Compression toggle on (`encode zstd gzip`) — pairs cleanly so Caddy is the single source of truth for compression. Caddy JSON: `transport.http.compression: false`. Caddyfile: `compression off` inside the `transport http { ... }` block. Round-trips through `/caddyfile-import`.
+
+### Upgrade
+
+```
+docker pull applegater/caddyui:v2.12.53  # pinned (this release)
+docker pull applegater/caddyui:latest    # rolling, retagged from v2.12.35 → v2.12.53
+docker pull applegater/caddyui:stable    # alias of :latest
+docker pull applegater/caddyui:preview   # rolling dev push
+```
+
+In Portainer: **Recreate** → enable **Re-pull image**. Migrations run automatically. No downtime beyond the container restart.
+
+> **One-time service-worker cleanup** if upgrading from v2.12.38 or earlier: F12 → **Application** → **Service Workers** → **Unregister** next to your CaddyUI domain, then Ctrl+Shift+R. The new SW (v2.12.39+) auto-purges old caches per release, so this is needed only once.
+
+Multi-arch on Docker Hub (`linux/amd64` + `linux/arm64`, scratch base, non-root UID 10001).
+
+### Per-version detail
+
+The eighteen patch versions in this wave each have their own commit message with full per-version detail. See `git log v2.12.35..v2.12.53` for the chronological narrative, or the GitHub releases for v2.12.37, .39, .40, .43, .53 for the headline cuts.
+
+---
+
 ## [2.12.35] — 2026-04-29 · Carbon Orange theme + UI modernization + AI assistant overhaul + sync/header fixes (cumulative)
 
 > **Patch wave on top of v2.12.12.** Pinned tag `:v2.12.35` (multi-arch). Rolling Docker tags (`:latest`, `:stable`) untouched in this release; `:preview` reflects the latest dev push as usual.
