@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.13.0] — 2026-05-10 · REST API v1 — full coverage for raw routes and certificates
+
+> `:preview` updated. Pinned tag `:v2.13.0` published.
+
+### Added
+
+- **v2.13.0 — REST API v1 for raw routes.** Full CRUD + toggle: `GET /api/v1/raw-routes`, `GET /api/v1/raw-routes/{id}`, `POST /api/v1/raw-routes`, `PUT /api/v1/raw-routes/{id}`, `DELETE /api/v1/raw-routes/{id}`, `POST /api/v1/raw-routes/{id}/toggle`. Create/update accept `label`, `json_data`, `caddyfile_src`, `enabled`, `certificate_id`, `force_ssl`, `block_common_exploits`. Responses include the same fields plus `owner_email`, `created_at`, `updated_at`. Caddy is synced after every write. Requires write-scoped token or admin/write role for mutations.
+- **v2.13.0 — REST API v1 for certificates.** Full CRUD: `GET /api/v1/certificates`, `GET /api/v1/certificates/{id}`, `POST /api/v1/certificates`, `PUT /api/v1/certificates/{id}`, `DELETE /api/v1/certificates/{id}`. Create/update accept `name`, `domains`, `source` (`pem` or `path`), `cert_pem`, `key_pem`, `cert_path`, `key_path`. Delete is blocked with HTTP 409 if the certificate is still referenced by any proxy host, redirection host, or raw route. Respects the existing per-user ownership model — non-admin users see only their own uploads plus global (admin-owned) certs.
+- **v2.13.0 — `models.ToggleRawRoute`.** Added `ToggleRawRoute` to the models package (mirrors `ToggleProxyHost` / `ToggleRedirectionHost`) to support the new API toggle endpoint cleanly.
+
+---
+
 ## [2.12.54] — 2026-05-10 · REST API v1 — full proxy host field coverage + docs fixes
 
 >  `:preview` updated. Pinned tag `:v2.12.54` published (multi-arch `linux/amd64` + `linux/arm64`).

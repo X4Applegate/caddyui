@@ -590,6 +590,10 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/api/v1/proxy-hosts/{id}", s.apiV1GetProxyHost)
 		r.Get("/api/v1/redirection-hosts", s.apiV1ListRedirectionHosts)
 		r.Get("/api/v1/redirection-hosts/{id}", s.apiV1GetRedirectionHost)
+		r.Get("/api/v1/raw-routes", s.apiV1ListRawRoutes)
+		r.Get("/api/v1/raw-routes/{id}", s.apiV1GetRawRoute)
+		r.Get("/api/v1/certificates", s.apiV1ListCertificates)
+		r.Get("/api/v1/certificates/{id}", s.apiV1GetCertificate)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -627,6 +631,13 @@ func (s *Server) Routes() http.Handler {
 			r.Put("/api/v1/redirection-hosts/{id}", s.apiV1UpdateRedirectionHost)
 			r.Delete("/api/v1/redirection-hosts/{id}", s.apiV1DeleteRedirectionHost)
 			r.Post("/api/v1/redirection-hosts/{id}/toggle", s.apiV1ToggleRedirectionHost)
+			r.Post("/api/v1/raw-routes", s.apiV1CreateRawRoute)
+			r.Put("/api/v1/raw-routes/{id}", s.apiV1UpdateRawRoute)
+			r.Delete("/api/v1/raw-routes/{id}", s.apiV1DeleteRawRoute)
+			r.Post("/api/v1/raw-routes/{id}/toggle", s.apiV1ToggleRawRoute)
+			r.Post("/api/v1/certificates", s.apiV1CreateCertificate)
+			r.Put("/api/v1/certificates/{id}", s.apiV1UpdateCertificate)
+			r.Delete("/api/v1/certificates/{id}", s.apiV1DeleteCertificate)
 
 			r.Get("/redirection-hosts/new", s.newRedirectionHost)
 			r.Post("/redirection-hosts", s.createRedirectionHost)
@@ -13511,3 +13522,377 @@ func (s *Server) apiV1ToggleRedirectionHost(w http.ResponseWriter, r *http.Reque
 }
 
 
+
+// --- REST JSON API v1: Raw Routes ---
+
+func rawRouteToAPIMap(r *models.RawRoute) map[string]any {
+	return map[string]any{
+		"id":                    r.ID,
+		"label":                 r.Label,
+		"json_data":             r.JSONData,
+		"caddyfile_src":         r.CaddyfileSrc,
+		"enabled":               r.Enabled,
+		"certificate_id":        r.CertificateID,
+		"force_ssl":             r.ForceSSL,
+		"block_common_exploits": r.BlockCommonExploits,
+		"owner_email":           r.OwnerEmail,
+		"created_at":            r.CreatedAt,
+		"updated_at":            r.UpdatedAt,
+	}
+}
+
+// GET /api/v1/raw-routes
+func (s *Server) apiV1ListRawRoutes(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	routes, err := models.ListRawRoutes(s.DB, s.currentServerID(r), cu.ID, cu.IsAdmin, nil)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(routes))
+	for i := range routes {
+		out = append(out, rawRouteToAPIMap(&routes[i]))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/v1/raw-routes/{id}
+func (s *Server) apiV1GetRawRoute(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	rr, err := models.GetRawRoute(s.DB, id)
+	if err != nil || rr == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, rawRouteToAPIMap(rr))
+}
+
+// POST /api/v1/raw-routes
+func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var inp struct {
+		Label               string `json:"label"`
+		JSONData            string `json:"json_data"`
+		CaddyfileSrc        string `json:"caddyfile_src"`
+		Enabled             bool   `json:"enabled"`
+		CertificateID       int64  `json:"certificate_id"`
+		ForceSSL            bool   `json:"force_ssl"`
+		BlockCommonExploits bool   `json:"block_common_exploits"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if inp.JSONData == "" {
+		writeJSONError(w, http.StatusBadRequest, "json_data is required")
+		return
+	}
+	rr := &models.RawRoute{
+		Label: inp.Label, JSONData: inp.JSONData, CaddyfileSrc: inp.CaddyfileSrc,
+		Enabled: inp.Enabled, CertificateID: inp.CertificateID,
+		ForceSSL: inp.ForceSSL, BlockCommonExploits: inp.BlockCommonExploits,
+	}
+	serverID := s.currentServerID(r)
+	ownerID := int64(0)
+	if !cu.IsAdmin {
+		ownerID = cu.ID
+	}
+	newID, err := models.CreateRawRoute(s.DB, serverID, ownerID, rr)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, serverID, cu.Email, "rawroute_create", fmt.Sprintf("rr:%d", newID), inp.Label, true)
+	s.trySyncCaddy(serverID, false)
+	created, _ := models.GetRawRoute(s.DB, newID)
+	if created == nil {
+		created = rr
+		created.ID = newID
+	}
+	writeJSON(w, http.StatusCreated, rawRouteToAPIMap(created))
+}
+
+// PUT /api/v1/raw-routes/{id}
+func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	existing, err := models.GetRawRoute(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var inp struct {
+		Label               string `json:"label"`
+		JSONData            string `json:"json_data"`
+		CaddyfileSrc        string `json:"caddyfile_src"`
+		Enabled             bool   `json:"enabled"`
+		CertificateID       int64  `json:"certificate_id"`
+		ForceSSL            bool   `json:"force_ssl"`
+		BlockCommonExploits bool   `json:"block_common_exploits"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if inp.Label != "" {
+		existing.Label = inp.Label
+	}
+	if inp.JSONData != "" {
+		existing.JSONData = inp.JSONData
+	}
+	if inp.CaddyfileSrc != "" {
+		existing.CaddyfileSrc = inp.CaddyfileSrc
+	}
+	existing.Enabled = inp.Enabled
+	existing.ForceSSL = inp.ForceSSL
+	existing.BlockCommonExploits = inp.BlockCommonExploits
+	if inp.CertificateID != 0 {
+		existing.CertificateID = inp.CertificateID
+	}
+	if err := models.UpdateRawRoute(s.DB, existing); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "rawroute_update", fmt.Sprintf("rr:%d", id), existing.Label, true)
+	s.trySyncCaddy(s.currentServerID(r), false)
+	updated, _ := models.GetRawRoute(s.DB, id)
+	if updated == nil {
+		updated = existing
+	}
+	writeJSON(w, http.StatusOK, rawRouteToAPIMap(updated))
+}
+
+// DELETE /api/v1/raw-routes/{id}
+func (s *Server) apiV1DeleteRawRoute(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := models.DeleteRawRoute(s.DB, id); err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "rawroute_delete", fmt.Sprintf("rr:%d", id), "", true)
+	s.trySyncCaddy(s.currentServerID(r), false)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+// POST /api/v1/raw-routes/{id}/toggle
+func (s *Server) apiV1ToggleRawRoute(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	enabled, err := models.ToggleRawRoute(s.DB, id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found or error: "+err.Error())
+		return
+	}
+	rr, _ := models.GetRawRoute(s.DB, id)
+	if rr != nil {
+		s.syncCaddy(s.currentServerID(r), false)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "enabled": enabled})
+}
+
+// --- REST JSON API v1: Certificates ---
+
+func certificateToAPIMap(c *models.Certificate) map[string]any {
+	ownerID := int64(0)
+	if c.OwnerID.Valid {
+		ownerID = c.OwnerID.Int64
+	}
+	return map[string]any{
+		"id":          c.ID,
+		"name":        c.Name,
+		"domains":     c.Domains,
+		"source":      c.Source,
+		"cert_pem":    c.CertPEM,
+		"key_pem":     c.KeyPEM,
+		"cert_path":   c.CertPath,
+		"key_path":    c.KeyPath,
+		"owner_id":    ownerID,
+		"owner_email": c.OwnerEmail,
+		"created_at":  c.CreatedAt,
+		"updated_at":  c.UpdatedAt,
+	}
+}
+
+// GET /api/v1/certificates
+func (s *Server) apiV1ListCertificates(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	certs, err := models.ListCertificatesForUser(s.DB, s.currentServerID(r), cu.ID, cu.IsAdmin, nil)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(certs))
+	for i := range certs {
+		out = append(out, certificateToAPIMap(&certs[i]))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/v1/certificates/{id}
+func (s *Server) apiV1GetCertificate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	c, err := models.GetCertificate(s.DB, id)
+	if err != nil || c == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, certificateToAPIMap(c))
+}
+
+// POST /api/v1/certificates
+func (s *Server) apiV1CreateCertificate(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var inp struct {
+		Name     string `json:"name"`
+		Domains  string `json:"domains"`
+		Source   string `json:"source"`
+		CertPEM  string `json:"cert_pem"`
+		KeyPEM   string `json:"key_pem"`
+		CertPath string `json:"cert_path"`
+		KeyPath  string `json:"key_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if inp.Name == "" {
+		writeJSONError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if inp.Source == "" {
+		inp.Source = "pem"
+	}
+	c := &models.Certificate{
+		Name: inp.Name, Domains: inp.Domains, Source: inp.Source,
+		CertPEM: inp.CertPEM, KeyPEM: inp.KeyPEM,
+		CertPath: inp.CertPath, KeyPath: inp.KeyPath,
+	}
+	serverID := s.currentServerID(r)
+	ownerID := int64(0)
+	if !cu.IsAdmin {
+		ownerID = cu.ID
+	}
+	newID, err := models.CreateCertificate(s.DB, serverID, ownerID, c)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, serverID, cu.Email, "cert_create", fmt.Sprintf("cert:%d", newID), inp.Name, true)
+	created, _ := models.GetCertificate(s.DB, newID)
+	if created == nil {
+		created = c
+		created.ID = newID
+	}
+	writeJSON(w, http.StatusCreated, certificateToAPIMap(created))
+}
+
+// PUT /api/v1/certificates/{id}
+func (s *Server) apiV1UpdateCertificate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	existing, err := models.GetCertificate(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var inp struct {
+		Name     string `json:"name"`
+		Domains  string `json:"domains"`
+		Source   string `json:"source"`
+		CertPEM  string `json:"cert_pem"`
+		KeyPEM   string `json:"key_pem"`
+		CertPath string `json:"cert_path"`
+		KeyPath  string `json:"key_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if inp.Name != "" {
+		existing.Name = inp.Name
+	}
+	if inp.Domains != "" {
+		existing.Domains = inp.Domains
+	}
+	if inp.Source != "" {
+		existing.Source = inp.Source
+	}
+	if inp.CertPEM != "" {
+		existing.CertPEM = inp.CertPEM
+	}
+	if inp.KeyPEM != "" {
+		existing.KeyPEM = inp.KeyPEM
+	}
+	if inp.CertPath != "" {
+		existing.CertPath = inp.CertPath
+	}
+	if inp.KeyPath != "" {
+		existing.KeyPath = inp.KeyPath
+	}
+	if err := models.UpdateCertificate(s.DB, existing); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), existing.Name, true)
+	updated, _ := models.GetCertificate(s.DB, id)
+	if updated == nil {
+		updated = existing
+	}
+	writeJSON(w, http.StatusOK, certificateToAPIMap(updated))
+}
+
+// DELETE /api/v1/certificates/{id}
+func (s *Server) apiV1DeleteCertificate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if inUse, _ := models.CertificateInUse(s.DB, id); inUse > 0 {
+		writeJSONError(w, http.StatusConflict, "certificate is in use by one or more hosts; remove references first")
+		return
+	}
+	if err := models.DeleteCertificate(s.DB, id); err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
