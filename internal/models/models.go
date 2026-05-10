@@ -3163,6 +3163,17 @@ func ToggleRedirectionHost(db *sql.DB, id int64) (bool, error) {
 	}
 	return en == 1, nil
 }
+// ToggleRawRoute flips the enabled flag on a raw route and returns the new state.
+func ToggleRawRoute(db *sql.DB, id int64) (bool, error) {
+	if _, err := db.Exec(`UPDATE raw_routes SET enabled = 1 - enabled, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
+		return false, err
+	}
+	var en int
+	if err := db.QueryRow(`SELECT enabled FROM raw_routes WHERE id = ?`, id).Scan(&en); err != nil {
+		return false, err
+	}
+	return en == 1, nil
+}
 
 func DeleteProxyHost(db *sql.DB, id int64) error {
 	_, err := db.Exec(`DELETE FROM proxy_hosts WHERE id = ?`, id)
