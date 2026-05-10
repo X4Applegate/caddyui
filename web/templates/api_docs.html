@@ -60,15 +60,23 @@
         <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">[
   {
     "id": 1,
-    "domain_names": "app.example.com",
+    "domains": "app.example.com",
     "forward_scheme": "http",
     "forward_host": "192.168.1.10",
     "forward_port": 3000,
-    "enabled": true,
     "ssl_enabled": true,
+    "ssl_forced": false,
     "http2_support": true,
+    "websocket_support": false,
+    "enabled": true,
     "maintenance_mode": false,
-    "created_at": "2026-01-15T12:00:00Z"
+    "compression_enabled": false,
+    "cors_enabled": false,
+    "certificate_id": 0,
+    "tags": "",
+    "owner_email": "admin@example.com",
+    "created_at": "2026-01-15T12:00:00Z",
+    "updated_at": "2026-01-15T12:00:00Z"
   }
 ]</pre>
       </div>
@@ -84,15 +92,23 @@
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
         <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
   "id": 1,
-  "domain_names": "app.example.com",
+  "domains": "app.example.com",
   "forward_scheme": "http",
   "forward_host": "192.168.1.10",
   "forward_port": 3000,
-  "enabled": true,
   "ssl_enabled": true,
+  "ssl_forced": false,
   "http2_support": true,
+  "websocket_support": false,
+  "enabled": true,
   "maintenance_mode": false,
-  "created_at": "2026-01-15T12:00:00Z"
+  "compression_enabled": false,
+  "cors_enabled": false,
+  "certificate_id": 0,
+  "tags": "",
+  "owner_email": "admin@example.com",
+  "created_at": "2026-01-15T12:00:00Z",
+  "updated_at": "2026-01-15T12:00:00Z"
 }</pre>
       </div>
     </div>
@@ -106,18 +122,28 @@
       <div>
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
         <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
-  "domain_names": "app.example.com",
+  "domains": "app.example.com",
   "forward_scheme": "http",
   "forward_host": "192.168.1.10",
   "forward_port": 3000,
   "ssl_enabled": true,
+  "ssl_forced": false,
   "http2_support": true,
-  "websocket_support": true
+  "websocket_support": true,
+  "enabled": true,
+  "compression_enabled": false,
+  "cors_enabled": false,
+  "cors_origins": "*",
+  "block_common_exploits": false,
+  "security_headers_enabled": false,
+  "certificate_id": 0,
+  "tags": "",
+  "notes": ""
 }</pre>
       </div>
       <div>
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response — <span class="font-mono normal-case">201 Created</span></p>
-        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 7, "domain_names": "app.example.com", … }</pre>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 7, "domains": "app.example.com", … }</pre>
       </div>
     </div>
 
@@ -201,13 +227,17 @@
         <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">[
   {
     "id": 1,
-    "domain_names": "old.example.com",
+    "domains": "old.example.com",
     "forward_scheme": "https",
-    "forward_domain_name": "new.example.com",
-    "http_code": 301,
+    "forward_domain": "new.example.com",
+    "forward_http_code": 301,
     "preserve_path": true,
+    "ssl_enabled": false,
     "enabled": true,
-    "created_at": "2026-01-15T12:00:00Z"
+    "tags": "",
+    "owner_email": "admin@example.com",
+    "created_at": "2026-01-15T12:00:00Z",
+    "updated_at": "2026-01-15T12:00:00Z"
   }
 ]</pre>
       </div>
@@ -223,13 +253,17 @@
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response</p>
         <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
   "id": 1,
-  "domain_names": "old.example.com",
+  "domains": "old.example.com",
   "forward_scheme": "https",
-  "forward_domain_name": "new.example.com",
-  "http_code": 301,
+  "forward_domain": "new.example.com",
+  "forward_http_code": 301,
   "preserve_path": true,
+  "ssl_enabled": false,
   "enabled": true,
-  "created_at": "2026-01-15T12:00:00Z"
+  "tags": "",
+  "owner_email": "admin@example.com",
+  "created_at": "2026-01-15T12:00:00Z",
+  "updated_at": "2026-01-15T12:00:00Z"
 }</pre>
       </div>
     </div>
@@ -243,16 +277,18 @@
       <div>
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
         <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
-  "domain_names": "old.example.com",
+  "domains": "old.example.com",
   "forward_scheme": "https",
-  "forward_domain_name": "new.example.com",
-  "http_code": 301,
-  "preserve_path": true
+  "forward_domain": "new.example.com",
+  "forward_http_code": 301,
+  "preserve_path": true,
+  "ssl_enabled": false,
+  "enabled": true
 }</pre>
       </div>
       <div>
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response — <span class="font-mono normal-case">201 Created</span></p>
-        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 3, "domain_names": "old.example.com", … }</pre>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 3, "domains": "old.example.com", … }</pre>
       </div>
     </div>
 
@@ -265,13 +301,13 @@
       <div>
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
         <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
-  "http_code": 308,
+  "forward_http_code": 308,
   "preserve_path": false
 }</pre>
       </div>
       <div>
         <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Response — <span class="font-mono normal-case">200 OK</span></p>
-        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 3, "http_code": 308, "preserve_path": false, … }</pre>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{ "id": 3, "forward_http_code": 308, "preserve_path": false, … }</pre>
       </div>
     </div>
 

@@ -13191,13 +13191,39 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	if inp.ForwardScheme != "" { existing.ForwardScheme = inp.ForwardScheme }
 	if inp.ForwardHost != "" { existing.ForwardHost = inp.ForwardHost }
 	if inp.ForwardPort != 0 { existing.ForwardPort = inp.ForwardPort }
+	if inp.CertificateID != 0 { existing.CertificateID = inp.CertificateID }
+	if inp.TLSMinVersion != "" { existing.TLSMinVersion = inp.TLSMinVersion }
+	if inp.MaintenanceMsg != "" { existing.MaintenanceMsg = inp.MaintenanceMsg }
+	if inp.MaxRequestBodyMB != 0 { existing.MaxRequestBodyMB = inp.MaxRequestBodyMB }
+	if inp.UpstreamTimeoutSec != 0 { existing.UpstreamTimeoutSec = inp.UpstreamTimeoutSec }
+	if inp.CORSOrigins != "" { existing.CORSOrigins = inp.CORSOrigins }
+	if inp.HealthCheckURI != "" { existing.HealthCheckURI = inp.HealthCheckURI }
+	if inp.HealthCheckIntervalSec != 0 { existing.HealthCheckIntervalSec = inp.HealthCheckIntervalSec }
+	if inp.HealthCheckMethod != "" { existing.HealthCheckMethod = inp.HealthCheckMethod }
+	if inp.KeepaliveConns != 0 { existing.KeepaliveConns = inp.KeepaliveConns }
+	if inp.StripRespHeaders != "" { existing.StripRespHeaders = inp.StripRespHeaders }
+	if inp.BlockedAgents != "" { existing.BlockedAgents = inp.BlockedAgents }
+	if inp.UpstreamSNI != "" { existing.UpstreamSNI = inp.UpstreamSNI }
+	if inp.MaxConnsPerHost != 0 { existing.MaxConnsPerHost = inp.MaxConnsPerHost }
+	if inp.UpstreamRetries != 0 { existing.UpstreamRetries = inp.UpstreamRetries }
+	if inp.ProxyProtocol != "" { existing.ProxyProtocol = inp.ProxyProtocol }
+	if inp.ExtraUpstreams != "" { existing.ExtraUpstreams = inp.ExtraUpstreams }
 	existing.WebsocketSupport = inp.WebsocketSupport
 	existing.BlockCommonExploits = inp.BlockCommonExploits
 	existing.SSLEnabled = inp.SSLEnabled
 	existing.SSLForced = inp.SSLForced
 	existing.HTTP2Support = inp.HTTP2Support
 	existing.Enabled = inp.Enabled
+	existing.BasicAuthEnabled = inp.BasicAuthEnabled
+	existing.CompressionEnabled = inp.CompressionEnabled
+	existing.SecurityHeadersEnabled = inp.SecurityHeadersEnabled
 	existing.MaintenanceMode = inp.MaintenanceMode
+	existing.StickySessions = inp.StickySessions
+	existing.CORSEnabled = inp.CORSEnabled
+	existing.DisableAccessLog = inp.DisableAccessLog
+	existing.AddRequestID = inp.AddRequestID
+	existing.HSTSPreload = inp.HSTSPreload
+	existing.ForceHTTP1 = inp.ForceHTTP1
 	if inp.Tags != "" { existing.Tags = inp.Tags }
 	if inp.Notes != "" { existing.Notes = inp.Notes }
 	if inp.AccessList != "" { existing.AccessList = inp.AccessList }
