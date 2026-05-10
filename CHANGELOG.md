@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.12.54] — 2026-05-10 · REST API v1 — full proxy host field coverage + docs fixes
+
+>  `:preview` updated. Pinned tag `:v2.12.54` published (multi-arch `linux/amd64` + `linux/arm64`).
+
+### Added / Fixed
+
+- **v2.12.54 — PUT /api/v1/proxy-hosts/{id} now applies all 42 fields.** The update handler previously merged only 16 of the 42 fields accepted by the create endpoint — CORS settings, compression, security headers, TLS minimum version, health-check URI/interval/method, maintenance message, upstream timeout, keepalive connections, sticky sessions, load-balancer policy, strip-response headers, blocked agents, upstream SNI, HSTS preload, max connections per host, upstream retries, force-HTTP/1, proxy protocol, extra upstreams, basic-auth enabled, and certificate ID were all silently ignored on PUT. Every field in `apiProxyHostInput` is now applied on update (strings: merge if non-empty; booleans/ints: always applied).
+- **v2.12.54 — API docs corrected field names.** The `/api/docs` reference page used wrong field names in several examples: `domain_names` → `domains`, `forward_domain_name` → `forward_domain`, `http_code` → `forward_http_code`. Examples now show the actual JSON keys the API returns and include the full set of response fields.
+
+---
+
 ## [2.12.53] — 2026-05-03 · Multi-provider AI + Lighthouse 99/100/100/100 + Caddyfile export + bug fixes (cumulative)
 
 > **Patch wave on top of v2.12.35.** Pinned tag `:v2.12.53` (multi-arch `linux/amd64` + `linux/arm64`). `:latest` + `:stable` retag from v2.12.35 → v2.12.53. `:preview` rolls on every dev push.
