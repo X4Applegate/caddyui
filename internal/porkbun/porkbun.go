@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,6 +41,31 @@ func New(apiKey, secretKey string) *Client {
 	}
 }
 
+// pbInt is an int that Porkbun may return as either a bare JSON number (0)
+// or a quoted string ("0") depending on the endpoint/API version.
+type pbInt int
+
+func (n *pbInt) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		v, err := strconv.Atoi(s)
+		if err != nil {
+			return err
+		}
+		*n = pbInt(v)
+		return nil
+	}
+	var v int
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*n = pbInt(v)
+	return nil
+}
+
 // Domain represents a domain on the Porkbun account.
 type Domain struct {
 	Name         string `json:"domain"`
@@ -47,8 +73,8 @@ type Domain struct {
 	TLD          string `json:"tld"`
 	CreateDate   string `json:"createDate"`
 	ExpireDate   string `json:"expireDate"`
-	AutoRenew    int    `json:"autoRenew"`
-	WhoisPrivacy int    `json:"whoisPrivacy"`
+	AutoRenew    pbInt  `json:"autoRenew"`
+	WhoisPrivacy pbInt  `json:"whoisPrivacy"`
 }
 
 // DNSRecord represents a single Porkbun DNS record.
@@ -238,4 +264,35 @@ func pbErrorMsg(msg string) error {
 		return fmt.Errorf("porkbun: unknown error")
 	}
 	return fmt.Errorf("porkbun: %s", msg)
+}
+
+// SSLBundle holds the certificate material returned by /ssl/retrieve.
+type SSLBundle struct {
+	CertificateChain string // full PEM chain (cert + intermediates)
+	PrivateKey       string // PEM private key
+}
+
+// RetrieveSSL fetches the SSL certificate bundle for a domain from Porkbun.
+// The domain must have "API Access" enabled and a certificate issued through
+// Porkbun. Returns the full chain PEM and private key PEM.
+func (c *Client) RetrieveSSL(domain string) (*SSLBundle, error) {
+	raw, err := c.do("/ssl/retrieve/"+domain, nil)
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		pbResponse
+		CertificateChain string `json:"certificatechain"`
+		PrivateKey       string `json:"privatekey"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, fmt.Errorf("porkbun: decode ssl/retrieve: %w", err)
+	}
+	if r.Status != "SUCCESS" {
+		return nil, pbErrorMsg(r.Message)
+	}
+	return &SSLBundle{
+		CertificateChain: r.CertificateChain,
+		PrivateKey:       r.PrivateKey,
+	}, nil
 }
