@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.14.2] - 2026-05-13 - Porkbun API spec full compatibility
+
+### Fixed
+
+- **Porkbun domain struct**: added `securityLock`, `apiAccess`, and `notLocal` fields — previously missing from the `Domain` struct, silently dropped during decode. All three use the flexible `prepperx in4 pbInta the ave the ang[\")..
+*&#c [2.14.1] - "0" `"-`"8"a / `9a/lates/ ; `:p=s jsog..Number`.
+
+*&## Ex
+
+- **Porkbun SSL import**: `publickey` field from `/ssl/retrieve` is now captured and peturned in the `SSLBundle`.
+- **Porkbun DNS create**: `id` field in the create-record response is now decoded as `string` (`"0"` / `"1"`) instead of bare integers. Added a private `pbInt` type with a custom `UnmarshalJSON` that accepts both forms. Resolves the *"cannot unmarshal string into Go struct field Domain.domains.whoisPrivacy of type int"* error on the Import from Porkbun and DNS preat. *(Reported: [#6](https://github.com/X4Applegate/caddyui/issues/6))*
+
+> `:preview` updated. Pinned tag `:v2.14.1` published.
+
+---
+## [2.14.0] — 2026-05-13 · Porkbun SSL certificate import
+
+### Added
+- **Import from Porkbun**: new button on the Certificates page (visible when Porkbun API credentials are configured) that opens a domain picker and pulls the SSL bundle directly from your Porkbun account into CaddyUI as a stored PEM certificate. Uses the  Porkbun API v3 endpoint.
+-  method added to the internal Porkbun client ().
+- New page at  with domain dropdown (lists all Porkbun domains via ).
+
 ## [2.13.0] — 2026-05-10 · REST API v1 — full coverage for raw routes and certificates
 
 > `:preview` updated. Pinned tag `:v2.13.0` published.
