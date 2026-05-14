@@ -9,17 +9,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ### Fixed
 
-- **Porkbun domain struct**: added `securityLock`, `apiAccess`, and `notLocal` fields — previously missing from the `Domain` struct, silently dropped during decode. All three use the flexible `prepperx in4 pbInta the ave the ang[\")..
-*&#c [2.14.1] - "0" `"-`"8"a / `9a/lates/ ; `:p=s jsog..Number`.
+- **Porkbun domain struct**: added `securityLock`, `apiAccess`, and `notLocal` fields to the `Domain` struct - previously missing, silently dropped during decode. All three use the flexible `pbInt` type to handle string-or-int like the other integer fields.
+- **Porkbun SSL import**: `publickey` field from `/ssl/retrieve` is now captured and returned in the `SSLBundle`.
+- **Porkbun DNS create**: `id` field in the create-record response is now decoded as `string` (matching the v3 spec) instead of `json.Number`.
 
-*&## Ex
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.14.2` published.
 
-- **Porkbun SSL import**: `publickey` field from `/ssl/retrieve` is now captured and peturned in the `SSLBundle`.
-- **Porkbun DNS create**: `id` field in the create-record response is now decoded as `string` (`"0"` / `"1"`) instead of bare integers. Added a private `pbInt` type with a custom `UnmarshalJSON` that accepts both forms. Resolves the *"cannot unmarshal string into Go struct field Domain.domains.whoisPrivacy of type int"* error on the Import from Porkbun and DNS preat. *(Reported: [#6](https://github.com/X4Applegate/caddyui/issues/6))*
+---
+
+## [2.14.1] - 2026-05-13 - Porkbun whoisPrivacy / autoRenew type fix
+
+### Fixed
+
+- **Porkbun JSON type mismatch**: Porkbun's `/domain/listAll` returns `whoisPrivacy` and `autoRenew` as quoted strings instead of bare integers. Added a private `pbInt` type with a custom `UnmarshalJSON` that accepts both forms. Resolves the "cannot unmarshal string into Go struct field Domain.domains.whoisPrivacy of type int" error on the Import from Porkbun and DNS pages. (Reported: issue #6)
 
 > `:preview` updated. Pinned tag `:v2.14.1` published.
 
 ---
+
 ## [2.14.0] — 2026-05-13 · Porkbun SSL certificate import
 
 ### Added
