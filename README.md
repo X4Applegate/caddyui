@@ -45,6 +45,11 @@ See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
 
 ## Features
 
+
+### What's new in v2.14
+
+- **Import SSL from Porkbun** — new button on the Certificates page (visible when Porkbun credentials are saved) that opens a domain picker and pulls the SSL bundle directly from your Porkbun account into CaddyUI as a stored PEM certificate. *(v2.14.0)*
+- **Porkbun API v3 full compatibility** — fixed JSON type mismatches where the Porkbun API returns integer fields (`whoisPrivacy`, `autoRenew`, `securityLock`, `apiAccess`, `notLocal`) as quoted strings; all domain and DNS decode paths now handle both forms transparently. SSL retrieve. *(v2.14.1, v2.14.2)*
 ### What's new in v2.12
 
 - **⌘K / Ctrl+K command palette** — global search across every proxy host, redirection, raw route, and certificate. `↑/↓ Enter Esc`. Color-coded type pills. *(v2.11.5)*
