@@ -75,6 +75,9 @@ type Domain struct {
 	ExpireDate   string `json:"expireDate"`
 	AutoRenew    pbInt  `json:"autoRenew"`
 	WhoisPrivacy pbInt  `json:"whoisPrivacy"`
+	SecurityLock pbInt  `json:"securityLock"`
+	APIAccess    pbInt  `json:"apiAccess"`
+	NotLocal     pbInt  `json:"notLocal"`
 }
 
 // DNSRecord represents a single Porkbun DNS record.
@@ -184,7 +187,7 @@ func (c *Client) CreateRecord(domain, recordType, name, content string, ttl int)
 	}
 	var r struct {
 		pbResponse
-		ID json.Number `json:"id"`
+		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, fmt.Errorf("porkbun: decode create: %w", err)
@@ -193,7 +196,7 @@ func (c *Client) CreateRecord(domain, recordType, name, content string, ttl int)
 		return nil, pbErrorMsg(r.Message)
 	}
 	return &DNSRecord{
-		ID:      r.ID.String(),
+		ID:      r.ID,
 		Name:    strings.TrimPrefix(name+"."+domain, "."),
 		Type:    recordType,
 		Content: content,
@@ -270,6 +273,7 @@ func pbErrorMsg(msg string) error {
 type SSLBundle struct {
 	CertificateChain string // full PEM chain (cert + intermediates)
 	PrivateKey       string // PEM private key
+	PublicKey        string // PEM public key
 }
 
 // RetrieveSSL fetches the SSL certificate bundle for a domain from Porkbun.
@@ -284,6 +288,7 @@ func (c *Client) RetrieveSSL(domain string) (*SSLBundle, error) {
 		pbResponse
 		CertificateChain string `json:"certificatechain"`
 		PrivateKey       string `json:"privatekey"`
+		PublicKey        string `json:"publickey"`
 	}
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, fmt.Errorf("porkbun: decode ssl/retrieve: %w", err)
@@ -294,5 +299,6 @@ func (c *Client) RetrieveSSL(domain string) (*SSLBundle, error) {
 	return &SSLBundle{
 		CertificateChain: r.CertificateChain,
 		PrivateKey:       r.PrivateKey,
+		PublicKey:        r.PublicKey,
 	}, nil
 }
