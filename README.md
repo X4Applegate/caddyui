@@ -186,7 +186,10 @@ services:
       - caddy_config:/config
     environment:
       CADDY_ADMIN: 0.0.0.0:2019
-    command: caddy run --config /config/caddy/autosave.json --resume --adapter json
+    command: >-
+      mkdir -p /config/caddy;
+      [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json;
+      exec caddy run --config /config/caddy/autosave.json --resume --adapter json
     networks:
       - caddyui
 
@@ -217,6 +220,8 @@ networks:
     driver: bridge
 ```
 
+> **💡 Fresh install:** On first boot Caddy has no saved config yet and would crash-loop without one. The `command` above seeds an empty `{}` config automatically on first start — you don’t need to do anything extra.
+
 Open **http://localhost:8081** and complete the first-run setup (create an admin account).
 
 ### Docker Run (standalone)
@@ -246,7 +251,10 @@ services:
     container_name: caddy
     restart: unless-stopped
     # --resume is required so admin-API pushes persist across Caddy restarts.
-    command: caddy run --config /config/caddy/autosave.json --resume --adapter json
+    command: >-
+      mkdir -p /config/caddy;
+      [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json;
+      exec caddy run --config /config/caddy/autosave.json --resume --adapter json
     ports:
       # Bind the admin API to your private tunnel IP (WireGuard / Tailscale).
       # Do NOT expose :2019 on a public interface.
@@ -273,6 +281,10 @@ edge.
 > and discards anything pushed to the admin API. With `--resume` Caddy boots
 > from `autosave.json` (the last live config it received via the admin API),
 > so CaddyUI's pushes survive `docker compose restart`.
+>
+> **Fresh install:** On first boot no `autosave.json` exists yet, so Caddy would
+> crash-loop. The `command` above seeds an empty `{}` config on first start so
+> Caddy comes up cleanly without any extra steps.
 
 ---
 
