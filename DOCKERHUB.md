@@ -26,6 +26,12 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+    environment:
+      CADDY_ADMIN: 0.0.0.0:2019
+    command: >-
+      mkdir -p /config/caddy;
+      [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json;
+      exec caddy run --config /config/caddy/autosave.json --resume --adapter json
 
   caddyui:
     image: applegater/caddyui:latest
@@ -41,6 +47,8 @@ volumes:
   caddy_config:
   caddyui_data:
 ```
+
+> **💡 Fresh install:** On first boot Caddy has no saved config yet. The `command` above seeds an empty `{}` config automatically so Caddy starts cleanly without any extra steps. Without `--resume`, admin-API pushes from CaddyUI would be lost on every `docker compose restart`.
 
 ### Bind-mount note
 
