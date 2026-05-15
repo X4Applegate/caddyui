@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.14.3] - 2026-05-15 - Fresh-install Caddy crash-loop fix
+
+### Fixed
+
+- **Fresh install**: `docker-compose.yml` command now bootstraps an empty `{}` config on first boot so Caddy starts cleanly when `autosave.json` doesn't exist yet on a fresh volume. Previously Caddy would crash-loop with `open /config/caddy/autosave.json: no such file or directory`. Existing installs are unaffected — the one-liner is guarded by `[ -f ... ] ||` and skips entirely when the file already exists. ([#7](https://github.com/X4Applegate/caddyui/issues/7))
+
+### Docs
+
+- `README.md` Quick Start and Agent mode compose examples updated with the bootstrap command.
+- `DOCKERHUB.md` compose example updated with the bootstrap command and a fresh-install callout note.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.14.3` published.
+
+---
+
 ## [2.14.2] - 2026-05-13 - Porkbun API spec full compatibility
 
 ### Fixed
