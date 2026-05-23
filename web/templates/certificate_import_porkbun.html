@@ -1,0 +1,55 @@
+{{define "title"}}Import from Porkbun · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-3">
+  <div>
+    <div class="flex items-center gap-2 mb-1">
+      <a href="/certificates" class="text-sm text-ink-400 hover:text-ink-600 transition">Certificates</a>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-ink-300"><polyline points="9 18 15 12 9 6"/></svg>
+      <span class="text-sm text-ink-700 font-medium">Import from Porkbun</span>
+    </div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Import SSL Certificate from Porkbun</h1>
+    <p class="text-sm text-ink-500 mt-1">Select a domain to pull its SSL certificate bundle directly from your Porkbun account.</p>
+  </div>
+</div>
+
+{{if .Error}}
+<div class="mb-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 mt-0.5 shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  <span>{{.Error}}</span>
+</div>
+{{end}}
+
+{{if .Domains}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-6 max-w-lg">
+  <form method="post" action="/certificates/import/porkbun">
+    <div class="mb-5">
+      <label for="domain" class="block text-sm font-medium text-ink-700 mb-1.5">Domain</label>
+      <select id="domain" name="domain" required
+        class="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="">Select a domain…</option>
+        {{range .Domains}}
+        <option value="{{.Name}}"{{if eq $.Selected .Name}} selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
+      <p class="text-xs text-ink-400 mt-1.5">Only domains with an active SSL certificate on Porkbun can be imported.</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <button type="submit"
+        class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Import Certificate
+      </button>
+      <a href="/certificates" class="text-sm text-ink-500 hover:text-ink-700 transition">Cancel</a>
+    </div>
+  </form>
+</div>
+{{else if not .Error}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-16 text-center max-w-lg">
+  <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+  </div>
+  <div class="text-ink-600 text-sm font-medium">No domains found</div>
+  <div class="text-ink-400 text-xs mt-1">No domains were returned from your Porkbun account.</div>
+</div>
+{{end}}
+{{end}}

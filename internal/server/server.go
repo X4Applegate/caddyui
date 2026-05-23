@@ -38,6 +38,7 @@ import (
 	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/dns"
+	"github.com/X4Applegate/caddyui/internal/porkbun"
 	"github.com/X4Applegate/caddyui/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -681,6 +682,8 @@ func (s *Server) Routes() http.Handler {
 			// v2.11.10: bulk delete on /certificates — same ownership / in-use
 			// guards as the single-row deleteCertificate handler.
 			r.Post("/certificates/bulk-delete", s.bulkDeleteCertificates)
+			r.Get("/certificates/import/porkbun", s.importPorkbunCertificatePage)
+			r.Post("/certificates/import/porkbun", s.importPorkbunCertificate)
 
 			r.Get("/raw-routes/new", s.newRawRoute)
 			r.Post("/raw-routes", s.createRawRoute)
@@ -2517,6 +2520,86 @@ func (s *Server) bulkDeleteCertificates(w http.ResponseWriter, r *http.Request) 
 	}
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
+
+// importPorkbunCertificatePage — v2.14.0: renders the Porkbun certificate
+// import page. Lists all domains on the Porkbun account so the user can
+// pick one and pull its SSL bundle directly into CaddyUI.
+func (s *Server) importPorkbunCertificatePage(w http.ResponseWriter, r *http.Request) {
+	apiKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	secretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
+	if apiKey == "" || secretKey == "" {
+		s.render(w, r, "certificate_import_porkbun.html", map[string]any{
+			"User":    s.currentUser(r),
+			"Section": "certs",
+			"Error":   "Porkbun API credentials are not configured. Go to Settings → DNS Providers to add them.",
+		})
+		return
+	}
+	pb := porkbun.New(apiKey, secretKey)
+	domains, err := pb.ListDomains()
+	if err != nil {
+		s.render(w, r, "certificate_import_porkbun.html", map[string]any{
+			"User":    s.currentUser(r),
+			"Section": "certs",
+			"Error":   "Failed to list Porkbun domains: " + err.Error(),
+		})
+		return
+	}
+	s.render(w, r, "certificate_import_porkbun.html", map[string]any{
+		"User":    s.currentUser(r),
+		"Section": "certs",
+		"Domains": domains,
+	})
+}
+
+// importPorkbunCertificate — v2.14.0: fetches the SSL bundle for the
+// selected domain from Porkbun and creates a Certificate record in CaddyUI.
+func (s *Server) importPorkbunCertificate(w http.ResponseWriter, r *http.Request) {
+	domain := strings.TrimSpace(r.FormValue("domain"))
+	if domain == "" {
+		http.Error(w, "domain is required", http.StatusBadRequest)
+		return
+	}
+	apiKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	secretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
+	if apiKey == "" || secretKey == "" {
+		http.Error(w, "Porkbun credentials not configured", http.StatusBadRequest)
+		return
+	}
+	pb := porkbun.New(apiKey, secretKey)
+	bundle, err := pb.RetrieveSSL(domain)
+	if err != nil {
+		s.render(w, r, "certificate_import_porkbun.html", map[string]any{
+			"User":     s.currentUser(r),
+			"Section":  "certs",
+			"Error":    "Failed to retrieve certificate from Porkbun: " + err.Error(),
+			"Selected": domain,
+		})
+		return
+	}
+	cu := s.currentUser(r)
+	var ownerID int64
+	if cu != nil && cu.Role != models.RoleAdmin {
+		ownerID = cu.ID
+	}
+	cert := &models.Certificate{
+		Name:    domain,
+		Domains: domain,
+		Source:  models.CertSourcePEM,
+		CertPEM: bundle.CertificateChain,
+		KeyPEM:  bundle.PrivateKey,
+	}
+	sid := s.currentServerID(r)
+	id, err := models.CreateCertificate(s.DB, sid, ownerID, cert)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = models.LogActivity(s.DB, sid, s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), domain+" (Porkbun import)", true)
+	s.trySyncCaddy(sid, true)
+	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
+}
+
 
 // bulkToggleRawRoutes — v2.11.9: enables or disables a set of raw routes
 // in one shot. Mirrors bulkToggleProxyHosts.
@@ -5738,11 +5821,14 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
+	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
 	s.render(w, r, "certificates.html", map[string]any{
-		"User":        s.currentUser(r),
-		"Certs":       views,
-		"AutoDomains": autoDomains,
-		"Section":     "certs",
+		"User":               s.currentUser(r),
+		"Certs":              views,
+		"AutoDomains":        autoDomains,
+		"PorkbunConfigured":  pbAPIKey != "" && pbSecretKey != "",
+		"Section":            "certs",
 	})
 }
 
@@ -6896,6 +6982,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	}
 	applyRoutes(proposed, routes)
 	applyListen(proposed)
+	applyProtocols(proposed, s.DB)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, skipList)
 	applySkipRedirects(proposed, skipRedirects)
@@ -6951,6 +7038,11 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		// Non-fatal: access log skip is a UX feature; a failure here
 		// shouldn't roll back the primary sync.
 		log.Printf("caddy sync: access_logs write failed (non-fatal): %v", err)
+	}
+	if err := s.writeProtocolsSubtree(s.DB); err != nil {
+		// Non-fatal: protocol restriction is a UX feature; failure here
+		// shouldn't roll back the primary sync.
+		log.Printf("caddy sync: protocols write failed (non-fatal): %v", err)
 	}
 
 	// v2.12.0: auto-detect wildcard SAN hosts and push DNS-01 ACME automation
@@ -7341,6 +7433,34 @@ func applyListen(cfg map[string]any) {
 	srv["listen"] = []any{":443"}
 }
 
+// applyProtocols restricts the Caddy HTTP server to h1+h2 when disable_http3
+// is set, giving maximum compatibility with older Android clients. When the
+// setting is off it removes any previously-written protocols key so Caddy
+// reverts to its own default (h1, h2, h3).
+func applyProtocols(cfg map[string]any, db *sql.DB) {
+	apps, _ := cfg["apps"].(map[string]any)
+	if apps == nil {
+		return
+	}
+	httpApp, _ := apps["http"].(map[string]any)
+	if httpApp == nil {
+		return
+	}
+	servers, _ := httpApp["servers"].(map[string]any)
+	if servers == nil {
+		return
+	}
+	srv, _ := servers["srv0"].(map[string]any)
+	if srv == nil {
+		return
+	}
+	if v, _ := models.GetSetting(db, settingDisableHTTP3); v == "1" {
+		srv["protocols"] = []any{"h1", "h2"}
+	} else {
+		delete(srv, "protocols")
+	}
+}
+
 // applyTrustedProxies injects the trusted_proxies list into the Caddy HTTP
 // server config. This allows Caddy to extract the real client IP from
 // X-Forwarded-For when requests arrive via a trusted load balancer or CDN.
@@ -7585,6 +7705,33 @@ func (s *Server) writeListenSubtree() error {
 		return s.Caddy.PutPath("/config/apps/http/servers/srv0/listen", want)
 	}
 	return s.Caddy.PatchPath("/config/apps/http/servers/srv0/listen", want)
+}
+
+// writeProtocolsSubtree pushes the protocols list (or absence thereof) to
+// the live Caddy config. When disable_http3 is on it writes ["h1","h2"];
+// when off it deletes the key so Caddy reverts to its default h1+h2+h3.
+func (s *Server) writeProtocolsSubtree(db *sql.DB) error {
+	const path = "/config/apps/http/servers/srv0/protocols"
+	if v, _ := models.GetSetting(db, settingDisableHTTP3); v == "1" {
+		want := []any{"h1", "h2"}
+		existing, err := s.Caddy.FetchPath(path)
+		if err != nil {
+			return err
+		}
+		if cur, ok := existing.([]any); ok && stringListsEqual(cur, want) {
+			return nil
+		}
+		if existing == nil {
+			return s.Caddy.PutPath(path, want)
+		}
+		return s.Caddy.PatchPath(path, want)
+	}
+	// Setting is off — remove the key if it exists so Caddy uses its default.
+	existing, err := s.Caddy.FetchPath(path)
+	if err != nil || existing == nil {
+		return nil
+	}
+	return s.Caddy.DeletePath(path)
 }
 
 func (s *Server) writeTLSSubtree(loadPEM, loadFiles []any, force bool) error {
@@ -9564,6 +9711,11 @@ const (
 	// Concatenated with each proxy_host's own strip_response_headers in
 	// syncCaddy before BuildProxyRoute fires.
 	settingGlobalStripResponseHeaders = "global_strip_response_headers"
+
+	// v2.14.4: when "1", restricts the Caddy HTTP server to h1 + h2 only
+	// (removes h3/QUIC). Useful for clients that mishandle HTTP/3, e.g. older
+	// Android Bitwarden builds.
+	settingDisableHTTP3 = "disable_http3"
 )
 
 // sendEmail delivers a plain-text email via the SMTP settings stored in the DB.
@@ -12195,6 +12347,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AutoSyncHours":        mustGetSetting(s.DB, settingAutoSyncHours),
 		"ActivityLogDays":      mustGetSetting(s.DB, settingActivityLogDays),
 		"MaxLoginAttempts":     mustGetSetting(s.DB, settingMaxLoginAttempts),
+		"DisableHTTP3":         mustGetSetting(s.DB, settingDisableHTTP3),
 		"Section":              "settings",
 	})
 }
@@ -12360,6 +12513,13 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		// v2.12.36 did) leaked it via F12 → Elements even with type="password".
 		settingAISystemPrompt:             r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
 		settingGlobalStripResponseHeaders: strings.TrimSpace(r.FormValue("global_strip_response_headers")),
+		// v2.14.4: disable HTTP/3 / QUIC for compatibility with older Android clients.
+		settingDisableHTTP3: func() string {
+			if r.FormValue("disable_http3") == "on" {
+				return "1"
+			}
+			return "0"
+		}(),
 		// v2.9.5: 2FA enforcement policy (checkbox → "on" when checked).
 		settingRequire2FA: func() string {
 			if r.FormValue("require_2fa") == "on" {

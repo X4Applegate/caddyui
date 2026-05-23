@@ -8,10 +8,18 @@
   {{/* v2.7.2: + New visible to admin and user roles. View-only accounts
        can still see the table for reference but can't create a cert. */}}
   {{if ne .User.Role "view"}}
-  <a href="/certificates/new" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-3 py-2 rounded-lg shadow-sm transition self-start shrink-0">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    New
-  </a>
+  <div class="flex items-center gap-2 self-start shrink-0">
+    {{if .PorkbunConfigured}}
+    <a href="/certificates/import/porkbun" class="inline-flex items-center gap-1.5 bg-white hover:bg-ink-50 text-ink-700 text-sm font-medium px-3 py-2 rounded-lg border border-ink-300 shadow-sm transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Import from Porkbun
+    </a>
+    {{end}}
+    <a href="/certificates/new" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-3 py-2 rounded-lg shadow-sm transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      New
+    </a>
+  </div>
   {{end}}
 </div>
 

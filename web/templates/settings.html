@@ -800,6 +800,17 @@
         placeholder="103.21.244.0/22&#10;103.22.200.0/22&#10;10.0.0.0/8"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.TrustedProxies}}</textarea>
     </div>
+    <div class="py-4 border-b border-gray-100 dark:border-gray-800 flex items-start justify-between gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">Disable HTTP/3 (QUIC)</label>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Restricts Caddy to HTTP/1.1 and HTTP/2 only. Fixes "proxy mismatch" or certificate errors on older Android clients (Bitwarden, Chrome). Requires a Caddy reload to take effect.</p>
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+        <input type="checkbox" name="disable_http3" {{if eq .DisableHTTP3 "1"}}checked{{end}}
+          class="sr-only peer">
+        <div class="w-11 h-6 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-blue-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+      </label>
+    </div>
     <div class="py-4 border-b border-gray-100 dark:border-gray-800">
       <label class="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-1.5">Admin panel IP allowlist</label>
       <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">⚠️ One IP or CIDR per line. When set, only listed IPs can access CaddyUI. <strong>Make sure your own IP is included before saving!</strong></p>
