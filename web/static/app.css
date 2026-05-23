@@ -360,3 +360,107 @@ html.dark .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.15) !impo
 html.dark .hover\:bg-red-100:hover { background-color: rgba(239,68,68,0.25) !important; }
 html.dark .hover\:border-red-300:hover { border-color: rgba(239,68,68,0.5) !important; }
 html.dark .hover\:text-red-500:hover { color: #f87171 !important; }
+
+
+/* ── 2026 UI refresh ────────────────────────────────────────────────────────*/
+
+/* Sidebar active nav item — blue-tinted gradient pill */
+.nav-active-item {
+  background: linear-gradient(90deg, rgba(59,130,246,0.22) 0%, rgba(59,130,246,0.08) 60%, transparent 100%);
+  box-shadow: inset 2px 0 0 #60a5fa;
+}
+
+/* Animated status pulse (online servers / health dots) */
+@keyframes status-online-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.55); }
+  60%       { box-shadow: 0 0 0 4px rgba(16,185,129,0); }
+}
+.status-online-pulse {
+  animation: status-online-pulse 2.8s ease-in-out infinite;
+}
+
+/* Card hover lift */
+.card-lift {
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+.card-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px -3px rgb(15 23 42 / 0.09), 0 2px 6px -1px rgb(15 23 42 / 0.05) !important;
+  border-color: rgba(147,197,253,0.6) !important;
+}
+html.dark .card-lift:hover {
+  box-shadow: 0 6px 20px -3px rgba(0,0,0,0.55), 0 2px 8px -1px rgba(0,0,0,0.3) !important;
+  border-color: rgba(59,130,246,0.35) !important;
+}
+
+/* Stat card icon accent spot */
+.stat-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem; height: 2rem;
+  border-radius: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* Memory bar — gradient fill */
+.mem-gradient-bar {
+  background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
+  transition: width 600ms ease;
+}
+
+/* Page heading gradient text */
+.text-heading-gradient {
+  background: linear-gradient(135deg, #0f172a 0%, #1e40af 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+html.dark .text-heading-gradient {
+  background: linear-gradient(135deg, #f8fafc 0%, #93c5fd 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Sidebar logo glow line */
+.sidebar-brand-line::after {
+  content: '';
+  display: block;
+  height: 1px;
+  margin-top: 0.75rem;
+  background: linear-gradient(90deg, transparent 0%, rgba(96,165,250,0.35) 40%, rgba(59,130,246,0.55) 60%, transparent 100%);
+}
+
+/* Top bar subtle gradient border bottom */
+[data-topbar] {
+  position: relative;
+}
+[data-topbar]::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(59,130,246,0.18) 40%, rgba(59,130,246,0.1) 60%, transparent 100%);
+  pointer-events: none;
+}
+
+/* Badge pulse for update dot */
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.7; }
+}
+#update-badge:not(.hidden) {
+  animation: badge-pulse 2s ease-in-out infinite;
+}
+
+/* Dropdown glass panels */
+[data-server-menu-panel]:not(.hidden),
+[data-user-menu-panel]:not(.hidden) {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Smoother checkbox / toggle transitions */
+input[type="checkbox"] {
+  transition: background-color 150ms ease, border-color 150ms ease;
+}

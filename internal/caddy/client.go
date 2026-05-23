@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -120,26 +121,28 @@ type CaddyVersion struct {
 }
 
 // GetVersion fetches Caddy's version from the admin API root endpoint.
-// Returns empty string on error — callers should treat "" as "unknown".
+// Falls back to the CADDY_VERSION environment variable when the admin API
+// does not expose a version endpoint (custom builds, older instances).
 func (c *Client) GetVersion(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.AdminURL+"/", nil)
-	if err != nil {
-		return "", err
+	if err == nil {
+		c.applyAuth(req)
+		resp, err := c.HTTP.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var v CaddyVersion
+				if err := json.NewDecoder(resp.Body).Decode(&v); err == nil && v.Version != "" {
+					return v.Version, nil
+				}
+			}
+		}
 	}
-	c.applyAuth(req)
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return "", err
+	// Admin API root unavailable — fall back to CADDY_VERSION env var.
+	if ev := os.Getenv("CADDY_VERSION"); ev != "" {
+		return ev, nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("caddy version: status %d", resp.StatusCode)
-	}
-	var v CaddyVersion
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return "", err
-	}
-	return v.Version, nil
+	return "", fmt.Errorf("caddy version unavailable")
 }
 
 // GetUpstreamHealth fetches the live upstream health from Caddy's admin API.
@@ -191,6 +194,29 @@ func (c *Client) PutPath(path string, val any) error {
 // Fails with 404 if the path doesn't exist — callers should use PutPath for first writes.
 func (c *Client) PatchPath(path string, val any) error {
 	return c.send(http.MethodPatch, path, val)
+}
+
+// DeletePath removes the config key at the given path from the live Caddy config.
+// No-op (returns nil) if the path does not exist (404).
+func (c *Client) DeletePath(path string) error {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, c.AdminURL+"/config"+path, nil)
+	if err != nil {
+		return err
+	}
+	c.applyAuth(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy DELETE %s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // AdaptResult is what /adapt returns: the fully-resolved Caddy JSON config under

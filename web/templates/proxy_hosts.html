@@ -76,7 +76,7 @@
   {{range .Hosts}}
   {{$canEdit := or (eq $.User.Role "admin") (and .OwnerID.Valid (eq .OwnerID.Int64 $.ViewerID))}}
   {{$hostID := .ID}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-4{{if $canEdit}} cursor-pointer hover:border-brand-300 transition{{end}}" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}" data-tags="{{.Tags}}" data-notes="{{.Notes}}"{{if $canEdit}} data-edit-href="/proxy-hosts/{{.ID}}/edit"{{end}}>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card card-lift p-4{{if $canEdit}} cursor-pointer hover:border-brand-300 transition{{end}}" data-search="{{.Domains}} {{.ForwardHost}}" data-host-id="{{.ID}}" data-tags="{{.Tags}}" data-notes="{{.Notes}}"{{if $canEdit}} data-edit-href="/proxy-hosts/{{.ID}}/edit"{{end}}>
     <div class="flex items-start justify-between gap-2 mb-2">
       <div class="flex flex-wrap items-center gap-1 min-w-0">
         {{with index $.HealthMap $hostID}}
