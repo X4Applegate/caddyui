@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.15.2] - 2026-05-25 - Simple mode keeps DNS & TLS visible
+
+### Fixed
+
+- **Proxy form Simple mode**: DNS and TLS sections (`ph-dns`, `ph-tls`) now stay visible in Simple mode — those are the two most essential sections for any proxy host. Previously Simple mode hid everything including those, making it unusable. All other advanced sections (Security, Headers, Path routing, Rewrites, etc.) remain hidden until Advanced mode is selected.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.15.2` published.
+
+---
+
 ## [2.15.1] - 2026-05-25 - Cache-bust static assets so new themes load immediately
 
 ### Fixed
