@@ -53,6 +53,19 @@
         {{end}}
       {{end}}
     </div>
+    {{/* v2.15.0: expiry progress bar — JS sets width via data-expiry-bar */}}
+    {{if and .ExpiresAt (ge .DaysLeft 0)}}
+    <div class="mt-2 mb-1">
+      <div class="h-1 w-full rounded-full bg-ink-100 overflow-hidden">
+        <div class="h-full rounded-full transition-all
+          {{if lt .DaysLeft 15}}bg-red-500
+          {{else if lt .DaysLeft 30}}bg-amber-500
+          {{else if lt .DaysLeft 60}}bg-yellow-400
+          {{else}}bg-emerald-500{{end}}
+        " data-expiry-bar data-days="{{.DaysLeft}}" data-max="90"></div>
+      </div>
+    </div>
+    {{end}}
     <div class="text-xs text-ink-500 font-mono mb-3 break-all">{{.Domains}}</div>
     {{/* Admin-only: owner chip. User-role doesn't need this since the list
          is already scoped to their own + global anyway. */}}
@@ -180,6 +193,19 @@
             {{end}}
           {{else}}
             <span class="text-ink-400 text-xs italic">—</span>
+          {{end}}
+          {{/* v2.15.0: expiry progress bar — JS sets width via data-expiry-bar */}}
+          {{if and .ExpiresAt (ge .DaysLeft 0)}}
+          <div class="mt-1 w-24">
+            <div class="h-1 w-full rounded-full bg-ink-100 overflow-hidden">
+              <div class="h-full rounded-full
+                {{if lt .DaysLeft 15}}bg-red-500
+                {{else if lt .DaysLeft 30}}bg-amber-500
+                {{else if lt .DaysLeft 60}}bg-yellow-400
+                {{else}}bg-emerald-500{{end}}
+              " data-expiry-bar data-days="{{.DaysLeft}}" data-max="90"></div>
+            </div>
+          </div>
           {{end}}
         </td>
         <td class="px-5 py-3 sticky right-0 bg-white shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)]">
@@ -315,6 +341,18 @@
       syncBar();
     });
   }
+})();
+</script>
+<script>
+{{/* v2.15.0: Set expiry progress bar widths from data-days / data-max attributes */}}
+(function() {
+  document.querySelectorAll('[data-expiry-bar]').forEach(function(bar) {
+    var days = parseInt(bar.getAttribute('data-days'), 10);
+    var max  = parseInt(bar.getAttribute('data-max'),  10) || 90;
+    if (isNaN(days) || days < 0) { bar.style.width = '100%'; return; }
+    var pct = Math.min(days / max, 1) * 100;
+    bar.style.width = pct.toFixed(1) + '%';
+  });
 })();
 </script>
 {{end}}

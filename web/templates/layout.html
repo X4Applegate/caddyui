@@ -781,6 +781,11 @@ if ('serviceWorker' in navigator) {
   </main>
   {{end}}
 {{if .User}}
+{{/* v2.15.0: Toast container — fixed bottom-right, above AI fab. Toasts
+     are appended here by window.caddyuiToast() in app.js. The container
+     itself is pointer-events:none so it doesn't block clicks on underlying
+     content; each .toast-item overrides that. */}}
+<div id="toast-container" class="fixed bottom-6 right-6 z-[60] flex flex-col gap-2 items-end pointer-events-none" aria-live="polite" aria-atomic="false"></div>
 <script src="/static/app.js" defer></script>
 {{end}}
 </body>

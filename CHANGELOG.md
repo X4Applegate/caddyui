@@ -5,6 +5,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.15.0] - 2026-05-25 - Major UI overhaul: toasts, sparklines, themes, cert bars, quick-mode form
+
+### Added
+
+- **Toast notifications**: all form success/error/warning banners now slide in as auto-dismissing toasts (bottom-right, spring animation). Errors stay until dismissed. Maintenance banners remain inline. `window.caddyuiToast(msg, type, duration)` exposed for programmatic use.
+- **Dashboard sparklines**: the three stat cards (Requests / Visitors / Bandwidth) now show a 7-day trend sparkline inline with the number. Fetched from new `/api/dashboard-sparklines` endpoint after first paint.
+- **Certificate expiry progress bars**: each certificate now shows a thin horizontal bar below the name — green (≥ 60 d), yellow (< 60 d), amber (< 30 d), red (< 15 d / expired). Visual urgency at a glance in both mobile cards and desktop table.
+- **3 new color themes**: Forest Green, Rose / Crimson, Deep Indigo — each with full light + dark palette. Theme picker in Settings now offers 5 options (+ existing Default Slate Blue and Carbon Orange).
+- **Proxy form Simple / Advanced mode**: a pill toggle above the proxy host form hides all `<details>` expansion sections in Simple mode, showing only Domain, Forward Host/Port, and SSL — perfect for new users. Preference persisted to `localStorage`. Defaults to Simple on `/new`, Advanced on edit.
+- **Toast container** (`#toast-container`) added to layout — `pointer-events: none` wrapper so it never blocks clicks.
+
+### Fixed
+
+- **Dark mode inconsistency in Settings**: all `dark:*-gray-*` Tailwind utility classes in `settings.html` replaced with the canonical `ink-*` token system used everywhere else. Resolves card background mismatches in dark mode (e.g., `dark:bg-gray-900` vs the `.dark .bg-white` override).
+
+### Backend
+
+- **`GET /api/dashboard-sparklines`**: new authenticated endpoint returning 7 days of daily `{ views, visitors, bandwidth }` totals scoped to the active server's hostnames. Used by JS sparkline renderer.
+- **Color theme validation**: `postMyColorTheme` now accepts `forest`, `rose`, `indigo` in addition to `default` and `orange`.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.15.0` published.
+
+---
+
 ## [2.14.3] - 2026-05-15 - Fresh-install Caddy crash-loop fix
 
 ### Fixed
