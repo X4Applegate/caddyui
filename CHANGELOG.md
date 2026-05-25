@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.15.1] - 2026-05-25 - Cache-bust static assets so new themes load immediately
+
+### Fixed
+
+- **Static asset cache-busting**: `app.css`, `app.js`, and `htmx.min.js` URLs now include `?v={{.AppVersion}}` so browsers always fetch the latest version after an upgrade instead of serving the 24h-cached old file. This was why the Forest / Rose / Indigo themes appeared as blue on first load — the new CSS never arrived.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.15.1` published.
+
+---
+
 ## [2.15.0] - 2026-05-25 - Major UI overhaul: toasts, sparklines, themes, cert bars, quick-mode form
 
 ### Added

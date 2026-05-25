@@ -73,7 +73,7 @@
        count toward script loading; the <script> tag below still has
        defer so execution still happens after parse. */}}
   {{if .User}}
-  <link rel="preload" href="/static/app.js" as="script" />
+  <link rel="preload" href="/static/app.js?v={{.AppVersion}}" as="script" />
   {{end}}
   {{/* v2.12.43: split the Tailwind delivery by auth state.
 
@@ -141,8 +141,8 @@
   {{/* v2.12.39: htmx is now vendored to /static/htmx.min.js (downloaded
        at Docker build time from unpkg). `defer` is safe — htmx attaches
        its event listeners on DOMContentLoaded. */}}
-  <script src="/static/htmx.min.js" defer></script>
-  <link rel="stylesheet" href="/static/app.css" />
+  <script src="/static/htmx.min.js?v={{.AppVersion}}" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v={{.AppVersion}}" />
   <style>
     /* v2.12.25: typography polish.
        - Optical sizing: Inter has variable opsz axis (14–32). 'auto'
@@ -786,7 +786,7 @@ if ('serviceWorker' in navigator) {
      itself is pointer-events:none so it doesn't block clicks on underlying
      content; each .toast-item overrides that. */}}
 <div id="toast-container" class="fixed bottom-6 right-6 z-[60] flex flex-col gap-2 items-end pointer-events-none" aria-live="polite" aria-atomic="false"></div>
-<script src="/static/app.js" defer></script>
+<script src="/static/app.js?v={{.AppVersion}}" defer></script>
 {{end}}
 </body>
 </html>{{end}}
