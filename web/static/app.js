@@ -631,3 +631,140 @@ function caddyuiDelayFetch(ms, fn) {
   });
 })();
 
+// v2.15.0: Toast notification system.
+// window.caddyuiToast(msg, type, duration)
+//   type: 'success' | 'error' | 'info' | 'warning'
+//   duration: ms before auto-dismiss (default 4000)
+// Also auto-converts existing static banner divs on page load to toasts.
+(function() {
+  var container = document.getElementById('toast-container');
+  if (!container) return;
+
+  var ICONS = {
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0"><polyline points="20 6 9 17 4 12"/></svg>',
+    error:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    warning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    info:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
+  };
+  var COLORS = {
+    success: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+    error:   'bg-red-50 border-red-200 text-red-800',
+    warning: 'bg-amber-50 border-amber-200 text-amber-800',
+    info:    'bg-brand-50 border-brand-200 text-brand-800'
+  };
+  var ICON_COLORS = {
+    success: 'text-emerald-500',
+    error:   'text-red-500',
+    warning: 'text-amber-500',
+    info:    'text-brand-500'
+  };
+
+  function dismiss(el) {
+    el.classList.add('toast-leaving');
+    setTimeout(function() {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, 200);
+  }
+
+  window.caddyuiToast = function(msg, type, duration) {
+    if (!msg) return;
+    type = type || 'info';
+    duration = (typeof duration === 'number') ? duration : 4000;
+    var colorClass = COLORS[type] || COLORS.info;
+    var iconColorClass = ICON_COLORS[type] || ICON_COLORS.info;
+    var icon = ICONS[type] || ICONS.info;
+
+    var el = document.createElement('div');
+    el.className = 'toast-item flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg text-sm max-w-sm w-full ' + colorClass;
+    el.innerHTML =
+      '<span class="' + iconColorClass + '">' + icon + '</span>' +
+      '<span class="flex-1 leading-snug">' + String(msg).replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>' +
+      '<button class="ml-1 opacity-60 hover:opacity-100 transition" aria-label="Dismiss">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+      '</button>';
+
+    el.querySelector('button').addEventListener('click', function() { dismiss(el); });
+    container.appendChild(el);
+
+    if (duration > 0) {
+      setTimeout(function() { dismiss(el); }, duration);
+    }
+    return el;
+  };
+
+  // Auto-convert existing static success/error banners to toasts on page load.
+  // Finds .bg-brand-50 (success) and .bg-red-50 (error) banner divs in <main>,
+  // reads their text, fires a toast, then hides the original so there's no duplicate.
+  document.addEventListener('DOMContentLoaded', function() {
+    var main = document.getElementById('main-content');
+    if (!main) return;
+    // Success banners: bg-brand-50 border-brand-200
+    main.querySelectorAll('.bg-brand-50.border-brand-200').forEach(function(el) {
+      var text = el.innerText.trim();
+      if (!text) return;
+      window.caddyuiToast(text, 'success', 5000);
+      el.style.display = 'none';
+    });
+    // Error banners: bg-red-50 border-red-200
+    main.querySelectorAll('.bg-red-50.border-red-200').forEach(function(el) {
+      var text = el.innerText.trim();
+      if (!text) return;
+      window.caddyuiToast(text, 'error', 0); // 0 = no auto-dismiss for errors
+      el.style.display = 'none';
+    });
+    // Warning banners: bg-amber-50 border-amber-200
+    main.querySelectorAll('.bg-amber-50.border-amber-200').forEach(function(el) {
+      // Maintenance banners are important — keep visible, don't toast
+      if (el.textContent.indexOf('maintenance') !== -1) return;
+      var text = el.innerText.trim();
+      if (!text) return;
+      window.caddyuiToast(text, 'warning', 6000);
+      el.style.display = 'none';
+    });
+  });
+})();
+
+// v2.15.0: Dashboard sparklines — fetches /api/dashboard-sparklines (7-day
+// daily data) and renders inline SVG sparkline paths on the three stat cards.
+(function() {
+  var cards = [
+    { containerId: 'sparkline-views',     dataKey: 'views' },
+    { containerId: 'sparkline-visitors',  dataKey: 'visitors' },
+    { containerId: 'sparkline-bandwidth', dataKey: 'bandwidth' },
+  ];
+  // Only run on dashboard (all three containers must exist)
+  if (!document.getElementById('sparkline-views')) return;
+
+  caddyuiDelayFetch(1500, function() {
+    fetch('/api/dashboard-sparklines', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (!d || !d.days || d.days.length === 0) return;
+        cards.forEach(function(c) {
+          var el = document.getElementById(c.containerId);
+          if (!el) return;
+          var vals = d.days.map(function(day) { return day[c.dataKey] || 0; });
+          el.innerHTML = renderSparkline(vals);
+        });
+      })
+      .catch(function() {});
+  });
+
+  function renderSparkline(vals) {
+    if (!vals || vals.length < 2) return '';
+    var W = 80, H = 24;
+    var max = Math.max.apply(null, vals);
+    if (max === 0) max = 1;
+    var pts = vals.map(function(v, i) {
+      var x = (i / (vals.length - 1)) * W;
+      var y = H - (v / max) * (H - 2) - 1;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    // Smooth path via cardinal spline through points
+    var d = 'M ' + pts.join(' L ');
+    return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" class="sparkline-svg" aria-hidden="true">' +
+      '<polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5" points="' + pts.join(' ') + '"/>' +
+      '</svg>';
+  }
+})();
+

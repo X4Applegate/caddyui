@@ -558,6 +558,10 @@ func (s *Server) Routes() http.Handler {
 		// Phase 7: system stats API (authenticated, read-only).
 		r.Get("/api/system-stats", s.apiSystemStats)
 
+		// v2.15.0: dashboard sparklines — 7-day daily totals for the three
+		// stat cards (views, visitors, bandwidth). Scoped to active server.
+		r.Get("/api/dashboard-sparklines", s.apiDashboardSparklines)
+
 		// Caddy version from the admin API root endpoint.
 		r.Get("/api/caddy-version", s.apiCaddyVersion)
 
@@ -8300,7 +8304,8 @@ type upstreamHealthResult struct {
 // picker in Settings POSTs here on change. Body is form-encoded with a
 // single `theme` field. Empty string and "default" both clear the
 // preference (use the default palette); "orange" picks the carbon-orange
-// palette. Anything else returns 400 so we don't store junk that the
+// palette; "forest", "rose", and "indigo" pick their respective palettes
+// (v2.15.0). Anything else returns 400 so we don't store junk that the
 // CSS layer wouldn't recognise.
 func (s *Server) postMyColorTheme(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
@@ -8319,7 +8324,7 @@ func (s *Server) postMyColorTheme(w http.ResponseWriter, r *http.Request) {
 		theme = ""
 	}
 	switch theme {
-	case "", "orange":
+	case "", "orange", "forest", "rose", "indigo":
 		// allowed
 	default:
 		http.Error(w, "unknown theme", http.StatusBadRequest)
@@ -11021,6 +11026,68 @@ func (s *Server) apiSystemStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// apiDashboardSparklines returns 7 days of daily totals for the dashboard
+// stat card sparklines: views, visitors, bandwidth per day. Scoped to the
+// active server's hostnames (same logic as dashboard handler). Returns JSON:
+//
+//	{ "days": [ { "date": "2026-05-25", "views": N, "visitors": N, "bandwidth": N }, … ] }
+//
+// v2.15.0
+func (s *Server) apiDashboardSparklines(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	sid := s.currentServerID(r)
+	isAdmin := cu.Role == models.RoleAdmin
+	peers := s.groupPeerIDs(r)
+
+	hosts, _ := models.ListProxyHosts(s.DB, sid, cu.ID, isAdmin, peers)
+	redirs, _ := models.ListRedirectionHosts(s.DB, sid, cu.ID, isAdmin, peers)
+	raws, _ := models.ListRawRoutes(s.DB, sid, cu.ID, isAdmin, peers)
+
+	var hostsForActive []string
+	for _, h := range hosts {
+		hostsForActive = append(hostsForActive, h.DomainList()...)
+	}
+	for _, rh := range redirs {
+		hostsForActive = append(hostsForActive, rh.DomainList()...)
+	}
+	for _, rr := range raws {
+		hostsForActive = append(hostsForActive, rawRouteHosts(rr)...)
+	}
+
+	type DayPoint struct {
+		Date      string `json:"date"`
+		Views     int    `json:"views"`
+		Visitors  int    `json:"visitors"`
+		Bandwidth int64  `json:"bandwidth"`
+	}
+
+	now := time.Now().UTC()
+	days := make([]DayPoint, 7)
+	for i := 6; i >= 0; i-- {
+		day := now.AddDate(0, 0, -i).Truncate(24 * time.Hour)
+		dayEnd := day.Add(24 * time.Hour)
+		pt := DayPoint{Date: day.Format("2006-01-02")}
+		for _, host := range hostsForActive {
+			if t, err := models.AccessTotalsBetween(s.DB, day, dayEnd, host); err == nil {
+				pt.Views += t.Views
+				pt.Visitors += t.Visitors
+			}
+			if bw, err := models.BandwidthSince(s.DB, day, host); err == nil {
+				// BandwidthSince sums from `day` to now — approximate for dashboard
+				pt.Bandwidth += bw
+			}
+		}
+		days[6-i] = pt
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"days": days})
 }
 
 // apiCaddyVersion returns the running Caddy version from the admin API.

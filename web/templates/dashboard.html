@@ -1,5 +1,9 @@
 {{define "title"}}Dashboard · CaddyUI{{end}}
 {{define "content"}}
+<style>
+/* v2.15.0: sparkline SVG styling */
+.sparkline-svg { display: block; overflow: visible; }
+</style>
 {{if eq .GlobalMaintenance "1"}}
 <div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 mb-5 text-sm text-amber-800">
   <svg class="w-4 h-4 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
@@ -35,7 +39,10 @@
       <span class="stat-icon-wrap bg-brand-50"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-brand-500"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
     </div>
     <div class="text-2xl font-semibold text-ink-900 tabular-nums">{{.TodayViews}}</div>
-    <div class="text-xs text-ink-400 mt-1"><a href="/analytics" class="hover:text-brand-600 transition">View analytics →</a></div>
+    <div class="flex items-end justify-between gap-2 mt-1">
+      <a href="/analytics" class="text-xs text-ink-400 hover:text-brand-600 transition">View analytics →</a>
+      <span id="sparkline-views" class="text-brand-400 opacity-70"></span>
+    </div>
   </div>
   <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card card-lift overflow-hidden relative">
     <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-violet-400 to-purple-500 rounded-t-xl"></div>
@@ -44,7 +51,10 @@
       <span class="stat-icon-wrap bg-purple-50"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-purple-500"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
     </div>
     <div class="text-2xl font-semibold text-ink-900 tabular-nums">{{.TodayVisitors}}</div>
-    <div class="text-xs text-ink-400 mt-1">unique IPs</div>
+    <div class="flex items-end justify-between gap-2 mt-1">
+      <span class="text-xs text-ink-400">unique IPs</span>
+      <span id="sparkline-visitors" class="text-purple-400 opacity-70"></span>
+    </div>
   </div>
   <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card card-lift overflow-hidden relative">
     <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-400 to-teal-500 rounded-t-xl"></div>
@@ -53,7 +63,10 @@
       <span class="stat-icon-wrap bg-emerald-50"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-emerald-600"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
     </div>
     <div class="text-2xl font-semibold text-ink-900 tabular-nums">{{fmtBytes .TodayBandwidth}}</div>
-    <div class="text-xs text-ink-400 mt-1">bytes sent out</div>
+    <div class="flex items-end justify-between gap-2 mt-1">
+      <span class="text-xs text-ink-400">bytes sent out</span>
+      <span id="sparkline-bandwidth" class="text-emerald-400 opacity-70"></span>
+    </div>
   </div>
 </div>
 {{end}}

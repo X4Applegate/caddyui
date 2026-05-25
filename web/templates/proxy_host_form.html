@@ -42,6 +42,53 @@
 
      The IIFE at the bottom of this file expands the corresponding
      <details> on click, so the user lands on an open section. */}}
+{{/* v2.15.0: Simple / Advanced mode toggle. Simple mode hides all the
+     <details> expansion sections so new users see only Domain, Forward
+     Host/Port, and SSL — the three fields needed for 90% of proxy hosts.
+     Advanced mode (default for edit) shows everything. */}}
+<div class="flex items-center gap-3 mb-4 max-w-3xl">
+  <span class="text-xs font-medium text-ink-500">Form mode:</span>
+  <div class="flex items-center gap-1 bg-ink-100 rounded-lg p-0.5 text-xs">
+    <button type="button" id="mode-simple" onclick="setProxyFormMode('simple')"
+      class="px-3 py-1.5 rounded-md transition font-medium">Simple</button>
+    <button type="button" id="mode-advanced" onclick="setProxyFormMode('advanced')"
+      class="px-3 py-1.5 rounded-md transition font-medium">Advanced</button>
+  </div>
+  <span id="mode-hint" class="text-xs text-ink-400"></span>
+</div>
+<script>
+function setProxyFormMode(mode) {
+  var isSimple = mode === 'simple';
+  var details = document.querySelectorAll('#proxy-host-form details[id^="ph-"]');
+  var nav = document.querySelector('nav[aria-label="Form sections"]');
+  var hint = document.getElementById('mode-hint');
+  var btnSimple = document.getElementById('mode-simple');
+  var btnAdv = document.getElementById('mode-advanced');
+  details.forEach(function(d) {
+    d.style.display = isSimple ? 'none' : '';
+  });
+  if (nav) nav.style.display = isSimple ? 'none' : '';
+  if (hint) hint.textContent = isSimple ? 'Showing: Domain, Forward Host, SSL only' : '';
+  if (btnSimple) {
+    btnSimple.className = 'px-3 py-1.5 rounded-md transition font-medium ' +
+      (isSimple ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
+  }
+  if (btnAdv) {
+    btnAdv.className = 'px-3 py-1.5 rounded-md transition font-medium ' +
+      (!isSimple ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
+  }
+  try { localStorage.setItem('caddyui-proxy-mode', mode); } catch(e) {}
+}
+// On load: default to Advanced for existing hosts (edit), Simple for new hosts
+(function() {
+  var isNew = !document.querySelector('#proxy-host-form input[name="id"]') &&
+              window.location.pathname.indexOf('/new') !== -1;
+  var saved = '';
+  try { saved = localStorage.getItem('caddyui-proxy-mode') || ''; } catch(e) {}
+  var mode = saved || (isNew ? 'simple' : 'advanced');
+  setProxyFormMode(mode);
+})();
+</script>
 <nav aria-label="Form sections" class="mb-4 max-w-3xl flex flex-wrap items-center gap-1.5">
   {{/* Tier 1 — used on most proxy hosts */}}
   <a href="#ph-dns"            class="inline-flex items-center text-xs font-medium text-ink-700 hover:text-brand-700 bg-brand-50/50 hover:bg-brand-50 border border-brand-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Managed DNS</a>
