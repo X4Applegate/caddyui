@@ -59,16 +59,23 @@
 <script>
 function setProxyFormMode(mode) {
   var isSimple = mode === 'simple';
+  // In simple mode, keep Domain/DNS (#ph-dns) and TLS (#ph-tls) visible —
+  // those are the two most-used sections. Hide everything else.
+  var SIMPLE_KEEP = ['ph-dns', 'ph-tls'];
   var details = document.querySelectorAll('#proxy-host-form details[id^="ph-"]');
   var nav = document.querySelector('nav[aria-label="Form sections"]');
   var hint = document.getElementById('mode-hint');
   var btnSimple = document.getElementById('mode-simple');
   var btnAdv = document.getElementById('mode-advanced');
   details.forEach(function(d) {
-    d.style.display = isSimple ? 'none' : '';
+    if (isSimple) {
+      d.style.display = SIMPLE_KEEP.indexOf(d.id) !== -1 ? '' : 'none';
+    } else {
+      d.style.display = '';
+    }
   });
   if (nav) nav.style.display = isSimple ? 'none' : '';
-  if (hint) hint.textContent = isSimple ? 'Showing: Domain, Forward Host, SSL only' : '';
+  if (hint) hint.textContent = isSimple ? 'Showing: Domain, DNS & TLS only' : '';
   if (btnSimple) {
     btnSimple.className = 'px-3 py-1.5 rounded-md transition font-medium ' +
       (isSimple ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
