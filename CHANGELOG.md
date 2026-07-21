@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.2] - 2026-07-21 - Proxy Hosts loading speed hotfix
+
+### Fixed
+
+- **Proxy Hosts page slowdown after v2.16.1**: the new bulk certificate selector now loads lightweight certificate options (`id`, `name`, `domains`) instead of full certificate PEM/key payloads. This avoids dragging private key blobs into the proxy-host list render path.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.16.2` published.
+
+---
+
 ## [2.16.1] - 2026-07-21 - Bulk proxy certificate assignment
 
 ### Added
