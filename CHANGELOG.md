@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.1] - 2026-07-21 - Bulk proxy certificate assignment
+
+### Added
+
+- **Bulk apply certificates for proxy hosts**: the proxy-host bulk action bar now includes a certificate selector. Select multiple proxy hosts, choose a custom certificate or `Auto / ACME`, and apply once.
+
+### Changed
+
+- **Single sync after bulk certificate changes**: CaddyUI updates the selected proxy hosts and syncs Caddy once with TLS refresh, avoiding the old one-host-at-a-time workflow when rotating renewed certificates across many containers.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.16.1` published.
+
+---
+
 ## [2.16.0] - 2026-07-21 - Multiple DNS credential profiles
 
 ### Added

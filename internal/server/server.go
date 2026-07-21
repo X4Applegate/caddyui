@@ -621,6 +621,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/proxy-hosts/{id}/maintenance", s.toggleMaintenanceMode)
 			r.Post("/proxy-hosts/bulk-toggle", s.bulkToggleProxyHosts)
 			r.Post("/proxy-hosts/bulk-maintenance", s.bulkMaintenanceProxyHosts)
+			r.Post("/proxy-hosts/bulk-certificate", s.bulkCertificateProxyHosts)
 			r.Post("/proxy-hosts/bulk-delete", s.bulkDeleteProxyHosts)
 			// v2.11.11: drag-to-reorder rows — accepts ids[] in desired
 			// display order, writes sort_order = (index * 10) for each.
@@ -2363,6 +2364,7 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		hostIDs[i] = p.ID
 	}
 	healthMap, _ := models.LatestProxyHealth(s.DB, hostIDs)
+	certs, _ := s.certListForRequest(r)
 
 	// Per-host today request counts (best-effort — zero if analytics disabled).
 	hostRequestsToday := make(map[int64]int)
@@ -2409,6 +2411,7 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		"StatusFilter":      statusFilter,
 		"NeedsSync":         needsSync,
 		"HostRequestsToday": hostRequestsToday,
+		"Certificates":      certs,
 	})
 }
 
@@ -2629,6 +2632,81 @@ func (s *Server) bulkMaintenanceProxyHosts(w http.ResponseWriter, r *http.Reques
 	if serverID != 0 {
 		if err := s.syncCaddy(serverID, false); err != nil {
 			log.Printf("bulkMaintenance: syncCaddy(%d): %v", serverID, err)
+		}
+	}
+	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+}
+
+// bulkCertificateProxyHosts applies one certificate selection to many proxy
+// hosts. certificate_id=0 clears custom certs back to Auto/ACME.
+func (s *Server) bulkCertificateProxyHosts(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
+	certID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("certificate_id")), 10, 64)
+	if err != nil || certID < 0 {
+		http.Error(w, "invalid certificate", http.StatusBadRequest)
+		return
+	}
+	sid := s.currentServerID(r)
+	if certID > 0 {
+		allowed := false
+		certs, err := s.certListForRequest(r)
+		if err != nil {
+			http.Error(w, "load certificates: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, c := range certs {
+			if c.ID == certID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			http.Error(w, "certificate not found or not allowed", http.StatusForbidden)
+			return
+		}
+	}
+
+	rawIDs := r.Form["ids[]"]
+	if len(rawIDs) == 0 {
+		http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
+		return
+	}
+	updated := 0
+	for _, raw := range rawIDs {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			continue
+		}
+		ph, err := models.GetProxyHost(s.DB, id)
+		if err != nil || ph == nil || ph.ServerID != sid {
+			continue
+		}
+		if !isAdmin && (!ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID) {
+			continue
+		}
+		if ph.CertificateID == certID {
+			continue
+		}
+		ph.CertificateID = certID
+		if err := models.UpdateProxyHost(s.DB, ph); err != nil {
+			log.Printf("bulkCertificate: update proxy %d: %v", id, err)
+			continue
+		}
+		updated++
+	}
+	if updated > 0 {
+		_ = models.LogActivity(s.DB, sid, cu.Email, "proxy_bulk_certificate", fmt.Sprintf("cert:%d", certID), fmt.Sprintf("%d proxy host(s)", updated), true)
+		if err := s.syncCaddy(sid, true); err != nil {
+			log.Printf("bulkCertificate: syncCaddy(%d): %v", sid, err)
 		}
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)

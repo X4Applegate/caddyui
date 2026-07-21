@@ -257,6 +257,21 @@
     <button type="submit" class="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white font-medium transition">Delete</button>
   </form>
   <div class="w-px h-4 bg-white/20"></div>
+  <form method="post" action="/proxy-hosts/bulk-certificate" id="bulk-form-certificate"
+        class="flex items-center gap-2"
+        onsubmit="return confirm('Apply this certificate setting to selected proxy hosts?')">
+    <div id="bulk-cert-ids"></div>
+    <label for="bulk-certificate-id" class="sr-only">Certificate</label>
+    <select id="bulk-certificate-id" name="certificate_id"
+            class="rounded-lg border border-white/20 bg-gray-800 text-white text-sm px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-400">
+      <option value="0">Auto / ACME</option>
+      {{range .Certificates}}
+      <option value="{{.ID}}">{{.Name}} — {{.Domains}}</option>
+      {{end}}
+    </select>
+    <button type="submit" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition">Apply Cert</button>
+  </form>
+  <div class="w-px h-4 bg-white/20"></div>
   <form method="post" action="/proxy-hosts/bulk-maintenance" id="bulk-form-maint-enable">
     <input type="hidden" name="action" value="enable">
     <div id="bulk-maint-enable-ids"></div>
@@ -703,6 +718,7 @@ setInterval(fetchUpstreams, 30000);
   var enableIds = document.getElementById('bulk-enable-ids');
   var disableIds = document.getElementById('bulk-disable-ids');
   var deleteIds = document.getElementById('bulk-delete-ids');
+  var certIds = document.getElementById('bulk-cert-ids');
   var maintEnableIds = document.getElementById('bulk-maint-enable-ids');
   var maintDisableIds = document.getElementById('bulk-maint-disable-ids');
 
@@ -733,7 +749,7 @@ setInterval(fetchUpstreams, 30000);
         return inp;
       });
     }
-    [enableIds, disableIds, deleteIds, maintEnableIds, maintDisableIds].forEach(function(c) {
+    [enableIds, disableIds, deleteIds, certIds, maintEnableIds, maintDisableIds].forEach(function(c) {
       c.replaceChildren.apply(c, makeInputs());
     });
   }
