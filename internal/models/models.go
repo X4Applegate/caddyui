@@ -67,10 +67,11 @@ type ProxyHost struct {
 	// identifies which adapter in internal/dns handles lifecycle calls.
 	// Empty DNSProvider means "no managed DNS" — the host's A record is
 	// whatever the user set manually.
-	DNSProvider   string // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
-	DNSZoneID     string // provider-native zone ID (opaque for CF/Hetzner; domain for others)
-	DNSZoneName   string // base domain, e.g. "example.com", for display
-	DNSRecordID   string // record ID returned by the provider after create
+	DNSProvider  string // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
+	DNSZoneID    string // provider-native zone ID (opaque for CF/Hetzner; domain for others)
+	DNSZoneName  string // base domain, e.g. "example.com", for display
+	DNSRecordID  string // record ID returned by the provider after create
+	DNSProfileID string // optional credential profile ID; empty uses legacy provider settings
 	// Legacy CF/PB columns. Kept for rollback safety — the v2.3.0 migration
 	// copies these into the unified columns above. New writes only touch
 	// the unified columns, so these stay frozen at whatever the last v2.2.x
@@ -82,54 +83,54 @@ type ProxyHost struct {
 	// v2.9.0: per-host security settings. All default to off/empty so
 	// existing hosts are unchanged after upgrade. These three are persisted
 	// to the proxy_hosts table and reflected in the Caddy config on each sync.
-	CompressionEnabled     bool   // prepend gzip/zstd encode handler
-	SecurityHeadersEnabled bool   // add HSTS, X-Frame-Options, X-Content-Type-Options, etc.
+	CompressionEnabled     bool // prepend gzip/zstd encode handler
+	SecurityHeadersEnabled bool // add HSTS, X-Frame-Options, X-Content-Type-Options, etc.
 	// v2.12.16: in-memory only (not persisted). syncCaddy populates this
 	// from settingGlobalStripResponseHeaders before BuildProxyRoute fires
 	// so the per-host SecurityHeaders bundle can skip headers the user
 	// listed in the global strip — otherwise the bundle's `set` would
 	// override the strip handler.
-	GlobalStripHeaders []string `json:"-"`
-	TLSMinVersion          string // "" | "1.0" | "1.1" | "1.2" | "1.3"
-	CustomReqHeaders  string // JSON: map[string]string of request headers to set/delete
-	CustomRespHeaders string // JSON: map[string]string of response headers to set/delete
-	URLRewrites       string // JSON: []URLRewriteRule
-	MaintenanceMode       bool   // v2.9.3: serve 503 instead of proxying
-	MaintenanceMsg        string // custom message shown on the 503 page
-	MaintenanceStatusCode int    // 503 (default), 429, 502, or 520
-	MaxRequestBodyMB  int    // 0 = unlimited; >0 = max body size in MiB
-	StickySessions    bool   // cookie-based LB for multi-upstream hosts
-	UpstreamTimeoutSec int  // 0 = Caddy default; >0 = dial/response timeout seconds
-	CORSEnabled  bool   // add CORS response headers
-	CORSOrigins  string // comma-separated allowed origins, or "*"
-	HealthCheckURI         string // e.g. "/health"; empty = no active checks
-	HealthCheckIntervalSec int    // default 30 when HealthCheckURI is set
-	HealthCheckMethod      string // "GET" (default) or "HEAD"
-	KeepaliveConns         int    // max idle conns per host; 0 = Caddy default
-	Tags                   string // comma-separated labels, UI-only
-	Notes                  string // freeform admin notes, UI-only
-	DisableAccessLog       bool   // skip analytics ingest for this host
-	AddRequestID           bool   // inject X-Request-Id header for distributed tracing
-	StripRespHeaders       string // comma-separated response header names to delete
-	BlockedAgents          string // comma-separated user-agent patterns to block (403)
-	ResponseCacheControl   string // override Cache-Control response header; empty = keep upstream value
-	UpstreamSNI            string // override TLS SNI for HTTPS upstreams with a different hostname
-	HSTSPreload            bool   // append "; preload" to the HSTS header when SecurityHeadersEnabled
-	MaxConnsPerHost        int    // max concurrent connections per upstream (0 = unlimited)
-	HealthCheckTimeoutSec  int    // active health check timeout in seconds (default 5)
-	UpstreamRetries        int    // number of retries on upstream failure (0 = no retry)
-	ForceHTTP1             bool   // force HTTP/1.1 to upstream (disables H2 upstreams)
-	BasicAuthRealm         string // realm shown in browser basic-auth prompt (default "Restricted")
-	ErrorPageHTML          string // custom HTML served when upstream returns 4xx/5xx; empty = pass through
+	GlobalStripHeaders     []string `json:"-"`
+	TLSMinVersion          string   // "" | "1.0" | "1.1" | "1.2" | "1.3"
+	CustomReqHeaders       string   // JSON: map[string]string of request headers to set/delete
+	CustomRespHeaders      string   // JSON: map[string]string of response headers to set/delete
+	URLRewrites            string   // JSON: []URLRewriteRule
+	MaintenanceMode        bool     // v2.9.3: serve 503 instead of proxying
+	MaintenanceMsg         string   // custom message shown on the 503 page
+	MaintenanceStatusCode  int      // 503 (default), 429, 502, or 520
+	MaxRequestBodyMB       int      // 0 = unlimited; >0 = max body size in MiB
+	StickySessions         bool     // cookie-based LB for multi-upstream hosts
+	UpstreamTimeoutSec     int      // 0 = Caddy default; >0 = dial/response timeout seconds
+	CORSEnabled            bool     // add CORS response headers
+	CORSOrigins            string   // comma-separated allowed origins, or "*"
+	HealthCheckURI         string   // e.g. "/health"; empty = no active checks
+	HealthCheckIntervalSec int      // default 30 when HealthCheckURI is set
+	HealthCheckMethod      string   // "GET" (default) or "HEAD"
+	KeepaliveConns         int      // max idle conns per host; 0 = Caddy default
+	Tags                   string   // comma-separated labels, UI-only
+	Notes                  string   // freeform admin notes, UI-only
+	DisableAccessLog       bool     // skip analytics ingest for this host
+	AddRequestID           bool     // inject X-Request-Id header for distributed tracing
+	StripRespHeaders       string   // comma-separated response header names to delete
+	BlockedAgents          string   // comma-separated user-agent patterns to block (403)
+	ResponseCacheControl   string   // override Cache-Control response header; empty = keep upstream value
+	UpstreamSNI            string   // override TLS SNI for HTTPS upstreams with a different hostname
+	HSTSPreload            bool     // append "; preload" to the HSTS header when SecurityHeadersEnabled
+	MaxConnsPerHost        int      // max concurrent connections per upstream (0 = unlimited)
+	HealthCheckTimeoutSec  int      // active health check timeout in seconds (default 5)
+	UpstreamRetries        int      // number of retries on upstream failure (0 = no retry)
+	ForceHTTP1             bool     // force HTTP/1.1 to upstream (disables H2 upstreams)
+	BasicAuthRealm         string   // realm shown in browser basic-auth prompt (default "Restricted")
+	ErrorPageHTML          string   // custom HTML served when upstream returns 4xx/5xx; empty = pass through
 	// v2.9.5: scheduled maintenance window
 	MaintenanceWindowStart string // "HH:MM" (24-hour) when the window begins; "" = disabled
 	MaintenanceWindowEnd   string // "HH:MM" (24-hour) when the window ends
 	MaintenanceWindowDays  string // "" = every day; "mon,wed,fri" subset (3-letter abbrevs)
 	// v2.9.5: per-host security
-	IPBlocklist   string // comma-separated CIDR ranges to block (403 response)
-	LBPolicy      string // "" | "round_robin" | "random" | "ip_hash" | "least_conn" | "uri_hash" | "cookie"
-	ProxyProtocol         string // "" | "v1" | "v2" — PROXY protocol version for upstream transport
-	RobotsTxt             string // custom robots.txt body injected before the reverse proxy; empty = passthrough
+	IPBlocklist            string // comma-separated CIDR ranges to block (403 response)
+	LBPolicy               string // "" | "round_robin" | "random" | "ip_hash" | "least_conn" | "uri_hash" | "cookie"
+	ProxyProtocol          string // "" | "v1" | "v2" — PROXY protocol version for upstream transport
+	RobotsTxt              string // custom robots.txt body injected before the reverse proxy; empty = passthrough
 	PassiveFailDurationSec int    // seconds to hold upstream out-of-rotation after failures; 0 = disabled
 	PassiveMaxFails        int    // consecutive failures before marking unhealthy; 0 = Caddy default (1)
 	HSTSMaxAgeSec          int    // 0 = use default 31536000; >0 = custom max-age for Strict-Transport-Security
@@ -145,16 +146,16 @@ type ProxyHost struct {
 	ReadTimeoutSec       int    // response body read timeout in seconds; 0 = no limit
 	DenyDotfiles         bool   // block requests to dotfiles/directories (403)
 	// v2.9.8: request buffering; CORS enhancements
-	RequestBuffersKB      int    // buffer this many KB of request body before forwarding; 0 = disabled
-	CORSAllowCredentials  bool   // add Access-Control-Allow-Credentials: true
-	CORSExposeHeaders     string // comma-separated list for Access-Control-Expose-Headers
+	RequestBuffersKB     int    // buffer this many KB of request body before forwarding; 0 = disabled
+	CORSAllowCredentials bool   // add Access-Control-Allow-Credentials: true
+	CORSExposeHeaders    string // comma-separated list for Access-Control-Expose-Headers
 	// v2.9.9: upstream TLS verification; separate dial timeout
 	SSLVerifyUpstream bool // verify upstream TLS certificate (default: skip verify)
 	DialTimeoutSec    int  // dial/connect timeout in seconds; 0 = use upstream_timeout_sec or Caddy default
 	// v2.9.10: header-based API key auth; empty User-Agent blocking
-	APIKeyHeader          string // header name for API key authentication (e.g. "X-API-Key"); "" = disabled
-	APIKeyValue           string // expected API key value; "" = disabled
-	BlockEmptyUserAgent   bool   // return 403 if the request has no User-Agent header
+	APIKeyHeader        string // header name for API key authentication (e.g. "X-API-Key"); "" = disabled
+	APIKeyValue         string // expected API key value; "" = disabled
+	BlockEmptyUserAgent bool   // return 403 if the request has no User-Agent header
 	// v2.9.11: error redirect URL; granular security header overrides
 	ErrorRedirectURL  string // redirect client here on 4xx/5xx from upstream (overrides error_page_html)
 	PermissionsPolicy string // custom Permissions-Policy header value; empty = omit
@@ -172,16 +173,16 @@ type ProxyHost struct {
 	PathMatcher     string // if non-empty, route only matches this path prefix (e.g. "/api")
 	StripPathPrefix bool   // strip PathMatcher prefix before forwarding to upstream
 	// v2.9.17: load-balancer tuning
-	StickyCookieName  string // custom cookie name for sticky-session LB (default "lb_backend")
-	LBTryDurationSec  int    // seconds to keep retrying across upstreams (0 = Caddy default)
-	LBTryIntervalMS   int    // ms between retry attempts (0 = Caddy default 250ms)
+	StickyCookieName string // custom cookie name for sticky-session LB (default "lb_backend")
+	LBTryDurationSec int    // seconds to keep retrying across upstreams (0 = Caddy default)
+	LBTryIntervalMS  int    // ms between retry attempts (0 = Caddy default 250ms)
 	// v2.9.18: compression min size + client IP forwarding
 	CompressionMinSizeKB int  // minimum response size in KB to compress (0 = always compress)
 	ForwardClientIP      bool // add X-Real-IP header with the real client IP to upstream requests
 	// v2.9.19: CORS fine-tuning
-	CORSMaxAgeSec      int    // Access-Control-Max-Age in seconds (0 = default 86400)
-	CORSAllowMethods   string // override Access-Control-Allow-Methods (empty = use default)
-	CORSAllowHeaders   string // override Access-Control-Allow-Headers (empty = use default)
+	CORSMaxAgeSec    int    // Access-Control-Max-Age in seconds (0 = default 86400)
+	CORSAllowMethods string // override Access-Control-Allow-Methods (empty = use default)
+	CORSAllowHeaders string // override Access-Control-Allow-Headers (empty = use default)
 	// v2.9.22
 	RetryStatusCodes string // comma-separated HTTP status codes to trigger retry (e.g. "502,503,504")
 	WriteTimeoutSec  int    // time to write request body to upstream; 0 = no limit
@@ -197,8 +198,8 @@ type ProxyHost struct {
 	StripQueryString  bool   // remove the entire query string before forwarding
 	DeleteQueryParams string // comma-separated query param names to strip (e.g. "utm_source,fbclid")
 	// v2.9.29: request/response timing
-	RequestBodyReadTimeoutSec  int // client→caddy request body read timeout; 0 = no limit
-	ResponseHeaderTimeoutSec   int // caddy→upstream response header wait; 0 = use upstream_timeout_sec
+	RequestBodyReadTimeoutSec int // client→caddy request body read timeout; 0 = no limit
+	ResponseHeaderTimeoutSec  int // caddy→upstream response header wait; 0 = use upstream_timeout_sec
 	// v2.9.31: upstream connection lifetime limit
 	MaxConnDurationSec int // 0 = unlimited; >0 = max seconds before Caddy replaces the upstream conn
 	// v2.9.32: upstream response decompression before client delivery
@@ -641,8 +642,8 @@ type ProxyHost struct {
 	// in the reverse_proxy block. Useful when the upstream double-compresses
 	// already-compressed responses.
 	DisableUpstreamCompression bool
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
 }
 
 // InScheduledMaintenanceWindow returns true when the current wall-clock time
@@ -837,10 +838,11 @@ type RedirectionHost struct {
 	// v2.12.2: unified Managed DNS — same triple as proxy_hosts and
 	// raw_routes. CaddyUI auto-creates an A record per hostname in
 	// Domains when DNSProvider is set, deletes them on row removal.
-	DNSProvider     string
-	DNSZoneID       string
-	DNSZoneName     string
-	DNSRecordID     string
+	DNSProvider  string
+	DNSZoneID    string
+	DNSZoneName  string
+	DNSRecordID  string
+	DNSProfileID string
 	// v2.9.13: access control + maintenance mode (parity with proxy hosts)
 	AccessList      string // comma/newline-separated CIDR allowlist (empty = allow all)
 	MaintenanceMode bool   // when true, respond 503 before redirecting
@@ -881,7 +883,7 @@ type RedirectionHost struct {
 	RedirectWildcardSubdomain bool
 	// v2.9.232: sunset_at — ISO-8601 date (YYYY-MM-DD) after which this
 	// redirect returns 410 Gone instead of redirecting. Empty = no sunset.
-	SunsetAt string
+	SunsetAt  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -1369,6 +1371,7 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.owner_id, 0),
     COALESCE(ph.dns_provider,''), COALESCE(ph.dns_zone_id,''),
     COALESCE(ph.dns_zone_name,''), COALESCE(ph.dns_record_id,''),
+    COALESCE(ph.dns_profile_id,''),
     COALESCE(ph.compression_enabled,0), COALESCE(ph.security_headers_enabled,0),
     COALESCE(ph.tls_min_version,''),
     COALESCE(ph.custom_req_headers,'{}'), COALESCE(ph.custom_resp_headers,'{}'),
@@ -1687,7 +1690,7 @@ func scanProxyHost(s interface {
 		&bae, &p.BasicAuthUsers,
 		&p.AccessList, &p.ExtraUpstreams,
 		&ownerID,
-		&p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID,
+		&p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID, &p.DNSProfileID,
 		&compr, &sechdrs, &p.TLSMinVersion,
 		&p.CustomReqHeaders, &p.CustomRespHeaders,
 		&p.URLRewrites,
@@ -3108,6 +3111,16 @@ func UpdateProxyHostDNSRecord(db *sql.DB, id int64, provider, zoneID, zoneName, 
 	return err
 }
 
+// UpdateProxyHostDNSProfile persists the credential profile selected for
+// managed DNS without touching the provider-returned record metadata.
+func UpdateProxyHostDNSProfile(db *sql.DB, id int64, profileID string) error {
+	_, err := db.Exec(`UPDATE proxy_hosts
+		SET dns_profile_id=?, updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`,
+		profileID, id)
+	return err
+}
+
 // ListProxyHostsWithDNSRecords returns a lightweight slice of all proxy
 // hosts that have an active managed DNS record. Only the fields needed for
 // lifecycle management (IP retarget, bulk delete) are populated — the
@@ -3115,7 +3128,7 @@ func UpdateProxyHostDNSRecord(db *sql.DB, id int64, provider, zoneID, zoneName, 
 // Pass serverID > 0 to restrict to that Caddy server (for per-server IP
 // retargeting); 0 means "all servers".
 func ListProxyHostsWithDNSRecords(db *sql.DB, serverID int64) ([]ProxyHost, error) {
-	q := `SELECT id, server_id, domains, dns_provider, dns_zone_id, dns_zone_name, dns_record_id
+	q := `SELECT id, server_id, domains, dns_provider, dns_zone_id, dns_zone_name, dns_record_id, COALESCE(dns_profile_id,'')
 		FROM proxy_hosts
 		WHERE dns_provider != '' AND dns_record_id != ''`
 	args := []any{}
@@ -3132,7 +3145,7 @@ func ListProxyHostsWithDNSRecords(db *sql.DB, serverID int64) ([]ProxyHost, erro
 	var out []ProxyHost
 	for rows.Next() {
 		var p ProxyHost
-		if err := rows.Scan(&p.ID, &p.ServerID, &p.Domains, &p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID); err != nil {
+		if err := rows.Scan(&p.ID, &p.ServerID, &p.Domains, &p.DNSProvider, &p.DNSZoneID, &p.DNSZoneName, &p.DNSRecordID, &p.DNSProfileID); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -3163,6 +3176,7 @@ func ToggleRedirectionHost(db *sql.DB, id int64) (bool, error) {
 	}
 	return en == 1, nil
 }
+
 // ToggleRawRoute flips the enabled flag on a raw route and returns the new state.
 func ToggleRawRoute(db *sql.DB, id int64) (bool, error) {
 	if _, err := db.Exec(`UPDATE raw_routes SET enabled = 1 - enabled, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
@@ -3207,7 +3221,8 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.redirect_wildcard_subdomain,0),
                COALESCE(rh.sunset_at,''),
                COALESCE(rh.dns_provider,''), COALESCE(rh.dns_zone_id,''),
-               COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,'')
+               COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,''),
+               COALESCE(rh.dns_profile_id,'')
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ? ORDER BY rh.sort_order ASC, rh.id DESC`, serverID)
@@ -3233,7 +3248,8 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.redirect_wildcard_subdomain,0),
                COALESCE(rh.sunset_at,''),
                COALESCE(rh.dns_provider,''), COALESCE(rh.dns_zone_id,''),
-               COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,'')
+               COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,''),
+               COALESCE(rh.dns_profile_id,'')
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ?
@@ -3260,7 +3276,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 			&r.AdvancedConfig, &r.Color,
 			&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
 			&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt,
-			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID); err != nil {
+			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID); err != nil {
 			return nil, err
 		}
 		r.PreservePath = pp == 1
@@ -3303,7 +3319,8 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
                COALESCE(redirect_wildcard_subdomain,0),
                COALESCE(sunset_at,''),
                COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
-               COALESCE(dns_zone_name,''), COALESCE(dns_record_id,'')
+               COALESCE(dns_zone_name,''), COALESCE(dns_record_id,''),
+               COALESCE(dns_profile_id,'')
         FROM redirection_hosts WHERE id = ?`, id).Scan(
 		&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain, &r.ForwardHTTPCode,
 		&pp, &ssl, &sslf, &en, &r.CertificateID, &r.CreatedAt, &r.UpdatedAt,
@@ -3314,7 +3331,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 		&r.AdvancedConfig, &r.Color,
 		&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
 		&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt,
-		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID,
+		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID,
 	)
 	if err != nil {
 		return nil, err
@@ -3354,8 +3371,8 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
             hsts_max_age_sec, hsts_include_subdomains, hsts_preload, advanced_config, color,
             maintenance_status_code, sort_order, redirect_rules,
             redirect_strip_path_prefix, redirect_wildcard_subdomain, sunset_at,
-            dns_provider, dns_zone_id, dns_zone_name, dns_record_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -3367,7 +3384,7 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
 		r.AdvancedConfig, r.Color,
 		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
 		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
 	)
 	if err != nil {
 		return 0, err
@@ -3395,7 +3412,7 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
             advanced_config=?, color=?,
             maintenance_status_code=?, sort_order=?, redirect_rules=?,
             redirect_strip_path_prefix=?, redirect_wildcard_subdomain=?, sunset_at=?,
-            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
+            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?,
             updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -3406,7 +3423,7 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
 		r.AdvancedConfig, r.Color,
 		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
 		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
 		r.ID,
 	)
 	return err
@@ -3420,6 +3437,13 @@ func UpdateRedirectionHostDNSRecord(db *sql.DB, id int64, provider, zoneID, zone
         SET dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
             updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		provider, zoneID, zoneName, recordIDs, id)
+	return err
+}
+
+func UpdateRedirectionHostDNSProfile(db *sql.DB, id int64, profileID string) error {
+	_, err := db.Exec(`UPDATE redirection_hosts
+        SET dns_profile_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		profileID, id)
 	return err
 }
 
@@ -3449,20 +3473,22 @@ type RawRoute struct {
 	// Populated on save when the user picks a provider + zone in the form;
 	// empty means "no managed DNS, user wires A records manually." Same
 	// semantics as the proxy-host columns — see models.ProxyHost.
-	DNSProvider   string
-	DNSZoneID     string
-	DNSZoneName   string
-	DNSRecordID   string
-	OwnerID       sql.NullInt64
-	OwnerEmail    string // populated via JOIN for display
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	DNSProvider  string
+	DNSZoneID    string
+	DNSZoneName  string
+	DNSRecordID  string
+	DNSProfileID string
+	OwnerID      sql.NullInt64
+	OwnerEmail   string // populated via JOIN for display
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 const rawRouteCols = `id, label, json_data, COALESCE(caddyfile_src, ''), enabled,
     COALESCE(certificate_id, 0), COALESCE(force_ssl, 0), COALESCE(block_common_exploits, 0),
     COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
     COALESCE(dns_zone_name,''), COALESCE(dns_record_id,''),
+    COALESCE(dns_profile_id,''),
     created_at, updated_at, COALESCE(owner_id, 0)`
 
 func scanRawRoute(s interface {
@@ -3473,7 +3499,7 @@ func scanRawRoute(s interface {
 	var ownerID int64
 	err := s.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 		&r.CertificateID, &force, &block,
-		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID,
+		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID,
 		&r.CreatedAt, &r.UpdatedAt, &ownerID)
 	if err == nil {
 		r.Enabled = en == 1
@@ -3499,6 +3525,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.certificate_id, 0), COALESCE(rr.force_ssl, 0), COALESCE(rr.block_common_exploits, 0),
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
+               COALESCE(rr.dns_profile_id,''),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3511,6 +3538,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.certificate_id, 0), COALESCE(rr.force_ssl, 0), COALESCE(rr.block_common_exploits, 0),
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
+               COALESCE(rr.dns_profile_id,''),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3529,7 +3557,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
 		var ownerID int64
 		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 			&r.CertificateID, &force, &block,
-			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID,
+			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID,
 			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail); err != nil {
 			return nil, err
 		}
@@ -3548,12 +3576,12 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
 func CreateRawRoute(db *sql.DB, serverID int64, ownerID int64, r *RawRoute) (int64, error) {
 	res, err := db.Exec(`INSERT INTO raw_routes (server_id, label, json_data, caddyfile_src, enabled,
             certificate_id, force_ssl, block_common_exploits,
-            dns_provider, dns_zone_id, dns_zone_name, dns_record_id,
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id,
             owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID, r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
 		nilIfZero(ownerID))
 	if err != nil {
 		return 0, err
@@ -3572,11 +3600,11 @@ func GetRawRoute(db *sql.DB, id int64) (*RawRoute, error) {
 func UpdateRawRoute(db *sql.DB, r *RawRoute) error {
 	_, err := db.Exec(`UPDATE raw_routes SET label=?, json_data=?, caddyfile_src=?, enabled=?,
             certificate_id=?, force_ssl=?, block_common_exploits=?,
-            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?,
+            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?,
             updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
 		r.ID)
 	return err
 }
@@ -3603,13 +3631,21 @@ func UpdateRawRouteDNSRecord(db *sql.DB, id int64, provider, zoneID, zoneName, r
 	return err
 }
 
+func UpdateRawRouteDNSProfile(db *sql.DB, id int64, profileID string) error {
+	_, err := db.Exec(`UPDATE raw_routes
+        SET dns_profile_id=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`,
+		profileID, id)
+	return err
+}
+
 // ListRawRoutesWithDNSRecords returns a lightweight slice of all raw
 // routes with an active managed DNS record. Only the fields needed for
 // lifecycle management (IP retarget, bulk delete) are populated —
 // mirrors ListProxyHostsWithDNSRecords. Pass serverID > 0 to restrict
 // to that Caddy server; 0 means "all servers".
 func ListRawRoutesWithDNSRecords(db *sql.DB, serverID int64) ([]RawRoute, error) {
-	q := `SELECT id, label, json_data, dns_provider, dns_zone_id, dns_zone_name, dns_record_id
+	q := `SELECT id, label, json_data, dns_provider, dns_zone_id, dns_zone_name, dns_record_id, COALESCE(dns_profile_id,'')
         FROM raw_routes
         WHERE dns_provider != '' AND dns_record_id != ''`
 	args := []any{}
@@ -3626,7 +3662,7 @@ func ListRawRoutesWithDNSRecords(db *sql.DB, serverID int64) ([]RawRoute, error)
 	var out []RawRoute
 	for rows.Next() {
 		var r RawRoute
-		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID); err != nil {
+		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

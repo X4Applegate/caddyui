@@ -89,6 +89,7 @@
        already selected so edit flows keep the picker visible. */}}
   {{if .AnyDNSEnabled}}
   {{$provider := .Row.DNSProvider}}
+  {{$profile := .Row.DNSProfileID}}
   <details class="pt-4 border-t border-ink-100"{{if $provider}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
@@ -102,12 +103,13 @@
 
     <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
       <div class="sm:col-span-4">
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Provider</label>
-        <select id="dns-provider-select" name="dns_provider"
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">DNS credentials</label>
+        <input type="hidden" id="dns-provider-hidden" name="dns_provider" value="{{$provider}}" />
+        <select id="dns-provider-select" name="dns_profile_id"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-          <option value="" {{if eq $provider ""}}selected{{end}}>None</option>
-          {{range .DNSProviders}}
-          <option value="{{.ID}}" {{if eq $provider .ID}}selected{{end}}>{{.DisplayName}}</option>
+          <option value="" data-provider="" {{if eq $provider ""}}selected{{end}}>None</option>
+          {{range .DNSProfiles}}
+          <option value="{{.ID}}" data-provider="{{.ProviderID}}" {{if and (eq $profile "") (eq $provider .ProviderID) .Legacy}}selected{{else if eq $profile .ID}}selected{{end}}>{{.DisplayName}}</option>
           {{end}}
         </select>
       </div>
@@ -211,6 +213,7 @@
   // mirrors it client-side so zone auto-selection + existing-record checks
   // have a domain to work with before the user hits Save.
   var providerSel = document.getElementById('dns-provider-select');
+  var providerHidden = document.getElementById('dns-provider-hidden');
   var zoneWrap    = document.getElementById('dns-zone-wrap');
   var zoneSel     = document.getElementById('dns-zone-select');
   var zoneNameIn  = document.getElementById('dns-zone-name');
@@ -218,6 +221,20 @@
   var mismatchBox = document.getElementById('dns-zone-mismatch');
   var mismatchMsg = document.getElementById('dns-zone-mismatch-msg');
   if (!providerSel || !zoneSel) return;
+  function selectedProviderID() {
+    if (!providerSel || providerSel.selectedIndex < 0) return '';
+    var opt = providerSel.options[providerSel.selectedIndex];
+    return opt ? (opt.getAttribute('data-provider') || '') : '';
+  }
+  function selectedProfileID() {
+    return providerSel ? (providerSel.value || '') : '';
+  }
+  function cacheKey() {
+    return selectedProviderID() + '|' + selectedProfileID();
+  }
+  function syncProviderHidden() {
+    if (providerHidden) providerHidden.value = selectedProviderID();
+  }
 
   var jsonIn = document.querySelector('textarea[name="json_data"]');
   var cfIn   = document.querySelector('textarea[name="caddyfile_src"]');
@@ -315,7 +332,7 @@
   function updateMismatchWarn() {
     if (!mismatchBox) return;
     var fqdn = firstDomain();
-    if (!fqdn || !providerSel.value || !zoneSel.value) {
+    if (!fqdn || !selectedProviderID() || !zoneSel.value) {
       mismatchBox.classList.add('hidden');
       return;
     }
@@ -365,12 +382,14 @@
 
   function loadZones(providerID) {
     if (!providerID) return;
-    if (cache[providerID]) {
-      renderZones(providerID, cache[providerID], currentZoneID);
+    var key = cacheKey();
+    if (cache[key]) {
+      renderZones(providerID, cache[key], currentZoneID);
       return;
     }
     zoneSel.replaceChildren(new Option('Loading zones…', ''));
-    fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID))
+    fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID) +
+          '&profile=' + encodeURIComponent(selectedProfileID()))
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data && data.error) {
@@ -380,8 +399,8 @@
           syncZoneName();
           return;
         }
-        cache[providerID] = data || [];
-        renderZones(providerID, cache[providerID], currentZoneID);
+        cache[key] = data || [];
+        renderZones(providerID, cache[key], currentZoneID);
       })
       .catch(function(e) {
         zoneSel.replaceChildren(new Option('Failed to load zones: ' + String(e && e.message ? e.message : e), ''));
@@ -390,6 +409,7 @@
   }
 
   function applyProvider(v) {
+    syncProviderHidden();
     if (zoneWrap) zoneWrap.classList.toggle('hidden', !v);
     if (zoneHint) {
       var h = hints[v];
@@ -445,13 +465,15 @@
   var checkTimer = null;
 
   function triple() {
-    return (providerSel.value || '') + '|' +
+    return (selectedProviderID() || '') + '|' +
+           (selectedProfileID() || '') + '|' +
            (zoneSel.value || '') + '|' +
            allDomains().join(',');
   }
 
   function checkExistingRecord() {
-    var provider = providerSel.value;
+    var provider = selectedProviderID();
+    var profile  = selectedProfileID();
     var zoneID   = zoneSel.value;
     var zoneName = zoneNameIn ? zoneNameIn.value : '';
     var fqdns    = allDomains();
@@ -468,6 +490,7 @@
     // v2.12.1: fetch every fqdn in parallel and aggregate.
     var url = function(fqdn) {
       return '/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
+             '&profile=' + encodeURIComponent(profile) +
              '&zone=' + encodeURIComponent(zoneID) +
              '&zone_name=' + encodeURIComponent(zoneName) +
              '&fqdn=' + encodeURIComponent(fqdn);
@@ -492,7 +515,7 @@
 
   function onDomainInput() {
     if (!userPickedZone) {
-      var zones = cache[providerSel.value];
+      var zones = cache[cacheKey()];
       if (zones && zones.length) {
         var best = bestZoneMatch(firstDomain(), zones);
         if (best && zoneSel.value !== best.id) {
@@ -511,7 +534,7 @@
   providerSel.addEventListener('change', function() {
     currentZoneID = '';
     userPickedZone = false;
-    applyProvider(this.value);
+    applyProvider(selectedProviderID());
     scheduleCheck();
   });
   zoneSel.addEventListener('change', function() {
@@ -521,7 +544,8 @@
     scheduleCheck();
   });
 
-  applyProvider(providerSel.value);
+  syncProviderHidden();
+  applyProvider(selectedProviderID());
   scheduleCheck();
 })();
 
