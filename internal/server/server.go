@@ -2364,7 +2364,7 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		hostIDs[i] = p.ID
 	}
 	healthMap, _ := models.LatestProxyHealth(s.DB, hostIDs)
-	certs, _ := s.certListForRequest(r)
+	certs, _ := s.certOptionListForRequest(r)
 
 	// Per-host today request counts (best-effort — zero if analytics disabled).
 	hostRequestsToday := make(map[int64]int)
@@ -2658,7 +2658,7 @@ func (s *Server) bulkCertificateProxyHosts(w http.ResponseWriter, r *http.Reques
 	sid := s.currentServerID(r)
 	if certID > 0 {
 		allowed := false
-		certs, err := s.certListForRequest(r)
+		certs, err := s.certOptionListForRequest(r)
 		if err != nil {
 			http.Error(w, "load certificates: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -6168,6 +6168,16 @@ func (s *Server) certListForRequest(r *http.Request) ([]models.Certificate, erro
 		viewerID = cu.ID
 	}
 	return models.ListCertificatesForUser(s.DB, s.currentServerID(r), viewerID, isAdmin, s.groupPeerIDs(r))
+}
+
+func (s *Server) certOptionListForRequest(r *http.Request) ([]models.Certificate, error) {
+	cu := s.currentUser(r)
+	isAdmin := cu != nil && cu.Role == models.RoleAdmin
+	var viewerID int64
+	if cu != nil {
+		viewerID = cu.ID
+	}
+	return models.ListCertificateOptionsForUser(s.DB, s.currentServerID(r), viewerID, isAdmin, s.groupPeerIDs(r))
 }
 
 func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {

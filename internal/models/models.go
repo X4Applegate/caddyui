@@ -3869,6 +3869,45 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
 	return out, rows.Err()
 }
 
+// ListCertificateOptionsForUser returns the same scoped certificate rows as
+// ListCertificatesForUser, but omits PEM/key payload columns. Use this for
+// dropdowns on pages that do not inspect or edit certificate material.
+func ListCertificateOptionsForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, peerIDs []int64) ([]Certificate, error) {
+	var rows *sql.Rows
+	var err error
+	if isAdmin {
+		rows, err = db.Query(`
+            SELECT c.id, c.name, c.domains, c.source, c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
+            FROM certificates c
+            LEFT JOIN users u ON u.id = c.owner_id
+            WHERE c.server_id = ? ORDER BY c.id DESC`, serverID)
+	} else {
+		inStr, inArgs := inClause(peerIDs)
+		args := append([]any{serverID, viewerID}, inArgs...)
+		rows, err = db.Query(`
+            SELECT c.id, c.name, c.domains, c.source, c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
+            FROM certificates c
+            LEFT JOIN users u ON u.id = c.owner_id
+            WHERE c.server_id = ?
+              AND (c.owner_id IS NULL OR c.owner_id = ? OR c.owner_id IN (`+inStr+`))
+            ORDER BY c.id DESC`, args...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Certificate
+	for rows.Next() {
+		var c Certificate
+		if err := rows.Scan(&c.ID, &c.Name, &c.Domains, &c.Source, &c.OwnerID,
+			&c.CreatedAt, &c.UpdatedAt, &c.OwnerEmail); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func GetCertificate(db *sql.DB, id int64) (*Certificate, error) {
 	var c Certificate
 	err := db.QueryRow(`
