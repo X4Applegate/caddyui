@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.15.3] - 2026-07-21 - Security dependency refresh
+
+### Security
+
+- **Dependabot crypto alerts**: updated `golang.org/x/crypto` from `v0.45.0` to `v0.52.0`, resolving the open GitHub Dependabot alerts for the module.
+- **Go toolchain**: updated the module and Docker build stage to Go 1.25 so the patched crypto module can be used.
+- **Transitive modules**: refreshed `golang.org/x/sys` from `v0.38.0` to `v0.45.0` via `go mod tidy`.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.15.3` published.
+
+---
+
 ## [2.15.2] - 2026-05-25 - Simple mode keeps DNS & TLS visible
 
 ### Fixed

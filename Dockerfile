@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 
 # Install ca-certificates and tzdata in the build stage so they can be
 # copied into the scratch final image. curl is needed for the v2.12.39
