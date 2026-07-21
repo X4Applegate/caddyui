@@ -254,6 +254,7 @@ function setProxyFormMode(mode) {
        open. */}}
   {{if .AnyDNSEnabled}}
   {{$provider := .Host.DNSProvider}}
+  {{$profile := .Host.DNSProfileID}}
   <details id="ph-dns" class="pt-4 border-t border-ink-100" data-keep-open open>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
@@ -267,12 +268,13 @@ function setProxyFormMode(mode) {
 
     <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
       <div class="sm:col-span-4">
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Provider</label>
-        <select id="dns-provider-select" name="dns_provider"
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">DNS credentials</label>
+        <input type="hidden" id="dns-provider-hidden" name="dns_provider" value="{{$provider}}" />
+        <select id="dns-provider-select" name="dns_profile_id"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-          <option value="" {{if eq $provider ""}}selected{{end}}>None</option>
-          {{range .DNSProviders}}
-          <option value="{{.ID}}" {{if eq $provider .ID}}selected{{end}}>{{.DisplayName}}</option>
+          <option value="" data-provider="" {{if eq $provider ""}}selected{{end}}>None</option>
+          {{range .DNSProfiles}}
+          <option value="{{.ID}}" data-provider="{{.ProviderID}}" {{if and (eq $profile "") (eq $provider .ProviderID) .Legacy}}selected{{else if eq $profile .ID}}selected{{end}}>{{.DisplayName}}</option>
           {{end}}
         </select>
       </div>
@@ -3645,10 +3647,20 @@ function setProxyFormMode(mode) {
 (function() {
   var domainsIn = document.querySelector('input[name="domains"]');
   var providerSel = document.getElementById('dns-provider-select');
+  var providerHidden = document.getElementById('dns-provider-hidden');
   var callout = document.getElementById('wildcard-callout');
   var detail = document.getElementById('wildcard-callout-detail');
   if (!domainsIn || !callout || !detail) return;
+  function selectedProviderID() {
+    if (!providerSel || providerSel.selectedIndex < 0) return '';
+    var opt = providerSel.options[providerSel.selectedIndex];
+    return opt ? (opt.getAttribute('data-provider') || '') : '';
+  }
+  function syncProviderHidden() {
+    if (providerHidden) providerHidden.value = selectedProviderID();
+  }
   function refresh() {
+    syncProviderHidden();
     var raw = (domainsIn.value || '').split(',').map(function(s) { return s.trim(); });
     var wildcards = raw.filter(function(d) { return d.indexOf('*.') === 0; });
     if (wildcards.length === 0) {
@@ -3656,7 +3668,7 @@ function setProxyFormMode(mode) {
       return;
     }
     callout.classList.remove('hidden');
-    var providerID = providerSel ? providerSel.value : '';
+    var providerID = selectedProviderID();
     var providerLabel = '';
     if (providerSel && providerID) {
       var opt = providerSel.options[providerSel.selectedIndex];
@@ -3816,6 +3828,7 @@ function setProxyFormMode(mode) {
   // demand so we don't fire six provider API calls on page load.
   (function() {
     var providerSel = document.getElementById('dns-provider-select');
+    var providerHidden = document.getElementById('dns-provider-hidden');
     var zoneWrap    = document.getElementById('dns-zone-wrap');
     var zoneSel     = document.getElementById('dns-zone-select');
     var zoneNameIn  = document.getElementById('dns-zone-name');
@@ -3823,6 +3836,20 @@ function setProxyFormMode(mode) {
     var mismatchBox = document.getElementById('dns-zone-mismatch');
     var mismatchMsg = document.getElementById('dns-zone-mismatch-msg');
     if (!providerSel || !zoneSel) return;
+    function selectedProviderID() {
+      if (!providerSel || providerSel.selectedIndex < 0) return '';
+      var opt = providerSel.options[providerSel.selectedIndex];
+      return opt ? (opt.getAttribute('data-provider') || '') : '';
+    }
+    function selectedProfileID() {
+      return providerSel ? (providerSel.value || '') : '';
+    }
+    function cacheKey() {
+      return selectedProviderID() + '|' + selectedProfileID();
+    }
+    function syncProviderHidden() {
+      if (providerHidden) providerHidden.value = selectedProviderID();
+    }
 
     // Per-provider cache so switching back and forth doesn't re-fetch.
     var cache = {};
@@ -3883,7 +3910,7 @@ function setProxyFormMode(mode) {
     function updateMismatchWarn() {
       if (!mismatchBox) return;
       var fqdn = firstDomain();
-      if (!fqdn || !providerSel.value || !zoneSel.value) {
+      if (!fqdn || !selectedProviderID() || !zoneSel.value) {
         mismatchBox.classList.add('hidden');
         return;
       }
@@ -3934,12 +3961,14 @@ function setProxyFormMode(mode) {
 
     function loadZones(providerID) {
       if (!providerID) return;
-      if (cache[providerID]) {
-        renderZones(providerID, cache[providerID], currentZoneID);
+      var key = cacheKey();
+      if (cache[key]) {
+        renderZones(providerID, cache[key], currentZoneID);
         return;
       }
       zoneSel.replaceChildren(new Option('Loading zones…', ''));
-      fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID))
+      fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID) +
+            '&profile=' + encodeURIComponent(selectedProfileID()))
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (data && data.error) {
@@ -3949,8 +3978,8 @@ function setProxyFormMode(mode) {
             syncZoneName();
             return;
           }
-          cache[providerID] = data || [];
-          renderZones(providerID, cache[providerID], currentZoneID);
+          cache[key] = data || [];
+          renderZones(providerID, cache[key], currentZoneID);
         })
         .catch(function(e) {
           zoneSel.replaceChildren(new Option('Failed to load zones: ' + String(e && e.message ? e.message : e), ''));
@@ -3959,6 +3988,7 @@ function setProxyFormMode(mode) {
     }
 
     function applyProvider(v) {
+      syncProviderHidden();
       if (zoneWrap) zoneWrap.classList.toggle('hidden', !v);
       if (zoneHint) {
         var h = hints[v];
@@ -4031,13 +4061,15 @@ function setProxyFormMode(mode) {
     var checkTimer = null;
 
     function triple() {
-      return (providerSel.value || '') + '|' +
+      return (selectedProviderID() || '') + '|' +
+             (selectedProfileID() || '') + '|' +
              (zoneSel.value || '') + '|' +
              allDomains().join(',');
     }
 
     function checkExistingRecord() {
-      var provider = providerSel.value;
+      var provider = selectedProviderID();
+      var profile  = selectedProfileID();
       var zoneID   = zoneSel.value;
       var zoneName = zoneNameIn ? zoneNameIn.value : '';
       var fqdns    = allDomains();
@@ -4053,6 +4085,7 @@ function setProxyFormMode(mode) {
       }
       var url = function(fqdn) {
         return '/api/dns-zones/check-record?provider=' + encodeURIComponent(provider) +
+               '&profile=' + encodeURIComponent(profile) +
                '&zone=' + encodeURIComponent(zoneID) +
                '&zone_name=' + encodeURIComponent(zoneName) +
                '&fqdn=' + encodeURIComponent(fqdn);
@@ -4082,7 +4115,7 @@ function setProxyFormMode(mode) {
         // Also re-checks the mismatch warning so a typo like
         // "test.richardapplegate.ip" flags the moment the user types it.
         if (!userPickedZone) {
-          var zones = cache[providerSel.value];
+          var zones = cache[cacheKey()];
           if (zones && zones.length) {
             var best = bestZoneMatch(firstDomain(), zones);
             if (best && zoneSel.value !== best.id) {
@@ -4103,7 +4136,7 @@ function setProxyFormMode(mode) {
       // carries no authority over the new provider's list.
       currentZoneID = '';
       userPickedZone = false;
-      applyProvider(this.value);
+      applyProvider(selectedProviderID());
       // Provider change = new triple; reset the check.
       scheduleCheck();
     });
@@ -4118,7 +4151,8 @@ function setProxyFormMode(mode) {
       scheduleCheck();
     });
 
-    applyProvider(providerSel.value);
+    syncProviderHidden();
+    applyProvider(selectedProviderID());
     // Kick off an initial check on page load (edit-host flow with prefilled
     // provider/zone/domain) so the warning shows immediately where relevant.
     scheduleCheck();

@@ -270,6 +270,17 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	for _, tbl := range []string{"proxy_hosts", "redirection_hosts", "raw_routes"} {
+		has, err := columnExists(db, tbl, "dns_profile_id")
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN dns_profile_id TEXT NOT NULL DEFAULT ''`, tbl)); err != nil {
+				return fmt.Errorf("add dns_profile_id to %s: %w", tbl, err)
+			}
+		}
+	}
 	has, err := columnExists(db, "raw_routes", "caddyfile_src")
 	if err != nil {
 		return err
@@ -424,10 +435,10 @@ func migrate(db *sql.DB) error {
 	// state the row is in. Further DNS providers (Namecheap, GoDaddy,
 	// DigitalOcean, Hetzner) write only to the new columns.
 	for _, col := range []struct{ name, def string }{
-		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},      // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
-		{"dns_zone_id", "TEXT NOT NULL DEFAULT ''"},       // provider-native zone ID (opaque or domain)
-		{"dns_zone_name", "TEXT NOT NULL DEFAULT ''"},     // base domain for display
-		{"dns_record_id", "TEXT NOT NULL DEFAULT ''"},     // record ID returned by the provider after create
+		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},  // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
+		{"dns_zone_id", "TEXT NOT NULL DEFAULT ''"},   // provider-native zone ID (opaque or domain)
+		{"dns_zone_name", "TEXT NOT NULL DEFAULT ''"}, // base domain for display
+		{"dns_record_id", "TEXT NOT NULL DEFAULT ''"}, // record ID returned by the provider after create
 	} {
 		has, err := columnExists(db, "proxy_hosts", col.name)
 		if err != nil {

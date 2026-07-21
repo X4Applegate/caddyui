@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.0] - 2026-07-21 - Multiple DNS credential profiles
+
+### Added
+
+- **Multiple Cloudflare DNS credential profiles**: Settings → DNS now supports additional named Cloudflare profiles, each with its own API token, proxy mode, and zone allow-list. This lets one CaddyUI install manage domains split across multiple Cloudflare accounts or tokens.
+- **Per-host DNS profile selection**: proxy hosts, redirection hosts, and raw routes can pick a specific DNS credential profile while the legacy provider-wide settings continue to work unchanged.
+
+### Changed
+
+- **Managed DNS lifecycle**: zone loading, existing-record checks, record create/delete, public-IP retargeting, and wildcard DNS-01 automation now resolve credentials from the selected profile.
+- **Safety guard**: if a saved row references a deleted/missing DNS profile, provider calls no-op instead of falling back to the global token and risking changes in the wrong account.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.16.0` published.
+
+---
+
 ## [2.15.3] - 2026-07-21 - Security dependency refresh
 
 ### Security

@@ -215,13 +215,15 @@
     {{end}}
 
     <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+      {{$rhProfile := .Host.DNSProfileID}}
       <div class="sm:col-span-4">
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Provider</label>
-        <select id="dns-provider-select" name="dns_provider"
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">DNS credentials</label>
+        <input type="hidden" id="dns-provider-hidden" name="dns_provider" value="{{$rhProvider}}" />
+        <select id="dns-provider-select" name="dns_profile_id"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-          <option value="" {{if eq $rhProvider ""}}selected{{end}}>None</option>
-          {{range .DNSProviders}}
-          <option value="{{.ID}}" {{if eq $rhProvider .ID}}selected{{end}}>{{.DisplayName}}</option>
+          <option value="" data-provider="" {{if eq $rhProvider ""}}selected{{end}}>None</option>
+          {{range .DNSProfiles}}
+          <option value="{{.ID}}" data-provider="{{.ProviderID}}" {{if and (eq $rhProfile "") (eq $rhProvider .ProviderID) .Legacy}}selected{{else if eq $rhProfile .ID}}selected{{end}}>{{.DisplayName}}</option>
           {{end}}
         </select>
       </div>
@@ -247,10 +249,22 @@
   // changes and populates the zone select.
   (function() {
     var providerSel = document.getElementById('dns-provider-select');
+    var providerHidden = document.getElementById('dns-provider-hidden');
     var zoneSel     = document.getElementById('dns-zone-select');
     var zoneWrap    = document.getElementById('dns-zone-wrap');
     var zoneNameIn  = document.getElementById('dns-zone-name');
     if (!providerSel || !zoneSel) return;
+    function selectedProviderID() {
+      if (!providerSel || providerSel.selectedIndex < 0) return '';
+      var opt = providerSel.options[providerSel.selectedIndex];
+      return opt ? (opt.getAttribute('data-provider') || '') : '';
+    }
+    function selectedProfileID() {
+      return providerSel ? (providerSel.value || '') : '';
+    }
+    function syncProviderHidden() {
+      if (providerHidden) providerHidden.value = selectedProviderID();
+    }
 
     function setZoneNameFromOption() {
       if (!zoneNameIn) return;
@@ -267,7 +281,8 @@
       }
       if (zoneWrap) zoneWrap.classList.remove('hidden');
       zoneSel.replaceChildren(new Option('Loading zones…', ''));
-      fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID))
+      fetch('/api/dns-zones?provider=' + encodeURIComponent(providerID) +
+            '&profile=' + encodeURIComponent(selectedProfileID()))
         .then(function(r) { return r.json(); })
         .then(function(data) {
           // v2.12.4: /api/dns-zones returns a flat [{id,name,...}] array,
@@ -297,9 +312,13 @@
         });
     }
 
-    providerSel.addEventListener('change', function() { loadZones(providerSel.value); });
+    providerSel.addEventListener('change', function() {
+      syncProviderHidden();
+      loadZones(selectedProviderID());
+    });
     zoneSel.addEventListener('change', setZoneNameFromOption);
-    if (providerSel.value) loadZones(providerSel.value);
+    syncProviderHidden();
+    if (selectedProviderID()) loadZones(selectedProviderID());
   })();
   </script>
   {{end}}{{/* /if .AnyDNSEnabled — v2.12.2 */}}

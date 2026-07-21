@@ -38,8 +38,8 @@ import (
 	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/dns"
-	"github.com/X4Applegate/caddyui/internal/porkbun"
 	"github.com/X4Applegate/caddyui/internal/models"
+	"github.com/X4Applegate/caddyui/internal/porkbun"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	totplib "github.com/pquerna/otp/totp"
@@ -57,12 +57,12 @@ type Server struct {
 	// volume, guaranteed writable by our UID) — `os.TempDir()` → /tmp doesn't
 	// exist in the scratch final image, and creating it at runtime as a
 	// non-root UID isn't allowed. v2.7.5.
-	DBPath string
-	pendingTOTP   sync.Map // token → userID (int64), auto-deleted after 5 min
+	DBPath      string
+	pendingTOTP sync.Map // token → userID (int64), auto-deleted after 5 min
 
 	// version-check cache (Docker Hub, 1h TTL)
-	versionMu     sync.Mutex
-	latestVersion string
+	versionMu        sync.Mutex
+	latestVersion    string
 	versionCheckedAt time.Time
 
 	// health-poller hysteresis: count consecutive failed pings per server so
@@ -1165,6 +1165,11 @@ const (
 
 	// Hetzner DNS (v2.3.0).
 	settingHetznerAPIToken = "hetzner_api_token"
+
+	// Multiple DNS credential profiles (v2.16.0). JSON array of
+	// dnsCredentialProfile. Empty/missing means legacy per-provider
+	// settings remain the only credential source.
+	settingDNSProfilesJSON = "dns_profiles_json"
 )
 
 // dnsProviderCredKeys lists every settings-table key that belongs to a DNS
@@ -1180,6 +1185,24 @@ var dnsProviderCredKeys = map[string][]string{
 	dns.GoDaddy:      {settingGDAPIKey, settingGDAPISecret},
 	dns.DigitalOcean: {settingDOAPIToken},
 	dns.Hetzner:      {settingHetznerAPIToken},
+}
+
+type dnsCredentialProfile struct {
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	ProviderID    string            `json:"provider_id"`
+	Credentials   map[string]string `json:"credentials"`
+	ZoneAllowlist []string          `json:"zone_allowlist,omitempty"`
+}
+
+type dnsProfileView struct {
+	ID               string
+	Name             string
+	ProviderID       string
+	ProviderName     string
+	TokenSet         bool
+	Proxied          bool
+	ZoneAllowlistRaw string
 }
 
 // zoneAllowlistKey returns the settings-table key where the per-provider
@@ -1342,6 +1365,268 @@ func (s *Server) dnsCreds(providerID string) map[string]string {
 		creds["cf_proxied"], _ = models.GetSetting(s.DB, settingCFProxied)
 	}
 	return creds
+}
+
+func randomDNSProfileID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("dnsprof_%d", time.Now().UnixNano())
+	}
+	return "dnsprof_" + hex.EncodeToString(b[:])
+}
+
+func normalizeDNSProfile(p dnsCredentialProfile) dnsCredentialProfile {
+	p.ID = strings.TrimSpace(p.ID)
+	p.Name = strings.TrimSpace(p.Name)
+	p.ProviderID = strings.ToLower(strings.TrimSpace(p.ProviderID))
+	if p.Credentials == nil {
+		p.Credentials = map[string]string{}
+	}
+	p.ZoneAllowlist = parseZoneAllowlist(strings.Join(p.ZoneAllowlist, ","))
+	return p
+}
+
+func (s *Server) loadDNSProfiles() []dnsCredentialProfile {
+	raw, _ := models.GetSetting(s.DB, settingDNSProfilesJSON)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var stored []dnsCredentialProfile
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		log.Printf("settings: decode DNS profiles: %v", err)
+		return nil
+	}
+	out := make([]dnsCredentialProfile, 0, len(stored))
+	seen := map[string]struct{}{}
+	for _, p := range stored {
+		p = normalizeDNSProfile(p)
+		if p.ID == "" || p.Name == "" || p.ProviderID == "" {
+			continue
+		}
+		if _, ok := dns.Lookup(p.ProviderID); !ok {
+			continue
+		}
+		if _, dup := seen[p.ID]; dup {
+			continue
+		}
+		seen[p.ID] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func (s *Server) saveDNSProfiles(profiles []dnsCredentialProfile) error {
+	cleaned := make([]dnsCredentialProfile, 0, len(profiles))
+	for _, p := range profiles {
+		p = normalizeDNSProfile(p)
+		if p.ID == "" || p.Name == "" || p.ProviderID == "" {
+			continue
+		}
+		if _, ok := dns.Lookup(p.ProviderID); !ok {
+			continue
+		}
+		if !dns.CredsComplete(p.ProviderID, p.Credentials) {
+			continue
+		}
+		cleaned = append(cleaned, p)
+	}
+	body, err := json.Marshal(cleaned)
+	if err != nil {
+		return err
+	}
+	return models.SetSetting(s.DB, settingDNSProfilesJSON, string(body))
+}
+
+func (s *Server) dnsProfileByID(profileID string) (dnsCredentialProfile, bool) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return dnsCredentialProfile{}, false
+	}
+	for _, p := range s.loadDNSProfiles() {
+		if p.ID == profileID {
+			return p, true
+		}
+	}
+	return dnsCredentialProfile{}, false
+}
+
+func (s *Server) dnsCredsFor(providerID, profileID string) map[string]string {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	profileID = strings.TrimSpace(profileID)
+	if profileID != "" {
+		if p, ok := s.dnsProfileByID(profileID); ok && p.ProviderID == providerID {
+			creds := map[string]string{}
+			for k, v := range p.Credentials {
+				creds[k] = v
+			}
+			return creds
+		}
+		return map[string]string{}
+	}
+	return s.dnsCreds(providerID)
+}
+
+func (s *Server) dnsClientFor(providerID, profileID string) dns.Provider {
+	if strings.TrimSpace(providerID) == "" {
+		return nil
+	}
+	return dns.Build(providerID, s.dnsCredsFor(providerID, profileID))
+}
+
+func (s *Server) zoneAllowlistFor(providerID, profileID string) []string {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	profileID = strings.TrimSpace(profileID)
+	if profileID != "" {
+		if p, ok := s.dnsProfileByID(profileID); ok && p.ProviderID == providerID {
+			return p.ZoneAllowlist
+		}
+		return []string{"__missing_dns_profile__"}
+	}
+	return s.zoneAllowlist(providerID)
+}
+
+func (s *Server) zoneAllowedFor(providerID, profileID, zoneName string) bool {
+	allow := s.zoneAllowlistFor(providerID, profileID)
+	if len(allow) == 0 {
+		return true
+	}
+	zoneName = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zoneName)), ".")
+	if zoneName == "" {
+		return false
+	}
+	for _, z := range allow {
+		if z == zoneName {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) normalizeDNSFormSelection(providerID, profileID string) (string, string) {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	profileID = strings.TrimSpace(profileID)
+	if strings.HasPrefix(profileID, "legacy:") {
+		return strings.TrimPrefix(profileID, "legacy:"), ""
+	}
+	if p, ok := s.dnsProfileByID(profileID); ok {
+		return p.ProviderID, p.ID
+	}
+	if _, ok := dns.Lookup(providerID); ok {
+		return providerID, ""
+	}
+	return "", ""
+}
+
+func (s *Server) applyDNSFormSelection(p *models.ProxyHost) {
+	provider, profileID := s.normalizeDNSFormSelection(p.DNSProvider, p.DNSProfileID)
+	p.DNSProvider, p.DNSProfileID = provider, profileID
+	if provider == "" {
+		p.DNSZoneID, p.DNSZoneName, p.DNSRecordID = "", "", ""
+	}
+}
+
+func (s *Server) applyRedirectionDNSFormSelection(rh *models.RedirectionHost) {
+	provider, profileID := s.normalizeDNSFormSelection(rh.DNSProvider, rh.DNSProfileID)
+	rh.DNSProvider, rh.DNSProfileID = provider, profileID
+	if provider == "" {
+		rh.DNSZoneID, rh.DNSZoneName, rh.DNSRecordID = "", "", ""
+	}
+}
+
+func (s *Server) applyRawDNSFormSelection(rr *models.RawRoute) {
+	provider, profileID := s.normalizeDNSFormSelection(rr.DNSProvider, rr.DNSProfileID)
+	rr.DNSProvider, rr.DNSProfileID = provider, profileID
+	if provider == "" {
+		rr.DNSZoneID, rr.DNSZoneName, rr.DNSRecordID = "", "", ""
+	}
+}
+
+func (s *Server) dnsProfileViews() []dnsProfileView {
+	profiles := s.loadDNSProfiles()
+	out := make([]dnsProfileView, 0, len(profiles)+1)
+	for _, p := range profiles {
+		providerName := p.ProviderID
+		if d, ok := dns.Lookup(p.ProviderID); ok {
+			providerName = d.DisplayName
+		}
+		out = append(out, dnsProfileView{
+			ID:               p.ID,
+			Name:             p.Name,
+			ProviderID:       p.ProviderID,
+			ProviderName:     providerName,
+			TokenSet:         strings.TrimSpace(p.Credentials[settingCFAPIToken]) != "",
+			Proxied:          p.Credentials[settingCFProxied] == "1",
+			ZoneAllowlistRaw: strings.Join(p.ZoneAllowlist, "\n"),
+		})
+	}
+	out = append(out, dnsProfileView{ProviderID: dns.Cloudflare, ProviderName: "Cloudflare"})
+	return out
+}
+
+func (s *Server) parseDNSProfilesForm(r *http.Request) []dnsCredentialProfile {
+	existing := map[string]dnsCredentialProfile{}
+	for _, p := range s.loadDNSProfiles() {
+		existing[p.ID] = p
+	}
+	deleted := map[string]struct{}{}
+	for _, id := range r.PostForm["dns_profile_delete"] {
+		if id = strings.TrimSpace(id); id != "" {
+			deleted[id] = struct{}{}
+		}
+	}
+	ids := r.PostForm["dns_profile_id"]
+	names := r.PostForm["dns_profile_name"]
+	tokens := r.PostForm["dns_profile_token"]
+	proxied := r.PostForm["dns_profile_proxied"]
+	allows := r.PostForm["dns_profile_zone_allowlist"]
+	out := make([]dnsCredentialProfile, 0, len(names))
+	for i := range names {
+		id := ""
+		if i < len(ids) {
+			id = strings.TrimSpace(ids[i])
+		}
+		if _, drop := deleted[id]; drop && id != "" {
+			continue
+		}
+		name := strings.TrimSpace(names[i])
+		token := ""
+		if i < len(tokens) {
+			token = strings.TrimSpace(tokens[i])
+		}
+		if token == "" && id != "" {
+			if prev, ok := existing[id]; ok {
+				token = strings.TrimSpace(prev.Credentials[settingCFAPIToken])
+			}
+		}
+		if name == "" && token == "" {
+			continue
+		}
+		if name == "" || token == "" {
+			continue
+		}
+		if id == "" {
+			id = randomDNSProfileID()
+		}
+		proxyFlag := "0"
+		if i < len(proxied) && proxied[i] == "1" {
+			proxyFlag = "1"
+		}
+		allowRaw := ""
+		if i < len(allows) {
+			allowRaw = allows[i]
+		}
+		out = append(out, dnsCredentialProfile{
+			ID:         id,
+			Name:       name,
+			ProviderID: dns.Cloudflare,
+			Credentials: map[string]string{
+				settingCFAPIToken: token,
+				settingCFProxied:  proxyFlag,
+			},
+			ZoneAllowlist: parseZoneAllowlist(allowRaw),
+		})
+	}
+	return out
 }
 
 // dnsClient returns a ready-to-use Provider for the given ID, or nil if
@@ -2604,7 +2889,6 @@ func (s *Server) importPorkbunCertificate(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
-
 // bulkToggleRawRoutes — v2.11.9: enables or disables a set of raw routes
 // in one shot. Mirrors bulkToggleProxyHosts.
 // Expects form fields: ids[]={id,...} and action=enable|disable.
@@ -2996,6 +3280,7 @@ func (s *Server) crossDeployProxyHost(actor string, p *models.ProxyHost, serverI
 			_ = models.LogActivity(s.DB, sid, actor, "proxy_cross_deploy", "proxy:new", p.Domains, false)
 			continue
 		}
+		_ = models.UpdateProxyHostDNSProfile(s.DB, id, cp.DNSProfileID)
 		_ = models.LogActivity(s.DB, sid, actor, "proxy_cross_deploy", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 		if err := s.syncCaddy(sid, false); err != nil {
 			log.Printf("cross-deploy proxy sync server %d: %v", sid, err)
@@ -3070,17 +3355,46 @@ func (s *Server) dnsProviderViewData(serverID int64) map[string]any {
 		ID          string
 		DisplayName string
 	}
+	type profileEntry struct {
+		ID          string
+		ProviderID  string
+		DisplayName string
+		Legacy      bool
+	}
 	enabled := []providerEntry{}
+	profiles := []profileEntry{}
 	if ip != "" {
 		for _, d := range dns.Descriptors() {
 			if dns.CredsComplete(d.ID, s.dnsCreds(d.ID)) {
 				enabled = append(enabled, providerEntry{ID: d.ID, DisplayName: d.DisplayName})
+				profiles = append(profiles, profileEntry{
+					ID:          "legacy:" + d.ID,
+					ProviderID:  d.ID,
+					DisplayName: d.DisplayName + " (default settings)",
+					Legacy:      true,
+				})
 			}
+		}
+		for _, p := range s.loadDNSProfiles() {
+			if !dns.CredsComplete(p.ProviderID, p.Credentials) {
+				continue
+			}
+			providerName := p.ProviderID
+			if d, ok := dns.Lookup(p.ProviderID); ok {
+				providerName = d.DisplayName
+			}
+			profiles = append(profiles, profileEntry{
+				ID:          p.ID,
+				ProviderID:  p.ProviderID,
+				DisplayName: p.Name + " (" + providerName + ")",
+			})
+			enabled = append(enabled, providerEntry{ID: p.ProviderID, DisplayName: providerName})
 		}
 	}
 	return map[string]any{
 		"DNSProviders":    enabled,
-		"AnyDNSEnabled":   len(enabled) > 0,
+		"DNSProfiles":     profiles,
+		"AnyDNSEnabled":   len(profiles) > 0,
 		"CurrentServerIP": ip, // shown in the form so users see the A-record target
 	}
 }
@@ -3122,6 +3436,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	// zone identifier. For human display the zone_name is also captured —
 	// the form stashes it in a hidden input whenever the picker changes.
 	provider := strings.ToLower(strings.TrimSpace(r.FormValue("dns_provider")))
+	profileID := strings.TrimSpace(r.FormValue("dns_profile_id"))
 	zoneID := ""
 	zoneName := ""
 	if provider != "" {
@@ -3197,7 +3512,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	// rewrite_type[], rewrite_from[], rewrite_to[]
 	rewriteTypes := r.Form["rewrite_type[]"]
 	rewriteFroms := r.Form["rewrite_from[]"]
-	rewriteTos   := r.Form["rewrite_to[]"]
+	rewriteTos := r.Form["rewrite_to[]"]
 	var urlRewrites string
 	{
 		type rule struct {
@@ -3209,10 +3524,16 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		for i := range rewriteTypes {
 			from := ""
 			to := ""
-			if i < len(rewriteFroms) { from = strings.TrimSpace(rewriteFroms[i]) }
-			if i < len(rewriteTos) { to = strings.TrimSpace(rewriteTos[i]) }
+			if i < len(rewriteFroms) {
+				from = strings.TrimSpace(rewriteFroms[i])
+			}
+			if i < len(rewriteTos) {
+				to = strings.TrimSpace(rewriteTos[i])
+			}
 			t := strings.TrimSpace(rewriteTypes[i])
-			if t == "" || from == "" { continue }
+			if t == "" || from == "" {
+				continue
+			}
 			rules = append(rules, rule{Type: t, From: from, To: to})
 		}
 		if len(rules) == 0 {
@@ -3263,6 +3584,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		DNSProvider:            provider,
 		DNSZoneID:              zoneID,
 		DNSZoneName:            zoneName,
+		DNSProfileID:           profileID,
 		CompressionEnabled:     r.FormValue("compression_enabled") == "on",
 		SecurityHeadersEnabled: r.FormValue("security_headers_enabled") == "on",
 		MaintenanceMode:        r.FormValue("maintenance_mode") == "on",
@@ -3291,16 +3613,16 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 			}
 			return m
 		}(),
-		KeepaliveConns:         keepaliveConns,
-		Tags:                   strings.TrimSpace(r.FormValue("tags")),
-		Notes:                  r.FormValue("notes"),
-		DisableAccessLog:       r.FormValue("disable_access_log") == "on",
-		AddRequestID:           r.FormValue("add_request_id") == "on",
-		StripRespHeaders:       strings.TrimSpace(r.FormValue("strip_resp_headers")),
-		BlockedAgents:          strings.TrimSpace(r.FormValue("blocked_agents")),
-		ResponseCacheControl:   strings.TrimSpace(r.FormValue("response_cache_control")),
-		UpstreamSNI:            strings.TrimSpace(r.FormValue("upstream_sni")),
-		HSTSPreload:            r.FormValue("hsts_preload") == "on",
+		KeepaliveConns:       keepaliveConns,
+		Tags:                 strings.TrimSpace(r.FormValue("tags")),
+		Notes:                r.FormValue("notes"),
+		DisableAccessLog:     r.FormValue("disable_access_log") == "on",
+		AddRequestID:         r.FormValue("add_request_id") == "on",
+		StripRespHeaders:     strings.TrimSpace(r.FormValue("strip_resp_headers")),
+		BlockedAgents:        strings.TrimSpace(r.FormValue("blocked_agents")),
+		ResponseCacheControl: strings.TrimSpace(r.FormValue("response_cache_control")),
+		UpstreamSNI:          strings.TrimSpace(r.FormValue("upstream_sni")),
+		HSTSPreload:          r.FormValue("hsts_preload") == "on",
 		MaxConnsPerHost: func() int {
 			n, _ := strconv.Atoi(r.FormValue("max_conns_per_host"))
 			return n
@@ -3768,6 +4090,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.applyDNSFormSelection(p)
 	if errMsg := validateSSLFlags(p.SSLEnabled, p.SSLForced, p.CertificateID); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
@@ -3834,6 +4157,10 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, p)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := models.UpdateProxyHostDNSProfile(s.DB, id, p.DNSProfileID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -3922,6 +4249,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID = id
+	s.applyDNSFormSelection(p)
 	if errMsg := validateSSLFlags(p.SSLEnabled, p.SSLForced, p.CertificateID); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
@@ -3986,11 +4314,12 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	domainChanged := !slices.Equal(oldDomains, newDomains)
 
 	providerChanged := old != nil && old.DNSProvider != p.DNSProvider
+	profileChanged := old != nil && old.DNSProfileID != p.DNSProfileID
 	zoneChanged := old != nil && old.DNSZoneID != p.DNSZoneID
 	needDelete := old != nil && old.DNSRecordID != "" &&
-		(p.DNSProvider == "" || providerChanged || zoneChanged || domainChanged)
+		(p.DNSProvider == "" || providerChanged || profileChanged || zoneChanged || domainChanged)
 	if needDelete {
-		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 		p.DNSRecordID = ""
 	} else if old != nil {
 		// Preserve existing record + zone metadata when nothing routing-
@@ -3999,9 +4328,13 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		p.DNSRecordID = old.DNSRecordID
 	}
 	needCreate := p.DNSProvider != "" && p.DNSZoneID != "" &&
-		(p.DNSRecordID == "" || providerChanged || zoneChanged || domainChanged)
+		(p.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || domainChanged)
 
 	if err := models.UpdateProxyHost(s.DB, p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := models.UpdateProxyHostDNSProfile(s.DB, p.ID, p.DNSProfileID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -4063,7 +4396,7 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	// Unified DNS: delete any managed record before removing the host.
 	// No-op when the host has no DNS-managed record.
 	if old != nil && old.DNSRecordID != "" {
-		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 	}
 	if err := models.DeleteProxyHost(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -4120,6 +4453,7 @@ func (s *Server) cloneProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "clone failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = models.UpdateProxyHostDNSProfile(s.DB, newID, clone.DNSProfileID)
 	http.Redirect(w, r, fmt.Sprintf("/proxy-hosts/%d/edit", newID), http.StatusSeeOther)
 }
 
@@ -4165,6 +4499,7 @@ func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) 
 	certID, _ := strconv.ParseInt(r.FormValue("certificate_id"), 10, 64)
 	// v2.12.2: Managed DNS triple — same shape as proxy hosts and raw routes.
 	provider := strings.ToLower(strings.TrimSpace(r.FormValue("dns_provider")))
+	profileID := strings.TrimSpace(r.FormValue("dns_profile_id"))
 	zoneID := ""
 	zoneName := ""
 	if provider != "" {
@@ -4251,9 +4586,10 @@ func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) 
 		// v2.9.232: sunset_at — accept ISO date YYYY-MM-DD; empty disables.
 		SunsetAt: strings.TrimSpace(r.FormValue("sunset_at")),
 		// v2.12.2: Managed DNS — wired to the same picker as proxy hosts.
-		DNSProvider: provider,
-		DNSZoneID:   zoneID,
-		DNSZoneName: zoneName,
+		DNSProvider:  provider,
+		DNSZoneID:    zoneID,
+		DNSZoneName:  zoneName,
+		DNSProfileID: profileID,
 	}, nil
 }
 
@@ -4263,6 +4599,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.applyRedirectionDNSFormSelection(rh)
 	if errMsg := validateSSLFlags(rh.SSLEnabled, rh.SSLForced, rh.CertificateID); errMsg != "" {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
@@ -4354,6 +4691,7 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rh.ID = id
+	s.applyRedirectionDNSFormSelection(rh)
 	if errMsg := validateSSLFlags(rh.SSLEnabled, rh.SSLForced, rh.CertificateID); errMsg != "" {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
@@ -4383,10 +4721,11 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	// fresh ones for the new triple. Same pattern as proxy hosts.
 	if old != nil {
 		oldKey := old.DNSProvider + "|" + old.DNSZoneID
-		newKey := rh.DNSProvider + "|" + rh.DNSZoneID
+		newKey := rh.DNSProvider + "|" + rh.DNSProfileID + "|" + rh.DNSZoneID
+		oldKey = old.DNSProvider + "|" + old.DNSProfileID + "|" + old.DNSZoneID
 		if oldKey != newKey {
 			if old.DNSRecordID != "" {
-				s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+				s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 				_ = models.UpdateRedirectionHostDNSRecord(s.DB, rh.ID, rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, "")
 				rh.DNSRecordID = ""
 			}
@@ -4433,7 +4772,7 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	// v2.12.2: drop the auto-created A record(s) so the row leaves nothing behind in DNS.
 	if old != nil && old.DNSRecordID != "" {
-		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redirect:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
@@ -4629,9 +4968,9 @@ func (s *Server) getCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 }
 
 type caddyfileImportResult struct {
-	Head     string // site-address line (e.g. "example.com")
-	Snippet  string // original Caddyfile block
-	Status   string // "created", "skipped", "error"
+	Head    string // site-address line (e.g. "example.com")
+	Snippet string // original Caddyfile block
+	Status  string // "created", "skipped", "error"
 	// Kind, when Status == "created", is one of "proxy", "redirect", "raw" so
 	// the import result table can show the user which list each block landed
 	// in. Empty for skipped/error rows. v2.10.8.
@@ -4946,14 +5285,14 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.render(w, r, "caddyfile_import.html", map[string]any{
-		"User":           s.currentUser(r),
-		"Section":        "paste",
-		"Results":        results,
-		"Created":        created,
-		"CreatedProxy":   nProxy,
-		"CreatedRedir":   nRedir,
-		"CreatedRaw":     nRaw,
-		"Input":          "",
+		"User":         s.currentUser(r),
+		"Section":      "paste",
+		"Results":      results,
+		"Created":      created,
+		"CreatedProxy": nProxy,
+		"CreatedRedir": nRedir,
+		"CreatedRaw":   nRaw,
+		"Input":        "",
 	})
 }
 
@@ -5094,12 +5433,13 @@ func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
 // per-provider and can be extended in caddyDNSProviderConfig.
 func (s *Server) buildWildcardAutomationPolicies(proxies []models.ProxyHost, raws []models.RawRoute) []map[string]any {
 	type bucket struct {
-		subjects []string
-		creds    map[string]string
+		providerID string
+		subjects   []string
+		creds      map[string]string
 	}
 	byProvider := map[string]*bucket{}
 
-	add := func(domains, providerID string, sslOn, enabled bool) {
+	add := func(domains, providerID, profileID string, sslOn, enabled bool) {
 		if !enabled || !sslOn || providerID == "" {
 			return
 		}
@@ -5108,40 +5448,35 @@ func (s *Server) buildWildcardAutomationPolicies(proxies []models.ProxyHost, raw
 			if !strings.HasPrefix(d, "*.") {
 				continue
 			}
-			b, ok := byProvider[providerID]
+			key := providerID + "|" + profileID
+			b, ok := byProvider[key]
 			if !ok {
-				descriptor, found := dns.Lookup(providerID)
-				if !found {
+				if _, found := dns.Lookup(providerID); !found {
 					return
 				}
-				creds := map[string]string{}
-				for _, c := range descriptor.Credentials {
-					v, _ := models.GetSetting(s.DB, c.Key)
-					creds[c.Key] = v
-				}
-				b = &bucket{creds: creds}
-				byProvider[providerID] = b
+				b = &bucket{providerID: providerID, creds: s.dnsCredsFor(providerID, profileID)}
+				byProvider[key] = b
 			}
 			b.subjects = append(b.subjects, d)
 		}
 	}
 	for _, p := range proxies {
-		add(p.Domains, p.DNSProvider, p.SSLEnabled, p.Enabled)
+		add(p.Domains, p.DNSProvider, p.DNSProfileID, p.SSLEnabled, p.Enabled)
 	}
 	for _, rr := range raws {
 		// Raw routes can carry a managed-DNS provider too (v2.5.6 unified DNS).
-		add("", rr.DNSProvider, false, rr.Enabled) // raw routes don't expose a domains field directly
+		add("", rr.DNSProvider, rr.DNSProfileID, false, rr.Enabled) // raw routes don't expose a domains field directly
 		_ = rr
 	}
 
 	var policies []map[string]any
-	for providerID, b := range byProvider {
+	for _, b := range byProvider {
 		if len(b.subjects) == 0 {
 			continue
 		}
-		cfg := caddyDNSProviderConfig(providerID, b.creds)
+		cfg := caddyDNSProviderConfig(b.providerID, b.creds)
 		if cfg == nil {
-			log.Printf("automation: skipping provider %q — DNS-01 mapping not implemented or credentials missing", providerID)
+			log.Printf("automation: skipping provider %q — DNS-01 mapping not implemented or credentials missing", b.providerID)
 			continue
 		}
 		// Convert []string → []any for the JSON marshaller.
@@ -5828,11 +6163,11 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
 	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)
 	s.render(w, r, "certificates.html", map[string]any{
-		"User":               s.currentUser(r),
-		"Certs":              views,
-		"AutoDomains":        autoDomains,
-		"PorkbunConfigured":  pbAPIKey != "" && pbSecretKey != "",
-		"Section":            "certs",
+		"User":              s.currentUser(r),
+		"Certs":             views,
+		"AutoDomains":       autoDomains,
+		"PorkbunConfigured": pbAPIKey != "" && pbSecretKey != "",
+		"Section":           "certs",
 	})
 }
 
@@ -6242,6 +6577,7 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 	// providers collapse to "none" so a stale dropdown value never writes
 	// a bogus row.
 	provider := strings.ToLower(strings.TrimSpace(r.FormValue("dns_provider")))
+	profileID := strings.TrimSpace(r.FormValue("dns_profile_id"))
 	zoneID := ""
 	zoneName := ""
 	if provider != "" {
@@ -6270,6 +6606,7 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 		DNSProvider:         provider,
 		DNSZoneID:           zoneID,
 		DNSZoneName:         zoneName,
+		DNSProfileID:        profileID,
 	}, ""
 }
 
@@ -6383,6 +6720,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
+	s.applyRawDNSFormSelection(rr)
 	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
@@ -6459,7 +6797,9 @@ func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request,
 			DNSProvider:         provider,
 			DNSZoneID:           zoneID,
 			DNSZoneName:         zoneName,
+			DNSProfileID:        strings.TrimSpace(r.FormValue("dns_profile_id")),
 		}
+		s.applyRawDNSFormSelection(rr)
 	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if id != 0 {
@@ -6518,6 +6858,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rr.ID = id
+	s.applyRawDNSFormSelection(rr)
 	// v2.7.8: zone/hostname match — same as create path. Routes with no host
 	// matcher skip the check (rawRouteHosts returns nil → validator returns "").
 	if errMsg := validateZoneMatchesHostname(rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, rawRouteHosts(*rr)); errMsg != "" {
@@ -6555,11 +6896,12 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	providerChanged := old != nil && old.DNSProvider != rr.DNSProvider
+	profileChanged := old != nil && old.DNSProfileID != rr.DNSProfileID
 	zoneChanged := old != nil && old.DNSZoneID != rr.DNSZoneID
 	needDelete := old != nil && old.DNSRecordID != "" &&
-		(rr.DNSProvider == "" || providerChanged || zoneChanged || fqdnChanged)
+		(rr.DNSProvider == "" || providerChanged || profileChanged || zoneChanged || fqdnChanged)
 	if needDelete {
-		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 		rr.DNSRecordID = ""
 	} else if old != nil {
 		// Preserve existing record ID when nothing routing-relevant
@@ -6568,7 +6910,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		rr.DNSRecordID = old.DNSRecordID
 	}
 	needCreate := rr.DNSProvider != "" && rr.DNSZoneID != "" && len(newHosts) > 0 &&
-		(rr.DNSRecordID == "" || providerChanged || zoneChanged || fqdnChanged)
+		(rr.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || fqdnChanged)
 
 	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
@@ -6631,7 +6973,7 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	// v2.5.6: remove the managed DNS record before deleting the row so we
 	// don't orphan it at the provider. No-op when the route has none.
 	if old != nil && old.DNSRecordID != "" {
-		s.dnsDeleteRecord(old.DNSProvider, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
+		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 	}
 	if err := models.DeleteRawRoute(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -6876,6 +7218,7 @@ func (s *Server) pruneActivityLog() {
 //     POST is Caddy's set-or-replace semantic; it leaves admin, acme, email,
 //     and automation policies untouched.
 //  5. Logs a row into activity_log with the outcome.
+//
 // syncCaddy pushes the current DB state to Caddy. If forceTLS is true, the tls
 // and automatic_https subtrees are written unconditionally — used when a cert
 // assignment changed, since the skip-when-unchanged optimization would otherwise
@@ -8278,8 +8621,8 @@ func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 // --- Feature B: Upstream health checks ---
 
 type upstreamHealthResult struct {
-	ID        int64  `json:"id"`
-	Domains   string `json:"domains"`
+	ID      int64  `json:"id"`
+	Domains string `json:"domains"`
 	// Status is the port-level (TCP) health: "ok", "error", "unknown", or
 	// "disabled". Sourced from Caddy's /reverse_proxy/upstreams (authoritative
 	// since Caddy is on the upstream's Docker network); falls back to a
@@ -9701,14 +10044,14 @@ const (
 	// v2.12.36: multi-provider AI assistant. Provider selector picks one of
 	// the four backends below; only the credentials for the active provider
 	// are read on each chat turn.
-	settingAIProvider           = "ai_provider"             // "ollama" | "ollama_cloud" | "anthropic" | "openai"; default "ollama"
-	settingAIOllamaCloudAPIKey  = "ai_ollama_cloud_api_key" // bearer token from ollama.com
-	settingAIOllamaCloudModel   = "ai_ollama_cloud_model"   // e.g. gpt-oss:20b, qwen3-coder:480b-cloud
-	settingAIAnthropicAPIKey    = "ai_anthropic_api_key"    // sk-ant-...
-	settingAIAnthropicModel     = "ai_anthropic_model"      // e.g. claude-haiku-4-5-20251001
-	settingAIOpenAIBaseURL      = "ai_openai_base_url"      // OpenAI-compatible endpoint root, defaults to https://api.openai.com/v1
-	settingAIOpenAIAPIKey       = "ai_openai_api_key"       // bearer token (works with OpenAI, OpenRouter, Groq, Together, vLLM, LM Studio, etc.)
-	settingAIOpenAIModel        = "ai_openai_model"         // e.g. gpt-4o-mini
+	settingAIProvider          = "ai_provider"             // "ollama" | "ollama_cloud" | "anthropic" | "openai"; default "ollama"
+	settingAIOllamaCloudAPIKey = "ai_ollama_cloud_api_key" // bearer token from ollama.com
+	settingAIOllamaCloudModel  = "ai_ollama_cloud_model"   // e.g. gpt-oss:20b, qwen3-coder:480b-cloud
+	settingAIAnthropicAPIKey   = "ai_anthropic_api_key"    // sk-ant-...
+	settingAIAnthropicModel    = "ai_anthropic_model"      // e.g. claude-haiku-4-5-20251001
+	settingAIOpenAIBaseURL     = "ai_openai_base_url"      // OpenAI-compatible endpoint root, defaults to https://api.openai.com/v1
+	settingAIOpenAIAPIKey      = "ai_openai_api_key"       // bearer token (works with OpenAI, OpenRouter, Groq, Together, vLLM, LM Studio, etc.)
+	settingAIOpenAIModel       = "ai_openai_model"         // e.g. gpt-4o-mini
 
 	// v2.12.14: comma-separated list of response headers stripped from every
 	// proxy-host's upstream response. Useful for blanket-removing things like
@@ -10573,14 +10916,14 @@ func runUpstreamCheck(db *sql.DB) {
 
 // notifierState holds in-memory tracking for the cert-expiry notifier goroutine.
 var notifierState struct {
-	mu          sync.Mutex
-	lastCheck   time.Time
+	mu           sync.Mutex
+	lastCheck    time.Time
 	lastNotified []notifiedEntry
 }
 
 type notifiedEntry struct {
-	Domain    string    `json:"domain"`
-	DaysLeft  int       `json:"days_left"`
+	Domain     string    `json:"domain"`
+	DaysLeft   int       `json:"days_left"`
 	NotifiedAt time.Time `json:"notified_at"`
 }
 
@@ -10824,7 +11167,8 @@ func runProxyHostCertExpiryCheck(db *sql.DB, webhookURL string, emailOK bool, da
 // alongside the existing generic-webhook path.
 //
 // The payload is the same canonical JSON every call site already builds:
-//   {"event": "...", "message": "...", ...event-specific fields}
+//
+//	{"event": "...", "message": "...", ...event-specific fields}
 //
 // For ntfy, "event" becomes the title and "message" becomes the body.
 // For the generic webhook, the full JSON is POSTed verbatim (back-compat
@@ -10931,11 +11275,11 @@ func (s *Server) apiNotifierStatus(w http.ResponseWriter, r *http.Request) {
 	upstreamNotifyState.mu.Unlock()
 
 	status := map[string]any{
-		"webhook_url":      webhookURL,
-		"last_check":       certLastCheck,
-		"last_notified":    certNotified,
-		"upstream_check":   upLastCheck,
-		"upstream_alerts":  upRecent,
+		"webhook_url":     webhookURL,
+		"last_check":      certLastCheck,
+		"last_notified":   certNotified,
+		"upstream_check":  upLastCheck,
+		"upstream_alerts": upRecent,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
@@ -11019,9 +11363,9 @@ func (s *Server) apiSystemStats(w http.ResponseWriter, r *http.Request) {
 				healthy++
 			}
 		}
-		stats["active_requests"]  = activeReqs
+		stats["active_requests"] = activeReqs
 		stats["healthy_upstreams"] = healthy
-		stats["total_upstreams"]   = len(upstreams)
+		stats["total_upstreams"] = len(upstreams)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -11187,11 +11531,11 @@ func fetchLatestDockerTag(namespace, image string) (string, error) {
 // per-server public_ip first and falls back to the global setting so
 // multi-server setups get the right A-record content instead of always
 // pointing at server #1's IP.
-func (s *Server) dnsCreateRecordForFQDN(serverID int64, provider, zoneID, zoneName, fqdn string) (string, string) {
+func (s *Server) dnsCreateRecordForFQDN(serverID int64, provider, profileID, zoneID, zoneName, fqdn string) (string, string) {
 	if provider == "" || zoneID == "" || fqdn == "" {
 		return "", ""
 	}
-	client := s.dnsClient(provider)
+	client := s.dnsClientFor(provider, profileID)
 	if client == nil {
 		return "", ""
 	}
@@ -11212,7 +11556,7 @@ func (s *Server) dnsCreateRecordForFQDN(serverID int64, provider, zoneID, zoneNa
 	// have come from an older config / direct DB edit / a user who
 	// tightened the allow-list after the host was created. Refusing here
 	// makes the allow-list a hard safety rail, not just a UI filter.
-	if !s.zoneAllowed(provider, zone.Name) {
+	if !s.zoneAllowedFor(provider, profileID, zone.Name) {
 		log.Printf("DNS %s: zone %q not in allow-list — skipping record creation for %s", provider, zone.Name, fqdn)
 		return "", ""
 	}
@@ -11258,7 +11602,7 @@ func (s *Server) dnsCreateRecord(serverID, hostID int64, p *models.ProxyHost) {
 	var ids []string
 	var zname string
 	for _, fqdn := range domains {
-		recID, zn := s.dnsCreateRecordForFQDN(serverID, p.DNSProvider, p.DNSZoneID, p.DNSZoneName, fqdn)
+		recID, zn := s.dnsCreateRecordForFQDN(serverID, p.DNSProvider, p.DNSProfileID, p.DNSZoneID, p.DNSZoneName, fqdn)
 		if recID == "" {
 			continue
 		}
@@ -11287,7 +11631,7 @@ func (s *Server) dnsCreateRecordForRedirection(serverID, hostID int64, rh *model
 	var ids []string
 	var zname string
 	for _, fqdn := range domains {
-		recID, zn := s.dnsCreateRecordForFQDN(serverID, rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, fqdn)
+		recID, zn := s.dnsCreateRecordForFQDN(serverID, rh.DNSProvider, rh.DNSProfileID, rh.DNSZoneID, rh.DNSZoneName, fqdn)
 		if recID == "" {
 			continue
 		}
@@ -11320,7 +11664,7 @@ func (s *Server) dnsCreateRecordForRaw(serverID, routeID int64, rr *models.RawRo
 	var ids []string
 	var zname string
 	for _, fqdn := range hosts {
-		recID, zn := s.dnsCreateRecordForFQDN(serverID, rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, fqdn)
+		recID, zn := s.dnsCreateRecordForFQDN(serverID, rr.DNSProvider, rr.DNSProfileID, rr.DNSZoneID, rr.DNSZoneName, fqdn)
 		if recID == "" {
 			continue
 		}
@@ -11343,11 +11687,11 @@ func (s *Server) dnsCreateRecordForRaw(serverID, routeID int64, rr *models.RawRo
 // DNSRecordID column value regardless of how many records are behind it.
 // Best-effort: errors are logged, not returned (the row is being deleted
 // anyway; a leftover record is a minor annoyance, not a correctness issue).
-func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordIDs string) {
+func (s *Server) dnsDeleteRecord(providerID, profileID, zoneID, zoneName, recordIDs string) {
 	if providerID == "" || recordIDs == "" {
 		return
 	}
-	client := s.dnsClient(providerID)
+	client := s.dnsClientFor(providerID, profileID)
 	if client == nil {
 		return
 	}
@@ -11360,7 +11704,7 @@ func (s *Server) dnsDeleteRecord(providerID, zoneID, zoneName, recordIDs string)
 	// in an excluded zone is exactly what the allow-list is meant to
 	// prevent, even when the touch is a cleanup. Leaves the record in
 	// place; the user can remove it by hand via the provider's console.
-	if !s.zoneAllowed(providerID, zone.Name) {
+	if !s.zoneAllowedFor(providerID, profileID, zone.Name) {
 		log.Printf("DNS %s: zone %q not in allow-list — leaving records %s in place", providerID, zone.Name, recordIDs)
 		return
 	}
@@ -11395,12 +11739,13 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 		return
 	}
 	clients := map[string]dns.Provider{}
-	getClient := func(id string) dns.Provider {
-		if c, ok := clients[id]; ok {
+	getClient := func(id, profileID string) dns.Provider {
+		key := id + "|" + profileID
+		if c, ok := clients[key]; ok {
 			return c
 		}
-		c := s.dnsClient(id)
-		clients[id] = c
+		c := s.dnsClientFor(id, profileID)
+		clients[key] = c
 		return c
 	}
 	log.Printf("DNS: retargeting %d proxy-host record(s) + %d raw-route record(s) to %s", len(hosts), len(rawRoutes), newIP)
@@ -11415,8 +11760,8 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 	// one new record per current hostname, persists the joined ID list.
 	// Rows created pre-v2.5.9 (one ID, multiple hostnames) self-heal on
 	// the first retarget — the missing-alias records get created fresh.
-	retarget := func(kind string, rowID int64, provider, zoneID, zoneName, recordIDs string, fqdns []string, persist func(zoneID, zoneName, recordID string)) {
-		client := getClient(provider)
+	retarget := func(kind string, rowID int64, provider, profileID, zoneID, zoneName, recordIDs string, fqdns []string, persist func(zoneID, zoneName, recordID string)) {
+		client := getClient(provider, profileID)
 		if client == nil {
 			log.Printf("DNS %s: credentials missing — skipping %s %d retarget", provider, kind, rowID)
 			return
@@ -11432,7 +11777,7 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 		// was valid when the record was created but the user has since
 		// tightened the list, the retarget job leaves that record alone —
 		// same policy as dnsCreateRecord / dnsDeleteRecord.
-		if !s.zoneAllowed(provider, zone.Name) {
+		if !s.zoneAllowedFor(provider, profileID, zone.Name) {
 			log.Printf("DNS %s: zone %q not in allow-list — skipping retarget for %v", provider, zone.Name, fqdns)
 			return
 		}
@@ -11466,7 +11811,7 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 
 	for _, h := range hosts {
 		h := h
-		retarget("proxy", h.ID, h.DNSProvider, h.DNSZoneID, h.DNSZoneName, h.DNSRecordID,
+		retarget("proxy", h.ID, h.DNSProvider, h.DNSProfileID, h.DNSZoneID, h.DNSZoneName, h.DNSRecordID,
 			h.DomainList(),
 			func(zoneID, zoneName, recordID string) {
 				provider := h.DNSProvider
@@ -11478,7 +11823,7 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 	}
 	for _, rr := range rawRoutes {
 		rr := rr
-		retarget("raw", rr.ID, rr.DNSProvider, rr.DNSZoneID, rr.DNSZoneName, rr.DNSRecordID,
+		retarget("raw", rr.ID, rr.DNSProvider, rr.DNSProfileID, rr.DNSZoneID, rr.DNSZoneName, rr.DNSRecordID,
 			rawRouteHosts(rr),
 			func(zoneID, zoneName, recordID string) {
 				provider := rr.DNSProvider
@@ -11499,14 +11844,20 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 // return real opaque zone IDs; for Porkbun/DO/GoDaddy/Namecheap the ID
 // and name are the same string (the bare domain).
 func (s *Server) apiDNSZones(w http.ResponseWriter, r *http.Request) {
-	provider := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider")))
+	q := r.URL.Query()
+	provider := strings.ToLower(strings.TrimSpace(q.Get("provider")))
+	profileID := strings.TrimSpace(q.Get("profile"))
+	if profileID == "" {
+		profileID = strings.TrimSpace(q.Get("dns_profile_id"))
+	}
+	provider, profileID = s.normalizeDNSFormSelection(provider, profileID)
 	w.Header().Set("Content-Type", "application/json")
 	if provider == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing provider parameter"})
 		return
 	}
-	client := s.dnsClient(provider)
+	client := s.dnsClientFor(provider, profileID)
 	if client == nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "credentials for provider \"" + provider + "\" not configured in Settings"})
@@ -11523,7 +11874,7 @@ func (s *Server) apiDNSZones(w http.ResponseWriter, r *http.Request) {
 	// zone dropdown then literally cannot offer domains the user has
 	// excluded. Empty allow-list = unrestricted (every zone the credentials
 	// can see), which preserves the original behaviour.
-	if allow := s.zoneAllowlist(provider); len(allow) > 0 {
+	if allow := s.zoneAllowlistFor(provider, profileID); len(allow) > 0 {
 		allowSet := make(map[string]struct{}, len(allow))
 		for _, a := range allow {
 			allowSet[a] = struct{}{}
@@ -11561,6 +11912,11 @@ func (s *Server) apiDNSCheckRecord(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	q := r.URL.Query()
 	provider := strings.ToLower(strings.TrimSpace(q.Get("provider")))
+	profileID := strings.TrimSpace(q.Get("profile"))
+	if profileID == "" {
+		profileID = strings.TrimSpace(q.Get("dns_profile_id"))
+	}
+	provider, profileID = s.normalizeDNSFormSelection(provider, profileID)
 	zoneID := strings.TrimSpace(q.Get("zone"))
 	zoneName := strings.TrimSpace(q.Get("zone_name"))
 	fqdn := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(q.Get("fqdn"))), ".")
@@ -11575,14 +11931,14 @@ func (s *Server) apiDNSCheckRecord(w http.ResponseWriter, r *http.Request) {
 	if zoneName == "" {
 		zoneName = zoneID
 	}
-	client := s.dnsClient(provider)
+	client := s.dnsClientFor(provider, profileID)
 	if client == nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "credentials for provider \"" + provider + "\" not configured"})
 		return
 	}
 	// Allow-list guard: don't leak record listings for zones the user has
 	// excluded from management. Symmetrical with apiDNSZones' filter.
-	if !s.zoneAllowed(provider, zoneName) {
+	if !s.zoneAllowedFor(provider, profileID, zoneName) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "zone not in allow-list"})
 		return
 	}
@@ -11767,21 +12123,21 @@ func resolveViaDoH(fqdn string) ([]string, error) {
 // public IP and dialing it from inside the LAN fails even when the site
 // is live for real users). We pick the dial target in priority order:
 //
-//   1. **Cloudflare-proxied** (orange cloud): dial the CF edge IP we just
-//      resolved via DoH. CF edge IPs are always public + outside the LAN,
-//      so hairpin never applies; SNI = fqdn makes CF serve the right
-//      customer cert from its Universal SSL / Advanced Certs pool. This
-//      is v2.5.5 — previously we tried to dial Caddy internally, which
-//      is wrong for proxied hosts because the user's browser sees CF's
-//      cert, not Caddy's origin cert.
-//   2. **Direct**: dial the Caddy server by its admin-URL hostname
-//      (docker service name `caddy` for single-host, admin host for
-//      remote servers). Bypasses public DNS + WAN hairpin; SNI = fqdn
-//      makes Caddy serve the right cert. This is the v2.5.4 path and
-//      remains the default for non-proxied providers.
-//   3. **Fallback**: dial the public fqdn directly. Used when we can't
-//      figure out an internal dial target (e.g. admin URL is a unix
-//      socket, or the server row is unreadable).
+//  1. **Cloudflare-proxied** (orange cloud): dial the CF edge IP we just
+//     resolved via DoH. CF edge IPs are always public + outside the LAN,
+//     so hairpin never applies; SNI = fqdn makes CF serve the right
+//     customer cert from its Universal SSL / Advanced Certs pool. This
+//     is v2.5.5 — previously we tried to dial Caddy internally, which
+//     is wrong for proxied hosts because the user's browser sees CF's
+//     cert, not Caddy's origin cert.
+//  2. **Direct**: dial the Caddy server by its admin-URL hostname
+//     (docker service name `caddy` for single-host, admin host for
+//     remote servers). Bypasses public DNS + WAN hairpin; SNI = fqdn
+//     makes Caddy serve the right cert. This is the v2.5.4 path and
+//     remains the default for non-proxied providers.
+//  3. **Fallback**: dial the public fqdn directly. Used when we can't
+//     figure out an internal dial target (e.g. admin URL is a unix
+//     socket, or the server row is unreadable).
 func (s *Server) tlsHandshakeOK(serverID int64, fqdn string, proxied bool, resolvedIPs []string) bool {
 	target := fqdn + ":443"
 	switch {
@@ -12251,13 +12607,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		Value string
 	}
 	type providerView struct {
-		ID             string
-		DisplayName    string
-		DocsAnchor     string
-		Credentials    []credView
-		Configured     bool   // every field non-empty
-		Enabled        bool   // Configured AND serverIP set
-		ExtraFlags     map[string]any // per-provider extras (e.g. Cloudflare proxied toggle)
+		ID          string
+		DisplayName string
+		DocsAnchor  string
+		Credentials []credView
+		Configured  bool           // every field non-empty
+		Enabled     bool           // Configured AND serverIP set
+		ExtraFlags  map[string]any // per-provider extras (e.g. Cloudflare proxied toggle)
 		// v2.4.7: zone allow-list. ZoneAllowlistRaw is the textarea value
 		// (one domain per line for readability); ZoneAllowlist is the parsed
 		// slice used to render the "N of M zones visible" hint.
@@ -12335,15 +12691,15 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.render(w, r, "settings.html", map[string]any{
-		"User":               s.currentUser(r),
-		"WebhookURL":         webhookURL,
-		"WebhookSecret":      mustGetSetting(s.DB, settingNotifyWebhookSecret),
+		"User":          s.currentUser(r),
+		"WebhookURL":    webhookURL,
+		"WebhookSecret": mustGetSetting(s.DB, settingNotifyWebhookSecret),
 		// v2.12.51: ntfy.sh — token uses *Set boolean (not the value) so
 		// it never re-renders into the form, same pattern as the v2.12.37
 		// API-key fields. URL is fine to render — it's not secret.
-		"NtfyURL":            ntfyURL,
-		"NtfyTokenSet":       strings.TrimSpace(ntfyToken) != "",
-		"DaysBefore":         daysBefore,
+		"NtfyURL":             ntfyURL,
+		"NtfyTokenSet":        strings.TrimSpace(ntfyToken) != "",
+		"DaysBefore":          daysBefore,
 		"AIEnabled":           aiEnabledStr == "1",
 		"AIProvider":          aiProvider,
 		"AIOllamaURL":         aiOllamaURL,
@@ -12357,33 +12713,34 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AIOpenAIModel":       aiOpenAIModel,
 		"AISystemPrompt":      aiSystemPrompt,
 		"GlobalStripHeaders":  globalStripHdrs,
-		"SMTPHost":           smtpHost,
-		"SMTPPort":           smtpPort,
-		"SMTPUsername":       smtpUsername,
-		"SMTPFrom":           smtpFrom,
-		"SMTPTo":             smtpTo,
-		"SMTPSecurity":       smtpSecurity,
-		"SMTPSkipVerify":     smtpSkipVerify == "1",
-		"SMTPConfigured":     smtpConfigured,
-		"TurnstileSiteKey":   turnstileSiteKey,
-		"TurnstileSecretKey": turnstileSecretKey,
-		"TurnstileEnabled":   turnstileSiteKey != "" && turnstileSecretKey != "",
+		"SMTPHost":            smtpHost,
+		"SMTPPort":            smtpPort,
+		"SMTPUsername":        smtpUsername,
+		"SMTPFrom":            smtpFrom,
+		"SMTPTo":              smtpTo,
+		"SMTPSecurity":        smtpSecurity,
+		"SMTPSkipVerify":      smtpSkipVerify == "1",
+		"SMTPConfigured":      smtpConfigured,
+		"TurnstileSiteKey":    turnstileSiteKey,
+		"TurnstileSecretKey":  turnstileSecretKey,
+		"TurnstileEnabled":    turnstileSiteKey != "" && turnstileSecretKey != "",
 		// v2.5.0: captcha provider + reCAPTCHA keys
-		"CaptchaProvider":        captchaProvider,
-		"CaptchaDisabledByEnv":   captchaDisabledByEnv(),
-		"RecaptchaSiteKey":       recaptchaSiteKey,
-		"RecaptchaSecretKey":     recaptchaSecretKey,
-		"RecaptchaMinScore":      recaptchaMinScoreRaw,
-		"RecaptchaEnabled":       recaptchaSiteKey != "" && recaptchaSecretKey != "",
+		"CaptchaProvider":      captchaProvider,
+		"CaptchaDisabledByEnv": captchaDisabledByEnv(),
+		"RecaptchaSiteKey":     recaptchaSiteKey,
+		"RecaptchaSecretKey":   recaptchaSecretKey,
+		"RecaptchaMinScore":    recaptchaMinScoreRaw,
+		"RecaptchaEnabled":     recaptchaSiteKey != "" && recaptchaSecretKey != "",
 		// Timezone: Timezone is the saved DB value (may be ""). TimezoneActive
 		// is what the server is *actually* rendering in right now — useful as
 		// a "(currently: UTC)" hint when the DB value is empty.
-		"Timezone":       timezoneSaved,
-		"TimezoneActive": activeLocation().String(),
-		"TimezoneOptions": commonTimezones,
-		"ServerIP":           serverIP,
-		"Servers":            caddyServers,
-		"DNSProviders":       providers,
+		"Timezone":              timezoneSaved,
+		"TimezoneActive":        activeLocation().String(),
+		"TimezoneOptions":       commonTimezones,
+		"ServerIP":              serverIP,
+		"Servers":               caddyServers,
+		"DNSProviders":          providers,
+		"DNSCredentialProfiles": s.dnsProfileViews(),
 		// Back-compat aliases for any embed that still references the old
 		// CF-centric keys. The template itself now uses DNSProviders +
 		// ServerIP; these stay so custom layouts built against v2.2.x
@@ -12393,29 +12750,29 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"Success":     success,
 		"ClearedName": clearedName,
 		// v2.7.0: analytics card
-		"AnalyticsEnabled":      analyticsCfg.Enabled,
-		"AnalyticsTarget":       analyticsCfg.TargetRaw,
+		"AnalyticsEnabled":           analyticsCfg.Enabled,
+		"AnalyticsTarget":            analyticsCfg.TargetRaw,
 		"AnalyticsTargetPlaceholder": defaultAnalyticsIngestTarget,
-		"AnalyticsExcludeRaw":   analyticsCfg.ExcludeRaw,
-		"AnalyticsIngestStats":  analyticsIngestSnap,
+		"AnalyticsExcludeRaw":        analyticsCfg.ExcludeRaw,
+		"AnalyticsIngestStats":       analyticsIngestSnap,
 		// v2.9.5: 2FA enforcement policy
-		"Require2FA":      mustGetSetting(s.DB, settingRequire2FA),
-		"RequireTOTP":     mustGetSetting(s.DB, settingRequireTOTP),
+		"Require2FA":  mustGetSetting(s.DB, settingRequire2FA),
+		"RequireTOTP": mustGetSetting(s.DB, settingRequireTOTP),
 		// v2.10.0: trusted proxies + custom site title
-		"TrustedProxies":  mustGetSetting(s.DB, settingTrustedProxies),
-		"SiteTitle":       mustGetSetting(s.DB, settingSiteTitle),
+		"TrustedProxies": mustGetSetting(s.DB, settingTrustedProxies),
+		"SiteTitle":      mustGetSetting(s.DB, settingSiteTitle),
 		// v2.11.0: custom favicon + admin IP allowlist
-		"FaviconURL":      mustGetSetting(s.DB, settingFaviconURL),
-		"AdminAllowlist":  mustGetSetting(s.DB, settingAdminAllowlist),
+		"FaviconURL":     mustGetSetting(s.DB, settingFaviconURL),
+		"AdminAllowlist": mustGetSetting(s.DB, settingAdminAllowlist),
 		// v2.12.0: configurable session duration + global catch-all 404
-		"SessionDays":        mustGetSetting(s.DB, settingSessionDays),
-		"CatchAll404HTML":    mustGetSetting(s.DB, settingCatchAll404HTML),
-		"GlobalMaintenance":    mustGetSetting(s.DB, settingGlobalMaintenance),
-		"AutoSyncHours":        mustGetSetting(s.DB, settingAutoSyncHours),
-		"ActivityLogDays":      mustGetSetting(s.DB, settingActivityLogDays),
-		"MaxLoginAttempts":     mustGetSetting(s.DB, settingMaxLoginAttempts),
-		"DisableHTTP3":         mustGetSetting(s.DB, settingDisableHTTP3),
-		"Section":              "settings",
+		"SessionDays":       mustGetSetting(s.DB, settingSessionDays),
+		"CatchAll404HTML":   mustGetSetting(s.DB, settingCatchAll404HTML),
+		"GlobalMaintenance": mustGetSetting(s.DB, settingGlobalMaintenance),
+		"AutoSyncHours":     mustGetSetting(s.DB, settingAutoSyncHours),
+		"ActivityLogDays":   mustGetSetting(s.DB, settingActivityLogDays),
+		"MaxLoginAttempts":  mustGetSetting(s.DB, settingMaxLoginAttempts),
+		"DisableHTTP3":      mustGetSetting(s.DB, settingDisableHTTP3),
+		"Section":           "settings",
 	})
 }
 
@@ -12544,7 +12901,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingNotifyWebhookSecret: webhookSecret,
 		settingNotifyNtfyURL:       ntfyURL, // v2.12.51
 		settingNotifyDaysBefore:    strconv.Itoa(daysBefore),
-		settingSMTPHost: smtpHost,
+		settingSMTPHost:            smtpHost,
 		// v2.11.15: AI assistant settings.
 		settingAIEnabled: func() string {
 			for _, v := range r.PostForm["ai_enabled"] {
@@ -12690,6 +13047,12 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		// readability.
 		allowRaw := r.FormValue(d.ID + "_zone_allowlist")
 		kv[zoneAllowlistKey(d.ID)] = strings.Join(parseZoneAllowlist(allowRaw), ",")
+	}
+	if _, ok := r.PostForm["dns_profile_name"]; ok {
+		if err := s.saveDNSProfiles(s.parseDNSProfilesForm(r)); err != nil {
+			http.Error(w, "failed to save DNS profiles: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// SMTP password stays keep-blank-to-preserve.
@@ -13223,53 +13586,53 @@ type apiProxyHostInput struct {
 // proxyHostToAPIMap converts a ProxyHost to a JSON-serialisable map.
 func proxyHostToAPIMap(p *models.ProxyHost) map[string]any {
 	return map[string]any{
-		"id":                       p.ID,
-		"server_id":                p.ServerID,
-		"domains":                  p.Domains,
-		"forward_scheme":           p.ForwardScheme,
-		"forward_host":             p.ForwardHost,
-		"forward_port":             p.ForwardPort,
-		"websocket_support":        p.WebsocketSupport,
-		"block_common_exploits":    p.BlockCommonExploits,
-		"ssl_enabled":              p.SSLEnabled,
-		"ssl_forced":               p.SSLForced,
-		"http2_support":            p.HTTP2Support,
-		"enabled":                  p.Enabled,
-		"certificate_id":           p.CertificateID,
-		"basicauth_enabled":        p.BasicAuthEnabled,
-		"access_list":              p.AccessList,
-		"ip_blocklist":             p.IPBlocklist,
-		"extra_upstreams":          p.ExtraUpstreams,
-		"compression_enabled":      p.CompressionEnabled,
-		"security_headers_enabled": p.SecurityHeadersEnabled,
-		"tls_min_version":          p.TLSMinVersion,
-		"maintenance_mode":         p.MaintenanceMode,
-		"maintenance_msg":          p.MaintenanceMsg,
-		"max_request_body_mb":      p.MaxRequestBodyMB,
-		"sticky_sessions":          p.StickySessions,
-		"lb_policy":                p.LBPolicy,
-		"upstream_timeout_sec":     p.UpstreamTimeoutSec,
-		"cors_enabled":             p.CORSEnabled,
-		"cors_origins":             p.CORSOrigins,
-		"health_check_uri":         p.HealthCheckURI,
+		"id":                        p.ID,
+		"server_id":                 p.ServerID,
+		"domains":                   p.Domains,
+		"forward_scheme":            p.ForwardScheme,
+		"forward_host":              p.ForwardHost,
+		"forward_port":              p.ForwardPort,
+		"websocket_support":         p.WebsocketSupport,
+		"block_common_exploits":     p.BlockCommonExploits,
+		"ssl_enabled":               p.SSLEnabled,
+		"ssl_forced":                p.SSLForced,
+		"http2_support":             p.HTTP2Support,
+		"enabled":                   p.Enabled,
+		"certificate_id":            p.CertificateID,
+		"basicauth_enabled":         p.BasicAuthEnabled,
+		"access_list":               p.AccessList,
+		"ip_blocklist":              p.IPBlocklist,
+		"extra_upstreams":           p.ExtraUpstreams,
+		"compression_enabled":       p.CompressionEnabled,
+		"security_headers_enabled":  p.SecurityHeadersEnabled,
+		"tls_min_version":           p.TLSMinVersion,
+		"maintenance_mode":          p.MaintenanceMode,
+		"maintenance_msg":           p.MaintenanceMsg,
+		"max_request_body_mb":       p.MaxRequestBodyMB,
+		"sticky_sessions":           p.StickySessions,
+		"lb_policy":                 p.LBPolicy,
+		"upstream_timeout_sec":      p.UpstreamTimeoutSec,
+		"cors_enabled":              p.CORSEnabled,
+		"cors_origins":              p.CORSOrigins,
+		"health_check_uri":          p.HealthCheckURI,
 		"health_check_interval_sec": p.HealthCheckIntervalSec,
-		"health_check_method":      p.HealthCheckMethod,
-		"keepalive_conns":          p.KeepaliveConns,
-		"tags":                     p.Tags,
-		"notes":                    p.Notes,
-		"disable_access_log":       p.DisableAccessLog,
-		"add_request_id":           p.AddRequestID,
-		"strip_resp_headers":       p.StripRespHeaders,
-		"blocked_agents":           p.BlockedAgents,
-		"upstream_sni":             p.UpstreamSNI,
-		"hsts_preload":             p.HSTSPreload,
-		"max_conns_per_host":       p.MaxConnsPerHost,
-		"upstream_retries":         p.UpstreamRetries,
-		"force_http1":              p.ForceHTTP1,
-		"proxy_protocol":           p.ProxyProtocol,
-		"owner_email":              p.OwnerEmail,
-		"created_at":               p.CreatedAt,
-		"updated_at":               p.UpdatedAt,
+		"health_check_method":       p.HealthCheckMethod,
+		"keepalive_conns":           p.KeepaliveConns,
+		"tags":                      p.Tags,
+		"notes":                     p.Notes,
+		"disable_access_log":        p.DisableAccessLog,
+		"add_request_id":            p.AddRequestID,
+		"strip_resp_headers":        p.StripRespHeaders,
+		"blocked_agents":            p.BlockedAgents,
+		"upstream_sni":              p.UpstreamSNI,
+		"hsts_preload":              p.HSTSPreload,
+		"max_conns_per_host":        p.MaxConnsPerHost,
+		"upstream_retries":          p.UpstreamRetries,
+		"force_http1":               p.ForceHTTP1,
+		"proxy_protocol":            p.ProxyProtocol,
+		"owner_email":               p.OwnerEmail,
+		"created_at":                p.CreatedAt,
+		"updated_at":                p.UpdatedAt,
 	}
 }
 
@@ -13361,15 +13724,21 @@ func (s *Server) apiV1CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 			return inp.ExtraUpstreams
 		}(),
 		CompressionEnabled: inp.CompressionEnabled, SecurityHeadersEnabled: inp.SecurityHeadersEnabled,
-		TLSMinVersion: inp.TLSMinVersion,
+		TLSMinVersion:   inp.TLSMinVersion,
 		MaintenanceMode: inp.MaintenanceMode, MaintenanceMsg: inp.MaintenanceMsg,
 		MaxRequestBodyMB: inp.MaxRequestBodyMB, StickySessions: inp.StickySessions,
 		LBPolicy: inp.LBPolicy, UpstreamTimeoutSec: inp.UpstreamTimeoutSec,
 		CORSEnabled: inp.CORSEnabled, CORSOrigins: func() string {
-			if inp.CORSOrigins == "" { return "*" }; return inp.CORSOrigins
+			if inp.CORSOrigins == "" {
+				return "*"
+			}
+			return inp.CORSOrigins
 		}(),
 		HealthCheckURI: inp.HealthCheckURI, HealthCheckIntervalSec: func() int {
-			if inp.HealthCheckIntervalSec <= 0 { return 30 }; return inp.HealthCheckIntervalSec
+			if inp.HealthCheckIntervalSec <= 0 {
+				return 30
+			}
+			return inp.HealthCheckIntervalSec
 		}(),
 		HealthCheckMethod: inp.HealthCheckMethod, KeepaliveConns: inp.KeepaliveConns,
 		Tags: inp.Tags, Notes: inp.Notes,
@@ -13425,27 +13794,69 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Merge: any field not supplied keeps the existing value.
-	if inp.Domains != "" { existing.Domains = inp.Domains }
-	if inp.ForwardScheme != "" { existing.ForwardScheme = inp.ForwardScheme }
-	if inp.ForwardHost != "" { existing.ForwardHost = inp.ForwardHost }
-	if inp.ForwardPort != 0 { existing.ForwardPort = inp.ForwardPort }
-	if inp.CertificateID != 0 { existing.CertificateID = inp.CertificateID }
-	if inp.TLSMinVersion != "" { existing.TLSMinVersion = inp.TLSMinVersion }
-	if inp.MaintenanceMsg != "" { existing.MaintenanceMsg = inp.MaintenanceMsg }
-	if inp.MaxRequestBodyMB != 0 { existing.MaxRequestBodyMB = inp.MaxRequestBodyMB }
-	if inp.UpstreamTimeoutSec != 0 { existing.UpstreamTimeoutSec = inp.UpstreamTimeoutSec }
-	if inp.CORSOrigins != "" { existing.CORSOrigins = inp.CORSOrigins }
-	if inp.HealthCheckURI != "" { existing.HealthCheckURI = inp.HealthCheckURI }
-	if inp.HealthCheckIntervalSec != 0 { existing.HealthCheckIntervalSec = inp.HealthCheckIntervalSec }
-	if inp.HealthCheckMethod != "" { existing.HealthCheckMethod = inp.HealthCheckMethod }
-	if inp.KeepaliveConns != 0 { existing.KeepaliveConns = inp.KeepaliveConns }
-	if inp.StripRespHeaders != "" { existing.StripRespHeaders = inp.StripRespHeaders }
-	if inp.BlockedAgents != "" { existing.BlockedAgents = inp.BlockedAgents }
-	if inp.UpstreamSNI != "" { existing.UpstreamSNI = inp.UpstreamSNI }
-	if inp.MaxConnsPerHost != 0 { existing.MaxConnsPerHost = inp.MaxConnsPerHost }
-	if inp.UpstreamRetries != 0 { existing.UpstreamRetries = inp.UpstreamRetries }
-	if inp.ProxyProtocol != "" { existing.ProxyProtocol = inp.ProxyProtocol }
-	if inp.ExtraUpstreams != "" { existing.ExtraUpstreams = inp.ExtraUpstreams }
+	if inp.Domains != "" {
+		existing.Domains = inp.Domains
+	}
+	if inp.ForwardScheme != "" {
+		existing.ForwardScheme = inp.ForwardScheme
+	}
+	if inp.ForwardHost != "" {
+		existing.ForwardHost = inp.ForwardHost
+	}
+	if inp.ForwardPort != 0 {
+		existing.ForwardPort = inp.ForwardPort
+	}
+	if inp.CertificateID != 0 {
+		existing.CertificateID = inp.CertificateID
+	}
+	if inp.TLSMinVersion != "" {
+		existing.TLSMinVersion = inp.TLSMinVersion
+	}
+	if inp.MaintenanceMsg != "" {
+		existing.MaintenanceMsg = inp.MaintenanceMsg
+	}
+	if inp.MaxRequestBodyMB != 0 {
+		existing.MaxRequestBodyMB = inp.MaxRequestBodyMB
+	}
+	if inp.UpstreamTimeoutSec != 0 {
+		existing.UpstreamTimeoutSec = inp.UpstreamTimeoutSec
+	}
+	if inp.CORSOrigins != "" {
+		existing.CORSOrigins = inp.CORSOrigins
+	}
+	if inp.HealthCheckURI != "" {
+		existing.HealthCheckURI = inp.HealthCheckURI
+	}
+	if inp.HealthCheckIntervalSec != 0 {
+		existing.HealthCheckIntervalSec = inp.HealthCheckIntervalSec
+	}
+	if inp.HealthCheckMethod != "" {
+		existing.HealthCheckMethod = inp.HealthCheckMethod
+	}
+	if inp.KeepaliveConns != 0 {
+		existing.KeepaliveConns = inp.KeepaliveConns
+	}
+	if inp.StripRespHeaders != "" {
+		existing.StripRespHeaders = inp.StripRespHeaders
+	}
+	if inp.BlockedAgents != "" {
+		existing.BlockedAgents = inp.BlockedAgents
+	}
+	if inp.UpstreamSNI != "" {
+		existing.UpstreamSNI = inp.UpstreamSNI
+	}
+	if inp.MaxConnsPerHost != 0 {
+		existing.MaxConnsPerHost = inp.MaxConnsPerHost
+	}
+	if inp.UpstreamRetries != 0 {
+		existing.UpstreamRetries = inp.UpstreamRetries
+	}
+	if inp.ProxyProtocol != "" {
+		existing.ProxyProtocol = inp.ProxyProtocol
+	}
+	if inp.ExtraUpstreams != "" {
+		existing.ExtraUpstreams = inp.ExtraUpstreams
+	}
 	existing.WebsocketSupport = inp.WebsocketSupport
 	existing.BlockCommonExploits = inp.BlockCommonExploits
 	existing.SSLEnabled = inp.SSLEnabled
@@ -13462,11 +13873,21 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	existing.AddRequestID = inp.AddRequestID
 	existing.HSTSPreload = inp.HSTSPreload
 	existing.ForceHTTP1 = inp.ForceHTTP1
-	if inp.Tags != "" { existing.Tags = inp.Tags }
-	if inp.Notes != "" { existing.Notes = inp.Notes }
-	if inp.AccessList != "" { existing.AccessList = inp.AccessList }
-	if inp.IPBlocklist != "" { existing.IPBlocklist = inp.IPBlocklist }
-	if inp.LBPolicy != "" { existing.LBPolicy = inp.LBPolicy }
+	if inp.Tags != "" {
+		existing.Tags = inp.Tags
+	}
+	if inp.Notes != "" {
+		existing.Notes = inp.Notes
+	}
+	if inp.AccessList != "" {
+		existing.AccessList = inp.AccessList
+	}
+	if inp.IPBlocklist != "" {
+		existing.IPBlocklist = inp.IPBlocklist
+	}
+	if inp.LBPolicy != "" {
+		existing.LBPolicy = inp.LBPolicy
+	}
 	if err := models.UpdateProxyHost(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -13474,7 +13895,9 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, existing.ServerID, s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), existing.Domains, true)
 	s.trySyncCaddy(existing.ServerID, existing.CertificateID != 0)
 	updated, _ := models.GetProxyHost(s.DB, id)
-	if updated == nil { updated = existing }
+	if updated == nil {
+		updated = existing
+	}
 	writeJSON(w, http.StatusOK, proxyHostToAPIMap(updated))
 }
 
@@ -13496,7 +13919,7 @@ func (s *Server) apiV1DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ph.DNSRecordID != "" {
-		s.dnsDeleteRecord(ph.DNSProvider, ph.DNSZoneID, ph.DNSZoneName, ph.DNSRecordID)
+		s.dnsDeleteRecord(ph.DNSProvider, ph.DNSProfileID, ph.DNSZoneID, ph.DNSZoneName, ph.DNSRecordID)
 	}
 	if err := models.DeleteProxyHost(s.DB, id); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -13642,8 +14065,12 @@ func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "domains and forward_domain are required")
 		return
 	}
-	if inp.ForwardScheme == "" { inp.ForwardScheme = "auto" }
-	if inp.ForwardHTTPCode == 0 { inp.ForwardHTTPCode = 301 }
+	if inp.ForwardScheme == "" {
+		inp.ForwardScheme = "auto"
+	}
+	if inp.ForwardHTTPCode == 0 {
+		inp.ForwardHTTPCode = 301
+	}
 	rh := &models.RedirectionHost{
 		Domains: inp.Domains, ForwardScheme: inp.ForwardScheme,
 		ForwardDomain: inp.ForwardDomain, ForwardHTTPCode: inp.ForwardHTTPCode,
@@ -13653,7 +14080,9 @@ func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Reque
 	}
 	serverID := s.currentServerID(r)
 	ownerID := int64(0)
-	if !cu.IsAdmin { ownerID = cu.ID }
+	if !cu.IsAdmin {
+		ownerID = cu.ID
+	}
 	newID, err := models.CreateRedirectionHost(s.DB, serverID, ownerID, rh)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -13662,7 +14091,10 @@ func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Reque
 	_ = models.LogActivity(s.DB, serverID, cu.Email, "redirect_create", fmt.Sprintf("redir:%d", newID), rh.Domains, true)
 	s.trySyncCaddy(serverID, false)
 	created, _ := models.GetRedirectionHost(s.DB, newID)
-	if created == nil { created = rh; created.ID = newID }
+	if created == nil {
+		created = rh
+		created.ID = newID
+	}
 	writeJSON(w, http.StatusCreated, redirectionHostToAPIMap(created))
 }
 
@@ -13694,16 +14126,28 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if inp.Domains != "" { existing.Domains = inp.Domains }
-	if inp.ForwardScheme != "" { existing.ForwardScheme = inp.ForwardScheme }
-	if inp.ForwardDomain != "" { existing.ForwardDomain = inp.ForwardDomain }
-	if inp.ForwardHTTPCode != 0 { existing.ForwardHTTPCode = inp.ForwardHTTPCode }
+	if inp.Domains != "" {
+		existing.Domains = inp.Domains
+	}
+	if inp.ForwardScheme != "" {
+		existing.ForwardScheme = inp.ForwardScheme
+	}
+	if inp.ForwardDomain != "" {
+		existing.ForwardDomain = inp.ForwardDomain
+	}
+	if inp.ForwardHTTPCode != 0 {
+		existing.ForwardHTTPCode = inp.ForwardHTTPCode
+	}
 	existing.PreservePath = inp.PreservePath
 	existing.SSLEnabled = inp.SSLEnabled
 	existing.SSLForced = inp.SSLForced
 	existing.Enabled = inp.Enabled
-	if inp.Tags != "" { existing.Tags = inp.Tags }
-	if inp.Notes != "" { existing.Notes = inp.Notes }
+	if inp.Tags != "" {
+		existing.Tags = inp.Tags
+	}
+	if inp.Notes != "" {
+		existing.Notes = inp.Notes
+	}
 	if err := models.UpdateRedirectionHost(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -13711,7 +14155,9 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_update", fmt.Sprintf("redir:%d", id), existing.Domains, true)
 	s.trySyncCaddy(s.currentServerID(r), false)
 	updated, _ := models.GetRedirectionHost(s.DB, id)
-	if updated == nil { updated = existing }
+	if updated == nil {
+		updated = existing
+	}
 	writeJSON(w, http.StatusOK, redirectionHostToAPIMap(updated))
 }
 
@@ -13744,11 +14190,11 @@ func (s *Server) apiV1ToggleRedirectionHost(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rh, _ := models.GetRedirectionHost(s.DB, id)
-	if rh != nil { s.syncCaddy(s.currentServerID(r), false) }
+	if rh != nil {
+		s.syncCaddy(s.currentServerID(r), false)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "enabled": enabled})
 }
-
-
 
 // --- REST JSON API v1: Raw Routes ---
 

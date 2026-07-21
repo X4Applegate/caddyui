@@ -603,6 +603,48 @@
         <span class="block text-xs text-ink-400 font-normal mt-0.5">Routes traffic through Cloudflare's network for DDoS protection and CDN. Disable for DNS-only mode.</span>
       </label>
     </div>
+    <details class="pt-3 border-t border-ink-100" {{if $.DNSCredentialProfiles}}open{{end}}>
+      <summary class="text-xs font-medium text-ink-600 cursor-pointer hover:text-ink-800">Additional Cloudflare credential profiles</summary>
+      <div class="pt-3 space-y-3">
+        <p class="text-xs text-ink-500">Use these when different zones live under different Cloudflare accounts or tokens. The proxy, redirect, and raw route DNS pickers can select a profile per row.</p>
+        {{range $.DNSCredentialProfiles}}
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-3 rounded-lg border border-ink-100 bg-ink-50/40 p-3">
+          <input type="hidden" name="dns_profile_id" value="{{.ID}}" />
+          <div class="md:col-span-3">
+            <label class="block text-xs font-medium text-ink-700 mb-1">Profile name</label>
+            <input name="dns_profile_name" value="{{.Name}}" type="text" placeholder="Production account"
+              class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+          </div>
+          <div class="md:col-span-4">
+            <label class="block text-xs font-medium text-ink-700 mb-1">API token <span class="text-ink-400 font-normal">(leave blank to keep existing)</span></label>
+            <input name="dns_profile_token" value="" type="password" autocomplete="new-password" placeholder="{{if .TokenSet}}configured{{else}}paste token here{{end}}"
+              class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="block text-xs font-medium text-ink-700 mb-1">Proxy</label>
+            <select name="dns_profile_proxied"
+              class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+              <option value="0" {{if not .Proxied}}selected{{end}}>DNS only</option>
+              <option value="1" {{if .Proxied}}selected{{end}}>Proxied</option>
+            </select>
+          </div>
+          <div class="md:col-span-3">
+            <label class="block text-xs font-medium text-ink-700 mb-1">Allowed zones</label>
+            <textarea name="dns_profile_zone_allowlist" rows="2" placeholder="example.com&#10;other.com"
+              class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.ZoneAllowlistRaw}}</textarea>
+          </div>
+          {{if .ID}}
+          <label class="md:col-span-12 flex items-center gap-2 text-xs text-red-600">
+            <input type="checkbox" name="dns_profile_delete" value="{{.ID}}" class="rounded border-red-300 text-red-600 focus:ring-red-500" />
+            Remove this profile on save
+          </label>
+          {{else}}
+          <p class="md:col-span-12 text-xs text-ink-400">Fill this blank row and save to add another Cloudflare profile.</p>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+    </details>
     {{end}}
 
     {{/* Porkbun-only: per-domain API-Access reminder. */}}
