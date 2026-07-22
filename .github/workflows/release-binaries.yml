@@ -1,0 +1,73 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: Build release archives
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME:-manual}"
+          mkdir -p dist
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch <<< "${target}"
+            name="caddyui_${version}_${goos}_${goarch}"
+            outdir="dist/${name}"
+            mkdir -p "${outdir}"
+
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.Version=${version}" \
+              -o "${outdir}/caddyui" \
+              ./cmd/caddyui
+
+            cp README.md CHANGELOG.md LICENSE "${outdir}/"
+            cp packaging/systemd/caddyui.service "${outdir}/caddyui.service"
+            tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          done
+
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: caddyui-binaries
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt

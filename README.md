@@ -11,7 +11,7 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 
 ---
 
-## 🐳 Install
+## Install
 
 ```bash
 docker pull applegater/caddyui:latest
@@ -19,7 +19,10 @@ docker pull applegater/caddyui:latest
 
 Multi-arch: `linux/amd64` + `linux/arm64` (runs on your Raspberry Pi). SBOM + provenance signed. Non-root (UID 10001).
 
-See the [Quick Start](#quick-start) below for the full `docker-compose.yml`.
+Docker remains the recommended install path, but tagged releases also include
+native Linux binary archives for `amd64` and `arm64` hosts. See the
+[non-Docker systemd install](#non-docker-systemd-install) below if you want to
+run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ---
 
@@ -233,6 +236,50 @@ docker run -d \
   -v caddyui_data:/data \
   -e CADDY_ADMIN_URL=http://your-caddy-host:2019 \
   applegater/caddyui:latest
+```
+
+### Non-Docker systemd install
+
+Tagged GitHub releases include `linux/amd64` and `linux/arm64` tarballs with
+the `caddyui` binary and a sample `caddyui.service` unit. This is useful for
+LXC/Proxmox labs, VMs, or hosts where you prefer to run CaddyUI directly under
+systemd.
+
+1. Install Caddy separately and make sure its admin API is reachable from the
+   CaddyUI host. For a same-host install the default is
+   `http://127.0.0.1:2019`.
+2. Download the archive for your CPU architecture from the
+   [latest GitHub release](https://github.com/X4Applegate/caddyui/releases).
+3. Install the binary and service:
+
+```bash
+sudo useradd --system --home /var/lib/caddyui --shell /usr/sbin/nologin caddyui
+sudo install -d -o caddyui -g caddyui -m 0750 /var/lib/caddyui
+sudo install -m 0755 caddyui /usr/local/bin/caddyui
+sudo install -m 0644 caddyui.service /etc/systemd/system/caddyui.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now caddyui
+```
+
+The packaged service stores SQLite data at `/var/lib/caddyui/caddyui.db`,
+listens on `127.0.0.1:8080`, talks to Caddy at `http://127.0.0.1:2019`, and
+binds the analytics ingest listener to `127.0.0.1:9019`. Override those values
+with a systemd drop-in if your Caddy admin API is on another host:
+
+```bash
+sudo systemctl edit caddyui
+```
+
+```ini
+[Service]
+Environment=CADDYUI_LISTEN=0.0.0.0:8080
+Environment=CADDY_ADMIN_URL=http://10.8.0.2:2019
+```
+
+Then restart:
+
+```bash
+sudo systemctl restart caddyui
 ```
 
 ### Agent mode (edge-only Caddy, no CaddyUI)
