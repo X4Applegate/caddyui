@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.3] - 2026-07-21 - Dashboard recommendations and CI gate
+
+### Added
+
+- **Dashboard recommended actions**: the dashboard now surfaces a compact advisor panel for actionable operational issues, including down upstreams, maintenance mode, SSL-disabled enabled hosts, incomplete managed DNS, missing DNS profile references, expired or soon-expiring custom PEM certificates, stale or missing syncs, missing snapshots, disabled 2FA enforcement, and an empty admin IP allowlist.
+- **Basic Go CI gate**: added a GitHub Actions workflow that runs `go test ./...`, `go vet ./...`, and `go build ./cmd/caddyui` on pushes and pull requests to `main`.
+- **Dashboard advisor tests**: added focused unit tests covering operational recommendations, admin hardening recommendations, certificate expiry detection, and recommendation noise limits.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.16.3` published.
+
+---
+
 ## [2.16.2] - 2026-07-21 - Proxy Hosts loading speed hotfix
 
 ### Fixed

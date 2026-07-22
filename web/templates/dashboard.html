@@ -270,6 +270,34 @@
 </div>
 {{end}}
 
+{{if .Recommendations}}
+<div class="flex items-center justify-between mb-3 mt-2">
+  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recommended actions</h2>
+  <a href="/activity" class="text-xs text-ink-500 hover:text-ink-900 transition">Audit trail &rarr;</a>
+</div>
+<div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100 mb-8">
+  {{range .Recommendations}}
+  {{$badge := "bg-ink-100 text-ink-600"}}
+  {{$dot := "bg-ink-400"}}
+  {{if eq .Severity "critical"}}{{$badge = "bg-red-50 text-red-700"}}{{$dot = "bg-red-500"}}{{end}}
+  {{if eq .Severity "warning"}}{{$badge = "bg-amber-50 text-amber-700"}}{{$dot = "bg-amber-500"}}{{end}}
+  {{if eq .Severity "info"}}{{$badge = "bg-blue-50 text-blue-700"}}{{$dot = "bg-blue-500"}}{{end}}
+  <div class="flex items-center gap-3 px-4 py-3 text-sm">
+    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium {{$badge}} shrink-0">
+      <span class="w-1.5 h-1.5 rounded-full {{$dot}}"></span>{{.Severity}}
+    </span>
+    <div class="min-w-0 flex-1">
+      <div class="font-medium text-ink-900">{{.Title}}</div>
+      <div class="text-xs text-ink-500 mt-0.5">{{.Detail}}</div>
+    </div>
+    {{if .URL}}
+    <a href="{{.URL}}" class="text-xs font-medium text-brand-600 hover:text-brand-700 whitespace-nowrap">{{if .Action}}{{.Action}}{{else}}Open{{end}} &rarr;</a>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 {{/* v2.11.16: Caddy fleet health — one status card per registered server.
      Renders only when more than one server is registered (single-server
      installs don't benefit from a fleet view). */}}
