@@ -2049,6 +2049,190 @@ func (s *Server) postRegenerateBackupCodes(w http.ResponseWriter, r *http.Reques
 }
 
 // --- Dashboard ---
+
+type dashboardRecommendation struct {
+	Severity string // "critical" | "warning" | "info"
+	Title    string
+	Detail   string
+	URL      string
+	Action   string
+}
+
+type dashboardRecommendationInput struct {
+	IsAdmin           bool
+	ProxyHosts        []models.ProxyHost
+	RedirectionHosts  []models.RedirectionHost
+	RawRoutes         []models.RawRoute
+	Certificates      []models.Certificate
+	Snapshots         []models.ConfigSnapshot
+	DNSProfileIDs     map[string]bool
+	LastSync          *time.Time
+	DownCount         int
+	MaintenanceCount  int
+	GlobalMaintenance bool
+	Require2FA        bool
+	RequireTOTP       bool
+	AdminAllowlistSet bool
+	AutoSnapshots     bool
+	Now               time.Time
+}
+
+func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardRecommendation {
+	now := in.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	var out []dashboardRecommendation
+	add := func(severity, title, detail, url, action string) {
+		out = append(out, dashboardRecommendation{
+			Severity: severity,
+			Title:    title,
+			Detail:   detail,
+			URL:      url,
+			Action:   action,
+		})
+	}
+
+	if in.GlobalMaintenance {
+		add("critical", "Global maintenance mode is active", "Every proxy host is serving the maintenance response until this is turned off and Caddy is synced.", "/settings#settings-general", "Open settings")
+	} else if in.MaintenanceCount > 0 {
+		add("warning", "Proxy hosts are in maintenance", fmt.Sprintf("%d enabled proxy host(s) are currently serving maintenance responses.", in.MaintenanceCount), "/proxy-hosts?status=maintenance", "Review hosts")
+	}
+	if in.DownCount > 0 {
+		add("critical", "Upstreams are down", fmt.Sprintf("%d enabled proxy host(s) have failing health checks.", in.DownCount), "/proxy-hosts", "View health")
+	}
+
+	sslOff := 0
+	incompleteDNS := 0
+	missingProfiles := 0
+	referencedCerts := map[int64]bool{}
+	for _, h := range in.ProxyHosts {
+		if h.CertificateID != 0 {
+			referencedCerts[h.CertificateID] = true
+		}
+		if h.Enabled && !h.SSLEnabled {
+			sslOff++
+		}
+		if h.DNSProvider != "" && h.DNSZoneID == "" {
+			incompleteDNS++
+		}
+		if h.DNSProfileID != "" && !in.DNSProfileIDs[h.DNSProfileID] {
+			missingProfiles++
+		}
+	}
+	for _, h := range in.RedirectionHosts {
+		if h.CertificateID != 0 {
+			referencedCerts[h.CertificateID] = true
+		}
+		if h.DNSProvider != "" && h.DNSZoneID == "" {
+			incompleteDNS++
+		}
+		if h.DNSProfileID != "" && !in.DNSProfileIDs[h.DNSProfileID] {
+			missingProfiles++
+		}
+	}
+	for _, rr := range in.RawRoutes {
+		if rr.CertificateID != 0 {
+			referencedCerts[rr.CertificateID] = true
+		}
+		if rr.DNSProvider != "" && rr.DNSZoneID == "" {
+			incompleteDNS++
+		}
+		if rr.DNSProfileID != "" && !in.DNSProfileIDs[rr.DNSProfileID] {
+			missingProfiles++
+		}
+	}
+	if sslOff > 0 {
+		add("warning", "Enabled hosts have SSL off", fmt.Sprintf("%d enabled proxy host(s) are reachable without Caddy-managed TLS.", sslOff), "/proxy-hosts", "Review TLS")
+	}
+	if incompleteDNS > 0 {
+		add("warning", "Managed DNS is incomplete", fmt.Sprintf("%d resource(s) have a DNS provider selected but no zone saved yet.", incompleteDNS), "/proxy-hosts", "Review DNS")
+	}
+	if missingProfiles > 0 {
+		add("critical", "DNS profile references are missing", fmt.Sprintf("%d resource(s) reference a deleted or unavailable DNS credential profile.", missingProfiles), "/settings#settings-dns", "Fix profiles")
+	}
+
+	expiringSoon := 0
+	expired := 0
+	unusedCustomCerts := 0
+	for _, c := range in.Certificates {
+		if c.ID != 0 && !referencedCerts[c.ID] {
+			unusedCustomCerts++
+		}
+		if c.Source != models.CertSourcePEM {
+			continue
+		}
+		if t := parsePEMExpiry(c.CertPEM); t != nil {
+			if t.Before(now) {
+				expired++
+			} else if t.Sub(now) < 30*24*time.Hour {
+				expiringSoon++
+			}
+		}
+	}
+	if expired > 0 {
+		add("critical", "Custom certificates are expired", fmt.Sprintf("%d uploaded PEM certificate(s) are already expired.", expired), "/certificates", "Review certs")
+	} else if expiringSoon > 0 {
+		add("warning", "Custom certificates expire soon", fmt.Sprintf("%d uploaded PEM certificate(s) expire within 30 days.", expiringSoon), "/certificates", "Review certs")
+	}
+	if unusedCustomCerts > 0 {
+		add("info", "Unused custom certificates", fmt.Sprintf("%d certificate(s) are not assigned to any resource.", unusedCustomCerts), "/certificates", "Clean up")
+	}
+
+	resourceCount := len(in.ProxyHosts) + len(in.RedirectionHosts) + len(in.RawRoutes)
+	if resourceCount > 0 {
+		if in.LastSync == nil {
+			add("warning", "No successful sync recorded", "Resources exist, but the activity log has no successful Caddy sync for this server.", "/", "Sync Caddy")
+		} else if now.Sub(*in.LastSync) > 7*24*time.Hour {
+			add("info", "Last sync is over a week old", fmt.Sprintf("Last successful sync was %s ago.", humanDuration(now.Sub(*in.LastSync))), "/", "Sync Caddy")
+		}
+	}
+
+	if in.IsAdmin {
+		if !in.Require2FA && !in.RequireTOTP {
+			add("warning", "2FA is not required", "Admins can enable required TOTP enrollment to reduce account-takeover risk.", "/settings#settings-security", "Open security")
+		}
+		if !in.AdminAllowlistSet {
+			add("info", "Admin IP allowlist is empty", "Restricting CaddyUI to trusted IPs or CIDRs can reduce exposure for homelab installs.", "/settings#settings-security", "Open security")
+		}
+		if len(in.Snapshots) == 0 {
+			add("warning", "No config snapshots yet", "Take a manual snapshot so there is a known-good Caddy config to restore.", "/snapshots", "Take snapshot")
+		} else if !in.AutoSnapshots {
+			add("info", "Auto-snapshots are disabled", "Manual snapshots still work, but pre-sync restore points will not be captured automatically.", "/snapshots", "Review snapshots")
+		}
+	}
+
+	if len(out) > 6 {
+		return out[:6]
+	}
+	return out
+}
+
+func humanDuration(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	days := int(d.Hours() / 24)
+	if days >= 1 {
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	hours := int(d.Hours())
+	if hours >= 1 {
+		if hours == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", hours)
+	}
+	minutes := int(d.Minutes())
+	if minutes <= 1 {
+		return "1 minute"
+	}
+	return fmt.Sprintf("%d minutes", minutes)
+}
+
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	sid := s.currentServerID(r)
 	cu := s.currentUser(r)
@@ -2211,6 +2395,33 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	dnsProfileIDs := map[string]bool{}
+	for _, p := range s.loadDNSProfiles() {
+		dnsProfileIDs[p.ID] = true
+	}
+	snapshots, _ := models.ListSnapshots(s.DB, sid, 1)
+	require2FA := mustGetSetting(s.DB, settingRequire2FA) == "1"
+	requireTOTP := mustGetSetting(s.DB, settingRequireTOTP) == "1"
+	adminAllowlistSet := strings.TrimSpace(mustGetSetting(s.DB, settingAdminAllowlist)) != ""
+	recommendations := buildDashboardRecommendations(dashboardRecommendationInput{
+		IsAdmin:           isAdmin,
+		ProxyHosts:        hosts,
+		RedirectionHosts:  redirs,
+		RawRoutes:         raws,
+		Certificates:      certs,
+		Snapshots:         snapshots,
+		DNSProfileIDs:     dnsProfileIDs,
+		LastSync:          lastSync,
+		DownCount:         downCount,
+		MaintenanceCount:  maintenanceCount,
+		GlobalMaintenance: globalMaintenance == "1",
+		Require2FA:        require2FA,
+		RequireTOTP:       requireTOTP,
+		AdminAllowlistSet: adminAllowlistSet,
+		AutoSnapshots:     s.autoSnapshotsEnabled(),
+		Now:               time.Now(),
+	})
+
 	s.render(w, r, "dashboard.html", map[string]any{
 		"User":                 s.currentUser(r),
 		"ProxyHosts":           hosts,
@@ -2234,6 +2445,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		"MaintenanceHostCount": maintenanceCount,
 		"RecentEdits":          recentEdits,
 		"ServerHealth":         serverHealth,
+		"Recommendations":      recommendations,
 		"Section":              "dashboard",
 	})
 }
