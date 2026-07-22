@@ -49,6 +49,8 @@ jobs:
 
             cp README.md CHANGELOG.md LICENSE "${outdir}/"
             cp packaging/systemd/caddyui.service "${outdir}/caddyui.service"
+            cp packaging/install.sh "${outdir}/install.sh"
+            chmod 0755 "${outdir}/install.sh"
             tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           done
 
