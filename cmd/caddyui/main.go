@@ -38,18 +38,18 @@ func main() {
 	caddyAdminPass := os.Getenv("CADDY_ADMIN_PASS")
 
 	// v2.12.53: friendly error if the data directory isn't writable.
-	// Bind-mount users sometimes hit "unable to open database file (1)"
-	// because the host directory is owned by root (mount default) but
-	// the binary runs as uid 10001. Probe with a temp-file write BEFORE
-	// db.Open so the error message is actionable.
+	// Container bind mounts and native systemd installs can both hit
+	// "unable to open database file (1)" when the DB parent directory is
+	// owned by another user. Probe with a temp-file write BEFORE db.Open so
+	// the error message is actionable.
 	if err := probeDataDir(dbPath); err != nil {
-		log.Fatalf(`data directory is not writable by uid 10001 (%v)
+		log.Fatalf(`data directory is not writable by the current user (uid %d): %v
 
-CaddyUI runs as non-root uid 10001 inside the container. Fix by:
-  • chown the bind-mount on the host:
-        sudo chown -R 10001:10001 /path/to/caddyui_data
-  • OR run the container as root with --user 0:0 (less secure)
-  • OR use a named docker volume instead of a bind mount`, err)
+Fix by:
+  • chown the data directory for the user running CaddyUI:
+        sudo chown -R <user>:<group> /path/to/caddyui_data
+  • OR use a writable named Docker volume for container installs
+  • OR run the container with a matching --user value for your bind mount`, os.Geteuid(), err)
 	}
 
 	conn, err := db.Open(dbPath)
