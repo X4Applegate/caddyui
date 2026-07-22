@@ -5,7 +5,7 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 [![License: CaddyUI-SAL 1.0](https://img.shields.io/badge/license-CaddyUI--SAL%201.0-blue)](LICENSE)
 [![Docker Hub](https://img.shields.io/docker/v/applegater/caddyui?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/applegater/caddyui)
 [![Docker Pulls](https://img.shields.io/docker/pulls/applegater/caddyui?label=pulls)](https://hub.docker.com/r/applegater/caddyui)
-[![Go 1.24](https://img.shields.io/badge/Go-1.24-00ADD8)](https://go.dev/)
+[![Go 1.25](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev/)
 
 **Lighthouse:** Performance **99** · Accessibility **100** · Best Practices **100** · SEO **100** *(measured on `/login` from Google's PageSpeed Insights against a residential-ISP install — `:v2.12.53` and later)*
 
@@ -253,7 +253,7 @@ systemd.
 3. Install the binary and service:
 
 ```bash
-sudo useradd --system --home /var/lib/caddyui --shell /usr/sbin/nologin caddyui
+id -u caddyui >/dev/null 2>&1 || sudo useradd --system --home /var/lib/caddyui --shell /usr/sbin/nologin caddyui
 sudo install -d -o caddyui -g caddyui -m 0750 /var/lib/caddyui
 sudo install -m 0755 caddyui /usr/local/bin/caddyui
 sudo install -m 0644 caddyui.service /etc/systemd/system/caddyui.service
@@ -376,11 +376,47 @@ Edge / remote hosts do **not** need to run a CaddyUI container — just Caddy wi
 
 ## Building from Source
 
+CaddyUI can be built and run directly on Linux without Docker. Install Caddy
+separately first, then make sure its admin API is reachable from the CaddyUI
+host. For same-host installs, Caddy's default admin endpoint is usually
+`http://127.0.0.1:2019`.
+
+Install Go 1.25 or newer, then build:
+
 ```bash
 git clone https://github.com/X4Applegate/caddyui.git
 cd caddyui
-go build -o caddyui ./cmd/caddyui
+git checkout "$(git tag --sort=-v:refname | head -n1)"
+version="$(git describe --tags --always --dirty)"
+CGO_ENABLED=0 go build \
+  -trimpath \
+  -ldflags "-s -w -X main.Version=${version}" \
+  -o caddyui \
+  ./cmd/caddyui
+```
+
+To test it before installing:
+
+```bash
+mkdir -p ./data
+CADDYUI_DB="$PWD/data/caddyui.db" \
+CADDYUI_LISTEN=127.0.0.1:8080 \
+CADDY_ADMIN_URL=http://127.0.0.1:2019 \
+CADDYUI_INGEST_LISTEN=127.0.0.1:9019 \
 ./caddyui
+```
+
+Open `http://127.0.0.1:8080` and complete the first-run setup.
+
+To install your locally built binary as a systemd service:
+
+```bash
+id -u caddyui >/dev/null 2>&1 || sudo useradd --system --home /var/lib/caddyui --shell /usr/sbin/nologin caddyui
+sudo install -d -o caddyui -g caddyui -m 0750 /var/lib/caddyui
+sudo install -m 0755 caddyui /usr/local/bin/caddyui
+sudo install -m 0644 packaging/systemd/caddyui.service /etc/systemd/system/caddyui.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now caddyui
 ```
 
 ### Docker Build
@@ -391,7 +427,7 @@ docker build --build-arg VERSION=v1.0.0 -t caddyui:v1.0.0 .
 
 ### Dependencies
 
-- [Go 1.24+](https://go.dev/)
+- [Go 1.25+](https://go.dev/)
 - [Caddy 2.x](https://caddyserver.com/) with the admin API enabled (default)
 - No external database required — uses embedded SQLite
 
