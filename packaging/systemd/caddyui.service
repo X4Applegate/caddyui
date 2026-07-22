@@ -11,6 +11,7 @@ Group=caddyui
 Environment=CADDYUI_DB=/var/lib/caddyui/caddyui.db
 Environment=CADDYUI_LISTEN=127.0.0.1:8080
 Environment=CADDY_ADMIN_URL=http://127.0.0.1:2019
+# Optional visitor-analytics ingest listener. Set to an empty value to disable.
 Environment=CADDYUI_INGEST_LISTEN=127.0.0.1:9019
 ExecStart=/usr/local/bin/caddyui
 Restart=on-failure

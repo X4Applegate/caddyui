@@ -250,21 +250,20 @@ systemd.
    `http://127.0.0.1:2019`.
 2. Download the archive for your CPU architecture from the
    [latest GitHub release](https://github.com/X4Applegate/caddyui/releases).
-3. Install the binary and service:
+3. Extract the archive and run the packaged installer:
 
 ```bash
-id -u caddyui >/dev/null 2>&1 || sudo useradd --system --home /var/lib/caddyui --shell /usr/sbin/nologin caddyui
-sudo install -d -o caddyui -g caddyui -m 0750 /var/lib/caddyui
-sudo install -m 0755 caddyui /usr/local/bin/caddyui
-sudo install -m 0644 caddyui.service /etc/systemd/system/caddyui.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now caddyui
+tar -xvf ./caddyui_vX.Y.Z_linux_ARCH.tar.gz
+cd caddyui_vX.Y.Z_linux_ARCH
+./install.sh
 ```
 
 The packaged service stores SQLite data at `/var/lib/caddyui/caddyui.db`,
 listens on `127.0.0.1:8080`, talks to Caddy at `http://127.0.0.1:2019`, and
-binds the analytics ingest listener to `127.0.0.1:9019`. Override those values
-with a systemd drop-in if your Caddy admin API is on another host:
+binds the optional visitor-analytics ingest listener to `127.0.0.1:9019`. The
+ingest listener only matters if you enable CaddyUI visitor analytics; set
+`CADDYUI_INGEST_LISTEN=` in a systemd drop-in to disable it. Override these
+values if your Caddy admin API is on another host:
 
 ```bash
 sudo systemctl edit caddyui
@@ -274,6 +273,8 @@ sudo systemctl edit caddyui
 [Service]
 Environment=CADDYUI_LISTEN=0.0.0.0:8080
 Environment=CADDY_ADMIN_URL=http://10.8.0.2:2019
+# Optional: disable visitor-analytics ingest if you do not use analytics.
+Environment=CADDYUI_INGEST_LISTEN=
 ```
 
 Then restart:
