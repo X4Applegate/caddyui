@@ -168,6 +168,10 @@ If you want a different persona, in-house naming conventions, or a leaner / chat
 
 API keys are stored in CaddyUI's SQLite database. The Settings UI never renders saved keys back to the form (a `••••••••` placeholder shows when one is set; leave the field blank to keep the existing key). Local Ollama means the conversation never leaves your machine; cloud backends send the conversation to your chosen provider per their respective terms.
 
+### Community integrations
+
+- [CaddyUI-MCP](https://github.com/loryanstrant/CaddyUI-MCP) — a community-maintained MCP server that wraps CaddyUI's `/api/v1` REST API for agent-driven automation. Use a dedicated CaddyUI user and the narrowest API token scope that fits your workflow.
+
 ---
 
 ## Quick Start

@@ -89,6 +89,8 @@ type Server struct {
 	healthClient *http.Client
 }
 
+type apiTokenScopeContextKey struct{}
+
 // SetAnalyticsIngest plumbs the analytics ingest listener into the server
 // so handlers can surface its stats on /analytics and /settings. Called
 // once at startup from main.go after the ingest listener has bound.
@@ -930,6 +932,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 					return
 				}
 				ctx := context.WithValue(r.Context(), auth.ContextUserKey, u)
+				ctx = context.WithValue(ctx, apiTokenScopeContextKey{}, tokenScopes)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -948,6 +951,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 					return
 				}
 				ctx := context.WithValue(r.Context(), auth.ContextUserKey, u)
+				ctx = context.WithValue(ctx, apiTokenScopeContextKey{}, tokenScopes)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -1017,6 +1021,15 @@ func (s *Server) bearerTokenUser(r *http.Request) (*models.User, string) {
 func (s *Server) currentUser(r *http.Request) *models.User {
 	u, _ := r.Context().Value(auth.ContextUserKey).(*models.User)
 	return u
+}
+
+func currentAPITokenScope(r *http.Request) string {
+	scope, _ := r.Context().Value(apiTokenScopeContextKey{}).(string)
+	return scope
+}
+
+func proxyWriteTokenCanWritePath(path string) bool {
+	return path == "/api/v1/proxy-hosts" || strings.HasPrefix(path, "/api/v1/proxy-hosts/")
 }
 
 // sessionTTL returns the configured session duration, defaulting to 7 days.
@@ -8565,6 +8578,16 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 // pass through, so viewers see the UI but can't change anything.
 func (s *Server) requireWrite(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch currentAPITokenScope(r) {
+		case models.TokenScopeReadOnly:
+			http.Error(w, "token scope is read-only", http.StatusForbidden)
+			return
+		case models.TokenScopeProxyWrite:
+			if !proxyWriteTokenCanWritePath(r.URL.Path) {
+				http.Error(w, "token scope allows proxy-host writes only", http.StatusForbidden)
+				return
+			}
+		}
 		u := s.currentUser(r)
 		if u != nil && u.Role == models.RoleView {
 			http.Error(w, "read-only account — ask an admin to make changes", http.StatusForbidden)
