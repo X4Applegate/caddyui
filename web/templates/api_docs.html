@@ -33,6 +33,15 @@
       <p class="text-xs font-medium text-ink-800 mb-2">Example — Bearer token header</p>
       <pre class="font-mono text-xs text-ink-700 overflow-x-auto">Authorization: Bearer caddyui_tok_abc123…</pre>
     </div>
+    <div class="bg-ink-50 border border-ink-200 rounded-lg px-4 py-3">
+      <p class="text-xs font-medium text-ink-800 mb-2">Token scopes</p>
+      <ul class="list-disc pl-5 text-xs text-ink-600 space-y-1">
+        <li><strong>Read-only</strong> allows <code class="font-mono">GET</code> and <code class="font-mono">HEAD</code> requests only.</li>
+        <li><strong>Proxy write</strong> allows writes to <code class="font-mono">/api/v1/proxy-hosts</code> and reads elsewhere.</li>
+        <li><strong>Full access</strong> allows all API writes that the token owner's user account is allowed to perform.</li>
+      </ul>
+      <p class="text-xs text-ink-500 mt-3">For agent or MCP automation, create a dedicated CaddyUI user and use the narrowest token that matches the workflow. Community integrations that manage redirections, raw routes, or certificates require a full-access token from an appropriately limited user.</p>
+    </div>
     <p class="text-xs text-ink-500">Requests without a valid credential receive <code class="font-mono">401 Unauthorized</code>.</p>
   </div>
 </section>

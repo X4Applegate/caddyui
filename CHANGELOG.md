@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.6] - 2026-07-24 - MCP community integration and token-scope hardening
+
+### Added
+
+- **Community MCP integration docs**: added a README link to the community-maintained [CaddyUI-MCP](https://github.com/loryanstrant/CaddyUI-MCP) project, with guidance to use dedicated users and narrow API token scopes for agent automation.
+- **API token scope documentation**: the REST API reference now explains `read_only`, `proxy_write`, and `full` token behavior, including the expectation that integrations managing redirections, raw routes, or certificates need a full-access token from an appropriately limited user.
+
+### Fixed
+
+- **`proxy_write` API token enforcement**: `proxy_write` bearer tokens are now limited to writes under `/api/v1/proxy-hosts`. Other write routes remain read-only for that token scope instead of behaving like full access.
+
+> `:preview`, `:stable`, `:latest` updated. Pinned tag `:v2.16.6` published.
+
+---
+
 ## [2.16.3] - 2026-07-21 - Dashboard recommendations and CI gate
 
 ### Added
