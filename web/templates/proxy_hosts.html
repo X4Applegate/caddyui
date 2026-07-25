@@ -575,7 +575,7 @@
     <div class="text-sm font-medium text-gray-800 dark:text-gray-200">Live upstream status</div>
     <button onclick="fetchUpstreams()" class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">↻ Refresh</button>
   </div>
-  <div id="upstream-health-list" class="text-xs text-gray-500 dark:text-gray-400">Loading…</div>
+  <div id="upstream-health-list" class="text-xs text-gray-500 dark:text-gray-400">Click Refresh to load detailed Caddy upstream status.</div>
 </div>
 
 <script>
@@ -600,8 +600,9 @@ function fetchUpstreams() {
       if (el) el.textContent = 'Could not fetch: ' + e.message;
     });
 }
-fetchUpstreams();
-setInterval(fetchUpstreams, 30000);
+// This panel duplicates the health request used by the row status dots and can
+// wait up to five seconds when a remote Caddy admin endpoint is unavailable.
+// Load it on demand so opening Proxy Hosts is never held open by that request.
 </script>
 
 <script>
