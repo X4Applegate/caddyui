@@ -2157,6 +2157,76 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pe
 	return out, rows.Err()
 }
 
+// ListProxyHostSummaries returns only the fields used by the proxy-host list
+// and its live-health endpoint. ProxyHost has hundreds of optional fields,
+// many containing large JSON/HTML blobs; selecting and scanning all of them
+// made /proxy-hosts increasingly expensive as the host count grew.
+func ListProxyHostSummaries(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, peerIDs []int64) ([]ProxyHost, error) {
+	const cols = `ph.id, ph.domains, ph.forward_scheme, ph.forward_host, ph.forward_port,
+		ph.ssl_enabled, ph.ssl_forced, ph.enabled, COALESCE(ph.certificate_id, 0),
+		ph.basicauth_enabled, COALESCE(ph.owner_id, 0),
+		COALESCE(ph.dns_provider, ''), COALESCE(ph.dns_record_id, ''),
+		COALESCE(ph.maintenance_mode, 0), COALESCE(ph.tags, ''),
+		COALESCE(ph.notes, ''), COALESCE(ph.color, ''), ph.updated_at,
+		COALESCE(u.email, '')`
+
+	var rows *sql.Rows
+	var err error
+	if isAdmin {
+		rows, err = db.Query(`
+			SELECT `+cols+`
+			FROM proxy_hosts ph
+			LEFT JOIN users u ON u.id = ph.owner_id
+			WHERE ph.server_id = ?
+			ORDER BY ph.sort_order ASC, ph.id DESC`, serverID)
+	} else {
+		inStr, inArgs := inClause(peerIDs)
+		args := append([]any{serverID, viewerID}, inArgs...)
+		rows, err = db.Query(`
+			SELECT `+cols+`
+			FROM proxy_hosts ph
+			LEFT JOIN users u ON u.id = ph.owner_id
+			WHERE ph.server_id = ?
+			  AND (ph.owner_id = ? OR ph.owner_id IN (`+inStr+`))
+			ORDER BY ph.sort_order ASC, ph.id DESC`, args...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ProxyHost
+	for rows.Next() {
+		var p ProxyHost
+		var sslEnabled, sslForced, enabled, basicAuth, maintenance int
+		var ownerID int64
+		if err := rows.Scan(
+			&p.ID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
+			&sslEnabled, &sslForced, &enabled, &p.CertificateID,
+			&basicAuth, &ownerID, &p.DNSProvider, &p.DNSRecordID,
+			&maintenance, &p.Tags, &p.Notes, &p.Color, &p.UpdatedAt,
+			&p.OwnerEmail,
+		); err != nil {
+			return nil, err
+		}
+		p.SSLEnabled = sslEnabled == 1
+		p.SSLForced = sslForced == 1
+		p.Enabled = enabled == 1
+		p.BasicAuthEnabled = basicAuth == 1
+		p.MaintenanceMode = maintenance == 1
+		if ownerID != 0 {
+			p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
+		}
+		// The list template still uses the legacy Cloudflare-specific display
+		// field for its badge. Keep it populated without loading legacy columns.
+		if p.DNSProvider == "cloudflare" {
+			p.CFDNSRecordID = p.DNSRecordID
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func GetProxyHost(db *sql.DB, id int64) (*ProxyHost, error) {
 	var p ProxyHost
 	if err := scanProxyHost(

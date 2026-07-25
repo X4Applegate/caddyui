@@ -2499,7 +2499,7 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		viewerID = cu.ID
 	}
 	peers := s.groupPeerIDs(r)
-	hosts, err := models.ListProxyHosts(s.DB, s.currentServerID(r), viewerID, isAdmin, peers)
+	hosts, err := models.ListProxyHostSummaries(s.DB, s.currentServerID(r), viewerID, isAdmin, peers)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -10030,7 +10030,7 @@ func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
 		viewerID = cu.ID
 	}
 	sid := s.currentServerID(r)
-	hosts, err := models.ListProxyHosts(s.DB, sid, viewerID, isAdmin, s.groupPeerIDs(r))
+	hosts, err := models.ListProxyHostSummaries(s.DB, sid, viewerID, isAdmin, s.groupPeerIDs(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

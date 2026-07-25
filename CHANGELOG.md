@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.8] - 2026-07-25 - Faster Proxy Hosts page
+
+### Fixed
+
+- **Proxy Hosts page load time**: the list now selects only the 19 fields it renders instead of loading and scanning every optional proxy-host field, including large advanced-config, header, rule, and custom-page blobs.
+- **Duplicate live Caddy request**: the separate Live upstream status panel no longer starts a second Caddy admin request automatically when the page opens. Row health continues loading normally; the detailed panel refreshes on demand.
+- **Health endpoint query size**: live row-health checks reuse the lightweight proxy-host summary query.
+
+---
+
 ## [2.16.7] - 2026-07-25 - DNS-01 certificate support and Caddy sync compatibility
 
 ### Added
