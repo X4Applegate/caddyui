@@ -207,7 +207,7 @@
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS <span class="font-normal normal-case">(optional)</span>
     </summary>
-    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every domain</strong> in this redirect, pointing at this server's public IP. Records are deleted when the redirect is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create).</p>
+    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every domain</strong> in this redirect, pointing at this server's public IP. When Auto SSL is enabled, the same credentials are reused for Let's Encrypt's <strong>DNS-01</strong> challenge. Records are deleted when the redirect is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create).</p>
     {{if .CurrentServerIP}}
     <p class="text-xs text-ink-500 mb-3">A records will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
     {{else}}

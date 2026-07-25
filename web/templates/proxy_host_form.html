@@ -259,7 +259,7 @@ function setProxyFormMode(mode) {
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
     </summary>
-    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every domain</strong> in this host, pointing at this server's public IP. Records are deleted when the host is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create). Pick the provider that owns the domain, then select the zone.</p>
+    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every domain</strong> in this host, pointing at this server's public IP. When Auto SSL is enabled, the same credentials are reused for Let's Encrypt's <strong>DNS-01</strong> challenge. Records are deleted when the host is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create). Pick the provider that owns the domain, then select the zone.</p>
     {{if .CurrentServerIP}}
     <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
     {{else}}
@@ -3674,10 +3674,8 @@ function setProxyFormMode(mode) {
       var opt = providerSel.options[providerSel.selectedIndex];
       providerLabel = opt ? opt.text : providerID;
     }
-    if (providerID === 'cloudflare') {
-      detail.textContent = 'Will use Cloudflare DNS-01 with the API token already configured under Settings → DNS providers. Caddy must include the caddy-dns/cloudflare plugin (the default caddy:2-alpine image does not — use a custom xcaddy build).';
-    } else if (providerID && providerLabel) {
-      detail.textContent = providerLabel + ' is selected, but DNS-01 auto-emit currently supports only Cloudflare. The cert request will fail at issuance time. Either pick Cloudflare or add the tls/automation policy manually via /caddyfile-import.';
+    if (providerID && providerLabel) {
+      detail.textContent = 'Will use ' + providerLabel + ' DNS-01 with the credentials already configured under Settings → DNS providers. Caddy must include the matching caddy-dns/' + providerID + ' plugin.';
     } else {
       detail.textContent = 'Pick a Managed DNS provider in the section below — the credentials you enter for A-record management will be reused for the ACME DNS-01 challenge automatically.';
     }
