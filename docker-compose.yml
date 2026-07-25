@@ -1,7 +1,7 @@
 services:
   caddy:
-    # Custom build — bakes in the Cloudflare DNS provider module so
-    # wildcard certs can solve DNS-01. See Dockerfile.caddy.
+    # Custom build — includes every DNS provider supported by CaddyUI so
+    # Managed DNS hosts can solve ACME DNS-01. See Dockerfile.caddy.
     build:
       context: .
       dockerfile: Dockerfile.caddy

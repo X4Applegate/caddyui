@@ -120,8 +120,8 @@ Per-host export also available from the proxy-host edit page.
 
 - **⌘K command palette** — global resource search across every proxy host, redirection, raw route, certificate
 - **Bulk multi-select + drag-to-reorder** on every list page
-- **Wildcard DNS-01 cert auto-issuance** — type `*.example.com` in Domains and CaddyUI emits the matching `tls.automation.policies` using your stored Cloudflare token
-- **Managed DNS** for Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap — auto-creates A records on save
+- **DNS-01 cert auto-issuance** — selecting Managed DNS emits the matching ACME policy for ordinary and wildcard names
+- **Managed DNS** for Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap — auto-creates A records on save and reuses the credentials for DNS-01
 - **Multi-server fleet management** — manage multiple Caddy instances from one UI; switch with a dropdown
 - **Three-role RBAC** — admin / user / view, with per-user resource ownership and group-based shared visibility
 - **2FA / TOTP**, login CAPTCHA (Turnstile or reCAPTCHA), session management
@@ -138,7 +138,7 @@ Per-host export also available from the proxy-host edit page.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.16.6`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.16.7`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 

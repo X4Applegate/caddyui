@@ -5719,36 +5719,30 @@ func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
 	return append(prepend, existing...)
 }
 
-// buildWildcardAutomationPolicies — v2.12.0: scans the supplied proxy / raw
-// route lists for hostnames that start with `*.` (wildcard SAN) on
-// SSL-enabled rows, and emits an apps.tls.automation.policies[] entry per
-// unique DNS provider so Caddy issues those wildcard certs via the ACME
-// DNS-01 challenge instead of HTTP-01 (which can't validate wildcards).
+// buildDNSAutomationPolicies scans SSL-enabled hosts that have Managed DNS
+// selected and emits an apps.tls.automation.policies[] entry per credential
+// profile. This makes DNS-01 an explicit consequence of choosing Managed DNS,
+// for ordinary names as well as wildcard SANs.
 //
 // Reuses the credentials already stored under each provider's settings
-// keys for managed DNS — users don't have to re-enter the token. If a
-// wildcard host has no dns_provider picked, it's silently skipped here;
-// the frontend wildcard callout is what tells the user they need to
-// pick one.
-//
-// Currently emits config for Cloudflare only. The mapping of internal
-// dns provider ID → caddy-dns plugin name + cred field schema is
-// per-provider and can be extended in caddyDNSProviderConfig.
-func (s *Server) buildWildcardAutomationPolicies(proxies []models.ProxyHost, raws []models.RawRoute) []map[string]any {
+// keys for managed DNS, so users don't enter secrets twice. The connected
+// Caddy build must include the corresponding caddy-dns provider module.
+func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute) []map[string]any {
 	type bucket struct {
 		providerID string
 		subjects   []string
+		seen       map[string]bool
 		creds      map[string]string
 	}
 	byProvider := map[string]*bucket{}
 
-	add := func(domains, providerID, profileID string, sslOn, enabled bool) {
-		if !enabled || !sslOn || providerID == "" {
+	add := func(domains []string, providerID, profileID string, sslOn, enabled bool, certificateID int64) {
+		if !enabled || !sslOn || certificateID != 0 || providerID == "" {
 			return
 		}
-		for _, raw := range strings.Split(domains, ",") {
-			d := strings.TrimSpace(raw)
-			if !strings.HasPrefix(d, "*.") {
+		for _, raw := range domains {
+			d := strings.ToLower(strings.TrimSpace(raw))
+			if d == "" {
 				continue
 			}
 			key := providerID + "|" + profileID
@@ -5757,19 +5751,28 @@ func (s *Server) buildWildcardAutomationPolicies(proxies []models.ProxyHost, raw
 				if _, found := dns.Lookup(providerID); !found {
 					return
 				}
-				b = &bucket{providerID: providerID, creds: s.dnsCredsFor(providerID, profileID)}
+				b = &bucket{
+					providerID: providerID,
+					creds:      s.dnsCredsFor(providerID, profileID),
+					seen:       map[string]bool{},
+				}
 				byProvider[key] = b
 			}
+			if b.seen[d] {
+				continue
+			}
+			b.seen[d] = true
 			b.subjects = append(b.subjects, d)
 		}
 	}
 	for _, p := range proxies {
-		add(p.Domains, p.DNSProvider, p.DNSProfileID, p.SSLEnabled, p.Enabled)
+		add(p.DomainList(), p.DNSProvider, p.DNSProfileID, p.SSLEnabled, p.Enabled, p.CertificateID)
+	}
+	for _, rd := range redirs {
+		add(rd.DomainList(), rd.DNSProvider, rd.DNSProfileID, rd.SSLEnabled, rd.Enabled, rd.CertificateID)
 	}
 	for _, rr := range raws {
-		// Raw routes can carry a managed-DNS provider too (v2.5.6 unified DNS).
-		add("", rr.DNSProvider, rr.DNSProfileID, false, rr.Enabled) // raw routes don't expose a domains field directly
-		_ = rr
+		add(rawRouteHosts(rr), rr.DNSProvider, rr.DNSProfileID, true, rr.Enabled, rr.CertificateID)
 	}
 
 	var policies []map[string]any
@@ -5802,7 +5805,7 @@ func (s *Server) buildWildcardAutomationPolicies(proxies []models.ProxyHost, raw
 	return policies
 }
 
-// caddyDNSProviderConfig — v2.12.0: maps an internal dns-provider ID to the
+// caddyDNSProviderConfig maps an internal DNS-provider ID to the matching
 // Caddy DNS plugin's JSON config block. Returns nil when the credential
 // fields haven't been populated under Settings → DNS providers, OR when
 // the internal provider has no caddy-dns plugin mapping yet.
@@ -5819,9 +5822,36 @@ func caddyDNSProviderConfig(providerID string, creds map[string]string) map[stri
 			return nil
 		}
 		return map[string]any{"name": "cloudflare", "api_token": token}
-		// Other providers would slot in here as their caddy-dns/<id>
-		// plugin schemas are confirmed. Skipping for v2.12.0 — Cloudflare
-		// covers the most common DoH / wildcard / multi-tenant case.
+	case dns.Porkbun:
+		key, secret := creds["pb_api_key"], creds["pb_secret_key"]
+		if key == "" || secret == "" {
+			return nil
+		}
+		return map[string]any{"name": "porkbun", "api_key": key, "api_secret_key": secret}
+	case dns.Namecheap:
+		user, key, clientIP := creds["nc_api_user"], creds["nc_api_key"], creds["nc_client_ip"]
+		if user == "" || key == "" || clientIP == "" {
+			return nil
+		}
+		return map[string]any{"name": "namecheap", "user": user, "api_key": key, "client_ip": clientIP}
+	case dns.GoDaddy:
+		key, secret := creds["gd_api_key"], creds["gd_api_secret"]
+		if key == "" || secret == "" {
+			return nil
+		}
+		return map[string]any{"name": "godaddy", "api_token": key + ":" + secret}
+	case dns.DigitalOcean:
+		token := creds["do_api_token"]
+		if token == "" {
+			return nil
+		}
+		return map[string]any{"name": "digitalocean", "auth_token": token}
+	case dns.Hetzner:
+		token := creds["hetzner_api_token"]
+		if token == "" {
+			return nil
+		}
+		return map[string]any{"name": "hetzner", "api_token": token}
 	}
 	return nil
 }
@@ -7012,10 +7042,11 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 		return ""
 	}
 	applyRoutes(proposed, s.buildMergedRoutes(proxies, redirs, raws))
+	applyPlainHTTPServer(proposed, s.buildPlainHTTPRoutes(proxies, redirs))
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws))
-	applySkipRedirects(proposed, buildSkipRedirects(proxies, redirs))
+	removeUnsupportedSkipRedirects(proposed)
 	applySkipAccessLogs(proposed, buildSkipAccessLogs(proxies))
 	// Mirror syncCaddy: preview-validation must match the config we'd push
 	// for real, otherwise a raw_route edit could validate clean here but
@@ -7619,11 +7650,9 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	}
 
 	routes := s.buildMergedRoutes(proxies, redirs, raws)
+	plainHTTPRoutes := s.buildPlainHTTPRoutes(proxies, redirs)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws)
-	// SSLForced=false + SSLEnabled=true → add to skip_redirects so Caddy
-	// doesn't force HTTP→HTTPS for hosts that explicitly allow plain HTTP.
-	skipRedirects := buildSkipRedirects(proxies, redirs)
 	skipAccessLogs := buildSkipAccessLogs(proxies)
 	// v2.9.0: per-SNI TLS minimum-version connection policies. nil when no
 	// host has a min version configured — writeTLSConnectionPoliciesSubtree
@@ -7641,11 +7670,12 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		return fmt.Errorf("clone config: %w", err)
 	}
 	applyRoutes(proposed, routes)
+	applyPlainHTTPServer(proposed, plainHTTPRoutes)
 	applyListen(proposed)
 	applyProtocols(proposed, s.DB)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, skipList)
-	applySkipRedirects(proposed, skipRedirects)
+	removeUnsupportedSkipRedirects(proposed)
 	applySkipAccessLogs(proposed, skipAccessLogs)
 	applyTLSConnectionPolicies(proposed, tlsConnPolicies)
 	applyTrustedProxies(proposed, s.DB, serverID)
@@ -7679,11 +7709,15 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_listen_failed", "", err.Error(), false)
 		return err
 	}
+	if err := s.writePlainHTTPServerSubtree(plainHTTPRoutes); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_http_routes_failed", "", err.Error(), false)
+		return err
+	}
 	if err := s.writeTLSSubtree(loadPEM, loadFiles, forceTLS); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_tls_failed", "", err.Error(), false)
 		return err
 	}
-	if err := s.writeAutomaticHTTPSSubtree(skipList, skipRedirects, forceTLS); err != nil {
+	if err := s.writeAutomaticHTTPSSubtree(skipList, forceTLS); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_autohttps_failed", "", err.Error(), false)
 		return err
 	}
@@ -7705,17 +7739,15 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		log.Printf("caddy sync: protocols write failed (non-fatal): %v", err)
 	}
 
-	// v2.12.0: auto-detect wildcard SAN hosts and push DNS-01 ACME automation
-	// policies for them. Reuses each host's configured Managed-DNS provider
-	// credentials. Non-fatal — Caddy will reject the policy if the right
-	// caddy-dns plugin isn't compiled in, but routes + apex certs are
-	// already applied above so the failure shouldn't cascade.
-	if wildcardPolicies := s.buildWildcardAutomationPolicies(proxies, raws); len(wildcardPolicies) > 0 {
-		if err := pushAutomationPoliciesVia(s.Caddy, wildcardPolicies); err != nil {
-			log.Printf("caddy sync: wildcard automation-policy push failed (non-fatal): %v", err)
+	// Hosts with Managed DNS selected use that provider for ACME DNS-01.
+	// Non-fatal: a remote Caddy without the matching caddy-dns module still
+	// keeps the successfully-applied routes, and the module error is logged.
+	if dnsPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws); len(dnsPolicies) > 0 {
+		if err := pushAutomationPoliciesVia(s.Caddy, dnsPolicies); err != nil {
+			log.Printf("caddy sync: DNS-01 automation-policy push failed (non-fatal): %v", err)
 			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_automation_failed", "", err.Error(), false)
 		} else {
-			log.Printf("caddy sync: pushed %d wildcard DNS-01 automation polic(ies)", len(wildcardPolicies))
+			log.Printf("caddy sync: pushed %d DNS-01 automation polic(ies)", len(dnsPolicies))
 		}
 	}
 
@@ -8079,6 +8111,25 @@ func applyRoutes(cfg map[string]any, routes []any) {
 	srv["routes"] = routes
 }
 
+// applyPlainHTTPServer mirrors the Caddyfile adapter's representation of a
+// site declared with both http:// and https:// addresses: HTTPS stays on srv0,
+// while an explicit :80 server handles hosts whose Force SSL toggle is off.
+// Caddy then excludes those hosts from its generated redirect routes without
+// relying on the nonexistent automatic_https.skip_redirects JSON field.
+func applyPlainHTTPServer(cfg map[string]any, routes []any) {
+	apps := ensureMap(cfg, "apps")
+	httpApp := ensureMap(apps, "http")
+	servers := ensureMap(httpApp, "servers")
+	if len(routes) == 0 {
+		delete(servers, "caddyui_http")
+		return
+	}
+	servers["caddyui_http"] = map[string]any{
+		"listen": []any{":80"},
+		"routes": routes,
+	}
+}
+
 // applyListen forces srv0 to listen on :443. Without this, a Caddyfile with no
 // site blocks produces a config where srv0.listen is null and Caddy only serves
 // on :80 — the :443 port has no listener and HTTPS is unreachable. Setting :443
@@ -8206,49 +8257,39 @@ func applySkipCertificates(cfg map[string]any, skipList []any) {
 	}
 }
 
-// buildSkipRedirects collects domains from hosts where SSL is enabled but
-// Force SSL is OFF. Those domains get added to automatic_https.skip_redirects
-// in Caddy, meaning HTTP traffic is not automatically redirected to HTTPS.
-// Hosts with SSL fully disabled don't need an entry here — they're already
-// in skip_certificates which also suppresses redirects.
-func buildSkipRedirects(proxies []models.ProxyHost, redirs []models.RedirectionHost) []any {
-	set := map[string]struct{}{}
+// buildPlainHTTPRoutes returns an explicit :80 route set for enabled hosts
+// whose Force SSL toggle is off. Caddy recognizes those HTTP routes and does
+// not synthesize redirects for their hostnames, while srv0 continues serving
+// the same routes over HTTPS when SSL is enabled.
+func (s *Server) buildPlainHTTPRoutes(proxies []models.ProxyHost, redirs []models.RedirectionHost) []any {
+	httpProxies := make([]models.ProxyHost, 0)
 	for _, p := range proxies {
-		if !p.SSLEnabled || p.SSLForced {
-			continue // SSL off or force-redirect on — default Caddy behavior
-		}
-		for _, d := range p.DomainList() {
-			set[d] = struct{}{}
+		if p.Enabled && !p.SSLForced {
+			httpProxies = append(httpProxies, p)
 		}
 	}
+	httpRedirs := make([]models.RedirectionHost, 0)
 	for _, rd := range redirs {
-		if !rd.SSLEnabled || rd.SSLForced {
-			continue
-		}
-		for _, d := range rd.DomainList() {
-			set[d] = struct{}{}
+		if rd.Enabled && !rd.SSLForced {
+			httpRedirs = append(httpRedirs, rd)
 		}
 	}
-	out := make([]any, 0, len(set))
-	for d := range set {
-		out = append(out, d)
-	}
-	return out
+	return s.buildMergedRoutes(httpProxies, httpRedirs, nil)
 }
 
-func applySkipRedirects(cfg map[string]any, skipList []any) {
+// removeUnsupportedSkipRedirects cleans configs produced by affected CaddyUI
+// versions before validation. Caddy's AutoHTTPSConfig has no skip_redirects
+// field; per-host plain HTTP is represented by applyPlainHTTPServer instead.
+func removeUnsupportedSkipRedirects(cfg map[string]any) {
 	apps := ensureMap(cfg, "apps")
 	httpApp := ensureMap(apps, "http")
 	servers := ensureMap(httpApp, "servers")
 	srv := ensureMap(servers, "srv0")
-	auto := ensureMap(srv, "automatic_https")
-	if len(skipList) > 0 {
-		auto["skip_redirects"] = skipList
-	} else {
+	if auto, ok := srv["automatic_https"].(map[string]any); ok {
 		delete(auto, "skip_redirects")
-	}
-	if len(auto) == 0 {
-		delete(srv, "automatic_https")
+		if len(auto) == 0 {
+			delete(srv, "automatic_https")
+		}
 	}
 }
 
@@ -8446,7 +8487,7 @@ func (s *Server) writeTLSSubtree(loadPEM, loadFiles []any, force bool) error {
 	return s.Caddy.PutPath("/config/apps/tls", tlsMap)
 }
 
-func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, skipRedirects []any, force bool) error {
+func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, force bool) error {
 	raw, err := s.Caddy.FetchPath("/config/apps/http/servers/srv0/automatic_https")
 	if err != nil {
 		return err
@@ -8457,10 +8498,10 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, skipRedirects []any
 		autoMap = map[string]any{}
 	}
 	existingSkipCerts, _ := autoMap["skip_certificates"].([]any)
-	existingSkipRedir, _ := autoMap["skip_redirects"].([]any)
 	// Skip the write when the effective lists are unchanged. Writing otherwise
 	// reprovisions the server module and can interrupt in-flight ACME work.
-	if !force && stringListsEqual(existingSkipCerts, skipCerts) && stringListsEqual(existingSkipRedir, skipRedirects) {
+	_, hasInvalidSkipRedirects := autoMap["skip_redirects"]
+	if !force && !hasInvalidSkipRedirects && stringListsEqual(existingSkipCerts, skipCerts) {
 		return nil
 	}
 	if len(skipCerts) > 0 {
@@ -8468,15 +8509,36 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, skipRedirects []any
 	} else {
 		delete(autoMap, "skip_certificates")
 	}
-	if len(skipRedirects) > 0 {
-		autoMap["skip_redirects"] = skipRedirects
-	} else {
-		delete(autoMap, "skip_redirects")
-	}
+	delete(autoMap, "skip_redirects")
 	if !existed && len(autoMap) == 0 {
 		return nil
 	}
 	return s.Caddy.PutPath("/config/apps/http/servers/srv0/automatic_https", autoMap)
+}
+
+// writePlainHTTPServerSubtree owns only the caddyui_http server. Replacing the
+// complete server map keeps its :80 listener and route list in sync atomically
+// without touching user-managed HTTP servers.
+func (s *Server) writePlainHTTPServerSubtree(routes []any) error {
+	const path = "/config/apps/http/servers/caddyui_http"
+	existing, err := s.Caddy.FetchPath(path)
+	if err != nil {
+		return err
+	}
+	if len(routes) == 0 {
+		if existing == nil {
+			return nil
+		}
+		return s.Caddy.DeletePath(path)
+	}
+	want := map[string]any{
+		"listen": []any{":80"},
+		"routes": routes,
+	}
+	if existing == nil {
+		return s.Caddy.PutPath(path, want)
+	}
+	return s.Caddy.PatchPath(path, want)
 }
 
 // writeTLSConnectionPoliciesSubtree replaces srv0.tls_connection_policies.

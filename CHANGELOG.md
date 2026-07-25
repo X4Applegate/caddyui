@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.7] - 2026-07-25 - DNS-01 certificate support and Caddy sync compatibility
+
+### Added
+
+- **DNS-01 for every Managed DNS provider**: proxy hosts, redirections, and advanced routes with Managed DNS selected now reuse those credentials for Let's Encrypt DNS-01 issuance. Supported providers are Cloudflare, Porkbun, Namecheap, GoDaddy, DigitalOcean, and Hetzner; the connected Caddy build must include the matching `caddy-dns` module.
+- **All-provider Caddy build**: `Dockerfile.caddy` now includes the six DNS provider modules supported by CaddyUI.
+
+### Fixed
+
+- **Caddy sync `skip_redirects` rejection**: CaddyUI no longer emits the unsupported `automatic_https.skip_redirects` field. Hosts with Force SSL disabled are served through an explicit CaddyUI-owned `:80` server, matching Caddy's native Caddyfile adaptation while retaining HTTPS on `:443`.
+- **Affected config cleanup**: sync removes any stale `skip_redirects` key before validation, so existing installations recover on their next sync.
+
+---
+
 ## [2.16.6] - 2026-07-24 - MCP community integration and token-scope hardening
 
 ### Added

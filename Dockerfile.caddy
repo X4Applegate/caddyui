@@ -1,5 +1,11 @@
 FROM caddy:2-builder AS builder
-RUN xcaddy build --with github.com/caddy-dns/cloudflare
+RUN xcaddy build \
+    --with github.com/caddy-dns/cloudflare \
+    --with github.com/caddy-dns/porkbun \
+    --with github.com/caddy-dns/namecheap \
+    --with github.com/caddy-dns/godaddy \
+    --with github.com/caddy-dns/digitalocean \
+    --with github.com/caddy-dns/hetzner/v2
 
 FROM caddy:2-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy

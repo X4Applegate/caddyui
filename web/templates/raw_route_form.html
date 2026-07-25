@@ -94,7 +94,7 @@
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
     </summary>
-    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every hostname</strong> in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>, pointing at this server's public IP. Records are deleted when the route is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create). Pick the provider that owns the domain, then select the zone.</p>
+    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every hostname</strong> in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>, pointing at this server's public IP. The same credentials are reused for Let's Encrypt's <strong>DNS-01</strong> challenge when no custom certificate is assigned. Records are deleted when the route is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create). Pick the provider that owns the domain, then select the zone.</p>
     {{if .CurrentServerIP}}
     <p class="text-xs text-ink-500 mb-3">The A record will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
     {{else}}
