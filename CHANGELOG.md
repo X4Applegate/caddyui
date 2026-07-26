@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.9] - 2026-07-26 - Caddy HTTP listener compatibility
+
+### Fixed
+
+- **Default port-80 sync failure**: CaddyUI now owns one explicit HTTP server for both open-HTTP hosts and Force SSL redirects, while disabling Caddy's competing automatic redirect listener. Sync works with Caddy's default `http_port` and no longer requires moving that port as a workaround.
+- **Force SSL routing**: proxy hosts, redirections, and advanced routes with Force SSL enabled receive a CaddyUI-managed permanent HTTPS redirect; routes with Force SSL disabled continue serving normally over both HTTP and HTTPS.
+- **Safe listener transitions**: sync disables Caddy's automatic redirect listener before creating the CaddyUI listener, and reverses that order when removing it, so live subtree updates never attempt to bind port 80 twice.
+
+---
+
 ## [2.16.8] - 2026-07-25 - Faster Proxy Hosts page
 
 ### Fixed

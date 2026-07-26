@@ -7042,11 +7042,13 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 		return ""
 	}
 	applyRoutes(proposed, s.buildMergedRoutes(proxies, redirs, raws))
-	applyPlainHTTPServer(proposed, s.buildPlainHTTPRoutes(proxies, redirs))
+	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
+	applyPlainHTTPServer(proposed, httpRoutes)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws))
 	removeUnsupportedSkipRedirects(proposed)
+	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, buildSkipAccessLogs(proxies))
 	// Mirror syncCaddy: preview-validation must match the config we'd push
 	// for real, otherwise a raw_route edit could validate clean here but
@@ -7650,7 +7652,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	}
 
 	routes := s.buildMergedRoutes(proxies, redirs, raws)
-	plainHTTPRoutes := s.buildPlainHTTPRoutes(proxies, redirs)
+	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws)
 	skipAccessLogs := buildSkipAccessLogs(proxies)
@@ -7670,12 +7672,13 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		return fmt.Errorf("clone config: %w", err)
 	}
 	applyRoutes(proposed, routes)
-	applyPlainHTTPServer(proposed, plainHTTPRoutes)
+	applyPlainHTTPServer(proposed, httpRoutes)
 	applyListen(proposed)
 	applyProtocols(proposed, s.DB)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, skipList)
 	removeUnsupportedSkipRedirects(proposed)
+	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, skipAccessLogs)
 	applyTLSConnectionPolicies(proposed, tlsConnPolicies)
 	applyTrustedProxies(proposed, s.DB, serverID)
@@ -7709,17 +7712,32 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_listen_failed", "", err.Error(), false)
 		return err
 	}
-	if err := s.writePlainHTTPServerSubtree(plainHTTPRoutes); err != nil {
-		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_http_routes_failed", "", err.Error(), false)
-		return err
-	}
 	if err := s.writeTLSSubtree(loadPEM, loadFiles, forceTLS); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_tls_failed", "", err.Error(), false)
 		return err
 	}
-	if err := s.writeAutomaticHTTPSSubtree(skipList, forceTLS); err != nil {
-		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_autohttps_failed", "", err.Error(), false)
-		return err
+	// Transition port 80 without ever provisioning two listeners at once.
+	// When enabling CaddyUI's HTTP server, suppress Caddy's generated redirect
+	// listener first. When removing it, delete ours before restoring automatic
+	// redirects.
+	if len(httpRoutes) > 0 {
+		if err := s.writeAutomaticHTTPSSubtree(skipList, true, forceTLS); err != nil {
+			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_autohttps_failed", "", err.Error(), false)
+			return err
+		}
+		if err := s.writePlainHTTPServerSubtree(httpRoutes); err != nil {
+			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_http_routes_failed", "", err.Error(), false)
+			return err
+		}
+	} else {
+		if err := s.writePlainHTTPServerSubtree(nil); err != nil {
+			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_http_routes_failed", "", err.Error(), false)
+			return err
+		}
+		if err := s.writeAutomaticHTTPSSubtree(skipList, false, forceTLS); err != nil {
+			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_autohttps_failed", "", err.Error(), false)
+			return err
+		}
 	}
 	if err := s.writeTLSConnectionPoliciesSubtree(tlsConnPolicies); err != nil {
 		// Non-fatal: log but don't abort — routes and certs are already applied.
@@ -8257,24 +8275,85 @@ func applySkipCertificates(cfg map[string]any, skipList []any) {
 	}
 }
 
-// buildPlainHTTPRoutes returns an explicit :80 route set for enabled hosts
-// whose Force SSL toggle is off. Caddy recognizes those HTTP routes and does
-// not synthesize redirects for their hostnames, while srv0 continues serving
-// the same routes over HTTPS when SSL is enabled.
-func (s *Server) buildPlainHTTPRoutes(proxies []models.ProxyHost, redirs []models.RedirectionHost) []any {
+// buildHTTPRoutes returns the complete route set for CaddyUI's explicit :80
+// server. Hosts with Force SSL off keep their normal handlers; hosts with
+// Force SSL on receive an HTTPS redirect. Owning both cases lets CaddyUI disable
+// Caddy's generated redirect listener, avoiding two servers competing for :80.
+func (s *Server) buildHTTPRoutes(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute) []any {
 	httpProxies := make([]models.ProxyHost, 0)
+	var forcedDomains []string
 	for _, p := range proxies {
-		if p.Enabled && !p.SSLForced {
+		if !p.Enabled {
+			continue
+		}
+		if !p.SSLForced {
 			httpProxies = append(httpProxies, p)
+		} else {
+			forcedDomains = append(forcedDomains, p.DomainList()...)
 		}
 	}
 	httpRedirs := make([]models.RedirectionHost, 0)
 	for _, rd := range redirs {
-		if rd.Enabled && !rd.SSLForced {
+		if !rd.Enabled {
+			continue
+		}
+		if !rd.SSLForced {
 			httpRedirs = append(httpRedirs, rd)
+		} else {
+			forcedDomains = append(forcedDomains, rd.DomainList()...)
 		}
 	}
-	return s.buildMergedRoutes(httpProxies, httpRedirs, nil)
+	httpRaws := make([]models.RawRoute, 0)
+	for _, rr := range raws {
+		if !rr.Enabled {
+			continue
+		}
+		if !rr.ForceSSL {
+			httpRaws = append(httpRaws, rr)
+		} else {
+			forcedDomains = append(forcedDomains, rawRouteHosts(rr)...)
+		}
+	}
+	routes := s.buildMergedRoutes(httpProxies, httpRedirs, httpRaws)
+	if redirect := buildHTTPSRedirectRoute(forcedDomains); redirect != nil {
+		// Keep a configured catch-all 404 last. Global maintenance, when on,
+		// remains first because buildMergedRoutes prepends it.
+		if html, _ := models.GetSetting(s.DB, settingCatchAll404HTML); strings.TrimSpace(html) != "" && len(routes) > 0 {
+			routes = append(routes, nil)
+			copy(routes[len(routes)-1:], routes[len(routes)-2:])
+			routes[len(routes)-2] = redirect
+		} else {
+			routes = append(routes, redirect)
+		}
+	}
+	return routes
+}
+
+func buildHTTPSRedirectRoute(domains []string) map[string]any {
+	seen := map[string]bool{}
+	hosts := make([]any, 0, len(domains))
+	for _, raw := range domains {
+		host := strings.ToLower(strings.TrimSpace(raw))
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		hosts = append(hosts, host)
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"match": []any{map[string]any{"host": hosts}},
+		"handle": []any{map[string]any{
+			"handler":     "static_response",
+			"status_code": http.StatusPermanentRedirect,
+			"headers": map[string]any{
+				"Location": []any{"https://{http.request.host}{http.request.uri}"},
+			},
+		}},
+		"terminal": true,
+	}
 }
 
 // removeUnsupportedSkipRedirects cleans configs produced by affected CaddyUI
@@ -8290,6 +8369,22 @@ func removeUnsupportedSkipRedirects(cfg map[string]any) {
 		if len(auto) == 0 {
 			delete(srv, "automatic_https")
 		}
+	}
+}
+
+func applyDisableAutomaticHTTPSRedirects(cfg map[string]any, disabled bool) {
+	apps := ensureMap(cfg, "apps")
+	httpApp := ensureMap(apps, "http")
+	servers := ensureMap(httpApp, "servers")
+	srv := ensureMap(servers, "srv0")
+	auto := ensureMap(srv, "automatic_https")
+	if disabled {
+		auto["disable_redirects"] = true
+	} else {
+		delete(auto, "disable_redirects")
+	}
+	if len(auto) == 0 {
+		delete(srv, "automatic_https")
 	}
 }
 
@@ -8487,7 +8582,7 @@ func (s *Server) writeTLSSubtree(loadPEM, loadFiles []any, force bool) error {
 	return s.Caddy.PutPath("/config/apps/tls", tlsMap)
 }
 
-func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, force bool) error {
+func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, disableRedirects, force bool) error {
 	raw, err := s.Caddy.FetchPath("/config/apps/http/servers/srv0/automatic_https")
 	if err != nil {
 		return err
@@ -8498,10 +8593,11 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, force bool) error {
 		autoMap = map[string]any{}
 	}
 	existingSkipCerts, _ := autoMap["skip_certificates"].([]any)
+	existingDisableRedirects, _ := autoMap["disable_redirects"].(bool)
 	// Skip the write when the effective lists are unchanged. Writing otherwise
 	// reprovisions the server module and can interrupt in-flight ACME work.
 	_, hasInvalidSkipRedirects := autoMap["skip_redirects"]
-	if !force && !hasInvalidSkipRedirects && stringListsEqual(existingSkipCerts, skipCerts) {
+	if !force && !hasInvalidSkipRedirects && existingDisableRedirects == disableRedirects && stringListsEqual(existingSkipCerts, skipCerts) {
 		return nil
 	}
 	if len(skipCerts) > 0 {
@@ -8510,6 +8606,11 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, force bool) error {
 		delete(autoMap, "skip_certificates")
 	}
 	delete(autoMap, "skip_redirects")
+	if disableRedirects {
+		autoMap["disable_redirects"] = true
+	} else {
+		delete(autoMap, "disable_redirects")
+	}
 	if !existed && len(autoMap) == 0 {
 		return nil
 	}

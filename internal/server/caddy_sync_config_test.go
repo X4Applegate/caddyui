@@ -10,7 +10,7 @@ import (
 	"github.com/X4Applegate/caddyui/internal/models"
 )
 
-func TestPlainHTTPRoutesReplaceUnsupportedSkipRedirects(t *testing.T) {
+func TestHTTPRoutesReplaceUnsupportedSkipRedirectsWithoutPortConflict(t *testing.T) {
 	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -22,9 +22,9 @@ func TestPlainHTTPRoutesReplaceUnsupportedSkipRedirects(t *testing.T) {
 		{Domains: "forced.example.com", Enabled: true, SSLEnabled: true, SSLForced: true, ForwardScheme: "http", ForwardHost: "app", ForwardPort: 8080},
 	}
 
-	routes := s.buildPlainHTTPRoutes(proxies, nil)
-	if len(routes) != 1 {
-		t.Fatalf("plain HTTP routes = %d, want 1", len(routes))
+	routes := s.buildHTTPRoutes(proxies, nil, nil)
+	if len(routes) != 2 {
+		t.Fatalf("HTTP routes = %d, want open route plus forced redirect", len(routes))
 	}
 
 	cfg := map[string]any{
@@ -43,15 +43,47 @@ func TestPlainHTTPRoutesReplaceUnsupportedSkipRedirects(t *testing.T) {
 	}
 	removeUnsupportedSkipRedirects(cfg)
 	applyPlainHTTPServer(cfg, routes)
+	applyDisableAutomaticHTTPSRedirects(cfg, true)
 
 	servers := cfg["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
 	auto := servers["srv0"].(map[string]any)["automatic_https"].(map[string]any)
 	if _, exists := auto["skip_redirects"]; exists {
 		t.Fatal("unsupported automatic_https.skip_redirects was not removed")
 	}
+	if disabled, _ := auto["disable_redirects"].(bool); !disabled {
+		t.Fatal("automatic HTTPS redirects were not disabled")
+	}
 	httpServer := servers["caddyui_http"].(map[string]any)
 	if !reflect.DeepEqual(httpServer["listen"], []any{":80"}) {
 		t.Fatalf("HTTP listen = %#v, want [:80]", httpServer["listen"])
+	}
+	redirect := routes[1].(map[string]any)
+	handler := redirect["handle"].([]any)[0].(map[string]any)
+	if handler["status_code"] != 308 {
+		t.Fatalf("forced HTTP status = %#v, want 308", handler["status_code"])
+	}
+}
+
+func TestHTTPRoutesIncludeRawRouteForceSSLBehavior(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	s := &Server{DB: conn}
+	raws := []models.RawRoute{
+		{Enabled: true, ForceSSL: false, JSONData: `{"match":[{"host":["open-raw.example.com"]}],"handle":[{"handler":"static_response","status_code":200}]}`},
+		{Enabled: true, ForceSSL: true, JSONData: `{"match":[{"host":["forced-raw.example.com"]}],"handle":[{"handler":"static_response","status_code":200}]}`},
+	}
+
+	routes := s.buildHTTPRoutes(nil, nil, raws)
+	if len(routes) != 2 {
+		t.Fatalf("HTTP routes = %d, want open raw route plus forced redirect", len(routes))
+	}
+	redirect := routes[1].(map[string]any)
+	match := redirect["match"].([]any)[0].(map[string]any)
+	if !reflect.DeepEqual(match["host"], []any{"forced-raw.example.com"}) {
+		t.Fatalf("forced raw redirect hosts = %#v", match["host"])
 	}
 }
 
