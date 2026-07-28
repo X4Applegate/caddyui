@@ -1,10 +1,14 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/X4Applegate/caddyui/internal/caddy"
 	appdb "github.com/X4Applegate/caddyui/internal/db"
 	"github.com/X4Applegate/caddyui/internal/dns"
 	"github.com/X4Applegate/caddyui/internal/models"
@@ -114,5 +118,81 @@ func TestCaddyDNSProviderConfig(t *testing.T) {
 func TestCaddyDNSProviderConfigRejectsIncompleteCredentials(t *testing.T) {
 	if got := caddyDNSProviderConfig(dns.Porkbun, map[string]string{"pb_api_key": "key"}); got != nil {
 		t.Fatalf("incomplete credentials returned config %#v", got)
+	}
+}
+
+func TestPushAutomationPoliciesCreatesMissingTLSApp(t *testing.T) {
+	var postedPath string
+	var posted map[string]any
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/config/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apps": map[string]any{"http": map[string]any{}},
+			})
+		case r.Method == http.MethodPost:
+			postedPath = r.URL.Path
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Errorf("decode POST: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer admin.Close()
+
+	incoming := []map[string]any{{
+		"subjects": []any{"example.com"},
+		"issuers":  []any{map[string]any{"module": "acme"}},
+	}}
+	if err := pushAutomationPoliciesVia(caddy.New(admin.URL, "", ""), incoming); err != nil {
+		t.Fatal(err)
+	}
+	if postedPath != "/config/apps/tls" {
+		t.Fatalf("POST path = %q, want /config/apps/tls", postedPath)
+	}
+	automation, _ := posted["automation"].(map[string]any)
+	policies, _ := automation["policies"].([]any)
+	if len(policies) != 1 {
+		t.Fatalf("posted policies = %#v, want one policy", policies)
+	}
+}
+
+func TestPushAutomationPoliciesPreservesExistingTLSAndUsesAutomationPath(t *testing.T) {
+	var postedPath string
+	var posted map[string]any
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/config/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apps": map[string]any{
+					"http": map[string]any{},
+					"tls": map[string]any{
+						"automation": map[string]any{"on_demand": map[string]any{}},
+					},
+				},
+			})
+		case r.Method == http.MethodPost:
+			postedPath = r.URL.Path
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Errorf("decode POST: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer admin.Close()
+
+	incoming := []map[string]any{{"subjects": []any{"example.com"}}}
+	if err := pushAutomationPoliciesVia(caddy.New(admin.URL, "", ""), incoming); err != nil {
+		t.Fatal(err)
+	}
+	if postedPath != "/config/apps/tls/automation" {
+		t.Fatalf("POST path = %q, want /config/apps/tls/automation", postedPath)
+	}
+	if _, ok := posted["on_demand"]; !ok {
+		t.Fatalf("existing automation fields were not preserved: %#v", posted)
 	}
 }

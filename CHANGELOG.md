@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.16.10] - 2026-07-28 - DNS automation sync compatibility
+
+### Fixed
+
+- **Fresh Caddy DNS-01 sync**: Managed DNS automation policies now create the missing `apps.tls` configuration branch before writing `apps.tls.automation`. This prevents `sync_apply_automation_failed` with Caddy's `invalid traversal path at: config/apps/tls/automation` error on installations that do not already have a TLS app.
+- **Existing TLS settings preserved**: installations that already have `apps.tls` continue using the narrow automation-only update, preserving unrelated TLS configuration and avoiding unnecessary TLS module reprovisioning.
+
+---
+
 ## [2.16.9] - 2026-07-26 - Caddy HTTP listener compatibility
 
 ### Fixed
