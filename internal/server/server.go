@@ -5881,13 +5881,24 @@ func pushAutomationPoliciesVia(cl *caddy.Client, incoming []map[string]any) erro
 		return fmt.Errorf("fetch config: %w", err)
 	}
 	apps := ensureMap(cfg, "apps")
-	tlsApp := ensureMap(apps, "tls")
+	tlsApp, tlsAppExists := apps["tls"].(map[string]any)
+	if tlsApp == nil {
+		tlsApp = map[string]any{}
+	}
 	automation, _ := tlsApp["automation"].(map[string]any)
 	if automation == nil {
 		automation = map[string]any{}
 	}
 	existing, _ := automation["policies"].([]any)
 	automation["policies"] = mergeAutomationPolicies(existing, incoming)
+	// A fresh Caddy JSON config commonly has apps.http but no apps.tls.
+	// Caddy's admin API can create the final path segment with POST, but it
+	// cannot traverse a missing parent, so POST /config/apps/tls/automation
+	// fails with "invalid traversal path". Create the TLS app in that case.
+	if !tlsAppExists {
+		tlsApp["automation"] = automation
+		return cl.PutPath("/config/apps/tls", tlsApp)
+	}
 	return cl.PutPath("/config/apps/tls/automation", automation)
 }
 
