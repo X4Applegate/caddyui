@@ -93,6 +93,23 @@
     <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
       CaddyUI creates a certificate-only wildcard route that returns 404 when no real proxy or redirect matches it. This triggers issuance safely without forwarding traffic anywhere. Add normal proxy hosts later; Caddy will reuse the wildcard certificate.
     </div>
+    {{if .OtherServers}}
+    <div class="pt-4 border-t border-ink-100">
+      <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also configure on</div>
+      <p class="text-xs text-ink-500 mb-3">Copy this managed certificate definition to additional Caddy servers. Each server obtains and renews its own certificate and private key using the same DNS credentials.</p>
+      <div class="space-y-2">
+        {{range .OtherServers}}
+        <label class="flex items-center gap-2.5 cursor-pointer select-none">
+          <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+          {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
+          <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+        </label>
+        {{end}}
+      </div>
+      <p class="text-xs text-ink-400 mt-3">Copies are independent after creation. Edit this certificate later and select a server again to add it to a newly registered server.</p>
+    </div>
+    {{end}}
     {{else}}
     <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
       No DNS credentials are configured. Save a supported provider under

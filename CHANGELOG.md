@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.17.1] - 2026-07-29 - Multi-server wildcard certificate workflow
+
+### Added
+
+- **Managed certificate cross-deploy**: Certificates → New/Edit can copy a managed ACME DNS-01 definition to selected Caddy servers. Each server obtains and renews its own certificate and private key; secrets and certificate material are not copied between Caddy instances.
+- **Automatic wildcard discovery during proxy cross-deploy**: when “Also deploy to” is selected on a proxy host, CaddyUI finds managed certificates on the source server that cover the hostname and ensures equivalent definitions exist on every target. This works for servers added later without permanent cross-server certificate links.
+- **Wildcard matching safeguards**: automatic reuse follows WebPKI semantics—`*.example.com` covers `app.example.com`, but not the apex or multi-level `deep.app.example.com`.
+
+### Fixed
+
+- **Managed certificate expiry display**: standalone ACME rows now show **Auto-renewed** in the Expires column instead of an unexplained blank value.
+- **Multi-server form guidance**: certificate and proxy forms now explain which configuration is replicated, that each Caddy instance owns its own key/order, and how managed wildcards are reused.
+
+---
+
 ## [2.17.0] - 2026-07-29 - Standalone managed wildcard certificates
 
 ### Added

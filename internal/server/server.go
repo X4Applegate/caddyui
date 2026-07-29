@@ -3571,8 +3571,20 @@ func parseDeployTo(r *http.Request) []int64 {
 // server and triggers a Caddy sync on each. It always creates a new record
 // (ID=0) so the target server can manage it independently.
 // Cross-deployed records are always global/admin-owned (ownerID=0).
-func (s *Server) crossDeployProxyHost(actor string, p *models.ProxyHost, serverIDs []int64) {
+func (s *Server) crossDeployProxyHost(actor string, sourceServerID int64, p *models.ProxyHost, serverIDs []int64) {
+	sourceCerts, _ := models.ListCertificates(s.DB, sourceServerID)
 	for _, sid := range serverIDs {
+		// Managed wildcard certificates are not attached by certificate_id;
+		// Caddy selects them automatically by SNI. Copy every source-server
+		// managed certificate that covers this host so the target behaves the
+		// same instead of obtaining an unrelated per-host certificate.
+		for _, cert := range sourceCerts {
+			if cert.Source == models.CertSourceManaged && certificateCoversAnyDomain(cert, p.DomainList()) {
+				if _, err := s.ensureManagedCertificateOnServer(actor, sid, cert); err != nil {
+					log.Printf("cross-deploy managed certificate to server %d: %v", sid, err)
+				}
+			}
+		}
 		cp := *p
 		cp.ID = 0
 		// Certificate IDs are per-server — don't carry them across
@@ -3587,6 +3599,103 @@ func (s *Server) crossDeployProxyHost(actor string, p *models.ProxyHost, serverI
 		_ = models.LogActivity(s.DB, sid, actor, "proxy_cross_deploy", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 		if err := s.syncCaddy(sid, false); err != nil {
 			log.Printf("cross-deploy proxy sync server %d: %v", sid, err)
+		}
+	}
+}
+
+func normalizedDomainSet(domains []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+		if domain != "" {
+			out[domain] = struct{}{}
+		}
+	}
+	return out
+}
+
+func sameDomainSet(a, b []string) bool {
+	as, bs := normalizedDomainSet(a), normalizedDomainSet(b)
+	if len(as) != len(bs) {
+		return false
+	}
+	for domain := range as {
+		if _, ok := bs[domain]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func managedCertificateCovers(certDomain, host string) bool {
+	certDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(certDomain)), ".")
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if certDomain == "" || host == "" {
+		return false
+	}
+	if certDomain == host {
+		return true
+	}
+	if !strings.HasPrefix(certDomain, "*.") || strings.HasPrefix(host, "*.") {
+		return false
+	}
+	suffix := certDomain[1:] // includes the leading dot
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	label := strings.TrimSuffix(host, suffix)
+	return label != "" && !strings.Contains(label, ".")
+}
+
+func certificateCoversAnyDomain(cert models.Certificate, hosts []string) bool {
+	for _, certDomain := range cert.DomainList() {
+		for _, host := range hosts {
+			if managedCertificateCovers(certDomain, host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ensureManagedCertificateOnServer copies a managed certificate definition
+// only when the target does not already have an equivalent subject set. The
+// Caddy instances still manage their own keys and ACME orders independently;
+// only the declarative DNS-01 configuration is replicated.
+func (s *Server) ensureManagedCertificateOnServer(actor string, serverID int64, source models.Certificate) (bool, error) {
+	certs, err := models.ListCertificates(s.DB, serverID)
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range certs {
+		if existing.Source == models.CertSourceManaged && sameDomainSet(existing.DomainList(), source.DomainList()) {
+			return false, nil
+		}
+	}
+	copy := source
+	copy.ID = 0
+	copy.OwnerID = sql.NullInt64{}
+	copy.OwnerEmail = ""
+	copy.CreatedAt = time.Time{}
+	copy.UpdatedAt = time.Time{}
+	id, err := models.CreateCertificate(s.DB, serverID, 0, &copy)
+	if err != nil {
+		return false, err
+	}
+	_ = models.LogActivity(s.DB, serverID, actor, "cert_cross_deploy", fmt.Sprintf("cert:%d", id), copy.Domains, true)
+	return true, nil
+}
+
+func (s *Server) crossDeployManagedCertificate(actor string, cert models.Certificate, serverIDs []int64) {
+	for _, serverID := range serverIDs {
+		created, err := s.ensureManagedCertificateOnServer(actor, serverID, cert)
+		if err != nil {
+			log.Printf("cross-deploy managed certificate to server %d: %v", serverID, err)
+			_ = models.LogActivity(s.DB, serverID, actor, "cert_cross_deploy", "cert:new", cert.Domains, false)
+			continue
+		}
+		if created {
+			s.trySyncCaddy(serverID, true)
 		}
 	}
 }
@@ -4494,7 +4603,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		sendNotification(s.DB, payload)
 	}
 	if len(deployTo) > 0 {
-		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
+		s.crossDeployProxyHost(s.currentUserEmail(r), s.currentServerID(r), p, deployTo)
 	}
 	// v2.5.2: when a managed DNS record was created, park the user on the
 	// deploying page so they can watch DNS propagate + cert issue instead
@@ -4670,7 +4779,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		sendNotification(s.DB, payload)
 	}
 	if len(deployTo) > 0 {
-		s.crossDeployProxyHost(s.currentUserEmail(r), p, deployTo)
+		s.crossDeployProxyHost(s.currentUserEmail(r), s.currentServerID(r), p, deployTo)
 	}
 	// v2.5.2: if this edit created a fresh DNS record (first time enabling
 	// Managed DNS, or provider / zone / first-domain changed), show the
@@ -6660,10 +6769,11 @@ func (s *Server) newCertificate(w http.ResponseWriter, r *http.Request) {
 	// v2.7.3: Users list fuels the admin-only Owner picker on the form.
 	// Non-admins get nil — the template skips rendering the picker.
 	data := map[string]any{
-		"User":    s.currentUser(r),
-		"Cert":    &models.Certificate{Source: models.CertSourcePEM},
-		"Users":   s.adminUserList(r),
-		"Section": "certs",
+		"User":         s.currentUser(r),
+		"Cert":         &models.Certificate{Source: models.CertSourcePEM},
+		"Users":        s.adminUserList(r),
+		"OtherServers": s.otherManagedServers(r),
+		"Section":      "certs",
 	}
 	s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 }
@@ -6734,11 +6844,12 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 			DNSProfileID: r.FormValue("dns_profile_id"),
 		}
 		data := map[string]any{
-			"User":    s.currentUser(r),
-			"Cert":    fallback,
-			"Users":   s.adminUserList(r),
-			"Error":   errMsg,
-			"Section": "certs",
+			"User":         s.currentUser(r),
+			"Cert":         fallback,
+			"Users":        s.adminUserList(r),
+			"OtherServers": s.otherManagedServers(r),
+			"Error":        errMsg,
+			"Section":      "certs",
 		}
 		s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 		return
@@ -6767,6 +6878,9 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
+	if c.Source == models.CertSourceManaged {
+		s.crossDeployManagedCertificate(s.currentUserEmail(r), *c, parseDeployTo(r))
+	}
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
@@ -6791,10 +6905,11 @@ func (s *Server) editCertificate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	data := map[string]any{
-		"User":    s.currentUser(r),
-		"Cert":    c,
-		"Users":   s.adminUserList(r),
-		"Section": "certs",
+		"User":         s.currentUser(r),
+		"Cert":         c,
+		"Users":        s.adminUserList(r),
+		"OtherServers": s.otherManagedServers(r),
+		"Section":      "certs",
 	}
 	s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 }
@@ -6831,11 +6946,12 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		existing.DNSProvider = r.FormValue("dns_provider")
 		existing.DNSProfileID = r.FormValue("dns_profile_id")
 		data := map[string]any{
-			"User":    s.currentUser(r),
-			"Cert":    existing,
-			"Users":   s.adminUserList(r),
-			"Error":   errMsg,
-			"Section": "certs",
+			"User":         s.currentUser(r),
+			"Cert":         existing,
+			"Users":        s.adminUserList(r),
+			"OtherServers": s.otherManagedServers(r),
+			"Error":        errMsg,
+			"Section":      "certs",
 		}
 		s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 		return
@@ -6860,6 +6976,9 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
+	if c.Source == models.CertSourceManaged {
+		s.crossDeployManagedCertificate(s.currentUserEmail(r), *c, parseDeployTo(r))
+	}
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 

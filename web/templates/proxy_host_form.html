@@ -3452,7 +3452,7 @@ function setProxyFormMode(mode) {
   {{if .OtherServers}}
   <div class="pt-4 border-t border-ink-100">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
-    <p class="text-xs text-ink-400 mb-3">Push a copy of this config to additional servers at the same time. Certificates are not mirrored — each server will use its own auto-SSL.</p>
+    <p class="text-xs text-ink-400 mb-3">Push a copy of this config to additional servers at the same time. Uploaded PEM/path certificates are not mirrored. If a managed wildcard on this server covers the hostname, CaddyUI automatically copies that definition to each target so Caddy can reuse the wildcard there too.</p>
     <div class="space-y-2">
       {{range .OtherServers}}
       <label class="flex items-center gap-2.5 cursor-pointer select-none">

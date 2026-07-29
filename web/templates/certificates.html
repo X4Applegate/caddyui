@@ -51,6 +51,8 @@
         {{else}}
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0">{{.DaysLeft}}d</span>
         {{end}}
+      {{else if eq .Source "managed"}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0">Auto-renewed</span>
       {{end}}
     </div>
     {{/* v2.15.0: expiry progress bar — JS sets width via data-expiry-bar */}}
@@ -195,6 +197,8 @@
             {{else}}
               <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700" title="{{fmtIn .ExpiresAt "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
             {{end}}
+          {{else if eq .Source "managed"}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700" title="Caddy renews this certificate automatically">Auto-renewed</span>
           {{else}}
             <span class="text-ink-400 text-xs italic">—</span>
           {{end}}
