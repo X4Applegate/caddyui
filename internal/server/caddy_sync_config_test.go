@@ -169,6 +169,62 @@ func TestManagedCertificatePersistsDNSSelectionAndIsNotCustomOption(t *testing.T
 	}
 }
 
+func TestManagedCertificateCoverageUsesSingleLabelWildcards(t *testing.T) {
+	tests := []struct {
+		cert string
+		host string
+		want bool
+	}{
+		{"*.example.com", "app.example.com", true},
+		{"*.example.com", "APP.EXAMPLE.COM.", true},
+		{"*.example.com", "deep.app.example.com", false},
+		{"*.example.com", "example.com", false},
+		{"*.sub.example.com", "app.sub.example.com", true},
+		{"app.example.com", "app.example.com", true},
+		{"*.example.com", "*.example.com", true},
+	}
+	for _, tt := range tests {
+		if got := managedCertificateCovers(tt.cert, tt.host); got != tt.want {
+			t.Errorf("managedCertificateCovers(%q, %q) = %v, want %v", tt.cert, tt.host, got, tt.want)
+		}
+	}
+}
+
+func TestEnsureManagedCertificateOnServerDeduplicatesEquivalentSubjects(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	targetID, err := models.CreateCaddyServer(conn, &models.CaddyServer{
+		Name: "target", AdminURL: "http://target:2019", Type: models.CaddyServerTypeManaged,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{DB: conn}
+	source := models.Certificate{
+		Name: "wildcard", Domains: "*.example.com, example.com", Source: models.CertSourceManaged,
+		DNSProvider: dns.Cloudflare,
+	}
+	created, err := s.ensureManagedCertificateOnServer("test", targetID, source)
+	if err != nil || !created {
+		t.Fatalf("first ensure = created %v, err %v; want created", created, err)
+	}
+	source.Domains = "example.com, *.example.com"
+	created, err = s.ensureManagedCertificateOnServer("test", targetID, source)
+	if err != nil || created {
+		t.Fatalf("second ensure = created %v, err %v; want existing equivalent", created, err)
+	}
+	certs, err := models.ListCertificates(conn, targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("target certificates = %d, want 1", len(certs))
+	}
+}
+
 func TestCaddyDNSProviderConfigRejectsIncompleteCredentials(t *testing.T) {
 	if got := caddyDNSProviderConfig(dns.Porkbun, map[string]string{"pb_api_key": "key"}); got != nil {
 		t.Fatalf("incomplete credentials returned config %#v", got)
