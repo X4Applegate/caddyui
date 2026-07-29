@@ -50,6 +50,8 @@ volumes:
 
 > **💡 Fresh install:** On first boot Caddy has no saved config yet. The `command` above seeds an empty `{}` config automatically so Caddy starts cleanly without any extra steps. Without `--resume`, admin-API pushes from CaddyUI would be lost on every `docker compose restart`.
 
+> **DNS-01 note:** Managed ACME certificates require a Caddy build containing the matching `caddy-dns` provider module. The stock `caddy:2-alpine` image in this minimal example does not include those modules. Use the repository's [`Dockerfile.caddy`](https://github.com/X4Applegate/caddyui/blob/main/Dockerfile.caddy), which includes every DNS provider supported by CaddyUI, or supply your own compatible Caddy build.
+
 ### Bind-mount note
 
 If you bind-mount a host directory to `/data` instead of using a named volume, the host directory must be owned by uid `10001` (the non-root user the container runs as):
@@ -131,6 +133,18 @@ Per-host export also available from the proxy-host edit page.
 - **Visitor analytics** — opt-in per-host traffic counters, top hosts, status-code mix, 24 h sparkline
 - **Carbon Orange theme** — alternative palette with cross-device sync via per-user DB column
 - **PWA** — installable on desktop and mobile; offline-capable service worker
+
+---
+
+## 🔐 Managed wildcard certificates (v2.17+)
+
+1. Save your provider credentials in **Settings → DNS**.
+2. Open **Certificates → New**, choose **Managed ACME (DNS-01)**, select the saved credentials, and enter a subject such as `*.example.com`.
+3. Select **Also configure on** to deploy the definition to additional Caddy servers. Each server obtains and renews its own certificate and keeps its own private key.
+4. Leave covered proxy hosts on **Auto** TLS. CaddyUI automatically reuses the wildcard and suppresses unnecessary exact-host certificate orders.
+5. Edit the managed certificate to inspect live deployment, issuer, expiry, and renewal health on every configured server.
+
+No PEM upload, fake proxy upstream, or private-key transfer is required.
 
 ---
 

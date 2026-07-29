@@ -16,6 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 - **Live per-server managed certificate status**: editing a managed certificate now shows every configured Caddy server, whether the definition is deployed there, the certificate actually served, issuer, expiration timestamp, days remaining, and renewal problems such as expired, mismatched, or unreachable certificates.
 - **Wildcard-safe certificate probing**: CaddyUI uses a synthetic wildcard-covered SNI name and connects directly to each Caddy server, so a standalone wildcard can be inspected without creating public DNS for a fake hostname.
+- **Managed wildcard documentation**: the GitHub README and Docker Hub overview now include the complete setup, multi-server deployment, Auto TLS reuse, provider-module requirement, and renewal-status workflow.
 
 ---
 

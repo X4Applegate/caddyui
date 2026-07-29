@@ -53,7 +53,8 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 - **Import SSL from Porkbun** — new button on the Certificates page (visible when Porkbun credentials are saved) that opens a domain picker and pulls the SSL bundle directly from your Porkbun account into CaddyUI as a stored PEM certificate. *(v2.14.0)*
 - **Porkbun API v3 full compatibility** — fixed JSON type mismatches where the Porkbun API returns integer fields (`whoisPrivacy`, `autoRenew`, `securityLock`, `apiAccess`, `notLocal`) as quoted strings; all domain and DNS decode paths now handle both forms transparently. SSL retrieve. *(v2.14.1, v2.14.2)*
-### What's new in v2.12
+
+### Recent releases
 
 - **⌘K / Ctrl+K command palette** — global search across every proxy host, redirection, raw route, and certificate. `↑/↓ Enter Esc`. Color-coded type pills. *(v2.11.5)*
 - **Bulk multi-select on every list page** — checkbox + select-all + floating Enable / Disable / Delete bar on `/proxy-hosts`, `/redirection-hosts`, `/raw-routes`, and `/certificates`. *(v2.11.6, .9, .10)*
@@ -70,6 +71,18 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 - **Managed DNS on redirections** — closes the long-standing gap where redirects had no DNS plumbing. Now creates A records per hostname on save, deletes on row removal. *(v2.12.2)*
 - **Per-section Save buttons on Settings** — no more scroll-to-bottom for a one-toggle change. *(v2.12.6)*
 - **Active-server-scoped dashboard cards** — Requests / Visitors / Bandwidth Today now reflect only the server selected in the picker, including traffic to wildcard SAN hostnames. *(v2.12.8, v2.12.9)*
+
+### Managed wildcard certificates (v2.17+)
+
+Use one DNS-01 wildcard across matching proxy hosts without exporting or copying its private key:
+
+1. Go to **Settings → DNS** and save credentials for your DNS provider.
+2. Go to **Certificates → New**, choose **Managed ACME (DNS-01)**, select that credential profile, and enter a subject such as `*.example.com`.
+3. If you manage multiple Caddy servers, select them under **Also configure on**. Each server performs its own ACME order and keeps its own private key.
+4. Leave matching proxy hosts on **Auto** TLS. CaddyUI detects the covering wildcard and prevents redundant exact-host certificate orders.
+5. Edit the managed certificate later to see live deployment, issuer, expiry, and renewal health for every configured server.
+
+Your Caddy build must include the matching `caddy-dns` provider module. The repository's [`Dockerfile.caddy`](Dockerfile.caddy) includes all six DNS providers supported by CaddyUI; the stock `caddy:2-alpine` image does not.
 
 ### Routing
 
