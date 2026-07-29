@@ -3666,33 +3666,31 @@ func (s *Server) dnsProviderViewData(serverID int64) map[string]any {
 	}
 	enabled := []providerEntry{}
 	profiles := []profileEntry{}
-	if ip != "" {
-		for _, d := range dns.Descriptors() {
-			if dns.CredsComplete(d.ID, s.dnsCreds(d.ID)) {
-				enabled = append(enabled, providerEntry{ID: d.ID, DisplayName: d.DisplayName})
-				profiles = append(profiles, profileEntry{
-					ID:          "legacy:" + d.ID,
-					ProviderID:  d.ID,
-					DisplayName: d.DisplayName + " (default settings)",
-					Legacy:      true,
-				})
-			}
-		}
-		for _, p := range s.loadDNSProfiles() {
-			if !dns.CredsComplete(p.ProviderID, p.Credentials) {
-				continue
-			}
-			providerName := p.ProviderID
-			if d, ok := dns.Lookup(p.ProviderID); ok {
-				providerName = d.DisplayName
-			}
+	for _, d := range dns.Descriptors() {
+		if dns.CredsComplete(d.ID, s.dnsCreds(d.ID)) {
+			enabled = append(enabled, providerEntry{ID: d.ID, DisplayName: d.DisplayName})
 			profiles = append(profiles, profileEntry{
-				ID:          p.ID,
-				ProviderID:  p.ProviderID,
-				DisplayName: p.Name + " (" + providerName + ")",
+				ID:          "legacy:" + d.ID,
+				ProviderID:  d.ID,
+				DisplayName: d.DisplayName + " (default settings)",
+				Legacy:      true,
 			})
-			enabled = append(enabled, providerEntry{ID: p.ProviderID, DisplayName: providerName})
 		}
+	}
+	for _, p := range s.loadDNSProfiles() {
+		if !dns.CredsComplete(p.ProviderID, p.Credentials) {
+			continue
+		}
+		providerName := p.ProviderID
+		if d, ok := dns.Lookup(p.ProviderID); ok {
+			providerName = d.DisplayName
+		}
+		profiles = append(profiles, profileEntry{
+			ID:          p.ID,
+			ProviderID:  p.ProviderID,
+			DisplayName: p.Name + " (" + providerName + ")",
+		})
+		enabled = append(enabled, providerEntry{ID: p.ProviderID, DisplayName: providerName})
 	}
 	return map[string]any{
 		"DNSProviders":    enabled,
@@ -5727,7 +5725,7 @@ func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
 // Reuses the credentials already stored under each provider's settings
 // keys for managed DNS, so users don't enter secrets twice. The connected
 // Caddy build must include the corresponding caddy-dns provider module.
-func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute) []map[string]any {
+func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) []map[string]any {
 	type bucket struct {
 		providerID string
 		subjects   []string
@@ -5774,6 +5772,11 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 	for _, rr := range raws {
 		add(rawRouteHosts(rr), rr.DNSProvider, rr.DNSProfileID, true, rr.Enabled, rr.CertificateID)
 	}
+	for _, cert := range certs {
+		if cert.Source == models.CertSourceManaged {
+			add(cert.DomainList(), cert.DNSProvider, cert.DNSProfileID, true, true, 0)
+		}
+	}
 
 	var policies []map[string]any
 	for _, b := range byProvider {
@@ -5803,6 +5806,38 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 		})
 	}
 	return policies
+}
+
+// buildManagedCertificateRoutes gives standalone managed certificates a host
+// matcher so Caddy's Automatic HTTPS machinery is instructed to obtain them.
+// Automation-policy subjects alone are filters and do not trigger issuance.
+// These 404 fallbacks are appended after real routes, so an actual proxy or
+// redirect for the same hostname wins while otherwise-unhandled wildcard
+// traffic fails closed.
+func buildManagedCertificateRoutes(certs []models.Certificate) []any {
+	var routes []any
+	for _, cert := range certs {
+		if cert.Source != models.CertSourceManaged {
+			continue
+		}
+		hosts := cert.DomainList()
+		if len(hosts) == 0 {
+			continue
+		}
+		hostValues := make([]any, 0, len(hosts))
+		for _, host := range hosts {
+			hostValues = append(hostValues, strings.ToLower(strings.TrimSpace(host)))
+		}
+		routes = append(routes, map[string]any{
+			"match": []any{map[string]any{"host": hostValues}},
+			"handle": []any{map[string]any{
+				"handler":     "static_response",
+				"status_code": 404,
+			}},
+			"terminal": true,
+		})
+	}
+	return routes
 }
 
 // caddyDNSProviderConfig maps an internal DNS-provider ID to the matching
@@ -6624,20 +6659,21 @@ func (s *Server) getCertificateInspect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) newCertificate(w http.ResponseWriter, r *http.Request) {
 	// v2.7.3: Users list fuels the admin-only Owner picker on the form.
 	// Non-admins get nil — the template skips rendering the picker.
-	s.render(w, r, "certificate_form.html", map[string]any{
+	data := map[string]any{
 		"User":    s.currentUser(r),
 		"Cert":    &models.Certificate{Source: models.CertSourcePEM},
 		"Users":   s.adminUserList(r),
 		"Section": "certs",
-	})
+	}
+	s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 }
 
-func parseCertificateForm(r *http.Request) (*models.Certificate, string) {
+func (s *Server) parseCertificateForm(r *http.Request) (*models.Certificate, string) {
 	_ = r.ParseForm()
 	name := strings.TrimSpace(r.FormValue("name"))
 	domains := strings.TrimSpace(r.FormValue("domains"))
 	source := r.FormValue("source")
-	if source != models.CertSourcePEM && source != models.CertSourcePath {
+	if source != models.CertSourcePEM && source != models.CertSourcePath && source != models.CertSourceManaged {
 		source = models.CertSourcePEM
 	}
 	c := &models.Certificate{
@@ -6663,36 +6699,48 @@ func parseCertificateForm(r *http.Request) (*models.Certificate, string) {
 		if !strings.Contains(c.KeyPEM, "PRIVATE KEY") {
 			return nil, "Private key PEM doesn't look like a PEM block"
 		}
-	} else {
+	} else if source == models.CertSourcePath {
 		c.CertPath = strings.TrimSpace(r.FormValue("cert_path"))
 		c.KeyPath = strings.TrimSpace(r.FormValue("key_path"))
 		if c.CertPath == "" || c.KeyPath == "" {
 			return nil, "Certificate path and Key path are required when source is 'path'"
+		}
+	} else {
+		c.DNSProvider, c.DNSProfileID = s.normalizeDNSFormSelection(
+			r.FormValue("dns_provider"), r.FormValue("dns_profile_id"))
+		if c.DNSProvider == "" {
+			return nil, "Choose DNS credentials for a managed ACME certificate"
+		}
+		if caddyDNSProviderConfig(c.DNSProvider, s.dnsCredsFor(c.DNSProvider, c.DNSProfileID)) == nil {
+			return nil, "The selected DNS credential profile is missing required credentials"
 		}
 	}
 	return c, ""
 }
 
 func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
-	c, errMsg := parseCertificateForm(r)
+	c, errMsg := s.parseCertificateForm(r)
 	if errMsg != "" {
 		// Re-render with whatever the user typed
 		fallback := &models.Certificate{
-			Name:     r.FormValue("name"),
-			Domains:  r.FormValue("domains"),
-			Source:   r.FormValue("source"),
-			CertPEM:  r.FormValue("cert_pem"),
-			KeyPEM:   r.FormValue("key_pem"),
-			CertPath: r.FormValue("cert_path"),
-			KeyPath:  r.FormValue("key_path"),
+			Name:         r.FormValue("name"),
+			Domains:      r.FormValue("domains"),
+			Source:       r.FormValue("source"),
+			CertPEM:      r.FormValue("cert_pem"),
+			KeyPEM:       r.FormValue("key_pem"),
+			CertPath:     r.FormValue("cert_path"),
+			KeyPath:      r.FormValue("key_path"),
+			DNSProvider:  r.FormValue("dns_provider"),
+			DNSProfileID: r.FormValue("dns_profile_id"),
 		}
-		s.render(w, r, "certificate_form.html", map[string]any{
+		data := map[string]any{
 			"User":    s.currentUser(r),
 			"Cert":    fallback,
 			"Users":   s.adminUserList(r),
 			"Error":   errMsg,
 			"Section": "certs",
-		})
+		}
+		s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 		return
 	}
 	// v2.7.2: non-admin uploads are tagged with their user ID so they land in
@@ -6742,12 +6790,13 @@ func (s *Server) editCertificate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.render(w, r, "certificate_form.html", map[string]any{
+	data := map[string]any{
 		"User":    s.currentUser(r),
 		"Cert":    c,
 		"Users":   s.adminUserList(r),
 		"Section": "certs",
-	})
+	}
+	s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 }
 
 func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
@@ -6766,7 +6815,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	c, errMsg := parseCertificateForm(r)
+	c, errMsg := s.parseCertificateForm(r)
 	if errMsg != "" {
 		existing, _ := models.GetCertificate(s.DB, id)
 		if existing == nil {
@@ -6779,13 +6828,16 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		existing.KeyPEM = r.FormValue("key_pem")
 		existing.CertPath = r.FormValue("cert_path")
 		existing.KeyPath = r.FormValue("key_path")
-		s.render(w, r, "certificate_form.html", map[string]any{
+		existing.DNSProvider = r.FormValue("dns_provider")
+		existing.DNSProfileID = r.FormValue("dns_profile_id")
+		data := map[string]any{
 			"User":    s.currentUser(r),
 			"Cert":    existing,
 			"Users":   s.adminUserList(r),
 			"Error":   errMsg,
 			"Section": "certs",
-		})
+		}
+		s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 		return
 	}
 	c.ID = id
@@ -7052,7 +7104,7 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 	if err != nil {
 		return ""
 	}
-	applyRoutes(proposed, s.buildMergedRoutes(proxies, redirs, raws))
+	applyRoutes(proposed, append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...))
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	applyPlainHTTPServer(proposed, httpRoutes)
 	loadPEM, loadFiles := buildCertLoaders(certs)
@@ -7662,7 +7714,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		}
 	}
 
-	routes := s.buildMergedRoutes(proxies, redirs, raws)
+	routes := append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws)
@@ -7771,7 +7823,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	// Hosts with Managed DNS selected use that provider for ACME DNS-01.
 	// Non-fatal: a remote Caddy without the matching caddy-dns module still
 	// keeps the successfully-applied routes, and the module error is logged.
-	if dnsPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws); len(dnsPolicies) > 0 {
+	if dnsPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs); len(dnsPolicies) > 0 {
 		if err := pushAutomationPoliciesVia(s.Caddy, dnsPolicies); err != nil {
 			log.Printf("caddy sync: DNS-01 automation-policy push failed (non-fatal): %v", err)
 			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_automation_failed", "", err.Error(), false)
@@ -14890,18 +14942,20 @@ func certificateToAPIMap(c *models.Certificate) map[string]any {
 		ownerID = c.OwnerID.Int64
 	}
 	return map[string]any{
-		"id":          c.ID,
-		"name":        c.Name,
-		"domains":     c.Domains,
-		"source":      c.Source,
-		"cert_pem":    c.CertPEM,
-		"key_pem":     c.KeyPEM,
-		"cert_path":   c.CertPath,
-		"key_path":    c.KeyPath,
-		"owner_id":    ownerID,
-		"owner_email": c.OwnerEmail,
-		"created_at":  c.CreatedAt,
-		"updated_at":  c.UpdatedAt,
+		"id":             c.ID,
+		"name":           c.Name,
+		"domains":        c.Domains,
+		"source":         c.Source,
+		"cert_pem":       c.CertPEM,
+		"key_pem":        c.KeyPEM,
+		"cert_path":      c.CertPath,
+		"key_path":       c.KeyPath,
+		"dns_provider":   c.DNSProvider,
+		"dns_profile_id": c.DNSProfileID,
+		"owner_id":       ownerID,
+		"owner_email":    c.OwnerEmail,
+		"created_at":     c.CreatedAt,
+		"updated_at":     c.UpdatedAt,
 	}
 }
 
@@ -14947,13 +15001,15 @@ func (s *Server) apiV1CreateCertificate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var inp struct {
-		Name     string `json:"name"`
-		Domains  string `json:"domains"`
-		Source   string `json:"source"`
-		CertPEM  string `json:"cert_pem"`
-		KeyPEM   string `json:"key_pem"`
-		CertPath string `json:"cert_path"`
-		KeyPath  string `json:"key_path"`
+		Name         string `json:"name"`
+		Domains      string `json:"domains"`
+		Source       string `json:"source"`
+		CertPEM      string `json:"cert_pem"`
+		KeyPEM       string `json:"key_pem"`
+		CertPath     string `json:"cert_path"`
+		KeyPath      string `json:"key_path"`
+		DNSProvider  string `json:"dns_provider"`
+		DNSProfileID string `json:"dns_profile_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -14970,6 +15026,7 @@ func (s *Server) apiV1CreateCertificate(w http.ResponseWriter, r *http.Request) 
 		Name: inp.Name, Domains: inp.Domains, Source: inp.Source,
 		CertPEM: inp.CertPEM, KeyPEM: inp.KeyPEM,
 		CertPath: inp.CertPath, KeyPath: inp.KeyPath,
+		DNSProvider: inp.DNSProvider, DNSProfileID: inp.DNSProfileID,
 	}
 	serverID := s.currentServerID(r)
 	ownerID := int64(0)
@@ -15003,13 +15060,15 @@ func (s *Server) apiV1UpdateCertificate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var inp struct {
-		Name     string `json:"name"`
-		Domains  string `json:"domains"`
-		Source   string `json:"source"`
-		CertPEM  string `json:"cert_pem"`
-		KeyPEM   string `json:"key_pem"`
-		CertPath string `json:"cert_path"`
-		KeyPath  string `json:"key_path"`
+		Name         string `json:"name"`
+		Domains      string `json:"domains"`
+		Source       string `json:"source"`
+		CertPEM      string `json:"cert_pem"`
+		KeyPEM       string `json:"key_pem"`
+		CertPath     string `json:"cert_path"`
+		KeyPath      string `json:"key_path"`
+		DNSProvider  string `json:"dns_provider"`
+		DNSProfileID string `json:"dns_profile_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -15035,6 +15094,12 @@ func (s *Server) apiV1UpdateCertificate(w http.ResponseWriter, r *http.Request) 
 	}
 	if inp.KeyPath != "" {
 		existing.KeyPath = inp.KeyPath
+	}
+	if inp.DNSProvider != "" {
+		existing.DNSProvider = inp.DNSProvider
+	}
+	if inp.DNSProfileID != "" {
+		existing.DNSProfileID = inp.DNSProfileID
 	}
 	if err := models.UpdateCertificate(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())

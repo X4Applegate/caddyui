@@ -13,6 +13,12 @@
 {{end}}
 
 <form method="post" action="{{if .Cert.ID}}/certificates/{{.Cert.ID}}{{else}}/certificates{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
+  <div class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+    <strong>Want a wildcard certificate?</strong>
+    Choose <strong>Managed ACME (DNS-01)</strong> below, enter names such as
+    <code class="font-mono">*.example.com</code>, and select saved DNS credentials.
+    Caddy obtains and renews it automatically; you do not paste or download the private key.
+  </div>
   <div>
     <label class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
     <input name="name" value="{{.Cert.Name}}" required placeholder="wildcard-example-com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
@@ -22,19 +28,23 @@
   <div>
     <label class="block text-sm font-medium text-ink-800 mb-1.5">Domains <span class="text-ink-400 font-normal">(comma separated)</span></label>
     <input name="domains" value="{{.Cert.Domains}}" required placeholder="example.com, *.example.com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-    <p class="text-xs text-ink-500 mt-1.5">Hostnames this cert covers. Caddy will stop auto-issuing certs for these.</p>
+    <p class="text-xs text-ink-500 mt-1.5">Hostnames this certificate covers. Wildcards must begin with <code class="font-mono">*.</code> and require Managed ACME / DNS-01.</p>
   </div>
 
   <div class="pt-2">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">Source</div>
-    <div class="grid grid-cols-2 gap-3">
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
       <label class="flex items-center gap-2.5 p-3 rounded-lg border border-ink-200 text-sm text-ink-700 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50 has-[:checked]:text-brand-700">
-        <input type="radio" name="source" value="pem" {{if ne .Cert.Source "path"}}checked{{end}} class="text-brand-600 focus:ring-brand-500" onchange="document.getElementById('src-pem').classList.remove('hidden');document.getElementById('src-path').classList.add('hidden');" />
+        <input type="radio" name="source" value="pem" {{if eq .Cert.Source "pem"}}checked{{end}} class="text-brand-600 focus:ring-brand-500" onchange="setCertSource('pem')" />
         Paste PEM
       </label>
       <label class="flex items-center gap-2.5 p-3 rounded-lg border border-ink-200 text-sm text-ink-700 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50 has-[:checked]:text-brand-700">
-        <input type="radio" name="source" value="path" {{if eq .Cert.Source "path"}}checked{{end}} class="text-brand-600 focus:ring-brand-500" onchange="document.getElementById('src-pem').classList.add('hidden');document.getElementById('src-path').classList.remove('hidden');" />
+        <input type="radio" name="source" value="path" {{if eq .Cert.Source "path"}}checked{{end}} class="text-brand-600 focus:ring-brand-500" onchange="setCertSource('path')" />
         File path on Caddy host
+      </label>
+      <label class="flex items-center gap-2.5 p-3 rounded-lg border border-ink-200 text-sm text-ink-700 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50 has-[:checked]:text-brand-700">
+        <input type="radio" name="source" value="managed" {{if eq .Cert.Source "managed"}}checked{{end}} class="text-brand-600 focus:ring-brand-500" onchange="setCertSource('managed')" />
+        Managed ACME (DNS-01)
       </label>
     </div>
   </div>
@@ -64,6 +74,33 @@
     </div>
   </div>
 
+  <div id="src-managed" class="{{if ne .Cert.Source "managed"}}hidden{{end}} space-y-4 pt-2">
+    {{if .AnyDNSEnabled}}
+    {{$provider := .Cert.DNSProvider}}
+    {{$profile := .Cert.DNSProfileID}}
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">DNS credentials</label>
+      <input type="hidden" id="managed-dns-provider" name="dns_provider" value="{{$provider}}" />
+      <select id="managed-dns-profile" name="dns_profile_id" onchange="document.getElementById('managed-dns-provider').value=this.options[this.selectedIndex].dataset.provider||''"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        <option value="" data-provider="">Choose saved DNS credentials…</option>
+        {{range .DNSProfiles}}
+        <option value="{{.ID}}" data-provider="{{.ProviderID}}" {{if and (eq $profile "") (eq $provider .ProviderID) .Legacy}}selected{{else if eq $profile .ID}}selected{{end}}>{{.DisplayName}}</option>
+        {{end}}
+      </select>
+      <p class="text-xs text-ink-500 mt-1.5">Configure credentials under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>. The connected Caddy build must include the matching DNS provider module.</p>
+    </div>
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+      CaddyUI creates a certificate-only wildcard route that returns 404 when no real proxy or redirect matches it. This triggers issuance safely without forwarding traffic anywhere. Add normal proxy hosts later; Caddy will reuse the wildcard certificate.
+    </div>
+    {{else}}
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+      No DNS credentials are configured. Save a supported provider under
+      <a href="/settings" class="font-medium text-brand-700 hover:underline">Settings → DNS</a>, then return here.
+    </div>
+    {{end}}
+  </div>
+
   {{if .Users}}
   <div class="pt-4 border-t border-ink-100">
     <label class="block text-sm font-medium text-ink-800 mb-1.5">Owner <span class="text-ink-400 font-normal">(admin only)</span></label>
@@ -82,4 +119,11 @@
     <a href="/certificates" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
   </div>
 </form>
+<script>
+function setCertSource(source) {
+  ['pem', 'path', 'managed'].forEach(function(name) {
+    document.getElementById('src-' + name).classList.toggle('hidden', name !== source);
+  });
+}
+</script>
 {{end}}

@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.17.0] - 2026-07-29 - Standalone managed wildcard certificates
+
+### Added
+
+- **Managed ACME source on Certificates**: create `*.example.com`, `*.sub.example.com`, or ordinary SAN certificates using any saved DNS credential profile. Caddy obtains and renews them through DNS-01; CaddyUI never stores or exports the private key.
+- **Certificate-only wildcard routes**: managed entries emit a terminal 404 fallback host route, which instructs Caddy Automatic HTTPS to manage the requested subjects without requiring a fake proxy upstream. Real proxy and redirect routes retain priority and reuse the wildcard certificate.
+- **Guided setup**: the certificate form and built-in documentation explain the Settings → DNS prerequisite, provider-module requirement, expected 404 fallback, and how Caddy reuses the certificate.
+
+### Changed
+
+- **Certificate selectors stay unambiguous**: managed ACME entries do not appear in the custom-certificate dropdown because they are automatically selected by SNI rather than attached as uploaded PEM material.
+
+---
+
 ## [2.16.10] - 2026-07-28 - DNS automation sync compatibility
 
 ### Fixed

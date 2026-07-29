@@ -3822,21 +3822,24 @@ func FormatSchemeHost(scheme, host string, port int) string {
 }
 
 const (
-	CertSourcePEM  = "pem"
-	CertSourcePath = "path"
+	CertSourcePEM     = "pem"
+	CertSourcePath    = "path"
+	CertSourceManaged = "managed"
 )
 
 type Certificate struct {
-	ID        int64
-	Name      string
-	Domains   string // comma-separated hostnames the cert covers (for display / skip_certificates)
-	Source    string // "pem" or "path"
-	CertPEM   string
-	KeyPEM    string
-	CertPath  string
-	KeyPath   string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           int64
+	Name         string
+	Domains      string // comma-separated hostnames the cert covers (for display / skip_certificates)
+	Source       string // "pem", "path", or "managed"
+	CertPEM      string
+	KeyPEM       string
+	CertPath     string
+	KeyPath      string
+	DNSProvider  string
+	DNSProfileID string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 
 	// v2.7.2: per-user ownership. OwnerID.Valid == false means admin-owned /
 	// global — any user-role account can reference it from the proxy-host
@@ -3868,7 +3871,8 @@ func (c Certificate) DomainList() []string {
 // non-admin accounts don't see another user's private TLS material.
 func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 	rows, err := db.Query(`
-        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path, owner_id, created_at, updated_at
+        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path,
+               COALESCE(dns_provider,''), COALESCE(dns_profile_id,''), owner_id, created_at, updated_at
         FROM certificates WHERE server_id = ? ORDER BY id DESC`, serverID)
 	if err != nil {
 		return nil, err
@@ -3878,7 +3882,8 @@ func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 	for rows.Next() {
 		var c Certificate
 		if err := rows.Scan(&c.ID, &c.Name, &c.Domains, &c.Source,
-			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath, &c.OwnerID,
+			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
+			&c.DNSProvider, &c.DNSProfileID, &c.OwnerID,
 			&c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -3901,6 +3906,7 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
 	if isAdmin {
 		rows, err = db.Query(`
             SELECT c.id, c.name, c.domains, c.source, c.cert_pem, c.key_pem, c.cert_path, c.key_path,
+                   COALESCE(c.dns_provider,''), COALESCE(c.dns_profile_id,''),
                    c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
             FROM certificates c
             LEFT JOIN users u ON u.id = c.owner_id
@@ -3915,6 +3921,7 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
 		args := append([]any{serverID, viewerID}, inArgs...)
 		rows, err = db.Query(`
             SELECT c.id, c.name, c.domains, c.source, c.cert_pem, c.key_pem, c.cert_path, c.key_path,
+                   COALESCE(c.dns_provider,''), COALESCE(c.dns_profile_id,''),
                    c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
             FROM certificates c
             LEFT JOIN users u ON u.id = c.owner_id
@@ -3930,7 +3937,8 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
 	for rows.Next() {
 		var c Certificate
 		if err := rows.Scan(&c.ID, &c.Name, &c.Domains, &c.Source,
-			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath, &c.OwnerID,
+			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
+			&c.DNSProvider, &c.DNSProfileID, &c.OwnerID,
 			&c.CreatedAt, &c.UpdatedAt, &c.OwnerEmail); err != nil {
 			return nil, err
 		}
@@ -3950,15 +3958,15 @@ func ListCertificateOptionsForUser(db *sql.DB, serverID int64, viewerID int64, i
             SELECT c.id, c.name, c.domains, c.source, c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
             FROM certificates c
             LEFT JOIN users u ON u.id = c.owner_id
-            WHERE c.server_id = ? ORDER BY c.id DESC`, serverID)
+            WHERE c.server_id = ? AND c.source != ? ORDER BY c.id DESC`, serverID, CertSourceManaged)
 	} else {
 		inStr, inArgs := inClause(peerIDs)
-		args := append([]any{serverID, viewerID}, inArgs...)
+		args := append([]any{serverID, CertSourceManaged, viewerID}, inArgs...)
 		rows, err = db.Query(`
             SELECT c.id, c.name, c.domains, c.source, c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
             FROM certificates c
             LEFT JOIN users u ON u.id = c.owner_id
-            WHERE c.server_id = ?
+            WHERE c.server_id = ? AND c.source != ?
               AND (c.owner_id IS NULL OR c.owner_id = ? OR c.owner_id IN (`+inStr+`))
             ORDER BY c.id DESC`, args...)
 	}
@@ -3981,10 +3989,12 @@ func ListCertificateOptionsForUser(db *sql.DB, serverID int64, viewerID int64, i
 func GetCertificate(db *sql.DB, id int64) (*Certificate, error) {
 	var c Certificate
 	err := db.QueryRow(`
-        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path, owner_id, created_at, updated_at
+        SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path,
+               COALESCE(dns_provider,''), COALESCE(dns_profile_id,''), owner_id, created_at, updated_at
         FROM certificates WHERE id = ?`, id).Scan(
 		&c.ID, &c.Name, &c.Domains, &c.Source,
-		&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath, &c.OwnerID,
+		&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
+		&c.DNSProvider, &c.DNSProfileID, &c.OwnerID,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -4002,9 +4012,10 @@ func CreateCertificate(db *sql.DB, serverID int64, ownerID int64, c *Certificate
 		c.Source = CertSourcePEM
 	}
 	res, err := db.Exec(`
-        INSERT INTO certificates (server_id, owner_id, name, domains, source, cert_pem, key_pem, cert_path, key_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		serverID, nilIfZero(ownerID), c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM, c.CertPath, c.KeyPath)
+        INSERT INTO certificates (server_id, owner_id, name, domains, source, cert_pem, key_pem, cert_path, key_path, dns_provider, dns_profile_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		serverID, nilIfZero(ownerID), c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM,
+		c.CertPath, c.KeyPath, c.DNSProvider, c.DNSProfileID)
 	if err != nil {
 		return 0, err
 	}
@@ -4017,8 +4028,9 @@ func UpdateCertificate(db *sql.DB, c *Certificate) error {
 	}
 	_, err := db.Exec(`
         UPDATE certificates SET name=?, domains=?, source=?, cert_pem=?, key_pem=?,
-            cert_path=?, key_path=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM, c.CertPath, c.KeyPath, c.ID)
+            cert_path=?, key_path=?, dns_provider=?, dns_profile_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM, c.CertPath, c.KeyPath,
+		c.DNSProvider, c.DNSProfileID, c.ID)
 	return err
 }
 

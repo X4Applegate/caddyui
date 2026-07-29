@@ -288,12 +288,22 @@
   </h2>
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
     <p>For most people, <strong>you don't need this page</strong>. Caddy auto-provisions certificates via Let's Encrypt (or ZeroSSL as a fallback) whenever you create a proxy host with <em>Auto SSL</em> enabled.</p>
-    <p>Use the Certificates page only when you need to:</p>
+    <p>Use the Certificates page when you need to:</p>
     <ul class="list-disc ml-5 space-y-1">
       <li>Upload a bought / internal CA-issued certificate.</li>
       <li>Use a DNS-01 challenge (for wildcard certs or hosts not reachable over HTTP).</li>
       <li>Pin a specific cert to a proxy host instead of letting Caddy manage it.</li>
     </ul>
+    <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-xs text-blue-900">
+      <strong>Standalone wildcard certificate:</strong> first save your provider credentials under
+      <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>. Then open
+      <a href="/certificates/new" class="text-brand-600 hover:underline">Certificates → New</a>,
+      enter <code class="font-mono">*.example.com</code> (and optionally
+      <code class="font-mono">*.sub.example.com</code>), choose
+      <strong>Managed ACME (DNS-01)</strong>, and select the credentials. Caddy obtains and renews
+      the certificate automatically. You do not need to create a fake proxy host or copy a PEM key.
+    </div>
+    <p>A managed wildcard entry is a certificate-only fallback: unmatched requests receive 404. Real proxy hosts and redirects for matching subdomains take precedence and automatically reuse the wildcard certificate on Caddy 2.10+.</p>
   </div>
 </section>
 

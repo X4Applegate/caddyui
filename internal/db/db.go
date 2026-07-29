@@ -2090,6 +2090,14 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "redirection_hosts", "redirect_rules") {
 		_, _ = db.Exec(`ALTER TABLE redirection_hosts ADD COLUMN redirect_rules TEXT NOT NULL DEFAULT ''`)
 	}
+	// v2.17.0: standalone Caddy-managed ACME certificates reuse a saved DNS
+	// credential profile for DNS-01 issuance and renewal.
+	if !columnExists2(db, "certificates", "dns_provider") {
+		_, _ = db.Exec(`ALTER TABLE certificates ADD COLUMN dns_provider TEXT NOT NULL DEFAULT ''`)
+	}
+	if !columnExists2(db, "certificates", "dns_profile_id") {
+		_, _ = db.Exec(`ALTER TABLE certificates ADD COLUMN dns_profile_id TEXT NOT NULL DEFAULT ''`)
+	}
 
 	return nil
 }
