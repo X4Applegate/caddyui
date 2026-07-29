@@ -3,7 +3,7 @@
 <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-3">
   <div>
     <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Certificates</h1>
-    <p class="text-sm text-ink-500 mt-1">Use your own TLS certs instead of Let's Encrypt / ZeroSSL.</p>
+    <p class="text-sm text-ink-500 mt-1">Upload a certificate or have Caddy obtain and renew one with ACME DNS-01.</p>
   </div>
   {{/* v2.7.2: + New visible to admin and user roles. View-only accounts
        can still see the table for reference but can't create a cert. */}}
@@ -79,7 +79,9 @@
     </div>
     {{end}}
     <div class="flex items-center justify-between gap-2">
-      {{if eq .Source "pem"}}
+      {{if eq .Source "managed"}}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">Managed ACME</span>
+      {{else if eq .Source "pem"}}
         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">PEM</span>
       {{else}}
         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700">file path</span>
@@ -159,7 +161,9 @@
         </td>
         <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.Domains}}</td>
         <td class="px-5 py-3">
-          {{if eq .Source "pem"}}
+          {{if eq .Source "managed"}}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">Managed ACME / DNS-01</span>
+          {{else if eq .Source "pem"}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">PEM (stored)</span>
           {{else}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700">file path</span>

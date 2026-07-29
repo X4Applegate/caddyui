@@ -115,6 +115,60 @@ func TestCaddyDNSProviderConfig(t *testing.T) {
 	}
 }
 
+func TestManagedCertificateRoutesTriggerAutomaticHTTPS(t *testing.T) {
+	certs := []models.Certificate{
+		{ID: 1, Source: models.CertSourcePEM, Domains: "*.ignored.example.com"},
+		{ID: 2, Source: models.CertSourceManaged, Domains: "*.example.com, *.sub.example.com"},
+	}
+	routes := buildManagedCertificateRoutes(certs)
+	if len(routes) != 1 {
+		t.Fatalf("routes = %d, want 1 managed-certificate route", len(routes))
+	}
+	route := routes[0].(map[string]any)
+	match := route["match"].([]any)[0].(map[string]any)
+	wantHosts := []any{"*.example.com", "*.sub.example.com"}
+	if !reflect.DeepEqual(match["host"], wantHosts) {
+		t.Fatalf("hosts = %#v, want %#v", match["host"], wantHosts)
+	}
+	handler := route["handle"].([]any)[0].(map[string]any)
+	if handler["status_code"] != 404 || route["terminal"] != true {
+		t.Fatalf("managed fallback = %#v, want terminal 404", route)
+	}
+}
+
+func TestManagedCertificatePersistsDNSSelectionAndIsNotCustomOption(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	id, err := models.CreateCertificate(conn, 1, 0, &models.Certificate{
+		Name:         "wildcard",
+		Domains:      "*.example.com",
+		Source:       models.CertSourceManaged,
+		DNSProvider:  dns.Cloudflare,
+		DNSProfileID: "profile-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := models.GetCertificate(conn, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != models.CertSourceManaged || got.DNSProvider != dns.Cloudflare || got.DNSProfileID != "profile-1" {
+		t.Fatalf("managed certificate round trip = %#v", got)
+	}
+	options, err := models.ListCertificateOptionsForUser(conn, 1, 0, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options) != 0 {
+		t.Fatalf("custom certificate options = %#v, managed certificate must not be assignable as uploaded PEM", options)
+	}
+}
+
 func TestCaddyDNSProviderConfigRejectsIncompleteCredentials(t *testing.T) {
 	if got := caddyDNSProviderConfig(dns.Porkbun, map[string]string{"pb_api_key": "key"}); got != nil {
 		t.Fatalf("incomplete credentials returned config %#v", got)
