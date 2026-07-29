@@ -110,6 +110,19 @@
       <p class="text-xs text-ink-400 mt-3">Copies are independent after creation. Edit this certificate later and select a server again to add it to a newly registered server.</p>
     </div>
     {{end}}
+    {{if .Cert.ID}}
+    <div class="pt-4 border-t border-ink-100">
+      <div class="flex items-center justify-between gap-3 mb-2">
+        <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Live certificate status by server</div>
+        <button type="button" id="managed-status-refresh" class="text-xs font-medium text-brand-600 hover:text-brand-700">Refresh</button>
+      </div>
+      <p class="text-xs text-ink-500 mb-3">CaddyUI connects directly to each configured Caddy server with a wildcard-covered SNI name and reads the certificate it actually serves. This exposes expired certificates, failed renewals, hostname mismatches, and unreachable instances.</p>
+      <div class="border border-ink-200 rounded-lg overflow-hidden">
+        <div id="managed-status-loading" class="px-3 py-4 text-xs text-ink-400">Checking configured servers…</div>
+        <div id="managed-status-list" class="hidden divide-y divide-ink-100"></div>
+      </div>
+    </div>
+    {{end}}
     {{else}}
     <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
       No DNS credentials are configured. Save a supported provider under
@@ -142,5 +155,71 @@ function setCertSource(source) {
     document.getElementById('src-' + name).classList.toggle('hidden', name !== source);
   });
 }
+{{if and .Cert.ID (eq .Cert.Source "managed")}}
+(function() {
+  var list = document.getElementById('managed-status-list');
+  var loading = document.getElementById('managed-status-loading');
+  var refresh = document.getElementById('managed-status-refresh');
+  function labelFor(row) {
+    if (row.status === 'healthy') return row.days_left + ' days left';
+    if (row.status === 'expiring') return 'Expires in ' + row.days_left + ' days';
+    if (row.status === 'expired') return 'Expired';
+    if (row.status === 'mismatch') return 'Certificate mismatch';
+    if (row.status === 'not_configured') return 'Not configured';
+    if (row.status === 'external') return 'External / read-only';
+    return 'Unavailable';
+  }
+  function colorFor(status) {
+    if (status === 'healthy') return 'bg-green-50 text-green-700';
+    if (status === 'expiring') return 'bg-amber-50 text-amber-700';
+    if (status === 'expired' || status === 'mismatch') return 'bg-red-50 text-red-700';
+    return 'bg-ink-100 text-ink-600';
+  }
+  function render(rows) {
+    list.replaceChildren();
+    rows.forEach(function(row) {
+      var line = document.createElement('div');
+      line.className = 'flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-3 py-3 bg-white';
+      var left = document.createElement('div');
+      var name = document.createElement('div');
+      name.className = 'text-sm font-medium text-ink-800';
+      name.textContent = row.server_name || ('Server ' + row.server_id);
+      left.appendChild(name);
+      var detail = document.createElement('div');
+      detail.className = 'text-xs text-ink-400 mt-0.5';
+      if (row.expires_at) {
+        detail.textContent = 'Expires ' + new Date(row.expires_at).toLocaleString() + (row.issuer ? ' · ' + row.issuer : '');
+      } else if (row.error) {
+        detail.textContent = row.error;
+      } else if (row.probe_name) {
+        detail.textContent = 'Probe SNI: ' + row.probe_name;
+      }
+      left.appendChild(detail);
+      var badge = document.createElement('span');
+      badge.className = 'inline-flex self-start px-2 py-0.5 rounded-full text-xs font-medium ' + colorFor(row.status);
+      badge.textContent = labelFor(row);
+      line.appendChild(left);
+      line.appendChild(badge);
+      list.appendChild(line);
+    });
+    loading.classList.add('hidden');
+    list.classList.remove('hidden');
+  }
+  function load() {
+    loading.textContent = 'Checking configured servers…';
+    loading.classList.remove('hidden');
+    list.classList.add('hidden');
+    fetch('/certificates/{{.Cert.ID}}/managed-status', {headers: {'Accept': 'application/json'}})
+      .then(function(response) {
+        if (!response.ok) throw new Error('Status check failed (' + response.status + ')');
+        return response.json();
+      })
+      .then(function(data) { render(data.servers || []); })
+      .catch(function(error) { loading.textContent = error.message; });
+  }
+  if (refresh) refresh.addEventListener('click', load);
+  load();
+})();
+{{end}}
 </script>
 {{end}}
