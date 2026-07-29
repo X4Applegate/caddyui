@@ -305,6 +305,7 @@
     </div>
     <p>A managed wildcard entry is a certificate-only fallback: unmatched requests receive 404. Real proxy hosts and redirects for matching subdomains take precedence and automatically reuse the wildcard certificate on Caddy 2.10+.</p>
     <p>For multiple Caddy instances, select servers under <strong>Also configure on</strong>. Each Caddy server performs its own ACME order and stores its own private key. When using a proxy host's <strong>Also deploy to</strong> option, CaddyUI also discovers any managed wildcard that covers the hostname and copies its definition to targets automatically. A wildcard covers one label only: <code class="font-mono">*.example.com</code> covers <code class="font-mono">app.example.com</code>, not <code class="font-mono">deep.app.example.com</code> or the bare apex.</p>
+    <p>Leaving a covered proxy host on <strong>Auto (Let's Encrypt / ZeroSSL)</strong> reuses the managed wildcard: CaddyUI suppresses a redundant exact-host ACME order while keeping HTTPS enabled. Edit the managed certificate to see live expiry, issuer, and renewal health for every configured Caddy server.</p>
   </div>
 </section>
 

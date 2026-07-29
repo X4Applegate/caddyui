@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.17.2] - 2026-07-29 - Enforced wildcard reuse and live renewal visibility
+
+### Fixed
+
+- **Auto TLS now reuses managed wildcards**: exact proxy, redirect, and advanced-route hostnames covered by a standalone managed wildcard are added to Caddy's `automatic_https.skip_certificates` list. HTTPS remains enabled, but Caddy no longer obtains an unnecessary exact-host certificate and instead serves the wildcard already managed in its cache.
+- **Safe wildcard boundaries**: only exact hostnames covered by a one-label wildcard are skipped. The wildcard subject itself remains eligible for DNS-01 issuance; apex and multi-level names still obtain their own certificate unless separately covered.
+
+### Added
+
+- **Live per-server managed certificate status**: editing a managed certificate now shows every configured Caddy server, whether the definition is deployed there, the certificate actually served, issuer, expiration timestamp, days remaining, and renewal problems such as expired, mismatched, or unreachable certificates.
+- **Wildcard-safe certificate probing**: CaddyUI uses a synthetic wildcard-covered SNI name and connects directly to each Caddy server, so a standalone wildcard can be inspected without creating public DNS for a fake hostname.
+
+---
+
 ## [2.17.1] - 2026-07-29 - Multi-server wildcard certificate workflow
 
 ### Added

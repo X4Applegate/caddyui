@@ -190,6 +190,40 @@ func TestManagedCertificateCoverageUsesSingleLabelWildcards(t *testing.T) {
 	}
 }
 
+func TestManagedWildcardSkipsCoveredExactCertificateIssuance(t *testing.T) {
+	proxies := []models.ProxyHost{
+		{Domains: "project.sub.example.com", Enabled: true, SSLEnabled: true},
+		{Domains: "deep.project.sub.example.com", Enabled: true, SSLEnabled: true},
+		{Domains: "sub.example.com", Enabled: true, SSLEnabled: true},
+	}
+	certs := []models.Certificate{
+		{Source: models.CertSourceManaged, Domains: "*.sub.example.com"},
+	}
+	got := buildSkipCertificates(proxies, nil, nil, certs)
+	if !reflect.DeepEqual(got, []any{"project.sub.example.com"}) {
+		t.Fatalf("skip certificates = %#v, want only wildcard-covered exact hostname", got)
+	}
+}
+
+func TestManagedWildcardSubjectItselfIsNeverSkipped(t *testing.T) {
+	proxies := []models.ProxyHost{
+		{Domains: "*.sub.example.com", Enabled: true, SSLEnabled: true},
+	}
+	certs := []models.Certificate{
+		{Source: models.CertSourceManaged, Domains: "*.sub.example.com"},
+	}
+	if got := buildSkipCertificates(proxies, nil, nil, certs); len(got) != 0 {
+		t.Fatalf("skip certificates = %#v, wildcard subject must remain eligible for issuance", got)
+	}
+}
+
+func TestManagedCertificateProbeNameUsesSyntheticWildcardChild(t *testing.T) {
+	cert := models.Certificate{Domains: "example.com, *.sub.example.com"}
+	if got := managedCertificateProbeName(cert); got != "caddyui-probe.sub.example.com" {
+		t.Fatalf("probe name = %q", got)
+	}
+}
+
 func TestEnsureManagedCertificateOnServerDeduplicatesEquivalentSubjects(t *testing.T) {
 	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
 	if err != nil {

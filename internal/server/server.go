@@ -509,6 +509,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/activity/export.csv", s.exportActivityCSV)
 		r.Get("/certificates", s.listCertificates)
 		r.Get("/certificates/{id}/inspect", s.getCertificateInspect)
+		r.Get("/certificates/{id}/managed-status", s.getManagedCertificateStatus)
 		r.Get("/raw-routes", s.listRawRoutes)
 		r.Get("/docs", s.getDocs)
 		r.Get("/api/docs", s.getAPIDocs)
@@ -6765,6 +6766,153 @@ func (s *Server) getCertificateInspect(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "certificate_inspect.html", data)
 }
 
+type managedCertificateServerStatus struct {
+	ServerID   int64      `json:"server_id"`
+	ServerName string     `json:"server_name"`
+	Deployed   bool       `json:"deployed"`
+	Status     string     `json:"status"`
+	ProbeName  string     `json:"probe_name,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	DaysLeft   int        `json:"days_left,omitempty"`
+	Issuer     string     `json:"issuer,omitempty"`
+	Error      string     `json:"error,omitempty"`
+}
+
+func managedCertificateProbeName(cert models.Certificate) string {
+	for _, domain := range cert.DomainList() {
+		domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+		if strings.HasPrefix(domain, "*.") {
+			return "caddyui-probe." + strings.TrimPrefix(domain, "*.")
+		}
+	}
+	for _, domain := range cert.DomainList() {
+		if domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), "."); domain != "" {
+			return domain
+		}
+	}
+	return ""
+}
+
+func (s *Server) probeManagedCertificate(server models.CaddyServer, cert models.Certificate) managedCertificateServerStatus {
+	result := managedCertificateServerStatus{
+		ServerID: server.ID, ServerName: server.Name, Deployed: true, Status: "unavailable",
+		ProbeName: managedCertificateProbeName(cert),
+	}
+	if result.ProbeName == "" {
+		result.Error = "no certificate subject configured"
+		return result
+	}
+	host := s.caddyDialHost(server.ID)
+	if host == "" {
+		host = result.ProbeName
+	}
+	target := net.JoinHostPort(strings.Trim(host, "[]"), "443")
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := tls.DialWithDialer(dialer, "tcp", target, &tls.Config{
+		ServerName:         result.ProbeName,
+		InsecureSkipVerify: true, // nolint:gosec // diagnostic probe: hostname and expiry are checked below, including expired certs
+		MinVersion:         tls.VersionTLS12,
+	})
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer conn.Close()
+	peers := conn.ConnectionState().PeerCertificates
+	if len(peers) == 0 {
+		result.Error = "server returned no peer certificate"
+		return result
+	}
+	leaf := peers[0]
+	if err := leaf.VerifyHostname(result.ProbeName); err != nil {
+		result.Status = "mismatch"
+		result.Error = err.Error()
+		return result
+	}
+	expires := leaf.NotAfter.UTC()
+	result.ExpiresAt = &expires
+	result.DaysLeft = int(time.Until(expires).Hours() / 24)
+	result.Issuer = leaf.Issuer.CommonName
+	switch {
+	case result.DaysLeft < 0:
+		result.Status = "expired"
+	case result.DaysLeft < 30:
+		result.Status = "expiring"
+	default:
+		result.Status = "healthy"
+	}
+	return result
+}
+
+// getManagedCertificateStatus reports the live certificate served by every
+// managed Caddy instance for an SNI name covered by this managed definition.
+// A synthetic child name lets wildcard-only certificates be inspected without
+// requiring public DNS for a real proxy hostname.
+func (s *Server) getManagedCertificateStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid certificate id")
+		return
+	}
+	visible, err := s.certListForRequest(r)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var cert *models.Certificate
+	for i := range visible {
+		if visible[i].ID == id {
+			cert = &visible[i]
+			break
+		}
+	}
+	if cert == nil {
+		writeJSONError(w, http.StatusNotFound, "certificate not found")
+		return
+	}
+	if cert.Source != models.CertSourceManaged {
+		writeJSONError(w, http.StatusBadRequest, "certificate is not managed by ACME")
+		return
+	}
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	results := make([]managedCertificateServerStatus, len(servers))
+	var wg sync.WaitGroup
+	for i, server := range servers {
+		if server.Type != models.CaddyServerTypeManaged {
+			results[i] = managedCertificateServerStatus{
+				ServerID: server.ID, ServerName: server.Name, Status: "external",
+			}
+			continue
+		}
+		deployed := false
+		if serverCerts, listErr := models.ListCertificates(s.DB, server.ID); listErr == nil {
+			for _, serverCert := range serverCerts {
+				if serverCert.Source == models.CertSourceManaged && sameDomainSet(serverCert.DomainList(), cert.DomainList()) {
+					deployed = true
+					break
+				}
+			}
+		}
+		if !deployed {
+			results[i] = managedCertificateServerStatus{
+				ServerID: server.ID, ServerName: server.Name, Status: "not_configured",
+			}
+			continue
+		}
+		wg.Add(1)
+		go func(index int, srv models.CaddyServer) {
+			defer wg.Done()
+			results[index] = s.probeManagedCertificate(srv, *cert)
+		}(i, server)
+	}
+	wg.Wait()
+	writeJSON(w, http.StatusOK, map[string]any{"servers": results})
+}
+
 func (s *Server) newCertificate(w http.ResponseWriter, r *http.Request) {
 	// v2.7.3: Users list fuels the admin-only Owner picker on the form.
 	// Non-admins get nil — the template skips rendering the picker.
@@ -7228,7 +7376,7 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 	applyPlainHTTPServer(proposed, httpRoutes)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
-	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws))
+	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws, certs))
 	removeUnsupportedSkipRedirects(proposed)
 	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, buildSkipAccessLogs(proxies))
@@ -7836,7 +7984,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	routes := append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	loadPEM, loadFiles := buildCertLoaders(certs)
-	skipList := buildSkipCertificates(proxies, redirs, raws)
+	skipList := buildSkipCertificates(proxies, redirs, raws, certs)
 	skipAccessLogs := buildSkipAccessLogs(proxies)
 	// v2.9.0: per-SNI TLS minimum-version connection policies. nil when no
 	// host has a min version configured — writeTLSConnectionPoliciesSubtree
@@ -8212,7 +8360,7 @@ func buildCertLoaders(certs []models.Certificate) (loadPEM, loadFiles []any) {
 	return
 }
 
-func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute) []any {
+func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) []any {
 	set := map[string]struct{}{}
 	for _, p := range proxies {
 		if p.CertificateID == 0 {
@@ -8246,6 +8394,48 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 				set[h] = struct{}{}
 			}
 		}
+	}
+	// Auto-selected exact hosts covered by a standalone managed wildcard must
+	// remain HTTPS-enabled but must not trigger their own ACME order. Caddy's
+	// skip_certificates setting provides exactly that behavior: the wildcard
+	// route obtains the wildcard certificate, and the exact route reuses it
+	// from Caddy's cache. Never skip wildcard subjects themselves, because
+	// those are what command Caddy to obtain the managed certificate.
+	addCoveredExact := func(hosts []string, enabled, sslEnabled bool, certificateID int64) {
+		if !enabled || !sslEnabled || certificateID != 0 {
+			return
+		}
+		for _, host := range hosts {
+			host = strings.ToLower(strings.TrimSpace(host))
+			if host == "" || strings.HasPrefix(host, "*.") {
+				continue
+			}
+			for _, cert := range certs {
+				if cert.Source != models.CertSourceManaged {
+					continue
+				}
+				covered := false
+				for _, certDomain := range cert.DomainList() {
+					if strings.HasPrefix(strings.TrimSpace(certDomain), "*.") && managedCertificateCovers(certDomain, host) {
+						covered = true
+						break
+					}
+				}
+				if covered {
+					set[host] = struct{}{}
+					break
+				}
+			}
+		}
+	}
+	for _, proxy := range proxies {
+		addCoveredExact(proxy.DomainList(), proxy.Enabled, proxy.SSLEnabled, proxy.CertificateID)
+	}
+	for _, redirect := range redirs {
+		addCoveredExact(redirect.DomainList(), redirect.Enabled, redirect.SSLEnabled, redirect.CertificateID)
+	}
+	for _, raw := range raws {
+		addCoveredExact(rawRouteHosts(raw), raw.Enabled, true, raw.CertificateID)
 	}
 	out := make([]any, 0, len(set))
 	for d := range set {

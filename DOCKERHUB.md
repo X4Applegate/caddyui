@@ -139,7 +139,7 @@ Per-host export also available from the proxy-host edit page.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.17.1`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.17.2`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 
