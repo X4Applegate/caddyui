@@ -48,13 +48,19 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
+### What's new in v2.17.2
 
-### What's new in v2.14
+- **Enforced Auto wildcard reuse** — Auto TLS suppresses redundant exact-host issuance when a managed wildcard covers the name. *(v2.17.2)*
+- **Live per-server renewal status** — edit a managed certificate to inspect each server's live expiry, issuer, deployment, and renewal health. *(v2.17.2)*
+- **Multi-server managed wildcard reuse** — copy managed certificate definitions to selected Caddy instances, or let proxy **Also deploy to** automatically discover and replicate a covering wildcard on each target. Every server keeps its own ACME order and private key. *(v2.17.1)*
+- **Standalone managed wildcard certificates** — **Certificates → New → Managed ACME (DNS-01)** obtains and renews `*.example.com` or `*.sub.example.com` without a proxy host, pasted PEM, or exported private key. *(v2.17.0)*
+
+See the [complete managed wildcard workflow](#managed-wildcard-certificates-v217) below.
+
+### Earlier highlights
 
 - **Import SSL from Porkbun** — new button on the Certificates page (visible when Porkbun credentials are saved) that opens a domain picker and pulls the SSL bundle directly from your Porkbun account into CaddyUI as a stored PEM certificate. *(v2.14.0)*
 - **Porkbun API v3 full compatibility** — fixed JSON type mismatches where the Porkbun API returns integer fields (`whoisPrivacy`, `autoRenew`, `securityLock`, `apiAccess`, `notLocal`) as quoted strings; all domain and DNS decode paths now handle both forms transparently. SSL retrieve. *(v2.14.1, v2.14.2)*
-
-### Recent releases
 
 - **⌘K / Ctrl+K command palette** — global search across every proxy host, redirection, raw route, and certificate. `↑/↓ Enter Esc`. Color-coded type pills. *(v2.11.5)*
 - **Bulk multi-select on every list page** — checkbox + select-all + floating Enable / Disable / Delete bar on `/proxy-hosts`, `/redirection-hosts`, `/raw-routes`, and `/certificates`. *(v2.11.6, .9, .10)*
@@ -64,9 +70,6 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 - **AI assistant — bring your own backend** *(v2.11.15, v2.12.36+)* — opt-in floating chat button that answers Caddy / TLS / DNS questions and writes production-grade Caddyfile snippets on demand. Pick any backend in Settings → AI assistant: **Ollama (local)** for fully-offline on your GPU, **Ollama Cloud** for hosted MoE models that won't fit on a homelab card (qwen3-coder:480b, gpt-oss:120b, etc.), **Anthropic Claude** (Haiku 4.5 / Sonnet 4.6 / Opus 4.7), or **any OpenAI-compatible API** (also covers OpenRouter, Groq, Together, vLLM, LM Studio). Conversation memory (multi-turn), markdown rendering, and a custom system prompt setting are shared by every backend.
 - **AI auto-fill — chat your hosts into existence** *(v2.12.11+)* — describe what you want in plain English (*"set up nextcloud at cloud.example.com pointing to nextcloud:80"*, *"redirect old.example.com to new.example.com permanently"*) and the assistant emits a structured `create_proxy_host(...)` / `create_redirection(...)` tool call. The chat panel renders a confirmation card with the exact arguments — click **Apply** and the resource is created, the form is filled in for you, and Caddy is auto-synced. Every AI-driven exec writes an `ai_tool_call` activity-log entry so admins can audit what the AI did. Works on Claude 4.x, GPT-4, qwen2.5+, llama3.1+, and gemma2.
 - **DNS-01 certificate issuance** — select Managed DNS on a proxy, redirection, or advanced route and CaddyUI reuses that credential profile for Let's Encrypt DNS-01. Supports Cloudflare, Porkbun, Namecheap, GoDaddy, DigitalOcean, and Hetzner; the connected Caddy needs the matching `caddy-dns` plugin. Wildcards are supported. *(v2.16.7)*
-- **Standalone managed wildcard certificates** — Certificates → New → Managed ACME (DNS-01) obtains and renews `*.example.com` or `*.sub.example.com` without a proxy host, pasted PEM, or exported private key. *(v2.17.0)*
-- **Multi-server managed wildcard reuse** — copy managed certificate definitions to selected Caddy instances, or let proxy “Also deploy to” automatically discover and replicate a covering wildcard on each target. Every server keeps its own ACME order and private key. *(v2.17.1)*
-- **Enforced Auto wildcard reuse + live renewal status** — Auto TLS suppresses redundant exact-host issuance when a managed wildcard covers the name. Edit the managed certificate to inspect each server's live expiry, issuer, deployment, and renewal health. *(v2.17.2)*
 - **Per-hostname DNS-record pre-flight** on multi-domain routes — checklist showing which records will be created vs already exist. *(v2.12.1)*
 - **Managed DNS on redirections** — closes the long-standing gap where redirects had no DNS plumbing. Now creates A records per hostname on save, deletes on row removal. *(v2.12.2)*
 - **Per-section Save buttons on Settings** — no more scroll-to-bottom for a one-toggle change. *(v2.12.6)*
