@@ -1,40 +1,92 @@
-{{define "title"}}Setup · CaddyUI{{end}}
+{{define "title"}}Set up CaddyUI{{end}}
+{{define "description"}}Create the first CaddyUI administrator and begin the guided environment setup.{{end}}
 {{define "content"}}
-<div class="max-w-md mx-auto mt-16">
-  <div class="flex items-center gap-2.5 justify-center mb-6">
-    <span class="relative inline-flex items-center justify-center w-10 h-10 rounded-xl bg-brand-500 shadow-card">
-      <svg viewBox="0 0 24 24" fill="none" class="w-5 h-5 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-    </span>
-    <span class="text-xl font-semibold tracking-tight text-ink-900">CaddyUI</span>
-  </div>
+<div class="setup-wizard">
+  <aside class="setup-wizard__story">
+    <a href="/setup" class="setup-wizard__brand" aria-label="CaddyUI setup">
+      <span class="setup-wizard__mark">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </span>
+      <span>CaddyUI</span>
+    </a>
 
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-8">
-    <h1 class="text-lg font-semibold text-ink-900 mb-1">Welcome to CaddyUI</h1>
-    <p class="text-sm text-ink-500 mb-6">Create the first admin user to get started.</p>
+    <div class="setup-wizard__intro">
+      <span class="setup-wizard__eyebrow">Enterprise setup</span>
+      <h1>Build a reliable Caddy control plane.</h1>
+      <p>Start with administrator identity, then verify Caddy, secure access, configure automation, and publish the first service.</p>
+    </div>
 
-    {{if .Error}}
-    <div class="bg-red-50 border border-red-200 text-red-800 px-3 py-2 rounded-lg mb-4 text-sm">{{.Error}}</div>
-    {{end}}
+    <ol class="setup-wizard__steps" aria-label="Setup journey">
+      <li class="is-current" aria-current="step">
+        <span>1</span><div><strong>Administrator</strong><small>Create the control-plane owner</small></div>
+      </li>
+      <li>
+        <span>2</span><div><strong>Caddy connection</strong><small>Verify the active environment</small></div>
+      </li>
+      <li>
+        <span>3</span><div><strong>Security &amp; automation</strong><small>Enable TOTP and optional DNS</small></div>
+      </li>
+      <li>
+        <span>4</span><div><strong>Publish service</strong><small>Validate, review, and deploy</small></div>
+      </li>
+    </ol>
 
-    <form method="post" action="/setup" class="space-y-4">
-      <div>
-        <label for="setup-name" class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
-        <input id="setup-name" name="name" autocomplete="name" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    <p class="setup-wizard__assurance">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></svg>
+      Setup state is derived from your real configuration. You can return to the readiness guide at any time.
+    </p>
+  </aside>
+
+  <main class="setup-wizard__main">
+    <div class="setup-wizard__form-shell">
+      <div class="setup-wizard__mobile-brand">
+        <span class="setup-wizard__mark">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        </span>
+        <span>CaddyUI</span>
       </div>
-      <div>
-        <label for="setup-email" class="block text-sm font-medium text-ink-800 mb-1.5">Email</label>
-        <input id="setup-email" name="email" type="email" autocomplete="email" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <div class="setup-wizard__form-heading">
+        <span>Step 1 of 4</span>
+        <h2>Create the first administrator</h2>
+        <p>This account owns settings, Caddy connections, access policy, and the initial deployment workflow.</p>
       </div>
-      <div>
-        <label for="setup-password" class="block text-sm font-medium text-ink-800 mb-1.5">Password</label>
-        <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-      </div>
-      <div>
-        <label for="setup-password-confirm" class="block text-sm font-medium text-ink-800 mb-1.5">Confirm password</label>
-        <input id="setup-password-confirm" name="password_confirm" type="password" autocomplete="new-password" required minlength="8" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-      </div>
-      <button class="w-full inline-flex items-center justify-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm py-2.5 rounded-lg shadow-sm transition">Create admin</button>
-    </form>
-  </div>
+
+      {{if .Error}}
+      <div class="setup-wizard__error" role="alert">{{.Error}}</div>
+      {{end}}
+
+      <form method="post" action="/setup" class="setup-wizard__form">
+        <div class="setup-field">
+          <label for="setup-name">Full name <span>Optional</span></label>
+          <input id="setup-name" name="name" autocomplete="name" placeholder="Richard Applegate" />
+          <small>Shown in account and audit context.</small>
+        </div>
+        <div class="setup-field">
+          <label for="setup-email">Administrator email</label>
+          <input id="setup-email" name="email" type="email" autocomplete="email" required placeholder="admin@example.com" />
+        </div>
+        <div class="setup-field-grid">
+          <div class="setup-field">
+            <label for="setup-password">Password</label>
+            <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="8" />
+          </div>
+          <div class="setup-field">
+            <label for="setup-password-confirm">Confirm password</label>
+            <input id="setup-password-confirm" name="password_confirm" type="password" autocomplete="new-password" required minlength="8" />
+          </div>
+        </div>
+        <div class="setup-password-note">
+          <span aria-hidden="true">i</span>
+          <p>Use at least 8 characters. The readiness guide will offer TOTP two-factor authentication immediately after account creation.</p>
+        </div>
+        <button class="setup-wizard__submit">
+          Create administrator and continue
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+
+      <p class="setup-wizard__footer">CaddyUI stores the password as a one-way hash. There is no default administrator credential.</p>
+    </div>
+  </main>
 </div>
 {{end}}

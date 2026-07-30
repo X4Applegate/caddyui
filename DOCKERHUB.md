@@ -72,20 +72,28 @@ The container will print a clear error message at startup if the directory isn't
 
 ## ✨ Headline features
 
-### 🧭 Enterprise operations center
+### 🧭 Guided enterprise operations
 
-CaddyUI v2.18 reorganizes daily work around the active environment instead of isolated feature pages:
+CaddyUI v2.20 organizes setup and daily work around operator intent and the active environment:
 
 - Active Caddy server, connection state, last contact, last sync, and version in one operational header
+- Live **Getting Started** readiness guide driven by the selected environment's real configuration state
+- First-run journey covering administrator identity, Caddy connectivity, account security, optional DNS automation, and the first published service
+- Guided Hostname → Upstream → Policy → Review workflow for publishing proxy hosts
+- One-click access to the full advanced editor for experienced Caddy operators
+- Stable semantic colors: blue action, green healthy, amber degraded, red failure, violet automation, gray neutral
+- Caddy Fleet inventory plus an Identify → Connect → Authorize environment connection workflow
 - Route inventory and host-health status with direct links into affected resources
 - Live system load, memory, requests, and upstream health for administrators
 - Prioritized reliability and security actions with one-click remediation paths
 - Multi-server fleet availability, recent configuration activity, and live proxy reachability
-- Persistent command search plus visible Create proxy host, Sync Caddy, and Manage servers actions
+- Persistent command search plus a global Create menu, Sync Caddy, and fleet management actions
 - Workflow-based navigation for Traffic, Observe, Configuration, Developer, and Administration tasks
 - Responsive light/dark layouts plus Carbon Orange, Forest, Rose, and Indigo themes
 
-The shared semantic design system also provides consistent panels, buttons, metrics, tables, focus states, and reduced-motion behavior as the remaining workflows are progressively migrated.
+DNS automation is an optional readiness capability, so ordinary deployments can
+reach 100% without provider credentials. The guide stays available after
+initial setup and works as an ongoing environment checklist.
 
 ### 🏆 Perfect Lighthouse score
 
@@ -175,7 +183,7 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.19.0`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.20.0`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 

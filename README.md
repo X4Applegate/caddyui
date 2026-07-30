@@ -48,7 +48,19 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### What's new in v2.19.0
+### What's new in v2.20.0
+
+- **Guided first-run journey** — create the administrator account, verify the Caddy control plane, secure access, optionally configure DNS automation, and publish the first service through one live readiness guide.
+- **Publish-service wizard** — new proxy hosts follow Hostname → Upstream → Policy → Review, with native validation and a deployment summary before anything is written to Caddy.
+- **Enterprise semantic colors** — blue is action/current context, green is healthy/enabled/completed, amber is pending/degraded/maintenance, red is failure/offline/destructive, violet is TLS/automation/managed policy, and gray is disabled/unknown/informational.
+- **Professional fleet operations** — Caddy environments are organized as an inventory with health, endpoint, management policy, last contact, and scoped actions; connecting a server follows Identify → Connect → Authorize.
+- **Faster daily workflows** — a global Create menu, persistent environment context, consistent **Publish service** language, and a one-click advanced editor keep both new and experienced operators moving.
+
+The guide reads real configuration state rather than a one-time “completed”
+flag. DNS automation is optional and never prevents an otherwise operational
+environment from reaching 100% readiness.
+
+### Database and performance improvements in v2.19
 
 - **MariaDB backend** — keep embedded SQLite for simple installs or connect CaddyUI to MariaDB for concurrent enterprise workloads, replication, and platform-managed backups.
 - **Safe database migration** — copy an existing SQLite installation into an empty MariaDB database with a read-only, batched migration command. Large analytics histories can be intentionally skipped.
@@ -446,13 +458,20 @@ All configuration is done through the web UI. No config files needed beyond the 
 ### First Run
 
 1. Open the UI at your configured port.
-2. Create the first admin account via the setup wizard.
-3. The bootstrap Caddy server is automatically added (using `CADDY_ADMIN_URL`).
-4. Add additional Caddy servers under **System → Caddy Servers**.
+2. Create the first administrator account in the account setup wizard.
+3. Continue into **Getting Started**, which checks the real state of the selected environment.
+4. Verify the bootstrap Caddy connection created from `CADDY_ADMIN_URL`.
+5. Enable administrator TOTP and save the recovery codes.
+6. Add DNS credentials only when you need managed records or DNS-01/wildcard certificates.
+7. Select **Publish a service** and complete Hostname → Upstream → Policy → Review.
+
+Add additional Caddy environments under **Administration → Caddy Fleet**.
+The readiness guide stays available after setup, so it can be used as an
+operational checklist whenever the environment changes.
 
 ### SMTP Notifications
 
-Configure under **System → Settings → Email (SMTP)**:
+Configure under **Administration → Settings → Email (SMTP)**:
 
 - Supports STARTTLS (port 587), implicit TLS (port 465), and plain (port 25)
 - Cert-expiry emails fire once per 24 h per domain when within the configured threshold
@@ -460,7 +479,7 @@ Configure under **System → Settings → Email (SMTP)**:
 
 ### Multi-Server
 
-Add additional Caddy instances under **System → Caddy Servers**. Switch the active server with the dropdown in the sidebar. All proxy hosts, redirections, routes, and certificates are scoped per server.
+Add additional Caddy instances under **Administration → Caddy Fleet**. Switch the active environment with the selector in the application shell. All proxy hosts, redirections, routes, and certificates are scoped per server.
 
 Edge / remote hosts do **not** need to run a CaddyUI container — just Caddy with its admin API reachable over a private network (WireGuard, Tailscale, VPC). See [Agent mode](#agent-mode-edge-only-caddy-no-caddyui) for the minimal compose file.
 

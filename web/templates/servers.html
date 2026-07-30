@@ -1,141 +1,152 @@
-{{define "title"}}Caddy Servers · CaddyUI{{end}}
+{{define "title"}}Caddy Fleet · CaddyUI{{end}}
 {{define "content"}}
-<div class="flex items-start justify-between mb-8 gap-6">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Caddy Servers</h1>
-    <p class="text-sm text-ink-500 mt-1 max-w-2xl">
-      Each row is a Caddy instance CaddyUI can reach over its admin API. Use this to fleet-manage
-      multiple Caddy boxes from one place. Status is refreshed every 30s by a background health poller.
-    </p>
-  </div>
-  <a href="/servers/new" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition whitespace-nowrap">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    Add Server
-  </a>
-</div>
+<div class="enterprise-page">
+  <header class="enterprise-page-header">
+    <div>
+      <div class="enterprise-page-header__eyebrow">Administration · control plane</div>
+      <h1>Caddy fleet</h1>
+      <p>Manage the Caddy environments this control plane can observe or configure. Resource changes always apply to the environment selected in the application shell.</p>
+    </div>
+    <div class="enterprise-page-header__actions">
+      <a href="/onboarding" class="ui-button ui-button--secondary">Readiness guide</a>
+      <a href="/servers/new" class="ui-button ui-button--primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Add Caddy server
+      </a>
+    </div>
+  </header>
 
-<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-x-auto">
-  <table class="hidden md:table w-full text-sm min-w-[1000px]">
-    <thead class="bg-ink-50/50 text-left">
-      <tr class="text-xs uppercase tracking-wider text-ink-500">
-        <th class="px-5 py-3 font-medium">Name</th>
-        <th class="px-5 py-3 font-medium">Status</th>
-        <th class="px-5 py-3 font-medium">Admin URL</th>
-        <th class="px-5 py-3 font-medium">Type</th>
-        <th class="px-5 py-3 font-medium">Tags</th>
-        <th class="px-5 py-3 font-medium">Last Contact</th>
-        <th class="px-5 py-3 font-medium text-right sticky right-0 bg-ink-50 shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)] z-10">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
+  <section class="fleet-context ui-panel">
+    <div class="fleet-context__metric">
+      <span>Registered environments</span>
+      <strong>{{len .Servers}}</strong>
+    </div>
+    <div class="fleet-context__message">
+      <span class="ui-status ui-status--automation">Managed</span>
+      <p>CaddyUI validates and pushes configuration.</p>
+    </div>
+    <div class="fleet-context__message">
+      <span class="ui-status ui-status--neutral">External</span>
+      <p>Monitoring and inventory only; configuration is never pushed.</p>
+    </div>
+  </section>
+
+  <section class="ui-section" aria-labelledby="fleet-inventory-title">
+    <div class="ui-section-header">
+      <div>
+        <h2 class="ui-section-header__title" id="fleet-inventory-title">Environment inventory</h2>
+        <p class="ui-section-header__description">Health refreshes every 30 seconds. Green means reachable; red means the health threshold has failed.</p>
+      </div>
+    </div>
+
+    <div class="hidden md:block ui-table-wrap">
+      <table class="ui-table fleet-table">
+        <thead>
+          <tr>
+            <th>Environment</th>
+            <th>Health</th>
+            <th>Admin endpoint</th>
+            <th>Policy</th>
+            <th>Last contact</th>
+            <th class="text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Servers}}
+          <tr>
+            <td>
+              <div class="fleet-name">
+                <strong>{{.Name}}</strong>
+                {{if and $.CurrentServer (eq $.CurrentServer.ID .ID)}}<span class="ui-status ui-status--info">Current</span>{{end}}
+              </div>
+              <div class="fleet-tags">
+                {{if .Version}}<span class="version-pill">{{.Version}}</span>{{end}}
+                {{range .TagList}}<span>{{.}}</span>{{end}}
+              </div>
+            </td>
+            <td>
+              {{if eq .Status "online"}}<span class="ui-status ui-status--success">Online</span>
+              {{else if eq .Status "offline"}}<span class="ui-status ui-status--danger">Offline</span>
+              {{else}}<span class="ui-status ui-status--neutral">Unknown</span>{{end}}
+            </td>
+            <td><code class="fleet-endpoint" title="{{.AdminURL}}">{{.AdminURL}}</code></td>
+            <td>
+              {{if eq .Type "managed"}}<span class="ui-status ui-status--automation">Managed</span>
+              {{else}}<span class="ui-status ui-status--neutral">External</span>{{end}}
+            </td>
+            <td class="fleet-last-contact">
+              {{if .LastContactAt.Valid}}{{fmtRel .LastContactAt.Time}}{{else}}Never{{end}}
+            </td>
+            <td>
+              <div class="fleet-actions">
+                {{if not (and $.CurrentServer (eq $.CurrentServer.ID .ID))}}
+                <form method="post" action="/servers/{{.ID}}/select"><button class="ui-button ui-button--secondary">Select</button></form>
+                {{end}}
+                <a href="/servers/{{.ID}}/config" class="ui-button ui-button--quiet">Config</a>
+                <a href="/servers/{{.ID}}/edit" class="ui-button ui-button--quiet">Edit</a>
+                <form method="post" action="/servers/{{.ID}}/delete" onsubmit="return confirm('Delete server {{.Name}}? Its config rows will be orphaned.')">
+                  <button class="fleet-delete">Delete</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {{else}}
+          <tr>
+            <td colspan="6">
+              <div class="ui-empty">
+                <div class="ui-empty__title">No Caddy environments registered</div>
+                <div class="ui-empty__body">Add a managed or external Caddy server to begin.</div>
+                <a href="/servers/new" class="ui-button ui-button--primary mt-4">Add Caddy server</a>
+              </div>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="md:hidden fleet-mobile-list">
       {{range .Servers}}
-      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
-        <td class="px-5 py-3">
-          <div class="font-medium text-ink-800">{{.Name}}</div>
-          {{if .Version}}<span class="version-pill mt-0.5" title="Caddy version reported by this server">{{.Version}}</span>{{end}}
-        </td>
-        <td class="px-5 py-3">
-          {{if eq .Status "online"}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>online</span>
-          {{else if eq .Status "offline"}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>offline</span>
-          {{else}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>unknown</span>
-          {{end}}
-        </td>
-        <td class="px-5 py-3 font-mono text-xs text-ink-600 break-all">{{.AdminURL}}</td>
-        <td class="px-5 py-3">
-          {{if eq .Type "managed"}}
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">Managed</span>
-          {{else}}
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">External</span>
-          {{end}}
-        </td>
-        <td class="px-5 py-3">
-          {{if .TagList}}
-            <div class="flex flex-wrap gap-1">
-              {{range .TagList}}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">{{.}}</span>{{end}}
+      <article class="ui-panel fleet-mobile-card">
+        <div class="fleet-mobile-card__header">
+          <div>
+            <div class="fleet-name">
+              <strong>{{.Name}}</strong>
+              {{if and $.CurrentServer (eq $.CurrentServer.ID .ID)}}<span class="ui-status ui-status--info">Current</span>{{end}}
             </div>
-          {{else}}<span class="text-ink-400 text-xs italic">No tags</span>{{end}}
-        </td>
-        <td class="px-5 py-3 text-xs text-ink-500">
-          {{if .LastContactAt.Valid}}{{fmtIn .LastContactAt.Time "Jan 2, 2006 3:04 PM"}}{{else}}<span class="text-ink-400">never</span>{{end}}
-        </td>
-        <td class="px-5 py-3 text-right whitespace-nowrap sticky right-0 bg-white shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)]">
-          <form method="post" action="/servers/{{.ID}}/select" class="inline mr-3">
-            <button class="text-brand-600 hover:text-brand-700 text-sm font-medium transition">Select</button>
-          </form>
-          <a href="/servers/{{.ID}}/config" class="text-ink-500 hover:text-ink-900 text-sm transition mr-3">Config</a>
-          <a href="/servers/{{.ID}}/edit" class="text-ink-500 hover:text-ink-900 text-sm transition mr-3">Edit</a>
-          <form method="post" action="/servers/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete server {{.Name}}? Its config rows will be orphaned.')">
-            <button class="text-red-600 hover:text-red-700 text-sm transition">Delete</button>
-          </form>
-        </td>
-      </tr>
-      {{else}}
-      <tr>
-        <td colspan="7" class="px-5 py-16 text-center">
-          <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            <code class="fleet-endpoint">{{.AdminURL}}</code>
           </div>
-          <div class="text-ink-600 text-sm font-medium">No Caddy servers</div>
-          <a href="/servers/new" class="inline-block mt-3 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Add one</a>
-        </td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-
-  <div class="lg:hidden divide-y divide-ink-100">
-    {{range .Servers}}
-    <div class="p-4 space-y-3">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-ink-800 font-medium truncate">{{.Name}}</span>
-            {{if .Version}}<span class="version-pill" title="Caddy version reported by this server">{{.Version}}</span>{{end}}
-          </div>
-          <div class="font-mono text-xs text-ink-500 break-all mt-0.5">{{.AdminURL}}</div>
+          {{if eq .Status "online"}}<span class="ui-status ui-status--success">Online</span>
+          {{else if eq .Status "offline"}}<span class="ui-status ui-status--danger">Offline</span>
+          {{else}}<span class="ui-status ui-status--neutral">Unknown</span>{{end}}
         </div>
-        {{if eq .Status "online"}}
-          <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>online</span>
-        {{else if eq .Status "offline"}}
-          <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>offline</span>
-        {{else}}
-          <span class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>unknown</span>
-        {{end}}
+        <div class="fleet-mobile-card__meta">
+          {{if eq .Type "managed"}}<span class="ui-status ui-status--automation">Managed</span>{{else}}<span class="ui-status ui-status--neutral">External</span>{{end}}
+          {{if .Version}}<span class="version-pill">{{.Version}}</span>{{end}}
+          <span>Last contact: {{if .LastContactAt.Valid}}{{fmtRel .LastContactAt.Time}}{{else}}never{{end}}</span>
+        </div>
+        <div class="fleet-actions">
+          {{if not (and $.CurrentServer (eq $.CurrentServer.ID .ID))}}
+          <form method="post" action="/servers/{{.ID}}/select"><button class="ui-button ui-button--secondary">Select</button></form>
+          {{end}}
+          <a href="/servers/{{.ID}}/config" class="ui-button ui-button--quiet">Config</a>
+          <a href="/servers/{{.ID}}/edit" class="ui-button ui-button--quiet">Edit</a>
+          <form method="post" action="/servers/{{.ID}}/delete" class="ml-auto" onsubmit="return confirm('Delete server {{.Name}}?')"><button class="fleet-delete">Delete</button></form>
+        </div>
+      </article>
+      {{else}}
+      <div class="ui-panel ui-empty">
+        <div class="ui-empty__title">No Caddy environments registered</div>
+        <div class="ui-empty__body">Add a managed or external Caddy server to begin.</div>
+        <a href="/servers/new" class="ui-button ui-button--primary mt-4">Add Caddy server</a>
       </div>
-      <div class="flex flex-wrap gap-1">
-        {{if eq .Type "managed"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">Managed</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">External</span>{{end}}
-        {{range .TagList}}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">{{.}}</span>{{end}}
-      </div>
-      <div class="text-xs text-ink-500">Last contact: {{if .LastContactAt.Valid}}{{fmtIn .LastContactAt.Time "Jan 2, 2006 3:04 PM"}}{{else}}<span class="text-ink-400">never</span>{{end}}</div>
-      <div class="flex items-center gap-4 pt-2 border-t border-ink-100 text-sm">
-        <form method="post" action="/servers/{{.ID}}/select" class="inline">
-          <button class="text-brand-600 hover:text-brand-700 font-medium transition">Select</button>
-        </form>
-        <a href="/servers/{{.ID}}/config" class="text-brand-600 hover:text-brand-700 font-medium transition">Config</a>
-        <a href="/servers/{{.ID}}/edit" class="text-brand-600 hover:text-brand-700 font-medium transition">Edit</a>
-        <form method="post" action="/servers/{{.ID}}/delete" class="inline ml-auto" onsubmit="return confirm('Delete server {{.Name}}?')">
-          <button class="text-red-600 hover:text-red-700 transition">Delete</button>
-        </form>
-      </div>
+      {{end}}
     </div>
-    {{else}}
-    <div class="px-5 py-16 text-center">
-      <div class="w-12 h-12 mx-auto bg-ink-100 rounded-full flex items-center justify-center mb-3">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-ink-400"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-      </div>
-      <div class="text-ink-600 text-sm font-medium">No Caddy servers</div>
-      <a href="/servers/new" class="inline-block mt-3 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Add one</a>
-    </div>
-    {{end}}
+  </section>
+
+  <div class="fleet-footnote">
+    <span class="semantic-dot semantic-dot--warning"></span>
+    <p>Protect TCP admin endpoints with a private network, WireGuard/Tailscale, or an authenticated reverse proxy. For local Caddy, a Unix socket avoids network exposure entirely.</p>
   </div>
 </div>
-
-<p class="text-xs text-ink-400 mt-3 max-w-3xl">
-  Use <strong class="text-ink-500">Select</strong> to switch the active server — all proxy hosts,
-  redirects, certificates, and routes you create or edit will be scoped to that server.
-  The active server is remembered in a browser cookie.
-</p>
 {{end}}

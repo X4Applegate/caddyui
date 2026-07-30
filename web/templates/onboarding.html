@@ -1,0 +1,187 @@
+{{define "title"}}Getting Started · CaddyUI{{end}}
+{{define "content"}}
+<div class="enterprise-page onboarding-page">
+  <header class="enterprise-page-header">
+    <div>
+      <div class="enterprise-page-header__eyebrow">Guided setup</div>
+      <h1>Prepare your Caddy environment</h1>
+      <p>Follow the operating sequence once, then use the same workflow whenever you add a server or publish a service.</p>
+    </div>
+    <div class="enterprise-page-header__actions">
+      <a href="/" class="ui-button ui-button--secondary">Open operations</a>
+      {{if ne .User.Role "viewer"}}
+      <a href="/proxy-hosts/new" class="ui-button ui-button--primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Publish a service
+      </a>
+      {{end}}
+    </div>
+  </header>
+
+  <section class="onboarding-hero ui-panel" aria-labelledby="setup-progress-title">
+    <div class="onboarding-hero__copy">
+      <span class="ui-status {{if eq .CompletedSteps 4}}ui-status--success{{else}}ui-status--info{{end}}">
+        {{.CompletedSteps}} of 4 required foundations ready
+      </span>
+      <h2 id="setup-progress-title">{{if eq .CompletedSteps 4}}Environment ready for operations{{else}}Finish the recommended foundation{{end}}</h2>
+      <p>CaddyUI checks real configuration state, so this page remains useful as an environment readiness review—not just a one-time tutorial.</p>
+    </div>
+    <div class="onboarding-progress" role="progressbar" aria-valuemin="0" aria-valuemax="4" aria-valuenow="{{.CompletedSteps}}" aria-label="Setup progress">
+      <div class="onboarding-progress__track">
+        <span style="width: {{mulDivInt .CompletedSteps 100 4}}%"></span>
+      </div>
+      <div class="onboarding-progress__meta">
+        <span>{{mulDivInt .CompletedSteps 100 4}}% complete</span>
+        <span>DNS automation is optional</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="onboarding-layout">
+    <ol class="onboarding-steps" aria-label="Environment setup steps">
+      <li class="onboarding-step onboarding-step--complete">
+        <div class="onboarding-step__rail"><span>1</span></div>
+        <article class="ui-panel onboarding-step__card">
+          <div class="onboarding-step__header">
+            <div>
+              <div class="onboarding-step__kicker">Identity</div>
+              <h2>Administrator account</h2>
+            </div>
+            <span class="ui-status ui-status--success">Ready</span>
+          </div>
+          <p>Your first administrator account is active. Account-level security is handled separately in step four.</p>
+          <div class="onboarding-step__context">
+            <span class="onboarding-context-label">Signed in as</span>
+            <strong>{{.User.Email}}</strong>
+          </div>
+        </article>
+      </li>
+
+      <li class="onboarding-step {{if .ServerConnected}}onboarding-step--complete{{else}}onboarding-step--current{{end}}">
+        <div class="onboarding-step__rail"><span>2</span></div>
+        <article class="ui-panel onboarding-step__card">
+          <div class="onboarding-step__header">
+            <div>
+              <div class="onboarding-step__kicker">Control plane</div>
+              <h2>Connect and verify Caddy</h2>
+            </div>
+            {{if .ServerConnected}}<span class="ui-status ui-status--success">Online</span>
+            {{else if and .CurrentServer (eq .CurrentServer.Status "offline")}}<span class="ui-status ui-status--danger">Offline</span>
+            {{else if .CurrentServer}}<span class="ui-status ui-status--warning">Waiting for health check</span>
+            {{else}}<span class="ui-status ui-status--danger">Not configured</span>{{end}}
+          </div>
+          <p>CaddyUI needs a reachable Caddy admin API before it can validate and deploy configuration.</p>
+          {{if .CurrentServer}}
+          <div class="onboarding-server-context">
+            <div>
+              <span class="onboarding-context-label">Environment</span>
+              <strong>{{.CurrentServer.Name}}</strong>
+            </div>
+            <code>{{.CurrentServer.AdminURL}}</code>
+          </div>
+          {{end}}
+          {{if eq .User.Role "admin"}}
+          <div class="onboarding-step__actions">
+            {{if .CurrentServer}}<a href="/servers/{{.CurrentServer.ID}}/edit" class="ui-button ui-button--secondary">Review connection</a>{{end}}
+            <a href="/servers" class="ui-section-header__action">Manage Caddy fleet →</a>
+          </div>
+          {{end}}
+        </article>
+      </li>
+
+      <li class="onboarding-step {{if .DNSConfigured}}onboarding-step--complete{{end}}">
+        <div class="onboarding-step__rail"><span>3</span></div>
+        <article class="ui-panel onboarding-step__card">
+          <div class="onboarding-step__header">
+            <div>
+              <div class="onboarding-step__kicker">Optional capability</div>
+              <h2>Configure DNS credentials</h2>
+            </div>
+            {{if .DNSConfigured}}<span class="ui-status ui-status--success">Configured</span>
+            {{else}}<span class="ui-status ui-status--neutral">Optional</span>{{end}}
+          </div>
+          <p>Saved provider profiles let CaddyUI create DNS records and let Caddy complete DNS-01 challenges for wildcard certificates.</p>
+          {{if eq .User.Role "admin"}}
+          <div class="onboarding-step__actions">
+            <a href="/settings#settings-dns" class="ui-button {{if .DNSConfigured}}ui-button--secondary{{else}}ui-button--primary{{end}}">
+              {{if .DNSConfigured}}Review DNS profiles{{else}}Add DNS provider{{end}}
+            </a>
+            <a href="/docs#proxy-hosts" class="ui-section-header__action">How automation works →</a>
+          </div>
+          {{end}}
+        </article>
+      </li>
+
+      <li class="onboarding-step {{if .TOTPEnabled}}onboarding-step--complete{{end}}">
+        <div class="onboarding-step__rail"><span>4</span></div>
+        <article class="ui-panel onboarding-step__card">
+          <div class="onboarding-step__header">
+            <div>
+              <div class="onboarding-step__kicker">Security</div>
+              <h2>Protect the administrator account</h2>
+            </div>
+            {{if .TOTPEnabled}}<span class="ui-status ui-status--success">Protected</span>
+            {{else}}<span class="ui-status ui-status--warning">Recommended</span>{{end}}
+          </div>
+          <p>Enable TOTP and save the recovery codes before putting CaddyUI on a shared or internet-reachable network.</p>
+          <div class="onboarding-step__actions">
+            <a href="/totp/setup" class="ui-button {{if .TOTPEnabled}}ui-button--secondary{{else}}ui-button--primary{{end}}">
+              {{if .TOTPEnabled}}Review two-factor auth{{else}}Enable two-factor auth{{end}}
+            </a>
+            {{if eq .User.Role "admin"}}<a href="/settings#settings-security" class="ui-section-header__action">Security policy →</a>{{end}}
+          </div>
+        </article>
+      </li>
+
+      <li class="onboarding-step {{if .ProxyCount}}onboarding-step--complete{{end}}">
+        <div class="onboarding-step__rail"><span>5</span></div>
+        <article class="ui-panel onboarding-step__card">
+          <div class="onboarding-step__header">
+            <div>
+              <div class="onboarding-step__kicker">Traffic</div>
+              <h2>Publish your first service</h2>
+            </div>
+            {{if .ProxyCount}}<span class="ui-status ui-status--success">{{.ProxyCount}} configured</span>
+            {{else}}<span class="ui-status ui-status--info">Next step</span>{{end}}
+          </div>
+          <p>The guided publishing workflow checks the public hostname, upstream target, TLS/DNS automation, and deployment scope before saving.</p>
+          {{if ne .User.Role "viewer"}}
+          <div class="onboarding-step__actions">
+            <a href="/proxy-hosts/new" class="ui-button ui-button--primary">Publish a service</a>
+            <a href="/proxy-hosts/new?mode=advanced" class="ui-section-header__action">Open advanced editor →</a>
+          </div>
+          {{else}}
+          <div class="onboarding-step__actions"><a href="/proxy-hosts" class="ui-button ui-button--secondary">View proxy hosts</a></div>
+          {{end}}
+        </article>
+      </li>
+    </ol>
+
+    <aside class="onboarding-aside">
+      <section class="ui-panel onboarding-principles">
+        <div class="onboarding-principles__header">
+          <span class="onboarding-principles__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></svg>
+          </span>
+          <div><h2>Enterprise guardrails</h2><p>What the interface means everywhere.</p></div>
+        </div>
+        <dl class="semantic-legend">
+          <div><dt><span class="semantic-dot semantic-dot--action"></span>Blue</dt><dd>Primary action or current context</dd></div>
+          <div><dt><span class="semantic-dot semantic-dot--success"></span>Green</dt><dd>Healthy, enabled, or completed</dd></div>
+          <div><dt><span class="semantic-dot semantic-dot--warning"></span>Amber</dt><dd>Pending, degraded, or maintenance</dd></div>
+          <div><dt><span class="semantic-dot semantic-dot--danger"></span>Red</dt><dd>Failure, offline, or destructive</dd></div>
+          <div><dt><span class="semantic-dot semantic-dot--automation"></span>Violet</dt><dd>TLS, automation, or managed policy</dd></div>
+          <div><dt><span class="semantic-dot semantic-dot--neutral"></span>Gray</dt><dd>Disabled, unknown, or informational</dd></div>
+        </dl>
+      </section>
+
+      <section class="ui-panel onboarding-operating-model">
+        <div class="onboarding-step__kicker">Operating model</div>
+        <h2>Plan → Validate → Deploy → Observe</h2>
+        <p>Creation workflows gather intent first, validate connectivity and policy second, then show a deployment review before changing Caddy.</p>
+        <a href="/docs" class="ui-section-header__action">Read the operations guide →</a>
+      </section>
+    </aside>
+  </div>
+</div>
+{{end}}

@@ -1,12 +1,21 @@
 {{define "title"}}{{if .Host.ID}}Edit{{else}}New{{end}} Proxy Host · CaddyUI{{end}}
 {{define "content"}}
-<div class="mb-8">
-  <a href="/proxy-hosts" class="text-xs text-ink-500 hover:text-ink-900 transition inline-flex items-center gap-1">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
-    Back to proxy hosts
-  </a>
-  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Host.ID}}Edit Proxy Host{{else}}New Proxy Host{{end}}</h1>
-</div>
+<header class="enterprise-page-header proxy-editor-header">
+  <div>
+    <a href="/proxy-hosts" class="enterprise-back-link">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+      Proxy hosts
+    </a>
+    <div class="enterprise-page-header__eyebrow">{{if .Guided}}Guided workflow{{else}}Traffic configuration{{end}}</div>
+    <h1>{{if .Host.ID}}Edit proxy host{{else if .Guided}}Publish a service{{else}}Create proxy host{{end}}</h1>
+    <p>{{if .Guided}}Define intent, validate the upstream, choose TLS and DNS policy, then review before deployment.{{else}}Manage the complete Caddy route, security policy, transport, and deployment configuration.{{end}}</p>
+  </div>
+  {{if and (not .Host.ID) .Guided}}
+  <div class="enterprise-page-header__actions">
+    <a href="/proxy-hosts/new?mode=advanced" class="ui-button ui-button--secondary">Use advanced editor</a>
+  </div>
+  {{end}}
+</header>
 
 {{if .Error}}
 <div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 font-mono text-xs max-w-3xl whitespace-pre-wrap break-all">{{.Error}}</div>
@@ -18,6 +27,7 @@
      text, auto-opens any <details> that contain matches, and shows a count
      of visible fields so you know whether your query found anything. Empty
      query restores the full form (collapsing previously-closed sections). */}}
+{{if not .Guided}}
 <div class="sticky top-0 z-10 bg-ink-50 pt-1 pb-2 mb-4 max-w-3xl">
   <div class="relative">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -29,6 +39,7 @@
     New here? See <a href="/docs#caddyfile-mapping" class="text-brand-600 hover:text-brand-700">Docs → Caddyfile ↔ form mapping</a> for how each Caddyfile directive translates to the fields below.
   </p>
 </div>
+{{end}}
 
 {{/* v2.12.44: section anchor pills — ordered by frequency-of-use, not
      by where the section physically lives in the form. The most common
@@ -46,6 +57,7 @@
      <details> expansion sections so new users see only Domain, Forward
      Host/Port, and SSL — the three fields needed for 90% of proxy hosts.
      Advanced mode (default for edit) shows everything. */}}
+{{if not .Guided}}
 <div class="flex items-center gap-3 mb-4 max-w-3xl">
   <span class="text-xs font-medium text-ink-500">Form mode:</span>
   <div class="flex items-center gap-1 bg-ink-100 rounded-lg p-0.5 text-xs">
@@ -96,6 +108,19 @@ function setProxyFormMode(mode) {
   setProxyFormMode(mode);
 })();
 </script>
+{{end}}
+{{if .Guided}}
+<nav class="publish-stepper" aria-label="Publish service workflow">
+  <button type="button" data-publish-step="1" aria-current="step"><span>1</span><strong>Hostname</strong><small>Public identity</small></button>
+  <i aria-hidden="true"></i>
+  <button type="button" data-publish-step="2"><span>2</span><strong>Upstream</strong><small>Service target</small></button>
+  <i aria-hidden="true"></i>
+  <button type="button" data-publish-step="3"><span>3</span><strong>Policy</strong><small>TLS and DNS</small></button>
+  <i aria-hidden="true"></i>
+  <button type="button" data-publish-step="4"><span>4</span><strong>Review</strong><small>Deployment scope</small></button>
+</nav>
+{{end}}
+{{if not .Guided}}
 <nav aria-label="Form sections" class="mb-4 max-w-3xl flex flex-wrap items-center gap-1.5">
   {{/* Tier 1 — used on most proxy hosts */}}
   <a href="#ph-dns"            class="inline-flex items-center text-xs font-medium text-ink-700 hover:text-brand-700 bg-brand-50/50 hover:bg-brand-50 border border-brand-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Managed DNS</a>
@@ -121,6 +146,7 @@ function setProxyFormMode(mode) {
   <a href="#ph-advanced"       class="inline-flex items-center text-xs font-medium text-ink-500 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Advanced</a>
   <a href="#ph-preview"        class="inline-flex items-center text-xs font-medium text-ink-500 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Live JSON Preview</a>
 </nav>
+{{end}}
 
 <style>
   /* v2.12.44: scroll-margin-top so the section heading lands below the
@@ -129,8 +155,9 @@ function setProxyFormMode(mode) {
   details[id^="ph-"] { scroll-margin-top: 80px; }
 </style>
 
-<form id="proxy-host-form" method="post" action="{{if .Host.ID}}/proxy-hosts/{{.Host.ID}}{{else}}/proxy-hosts{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
-  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+<form id="proxy-host-form" method="post" action="{{if .Host.ID}}/proxy-hosts/{{.Host.ID}}{{else}}/proxy-hosts{{end}}" class="{{if .Guided}}proxy-form--guided{{else}}bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl{{end}}">
+  {{if .Guided}}<input type="hidden" name="guided" value="1"><div id="guided-workflow-panels"></div>{{end}}
+  <div data-workflow-section="source" class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
     <div class="sm:col-span-2">
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Domain names <span class="text-ink-400 font-normal">(comma separated)</span></label>
       <input name="domains" value="{{.Host.Domains}}" required placeholder="example.com, www.example.com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
@@ -138,7 +165,7 @@ function setProxyFormMode(mode) {
            Domains field contains a *.foo.bar entry — wildcards can't be
            validated via HTTP-01, so Caddy needs DNS-01 with a real DNS
            provider plugin. JS toggles visibility live. */}}
-      <div id="wildcard-callout" class="hidden mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+      <div id="wildcard-callout" class="policy-callout policy-callout--warning hidden mt-2">
         <div class="flex items-start gap-2">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0 mt-0.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           <div class="flex-1 min-w-0">
@@ -174,7 +201,7 @@ function setProxyFormMode(mode) {
        Domain. These are the "where does this hostname forward to?"
        essentials and pair naturally with the Domain field — no reason
        to scroll past Enabled/Auto-SSL/Managed-DNS to set them. */}}
-  <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+  <div data-workflow-section="destination" class="grid grid-cols-1 sm:grid-cols-12 gap-3">
     <div class="sm:col-span-3">
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Scheme</label>
       <select name="forward_scheme" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
@@ -192,7 +219,7 @@ function setProxyFormMode(mode) {
     </div>
   </div>
 
-  <div class="flex items-center gap-2 mt-2">
+  <div data-workflow-section="destination" class="flex items-center gap-2 mt-2">
     <button type="button" id="test-upstream-btn"
       class="inline-flex items-center gap-1.5 text-xs bg-ink-50 hover:bg-ink-100 border border-ink-200 text-ink-700 font-medium px-3 py-1.5 rounded-lg transition">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -241,7 +268,7 @@ function setProxyFormMode(mode) {
   </script>
 
   {{/* v2.11.4: essential SSL/enabled toggles always-visible at top — pulled out of the collapsed Options & Forwarded Headers section so users don't have to expand it just to enable a host or flip Auto SSL. */}}
-  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-ink-100">
+  <div data-workflow-section="policy" class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-ink-100">
     <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
     <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_enabled" {{if .Host.SSLEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Auto SSL (Let's Encrypt)</label>
     <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_forced" {{if .Host.SSLForced}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Force SSL (HTTPS redirect)</label>
@@ -255,7 +282,7 @@ function setProxyFormMode(mode) {
   {{if .AnyDNSEnabled}}
   {{$provider := .Host.DNSProvider}}
   {{$profile := .Host.DNSProfileID}}
-  <details id="ph-dns" class="pt-4 border-t border-ink-100" data-keep-open open>
+  <details id="ph-dns" data-workflow-section="policy" class="pt-4 border-t border-ink-100" data-keep-open open>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS
     </summary>
@@ -318,7 +345,7 @@ function setProxyFormMode(mode) {
   </details>
   {{end}}
 
-  <details id="ph-tls" class="pt-4 border-t border-ink-100" data-keep-open open>
+  <details id="ph-tls" data-workflow-section="policy" class="pt-4 border-t border-ink-100" data-keep-open open>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       TLS Certificate <span class="font-normal normal-case">(optional, defaults to auto Let's Encrypt)</span>
     </summary>
@@ -3450,7 +3477,7 @@ function setProxyFormMode(mode) {
       </div>
 
   {{if .OtherServers}}
-  <div class="pt-4 border-t border-ink-100">
+  <div data-workflow-section="deployment" class="pt-4 border-t border-ink-100">
     <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
     <p class="text-xs text-ink-400 mb-3">Push a copy of this config to additional servers at the same time. Uploaded PEM/path certificates are not mirrored. If a managed wildcard on this server covers the hostname, CaddyUI automatically copies that definition to each target so Caddy can reuse the wildcard there too.</p>
     <div class="space-y-2">
@@ -3467,7 +3494,7 @@ function setProxyFormMode(mode) {
   {{end}}
 
   {{if .Users}}
-  <div class="pt-4 border-t border-ink-100">
+  <div data-workflow-section="deployment" class="pt-4 border-t border-ink-100">
     <label class="block text-sm font-medium text-ink-800 mb-1.5">Owner <span class="text-ink-400 font-normal">(admin only)</span></label>
     <select name="owner_id" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
       <option value="0" {{if not .Host.OwnerID.Valid}}selected{{end}}>Global (admin — managed by you)</option>
@@ -3634,7 +3661,7 @@ function setProxyFormMode(mode) {
   </details>
 
   <div id="ph-form-actions" class="flex items-center gap-3 pt-4 border-t border-ink-100">
-    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Host.ID}}Save changes{{else}}Create{{end}}</button>
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{if .Host.ID}}Save changes{{else}}Create proxy host{{end}}</button>
     <a href="/proxy-hosts" class="text-sm text-ink-500 hover:text-ink-900 transition">Cancel</a>
   </div>
 </form>
@@ -4307,6 +4334,170 @@ function setProxyFormMode(mode) {
   }
   // Pill clicks (and any other in-page anchor) — listen on hashchange.
   window.addEventListener('hashchange', function() { openTarget(window.location.hash); });
+})();
+
+// Guided publish workflow. The full editor remains the single source of truth:
+// we move the essential controls into four focused panels and leave every
+// advanced field in the form with its established default value. This keeps
+// creation behavior identical while giving new operators a deliberate
+// Plan → Validate → Deploy sequence.
+(function() {
+  var form = document.getElementById('proxy-host-form');
+  var slot = document.getElementById('guided-workflow-panels');
+  if (!form || !slot || !form.classList.contains('proxy-form--guided')) return;
+
+  var definitions = [
+    { key: 'source', number: 1, eyebrow: 'Public identity', title: 'Where should traffic arrive?', description: 'Enter the hostname clients will use. CaddyUI checks ownership conflicts before saving.' },
+    { key: 'destination', number: 2, eyebrow: 'Service target', title: 'Where should Caddy send requests?', description: 'Use a container name, private hostname, or IP address that is reachable from the selected Caddy server.' },
+    { key: 'policy', number: 3, eyebrow: 'Traffic policy', title: 'Choose TLS and DNS automation', description: 'Automatic HTTPS is the recommended default. Managed DNS is optional unless you need DNS-01 or automatic record creation.' },
+    { key: 'deployment', number: 4, eyebrow: 'Change review', title: 'Review and deploy', description: 'Confirm the effective route and deployment scope before CaddyUI writes configuration.' }
+  ];
+  var panels = [];
+  var current = 1;
+  var maxVisited = 1;
+  var stepButtons = Array.prototype.slice.call(document.querySelectorAll('[data-publish-step]'));
+
+  function element(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (typeof text === 'string') node.textContent = text;
+    return node;
+  }
+
+  definitions.forEach(function(def) {
+    var panel = element('section', 'publish-panel ui-panel');
+    panel.dataset.panelStep = String(def.number);
+    panel.hidden = def.number !== 1;
+
+    var header = element('header', 'publish-panel__header');
+    var headingWrap = element('div', '');
+    headingWrap.appendChild(element('div', 'publish-panel__eyebrow', 'Step ' + def.number + ' · ' + def.eyebrow));
+    var heading = element('h2', '', def.title);
+    heading.tabIndex = -1;
+    headingWrap.appendChild(heading);
+    headingWrap.appendChild(element('p', '', def.description));
+    header.appendChild(headingWrap);
+    panel.appendChild(header);
+
+    var body = element('div', 'publish-panel__body');
+    var nodes = Array.prototype.slice.call(form.querySelectorAll('[data-workflow-section="' + def.key + '"]'));
+    nodes.forEach(function(node) {
+      node.removeAttribute('data-workflow-section');
+      body.appendChild(node);
+    });
+
+    if (def.number === 4) {
+      var review = element('div', 'publish-review');
+      review.innerHTML =
+        '<div class="publish-review__row"><span>Public hostname</span><strong data-review-domain>—</strong></div>' +
+        '<div class="publish-review__row"><span>Upstream</span><strong data-review-upstream>—</strong></div>' +
+        '<div class="publish-review__row"><span>HTTPS policy</span><strong data-review-tls>—</strong></div>' +
+        '<div class="publish-review__row"><span>DNS automation</span><strong data-review-dns>—</strong></div>' +
+        '<div class="publish-review__row"><span>Initial state</span><strong data-review-state>—</strong></div>';
+      body.insertBefore(review, body.firstChild);
+    }
+    panel.appendChild(body);
+
+    var footer = element('footer', 'publish-panel__footer');
+    if (def.number > 1) {
+      var back = element('button', 'ui-button ui-button--secondary', 'Back');
+      back.type = 'button';
+      back.addEventListener('click', function() { showStep(def.number - 1, true); });
+      footer.appendChild(back);
+    } else {
+      var cancel = element('a', 'ui-button ui-button--quiet', 'Cancel');
+      cancel.href = '/proxy-hosts';
+      footer.appendChild(cancel);
+    }
+    var footerMeta = element('span', 'publish-panel__footer-meta', def.number < 4 ? 'Configuration is not saved until the final step.' : 'CaddyUI validates conflicts and policy before deployment.');
+    footer.appendChild(footerMeta);
+    if (def.number < 4) {
+      var next = element('button', 'ui-button ui-button--primary', def.number === 3 ? 'Review deployment' : 'Continue');
+      next.type = 'button';
+      next.addEventListener('click', function() {
+        if (!validatePanel(panel)) return;
+        maxVisited = Math.max(maxVisited, def.number + 1);
+        showStep(def.number + 1, true);
+      });
+      footer.appendChild(next);
+    } else {
+      var submit = element('button', 'ui-button ui-button--primary', 'Deploy service');
+      submit.type = 'submit';
+      footer.appendChild(submit);
+    }
+    panel.appendChild(footer);
+    slot.appendChild(panel);
+    panels.push(panel);
+  });
+
+  function validatePanel(panel) {
+    var required = Array.prototype.slice.call(panel.querySelectorAll('[required]'));
+    for (var i = 0; i < required.length; i++) {
+      if (!required[i].checkValidity()) {
+        required[i].reportValidity();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function refreshReview() {
+    var domains = form.querySelector('[name="domains"]');
+    var scheme = form.querySelector('[name="forward_scheme"]');
+    var host = form.querySelector('[name="forward_host"]');
+    var port = form.querySelector('[name="forward_port"]');
+    var ssl = form.querySelector('[name="ssl_enabled"]');
+    var forced = form.querySelector('[name="ssl_forced"]');
+    var cert = form.querySelector('[name="certificate_id"]');
+    var dns = document.getElementById('dns-provider-select');
+    var enabled = form.querySelector('[name="enabled"]');
+    var set = function(selector, value) {
+      var node = slot.querySelector(selector);
+      if (node) node.textContent = value;
+    };
+    set('[data-review-domain]', domains && domains.value.trim() ? domains.value.trim() : 'Not entered');
+    set('[data-review-upstream]',
+      (scheme ? scheme.value : 'http') + '://' +
+      (host && host.value.trim() ? host.value.trim() : 'not-entered') + ':' +
+      (port && port.value ? port.value : '—'));
+    var tlsText = ssl && ssl.checked ? (forced && forced.checked ? 'Automatic HTTPS · redirect HTTP' : 'Automatic HTTPS') : 'HTTP only';
+    if (ssl && ssl.checked && cert && cert.selectedIndex > 0) tlsText = cert.options[cert.selectedIndex].text;
+    set('[data-review-tls]', tlsText);
+    set('[data-review-dns]', dns && dns.selectedIndex > 0 ? dns.options[dns.selectedIndex].text : 'Managed externally');
+    set('[data-review-state]', enabled && enabled.checked ? 'Enabled after deployment' : 'Created disabled');
+  }
+
+  function showStep(number, focusHeading) {
+    current = number;
+    panels.forEach(function(panel) {
+      panel.hidden = Number(panel.dataset.panelStep) !== number;
+    });
+    stepButtons.forEach(function(button) {
+      var step = Number(button.dataset.publishStep);
+      button.classList.toggle('is-complete', step < number);
+      button.disabled = step > maxVisited;
+      if (step === number) button.setAttribute('aria-current', 'step');
+      else button.removeAttribute('aria-current');
+    });
+    if (number === 4) refreshReview();
+    if (focusHeading) {
+      var heading = panels[number - 1].querySelector('h2');
+      if (heading) {
+        heading.focus({preventScroll: true});
+        panels[number - 1].scrollIntoView({behavior: 'smooth', block: 'start'});
+      }
+    }
+  }
+
+  stepButtons.forEach(function(button) {
+    button.addEventListener('click', function() {
+      var target = Number(button.dataset.publishStep);
+      if (target <= maxVisited) showStep(target, true);
+    });
+  });
+  form.addEventListener('input', refreshReview);
+  form.addEventListener('change', refreshReview);
+  showStep(current, false);
 })();
 </script>
 {{end}}

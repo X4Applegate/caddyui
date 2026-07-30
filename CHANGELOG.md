@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.20.0] - 2026-07-29 - Enterprise workflows and guided operations
+
+### Added
+
+- **First-run account wizard**: new installations begin with a clear four-stage operating journey—create the administrator, connect Caddy, secure the account, and publish the first service.
+- **Live readiness guide**: **Getting Started** derives progress from the actual selected Caddy environment, TOTP state, DNS profiles, and proxy inventory instead of storing a dismissible tutorial flag. Administrators can return to it whenever an environment changes.
+- **Guided service publishing**: new proxy hosts now use a focused Hostname → Upstream → Policy → Review workflow. The final review shows the effective hostname, upstream, HTTPS policy, DNS automation, and initial state before CaddyUI writes configuration.
+- **Advanced-editor escape hatch**: experienced operators can open the complete proxy-host editor with one click. Existing hosts continue to use the full editor, and guided creation preserves every established advanced default.
+- **Global create menu**: the persistent application bar provides direct entry points for publishing a service, creating a redirection, adding a certificate, or building an advanced route.
+- **Environment readiness on Operations**: incomplete environments receive a compact, actionable readiness summary that links back to the live guide.
+
+### Changed
+
+- **Semantic color contract** is now explicit and consistent: blue means action/current context, green means healthy/enabled/completed, amber means pending/degraded/maintenance, red means failure/offline/destructive, violet means TLS/automation/managed policy, and gray means disabled/unknown/informational.
+- **Caddy fleet workflow** now presents registered environments as an operational inventory with environment, health, admin endpoint, management policy, last contact, and scoped actions.
+- **Caddy connection form** now follows an Identify → Connect → Authorize sequence and explains safe admin-API connectivity before configuration is saved.
+- **Proxy Hosts** has an enterprise page header, workflow language, and a primary **Publish service** action.
+- **Required readiness** uses four foundations. DNS automation remains visible as an optional capability and never prevents an environment from reaching 100% readiness.
+- **Navigation terminology** now uses **Caddy Fleet** and **Publish service** consistently where those labels better describe the operator's goal.
+
+### Accessibility
+
+- Guided steps expose current-state semantics, native form validation, predictable Back/Continue controls, keyboard focus targets, and a review stage before submission.
+- Setup, onboarding, publishing, fleet, and connection workflows have dedicated compact layouts for narrow screens and retain the existing reduced-motion behavior.
+- The enterprise workflow system supports light, dark, Carbon Orange, Forest, Rose, and Indigo themes through shared semantic tokens.
+
+---
+
 ## [2.19.0] - 2026-07-29 - MariaDB and large-installation performance
 
 ### Added
