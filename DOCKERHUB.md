@@ -66,6 +66,21 @@ The container will print a clear error message at startup if the directory isn't
 
 ## ✨ Headline features
 
+### 🧭 Enterprise operations center
+
+CaddyUI v2.18 reorganizes daily work around the active environment instead of isolated feature pages:
+
+- Active Caddy server, connection state, last contact, last sync, and version in one operational header
+- Route inventory and host-health status with direct links into affected resources
+- Live system load, memory, requests, and upstream health for administrators
+- Prioritized reliability and security actions with one-click remediation paths
+- Multi-server fleet availability, recent configuration activity, and live proxy reachability
+- Persistent command search plus visible Create proxy host, Sync Caddy, and Manage servers actions
+- Workflow-based navigation for Traffic, Observe, Configuration, Developer, and Administration tasks
+- Responsive light/dark layouts plus Carbon Orange, Forest, Rose, and Indigo themes
+
+The shared semantic design system also provides consistent panels, buttons, metrics, tables, focus states, and reduced-motion behavior as the remaining workflows are progressively migrated.
+
 ### 🏆 Perfect Lighthouse score
 
 After an eleven-version perf + a11y wave (v2.12.38 → v2.12.48), CaddyUI's `/login` page hits **99/100/100/100** on Google PageSpeed Insights against a residential-ISP install:

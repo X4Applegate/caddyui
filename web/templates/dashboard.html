@@ -1,559 +1,452 @@
-{{define "title"}}Dashboard · CaddyUI{{end}}
+{{define "title"}}Operations · CaddyUI{{end}}
 {{define "content"}}
-<style>
-/* v2.15.0: sparkline SVG styling */
-.sparkline-svg { display: block; overflow: visible; }
-</style>
-{{if eq .GlobalMaintenance "1"}}
-<div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 mb-5 text-sm text-amber-800">
-  <svg class="w-4 h-4 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-  <span><strong>Global maintenance mode is active.</strong> All proxy hosts are currently serving a 503 page. <a href="/settings#settings-general" class="underline hover:text-amber-900">Turn it off in Settings</a> and sync Caddy to restore service.</span>
-</div>
-{{else if .MaintenanceCount}}
-<div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 mb-5 text-sm text-amber-700">
-  <svg class="w-4 h-4 shrink-0 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-  <span><strong>{{.MaintenanceCount}} proxy {{if eq .MaintenanceCount 1}}host is{{else}}hosts are{{end}} in maintenance mode.</strong> <a href="/proxy-hosts?status=maintenance" class="underline hover:text-amber-900">View affected hosts →</a></span>
-</div>
-{{end}}
+<div class="ops-dashboard">
+  {{if eq .GlobalMaintenance "1"}}
+  <div class="ops-alert ops-alert--warning" role="status">
+    <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+    <span><strong>Global maintenance mode is active.</strong> All proxy hosts are serving a 503 page. <a href="/settings#settings-general">Turn it off in Settings</a> and sync Caddy to restore service.</span>
+  </div>
+  {{else if .MaintenanceCount}}
+  <div class="ops-alert ops-alert--warning" role="status">
+    <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+    <span><strong>{{.MaintenanceCount}} proxy {{if eq .MaintenanceCount 1}}host is{{else}}hosts are{{end}} in maintenance mode.</strong> <a href="/proxy-hosts?status=maintenance">View affected hosts</a>.</span>
+  </div>
+  {{end}}
 
-<div class="flex items-start justify-between mb-8 gap-6">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-heading-gradient">Dashboard</h1>
-    <p class="text-sm text-ink-500 mt-1">Overview of your active Caddy server.</p>
-  </div>
-  <form method="post" action="/caddy/reload">
-    <button class="inline-flex items-center gap-1.5 bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 text-sm font-medium px-4 py-2 rounded-lg transition">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-      Sync Caddy
-    </button>
-  </form>
-</div>
-
-{{/* ── Today's analytics stats ── */}}
-{{if or .TodayViews .TodayVisitors}}
-<div class="grid grid-cols-3 gap-3 mb-8 [&>div]:card-lift">
-  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card card-lift overflow-hidden relative">
-    <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-brand-400 to-brand-600 rounded-t-xl"></div>
-    <div class="flex items-start justify-between gap-2 mb-2">
-      <div class="text-xs uppercase tracking-wider text-ink-400 font-medium">Requests today</div>
-      <span class="stat-icon-wrap bg-brand-50"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-brand-500"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+  <header class="ops-page-header">
+    <div>
+      <div class="ops-page-header__eyebrow">Operations center</div>
+      <h1>Infrastructure overview</h1>
+      <p>Monitor the active Caddy environment, resolve issues, and move directly into common management workflows.</p>
     </div>
-    <div class="text-2xl font-semibold text-ink-900 tabular-nums">{{.TodayViews}}</div>
-    <div class="flex items-end justify-between gap-2 mt-1">
-      <a href="/analytics" class="text-xs text-ink-400 hover:text-brand-600 transition">View analytics →</a>
-      <span id="sparkline-views" class="text-brand-400 opacity-70"></span>
-    </div>
-  </div>
-  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card card-lift overflow-hidden relative">
-    <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-violet-400 to-purple-500 rounded-t-xl"></div>
-    <div class="flex items-start justify-between gap-2 mb-2">
-      <div class="text-xs uppercase tracking-wider text-ink-400 font-medium">Visitors today</div>
-      <span class="stat-icon-wrap bg-purple-50"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-purple-500"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
-    </div>
-    <div class="text-2xl font-semibold text-ink-900 tabular-nums">{{.TodayVisitors}}</div>
-    <div class="flex items-end justify-between gap-2 mt-1">
-      <span class="text-xs text-ink-400">unique IPs</span>
-      <span id="sparkline-visitors" class="text-purple-400 opacity-70"></span>
-    </div>
-  </div>
-  <div class="bg-white border border-ink-200 rounded-xl p-4 shadow-card card-lift overflow-hidden relative">
-    <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-400 to-teal-500 rounded-t-xl"></div>
-    <div class="flex items-start justify-between gap-2 mb-2">
-      <div class="text-xs uppercase tracking-wider text-ink-400 font-medium">Bandwidth today</div>
-      <span class="stat-icon-wrap bg-emerald-50"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-emerald-600"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
-    </div>
-    <div class="text-2xl font-semibold text-ink-900 tabular-nums">{{fmtBytes .TodayBandwidth}}</div>
-    <div class="flex items-end justify-between gap-2 mt-1">
-      <span class="text-xs text-ink-400">bytes sent out</span>
-      <span id="sparkline-bandwidth" class="text-emerald-400 opacity-70"></span>
-    </div>
-  </div>
-</div>
-{{end}}
-
-{{if .ExpiringSoon}}
-<div class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">
-  ⚠️ {{.ExpiringSoon}} certificate(s) expiring within 30 days — <a href="/certificates" class="underline">view certificates</a>
-</div>
-{{end}}
-
-<div id="update-notice" class="hidden bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm flex items-center gap-2">
-  <svg class="w-4 h-4 shrink-0 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-  <span id="update-notice-text"></span>
-  <a href="https://github.com/X4Applegate/caddyui/releases" target="_blank" rel="noopener" class="ml-auto text-brand-600 hover:text-brand-800 font-medium underline text-xs">View release →</a>
-</div>
-
-{{/* ── System stats ──
-     Admin-only. These cards surface host-level numbers (uptime, load avg,
-     RAM usage, active request count, upstream-health totals) that reflect
-     the health of the infrastructure rather than anything a regular user
-     or viewer owns. Non-admin roles see the proxy-host summary tiles below
-     instead, which are scoped to their own resources. The fetch at the
-     bottom of the page is gated on the same condition so non-admins don't
-     fire a 403 on /api/system-stats. */}}
-{{if eq .User.Role "admin"}}
-<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6"
-     id="sys-stats"
-     data-sid="{{if .CurrentServer}}{{.CurrentServer.ID}}{{else}}1{{end}}">
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3 card-lift flex items-center gap-3">
-    <span class="stat-icon-wrap bg-emerald-50 shrink-0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-emerald-600"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
-    <div class="min-w-0">
-      <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium">Uptime</div>
-      <div class="text-sm font-semibold text-ink-800 tabular-nums truncate" id="stat-uptime">—</div>
-    </div>
-  </div>
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3 card-lift flex items-center gap-3">
-    <span class="stat-icon-wrap bg-blue-50 shrink-0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-blue-500"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
-    <div class="min-w-0">
-      <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium">Load (1m)</div>
-      <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-load">—</div>
-    </div>
-  </div>
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3 card-lift flex items-center gap-3">
-    <span class="stat-icon-wrap bg-purple-50 shrink-0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-purple-500"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span>
-    <div class="min-w-0">
-      <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium">Memory</div>
-      <div class="text-sm font-semibold text-ink-800 tabular-nums truncate" id="stat-mem">—</div>
-    </div>
-  </div>
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3 card-lift">
-    <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-2">Memory %</div>
-    <div class="flex items-center gap-2">
-      <div class="flex-1 bg-ink-100 rounded-full h-1.5 overflow-hidden">
-        <div class="mem-gradient-bar h-1.5 rounded-full" id="stat-mem-bar" style="width:0%"></div>
-      </div>
-      <span class="text-xs font-semibold text-ink-700 tabular-nums w-8 text-right" id="stat-mem-pct">0%</span>
-    </div>
-  </div>
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3 card-lift flex items-center gap-3">
-    <span class="stat-icon-wrap bg-amber-50 shrink-0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-amber-500"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
-    <div class="min-w-0">
-      <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium">Active reqs</div>
-      <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-reqs">—</div>
-    </div>
-  </div>
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-4 py-3 card-lift flex items-center gap-3">
-    <span class="stat-icon-wrap bg-teal-50 shrink-0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-teal-600"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></span>
-    <div class="min-w-0">
-      <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium">Upstreams</div>
-      <div class="text-sm font-semibold text-ink-800 tabular-nums" id="stat-ups">—</div>
-    </div>
-  </div>
-</div>
-{{end}}
-
-{{if .CurrentServer}}
-<div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 mb-8">
-  <div class="flex items-start justify-between gap-4 flex-wrap">
-    <div class="flex items-center gap-3 min-w-0">
-      {{if eq .CurrentServer.Status "online"}}
-      <span class="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-brand-50 shrink-0">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-brand-600"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-      </span>
-      {{else if eq .CurrentServer.Status "offline"}}
-      <span class="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-red-50 shrink-0">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-red-500"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-      </span>
-      {{else}}
-      <span class="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-ink-100 shrink-0">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-ink-400"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-      </span>
-      {{end}}
-      <div class="min-w-0">
-        <div class="flex items-center gap-2">
-          <span class="font-semibold text-ink-900 text-base">{{.CurrentServer.Name}}</span>
-          {{if eq .CurrentServer.Status "online"}}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>online</span>
-          {{else if eq .CurrentServer.Status "offline"}}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>offline</span>
-          {{else}}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>unknown</span>
-          {{end}}
-          {{if eq .CurrentServer.Type "managed"}}
-          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">Managed</span>
-          {{else}}
-          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-ink-100 text-ink-600">External</span>
-          {{end}}
-        </div>
-        <div class="text-xs font-mono text-ink-400 mt-0.5 truncate">{{.CurrentServer.AdminURL}}</div>
-      </div>
-    </div>
-    <div class="flex items-center gap-5 text-xs text-ink-500 flex-wrap">
-      <div>
-        <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Last contact</div>
-        {{if .CurrentServer.LastContactAt.Valid}}
-        <span class="font-medium text-ink-700">{{fmtIn .CurrentServer.LastContactAt.Time "Jan 2, 3:04 PM"}}</span>
-        {{else}}<span class="text-ink-400 italic">never</span>{{end}}
-      </div>
-      <div>
-        <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Last sync</div>
-        {{if .LastSync}}
-        <span class="font-medium text-ink-700">{{fmtIn .LastSync "Jan 2, 3:04 PM"}}</span>
-        {{else}}<span class="text-ink-400 italic">never</span>{{end}}
-      </div>
-      <div>
-        <div class="text-[10px] uppercase tracking-wider text-ink-400 font-medium mb-0.5">Caddy version</div>
-        <span class="font-medium text-ink-700 font-mono text-xs" id="caddy-version">…</span>
-      </div>
+    <div class="ops-page-actions">
       {{if eq .User.Role "admin"}}
-      <a href="/servers/{{.CurrentServer.ID}}/config" class="text-ink-400 hover:text-brand-600 transition text-[11px] font-medium">View live config →</a>
-      {{end}}
-    </div>
-  </div>
-
-  <div class="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-    <a href="/proxy-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-brand-50 transition">
-      <span class="text-2xl font-semibold text-ink-900 group-hover:text-brand-700 tabular-nums">{{len .ProxyHosts}}</span>
-      <span class="text-xs text-ink-500 group-hover:text-brand-600 leading-tight">Proxy<br>Hosts</span>
-    </a>
-    <a href="/proxy-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-green-50 transition">
-      <span class="text-2xl font-semibold text-ink-900 group-hover:text-green-700 tabular-nums">{{.EnabledHosts}}</span>
-      <span class="text-xs text-ink-500 group-hover:text-green-600 leading-tight">Enabled<br>Proxies</span>
-    </a>
-    <a href="/proxy-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-ink-100 transition">
-      <span class="text-2xl font-semibold text-ink-900 group-hover:text-ink-700 tabular-nums">{{.DisabledHosts}}</span>
-      <span class="text-xs text-ink-500 group-hover:text-ink-600 leading-tight">Disabled<br>Proxies</span>
-    </a>
-    <a href="/redirection-hosts" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-blue-50 transition">
-      <span class="text-2xl font-semibold text-ink-900 group-hover:text-blue-700 tabular-nums">{{len .RedirectionHosts}}</span>
-      <span class="text-xs text-ink-500 group-hover:text-blue-600 leading-tight">Redirec-<br>tions</span>
-    </a>
-    <a href="/raw-routes" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-purple-50 transition">
-      <span class="text-2xl font-semibold text-ink-900 group-hover:text-purple-700 tabular-nums">{{.RawCount}}</span>
-      <span class="text-xs text-ink-500 group-hover:text-purple-600 leading-tight">Raw<br>Routes</span>
-    </a>
-    <a href="/certificates" class="group flex items-center gap-3 px-4 py-3 bg-ink-50 rounded-lg hover:bg-amber-50 transition">
-      <span class="text-2xl font-semibold text-ink-900 group-hover:text-amber-700 tabular-nums">{{.CertCount}}</span>
-      <span class="text-xs text-ink-500 group-hover:text-amber-600 leading-tight">Certifi-<br>cates</span>
-    </a>
-  </div>
-
-    <!-- Health summary row -->
-    {{if or .HealthyCount .DownCount}}
-    <div class="mt-3 flex items-center gap-3 text-xs flex-wrap">
-      <span class="text-ink-500 font-medium uppercase tracking-wider text-[10px]">Host health</span>
-      {{if .HealthyCount}}
-      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition font-medium">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-        {{.HealthyCount}} healthy
+      <a href="/servers" class="ui-button ui-button--quiet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg>
+        Manage servers
       </a>
       {{end}}
-      {{if .DownCount}}
-      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 text-red-700 hover:bg-red-100 transition font-medium">
-        <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-        {{.DownCount}} down
-      </a>
-      {{end}}
-      {{if .UnknownCount}}
-      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-ink-100 text-ink-500 font-medium">
-        <span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>
-        {{.UnknownCount}} unchecked
-      </span>
-      {{end}}
-      <a href="/proxy-hosts" class="text-ink-400 hover:text-brand-600 transition ml-auto text-[11px]">view all →</a>
-    </div>
-    {{end}}
-
-    {{/* Quick stats badges */}}
-    <div class="mt-4 flex flex-wrap gap-2">
-      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-xs text-ink-600 hover:border-brand-300 hover:text-brand-700 transition">
-        <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-        <span class="font-medium">{{.EnabledHostCount}}</span> enabled hosts
-      </a>
-      {{if .MaintenanceHostCount}}
-      <a href="/proxy-hosts" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-xs text-ink-600 hover:border-amber-300 hover:text-amber-700 transition">
-        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-        <span class="font-medium">{{.MaintenanceHostCount}}</span> in maintenance
+      <form method="post" action="/caddy/reload">
+        <button class="ui-button ui-button--secondary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          Sync Caddy
+        </button>
+      </form>
+      {{if ne .User.Role "viewer"}}
+      <a href="/proxy-hosts/new" class="ui-button ui-button--primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Create proxy host
       </a>
       {{end}}
     </div>
-</div>
-{{end}}
+  </header>
 
-{{if .Recommendations}}
-<div class="flex items-center justify-between mb-3 mt-2">
-  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recommended actions</h2>
-  <a href="/activity" class="text-xs text-ink-500 hover:text-ink-900 transition">Audit trail &rarr;</a>
-</div>
-<div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100 mb-8">
-  {{range .Recommendations}}
-  {{$badge := "bg-ink-100 text-ink-600"}}
-  {{$dot := "bg-ink-400"}}
-  {{if eq .Severity "critical"}}{{$badge = "bg-red-50 text-red-700"}}{{$dot = "bg-red-500"}}{{end}}
-  {{if eq .Severity "warning"}}{{$badge = "bg-amber-50 text-amber-700"}}{{$dot = "bg-amber-500"}}{{end}}
-  {{if eq .Severity "info"}}{{$badge = "bg-blue-50 text-blue-700"}}{{$dot = "bg-blue-500"}}{{end}}
-  <div class="flex items-center gap-3 px-4 py-3 text-sm">
-    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium {{$badge}} shrink-0">
-      <span class="w-1.5 h-1.5 rounded-full {{$dot}}"></span>{{.Severity}}
-    </span>
-    <div class="min-w-0 flex-1">
-      <div class="font-medium text-ink-900">{{.Title}}</div>
-      <div class="text-xs text-ink-500 mt-0.5">{{.Detail}}</div>
-    </div>
-    {{if .URL}}
-    <a href="{{.URL}}" class="text-xs font-medium text-brand-600 hover:text-brand-700 whitespace-nowrap">{{if .Action}}{{.Action}}{{else}}Open{{end}} &rarr;</a>
-    {{end}}
+  {{if .ExpiringSoon}}
+  <div class="ops-alert ops-alert--warning">
+    <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.3 3.8 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.8a2 2 0 0 0-3.4 0Z"/></svg>
+    <span><strong>{{.ExpiringSoon}} certificate(s) expire within 30 days.</strong> <a href="/certificates">Review certificates</a>.</span>
   </div>
   {{end}}
-</div>
-{{end}}
 
-{{/* v2.11.16: Caddy fleet health — one status card per registered server.
-     Renders only when more than one server is registered (single-server
-     installs don't benefit from a fleet view). */}}
-{{if .ServerHealth}}
-<div class="flex items-center justify-between mb-3 mt-2">
-  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Caddy servers</h2>
-  <a href="/servers" class="text-xs text-ink-500 hover:text-ink-900 transition">Manage &rarr;</a>
-</div>
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-8">
-  {{range .ServerHealth}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-4{{if .IsActive}} ring-2 ring-brand-500/40{{end}}">
-    <div class="flex items-start justify-between gap-2">
-      <div class="min-w-0">
-        <div class="flex items-center gap-1.5">
-          <span class="font-medium text-ink-900 truncate">{{.Name}}</span>
-          {{if .IsActive}}<span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-brand-100 text-brand-700 font-medium">active</span>{{end}}
-          {{if .IsExternal}}<span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium" title="External (read-only) server">read-only</span>{{end}}
-        </div>
-        <div class="text-xs text-ink-400 font-mono truncate mt-0.5">{{.AdminURL}}</div>
-      </div>
-      {{if eq .Status "online"}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>online</span>
-      {{else if eq .Status "offline"}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>offline</span>
-      {{else}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>unknown</span>
-      {{end}}
-    </div>
-    <div class="grid grid-cols-3 gap-2 mt-3 text-xs">
-      <div>
-        <div class="text-ink-400 uppercase tracking-wider text-[10px]">Hosts</div>
-        <div class="text-ink-900 font-semibold mt-0.5">{{.HostCount}}</div>
-      </div>
-      <div>
-        <div class="text-ink-400 uppercase tracking-wider text-[10px]">Caddy</div>
-        <div class="text-ink-900 font-mono mt-0.5">{{if .Version}}{{.Version}}{{else}}—{{end}}</div>
-      </div>
-      <div>
-        <div class="text-ink-400 uppercase tracking-wider text-[10px]">Last seen</div>
-        <div class="text-ink-900 mt-0.5">{{fmtRel .LastContactAt}}</div>
-      </div>
-    </div>
-    {{if not .IsActive}}
-    <form method="post" action="/servers/{{.ID}}/select" class="mt-3">
-      <button class="w-full text-xs px-2 py-1.5 rounded-md border border-ink-200 hover:border-brand-300 hover:bg-brand-50/30 text-ink-700 transition">Switch to this server</button>
-    </form>
-    {{end}}
+  <div id="update-notice" class="ops-alert ops-alert--info hidden">
+    <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    <span id="update-notice-text"></span>
+    <a href="https://github.com/X4Applegate/caddyui/releases" target="_blank" rel="noopener" class="ml-auto">View release</a>
   </div>
-  {{end}}
-</div>
-{{end}}
 
-{{/* v2.11.12: "Recently edited" widget — last 8 CRUD events across all
-     resource types (proxy hosts, redirects, raw routes, certs, groups,
-     API tokens), pulled from the activity log. Skips login/sync/snapshot
-     noise. Renders only when there's something to show. */}}
-{{if .RecentEdits}}
-<div class="flex items-center justify-between mb-3 mt-2">
-  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recently edited</h2>
-  <a href="/activity" class="text-xs text-ink-500 hover:text-ink-900 transition">View all &rarr;</a>
-</div>
-<div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100 mb-8">
-  {{range .RecentEdits}}
-  {{$type := "other"}}{{$colour := "bg-ink-100 text-ink-600"}}
-  {{if hasPrefix .Action "proxy_"}}{{$type = "Proxy"}}{{$colour = "bg-brand-100 text-brand-700"}}{{end}}
-  {{if hasPrefix .Action "redirect_"}}{{$type = "Redirect"}}{{$colour = "bg-sky-100 text-sky-700"}}{{end}}
-  {{if hasPrefix .Action "raw_"}}{{$type = "Advanced"}}{{$colour = "bg-purple-100 text-purple-700"}}{{end}}
-  {{if hasPrefix .Action "cert_"}}{{$type = "Cert"}}{{$colour = "bg-emerald-100 text-emerald-700"}}{{end}}
-  {{if hasPrefix .Action "group_"}}{{$type = "Group"}}{{$colour = "bg-amber-100 text-amber-700"}}{{end}}
-  {{if hasPrefix .Action "api_token_"}}{{$type = "API key"}}{{$colour = "bg-rose-100 text-rose-700"}}{{end}}
-  {{$verb := .Action}}
-  {{if hasSuffix .Action "_create"}}{{$verb = "created"}}{{end}}
-  {{if hasSuffix .Action "_update"}}{{$verb = "updated"}}{{end}}
-  {{if hasSuffix .Action "_delete"}}{{$verb = "deleted"}}{{end}}
-  {{if hasSuffix .Action "_revoke"}}{{$verb = "revoked"}}{{end}}
-  {{if hasSuffix .Action "_enable"}}{{$verb = "enabled"}}{{end}}
-  {{if hasSuffix .Action "_disable"}}{{$verb = "disabled"}}{{end}}
-  {{if eq .Action "caddyfile_import"}}{{$verb = "imported"}}{{end}}
-  {{if eq .Action "raw_reclassify"}}{{$verb = "re-classified"}}{{end}}
-  <div class="flex items-center gap-3 px-4 py-2.5 text-sm">
-    <span class="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded {{$colour}} font-medium shrink-0 w-20 text-center">{{$type}}</span>
-    <span class="flex-1 min-w-0 truncate"><span class="font-medium text-ink-700">{{.Actor}}</span> <span class="text-ink-500">{{$verb}}</span> <span class="text-ink-700 font-mono text-xs">{{if .Target}}{{.Target}}{{else}}—{{end}}</span>{{if .Detail}} <span class="text-ink-400 text-xs">({{.Detail}})</span>{{end}}</span>
-    <span class="text-xs text-ink-400 shrink-0" title="{{fmtIn .CreatedAt "Jan 2, 2006 15:04"}}">{{fmtRel .CreatedAt}}</span>
-  </div>
-  {{end}}
-</div>
-{{end}}
-
-<div class="flex items-center justify-between mb-3">
-  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recent proxy hosts</h2>
-  <a href="/proxy-hosts" class="text-xs text-ink-500 hover:text-ink-900 transition">View all &rarr;</a>
-</div>
-
-{{/* Mobile cards */}}
-<div class="lg:hidden space-y-2">
-  {{range .ProxyHosts}}
-  <a href="/proxy-hosts/{{.ID}}/edit" class="block bg-white border border-ink-200 rounded-xl shadow-card p-4 hover:border-brand-300 transition" data-host-id="{{.ID}}">
-    <div class="flex items-start justify-between gap-2 mb-1">
-      <div class="flex flex-wrap gap-1 min-w-0">
-        {{range splitDomains .Domains}}<span class="domain-pill break-all">{{.}}</span>{{end}}
-      </div>
-      {{if .Enabled}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>on</span>
-      {{else}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</span>
-      {{end}}
-    </div>
-    <div class="flex items-center gap-1.5 text-xs font-mono text-ink-400">
-      <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
-      <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
-      {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
-    </div>
-  </a>
-  {{else}}
-  <div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-10 text-center">
-    <div class="text-ink-400 text-sm">No proxy hosts yet.</div>
-    <a href="/proxy-hosts/new" class="inline-block mt-2 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Create your first</a>
-  </div>
-  {{end}}
-</div>
-
-{{/* Desktop table */}}
-<div class="hidden lg:block bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
-  <table class="w-full text-sm">
-    <thead class="bg-ink-50/50 text-left">
-      <tr class="text-xs uppercase tracking-wider text-ink-500">
-        <th class="px-5 py-3 font-medium">Source</th>
-        <th class="px-5 py-3 font-medium">Destination</th>
-        <th class="px-5 py-3 font-medium">Status</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{range .ProxyHosts}}
-      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition" data-host-id="{{.ID}}">
-        <td class="px-5 py-3">
-          <div class="flex flex-wrap items-center gap-1">
-            {{$hostID := .ID}}
-            {{range splitDomains .Domains}}<span class="inline-flex items-center gap-0.5">
-              <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
-              <a href="/proxy-hosts/{{$hostID}}/edit" title="Edit proxy host" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-brand-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              </a>
-            </span>{{end}}
+  {{if .CurrentServer}}
+  <section class="ui-panel ops-server" aria-labelledby="active-server-title">
+    <div class="ops-server__header">
+      <div class="ops-server__identity">
+        <span class="ops-server__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        </span>
+        <div class="min-w-0">
+          <div class="ops-server__title" id="active-server-title">
+            <span class="truncate">{{.CurrentServer.Name}}</span>
+            {{if eq .CurrentServer.Status "online"}}
+            <span class="ui-status ui-status--success">Online</span>
+            {{else if eq .CurrentServer.Status "offline"}}
+            <span class="ui-status ui-status--danger">Offline</span>
+            {{else}}
+            <span class="ui-status ui-status--neutral">Unknown</span>
+            {{end}}
+            {{if eq .CurrentServer.Type "managed"}}
+            <span class="ui-status ui-status--info">Managed</span>
+            {{else}}
+            <span class="ui-status ui-status--neutral">External</span>
+            {{end}}
           </div>
-        </td>
-        <td class="px-5 py-3 font-mono text-xs text-ink-600">
-          <span class="inline-flex items-center gap-1.5">
-            <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
-            <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
-            {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
-          </span>
-        </td>
-        <td class="px-5 py-3">
-          {{if .Enabled}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
-          {{else}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>disabled</span>
-          {{end}}
-        </td>
-      </tr>
-      {{else}}
-      <tr>
-        <td colspan="3" class="px-5 py-12 text-center">
-          <div class="text-ink-400 text-sm">No proxy hosts yet.</div>
-          <a href="/proxy-hosts/new" class="inline-block mt-2 text-brand-600 hover:text-brand-700 text-sm font-medium">+ Create your first</a>
-        </td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-</div>
-
-{{/* v2.7.9: Recent advanced routes block. Only renders when there's at
-     least one raw route — for fresh installs the dashboard stays
-     uncluttered. Mirrors the proxy-hosts mobile-card / desktop-table
-     split above so the page reads consistently top-to-bottom. */}}
-{{if .RawRoutes}}
-<div class="flex items-center justify-between mb-3 mt-8">
-  <h2 class="text-sm font-semibold uppercase tracking-wider text-ink-500">Recent advanced routes</h2>
-  <a href="/raw-routes" class="text-xs text-ink-500 hover:text-ink-900 transition">View all &rarr;</a>
-</div>
-
-{{/* Mobile cards */}}
-<div class="lg:hidden space-y-2">
-  {{range .RawRoutes}}
-  <a href="/raw-routes/{{.ID}}/edit" class="block bg-white border border-ink-200 rounded-xl shadow-card p-4 hover:border-purple-300 transition">
-    <div class="flex items-start justify-between gap-2 mb-1">
-      <div class="min-w-0 flex-1">
-        {{$srcHosts := rawRouteSourceHosts .JSONData}}
-        {{if $srcHosts}}
-        <div class="flex flex-wrap gap-1 mb-1">
-          {{range $srcHosts}}<span class="domain-pill break-all">{{.}}</span>{{end}}
+          <div class="ops-server__url" title="{{.CurrentServer.AdminURL}}">{{.CurrentServer.AdminURL}}</div>
         </div>
+      </div>
+      <dl class="ops-server__context">
+        <div>
+          <dt class="ops-context__label">Last contact</dt>
+          <dd class="ops-context__value">{{if .CurrentServer.LastContactAt.Valid}}{{fmtIn .CurrentServer.LastContactAt.Time "Jan 2, 3:04 PM"}}{{else}}Never{{end}}</dd>
+        </div>
+        <div>
+          <dt class="ops-context__label">Last sync</dt>
+          <dd class="ops-context__value">{{if .LastSync}}{{fmtIn .LastSync "Jan 2, 3:04 PM"}}{{else}}Never{{end}}</dd>
+        </div>
+        <div>
+          <dt class="ops-context__label">Caddy version</dt>
+          <dd class="ops-context__value font-mono" id="caddy-version">…</dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="ops-route-grid" aria-label="Route inventory">
+      <a href="/proxy-hosts" class="ops-route-metric">
+        <div class="ops-route-metric__value tabular-nums">{{len .ProxyHosts}}</div>
+        <div class="ops-route-metric__label">Proxy hosts</div>
+      </a>
+      <a href="/proxy-hosts" class="ops-route-metric">
+        <div class="ops-route-metric__value tabular-nums">{{.EnabledHosts}}</div>
+        <div class="ops-route-metric__label">Enabled proxies</div>
+      </a>
+      <a href="/proxy-hosts" class="ops-route-metric">
+        <div class="ops-route-metric__value tabular-nums">{{.DisabledHosts}}</div>
+        <div class="ops-route-metric__label">Disabled proxies</div>
+      </a>
+      <a href="/redirection-hosts" class="ops-route-metric">
+        <div class="ops-route-metric__value tabular-nums">{{len .RedirectionHosts}}</div>
+        <div class="ops-route-metric__label">Redirections</div>
+      </a>
+      <a href="/raw-routes" class="ops-route-metric">
+        <div class="ops-route-metric__value tabular-nums">{{.RawCount}}</div>
+        <div class="ops-route-metric__label">Advanced routes</div>
+      </a>
+      <a href="/certificates" class="ops-route-metric">
+        <div class="ops-route-metric__value tabular-nums">{{.CertCount}}</div>
+        <div class="ops-route-metric__label">Certificates</div>
+      </a>
+    </div>
+
+    <div class="ops-health-strip">
+      <span class="ops-health-strip__label">Host health</span>
+      {{if .HealthyCount}}<a href="/proxy-hosts" class="ui-status ui-status--success">{{.HealthyCount}} healthy</a>{{end}}
+      {{if .DownCount}}<a href="/proxy-hosts" class="ui-status ui-status--danger">{{.DownCount}} down</a>{{end}}
+      {{if .UnknownCount}}<span class="ui-status ui-status--neutral">{{.UnknownCount}} unchecked</span>{{end}}
+      {{if not (or .HealthyCount .DownCount .UnknownCount)}}<span class="text-xs text-ink-400">No enabled hosts to check</span>{{end}}
+      {{if .MaintenanceHostCount}}<a href="/proxy-hosts?status=maintenance" class="ui-status ui-status--warning">{{.MaintenanceHostCount}} in maintenance</a>{{end}}
+      {{if eq .User.Role "admin"}}<a href="/servers/{{.CurrentServer.ID}}/config" class="ui-section-header__action ml-auto">View live config →</a>{{end}}
+    </div>
+  </section>
+  {{end}}
+
+  <div class="ops-overview-grid">
+    {{if or .TodayViews .TodayVisitors}}
+    <section class="ui-panel" aria-labelledby="traffic-overview-title">
+      <div class="px-4 py-3 border-b border-ink-100">
+        <h2 class="ui-section-header__title" id="traffic-overview-title">Traffic today</h2>
+        <p class="ui-section-header__description">Active-server analytics since midnight UTC</p>
+      </div>
+      <div class="ops-metrics-grid">
+        <div class="ui-metric">
+          <div class="ui-metric__label">Requests</div>
+          <div class="ops-sparkline">
+            <div>
+              <div class="ui-metric__value tabular-nums">{{.TodayViews}}</div>
+              <a href="/analytics" class="ui-metric__meta">View analytics →</a>
+            </div>
+            <span id="sparkline-views" class="text-brand-400 opacity-70" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="ui-metric">
+          <div class="ui-metric__label">Unique visitors</div>
+          <div class="ops-sparkline">
+            <div>
+              <div class="ui-metric__value tabular-nums">{{.TodayVisitors}}</div>
+              <div class="ui-metric__meta">Unique IPs</div>
+            </div>
+            <span id="sparkline-visitors" class="text-purple-400 opacity-70" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="ui-metric">
+          <div class="ui-metric__label">Bandwidth</div>
+          <div class="ops-sparkline">
+            <div>
+              <div class="ui-metric__value tabular-nums">{{fmtBytes .TodayBandwidth}}</div>
+              <div class="ui-metric__meta">Bytes sent</div>
+            </div>
+            <span id="sparkline-bandwidth" class="text-emerald-400 opacity-70" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+    {{end}}
+
+    {{if eq .User.Role "admin"}}
+    <section class="ui-panel" id="sys-stats" data-sid="{{if .CurrentServer}}{{.CurrentServer.ID}}{{else}}1{{end}}" aria-labelledby="system-health-title">
+      <div class="px-4 py-3 border-b border-ink-100">
+        <h2 class="ui-section-header__title" id="system-health-title">System health</h2>
+        <p class="ui-section-header__description">Live host and upstream telemetry</p>
+      </div>
+      <div class="ops-system-grid">
+        <div class="ops-system-metric">
+          <div class="ops-system-metric__label">Uptime</div>
+          <div class="ops-system-metric__value tabular-nums truncate" id="stat-uptime">—</div>
+        </div>
+        <div class="ops-system-metric">
+          <div class="ops-system-metric__label">Load 1m / 5m</div>
+          <div class="ops-system-metric__value tabular-nums" id="stat-load">—</div>
+        </div>
+        <div class="ops-system-metric">
+          <div class="ops-system-metric__label">Memory</div>
+          <div class="ops-system-metric__value tabular-nums truncate" id="stat-mem">—</div>
+        </div>
+        <div class="ops-system-metric">
+          <div class="ops-system-metric__label">Memory use</div>
+          <div class="flex items-center gap-2 mt-2">
+            <div class="flex-1 bg-ink-100 rounded-full h-1.5 overflow-hidden"><div class="mem-gradient-bar h-1.5 rounded-full" id="stat-mem-bar" style="width:0%"></div></div>
+            <span class="ops-system-metric__value mt-0 tabular-nums" id="stat-mem-pct">0%</span>
+          </div>
+        </div>
+        <div class="ops-system-metric">
+          <div class="ops-system-metric__label">Active requests</div>
+          <div class="ops-system-metric__value tabular-nums" id="stat-reqs">—</div>
+        </div>
+        <div class="ops-system-metric">
+          <div class="ops-system-metric__label">Upstreams</div>
+          <div class="ops-system-metric__value tabular-nums" id="stat-ups">—</div>
+        </div>
+      </div>
+    </section>
+    {{end}}
+  </div>
+
+  {{if .Recommendations}}
+  <section class="ui-section" aria-labelledby="recommended-actions-title">
+    <div class="ui-section-header">
+      <div>
+        <h2 class="ui-section-header__title" id="recommended-actions-title">Needs attention</h2>
+        <p class="ui-section-header__description">Prioritized actions that improve reliability and security</p>
+      </div>
+      <a href="/activity" class="ui-section-header__action">Audit trail →</a>
+    </div>
+    <div class="ui-panel ops-attention-list">
+      {{range .Recommendations}}
+      <div class="ops-attention-row">
+        {{if eq .Severity "critical"}}<span class="ui-status ui-status--danger">{{.Severity}}</span>
+        {{else if eq .Severity "warning"}}<span class="ui-status ui-status--warning">{{.Severity}}</span>
+        {{else}}<span class="ui-status ui-status--info">{{.Severity}}</span>{{end}}
+        <div class="min-w-0">
+          <div class="ops-attention-row__title">{{.Title}}</div>
+          <div class="ops-attention-row__detail">{{.Detail}}</div>
+        </div>
+        {{if .URL}}<a href="{{.URL}}" class="ui-section-header__action">{{if .Action}}{{.Action}}{{else}}Open{{end}} →</a>{{end}}
+      </div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
+  {{if .ServerHealth}}
+  <section class="ui-section" aria-labelledby="fleet-health-title">
+    <div class="ui-section-header">
+      <div>
+        <h2 class="ui-section-header__title" id="fleet-health-title">Caddy fleet</h2>
+        <p class="ui-section-header__description">Availability and configuration context across registered servers</p>
+      </div>
+      <a href="/servers" class="ui-section-header__action">Manage fleet →</a>
+    </div>
+    <div class="ops-fleet-grid">
+      {{range .ServerHealth}}
+      <article class="ui-panel ops-fleet-card{{if .IsActive}} ops-fleet-card--active{{end}}">
+        <div class="ops-fleet-card__head">
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <h3 class="ops-fleet-card__name truncate">{{.Name}}</h3>
+              {{if .IsActive}}<span class="ui-status ui-status--info">Active</span>{{end}}
+              {{if .IsExternal}}<span class="ui-status ui-status--warning" title="External read-only server">Read-only</span>{{end}}
+            </div>
+            <div class="ops-fleet-card__url" title="{{.AdminURL}}">{{.AdminURL}}</div>
+          </div>
+          {{if eq .Status "online"}}<span class="ui-status ui-status--success">Online</span>
+          {{else if eq .Status "offline"}}<span class="ui-status ui-status--danger">Offline</span>
+          {{else}}<span class="ui-status ui-status--neutral">Unknown</span>{{end}}
+        </div>
+        <dl class="ops-fleet-card__metrics">
+          <div class="ops-fleet-card__metric"><dt>Hosts</dt><dd>{{.HostCount}}</dd></div>
+          <div class="ops-fleet-card__metric"><dt>Caddy</dt><dd class="font-mono truncate">{{if .Version}}{{.Version}}{{else}}—{{end}}</dd></div>
+          <div class="ops-fleet-card__metric"><dt>Last seen</dt><dd>{{fmtRel .LastContactAt}}</dd></div>
+        </dl>
+        {{if not .IsActive}}
+        <form method="post" action="/servers/{{.ID}}/select" class="mt-3">
+          <button class="ui-button ui-button--secondary w-full text-xs">Switch environment</button>
+        </form>
         {{end}}
-        <div class="font-mono text-xs text-ink-500 break-all">{{.Label}}</div>
-      </div>
-      {{if .Enabled}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>on</span>
-      {{else}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500 shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>off</span>
+      </article>
       {{end}}
     </div>
-  </a>
+  </section>
+  {{end}}
+
+  {{if .RecentEdits}}
+  <section class="ui-section" aria-labelledby="recent-activity-title">
+    <div class="ui-section-header">
+      <div>
+        <h2 class="ui-section-header__title" id="recent-activity-title">Recent activity</h2>
+        <p class="ui-section-header__description">Latest configuration changes on the active server</p>
+      </div>
+      <a href="/activity" class="ui-section-header__action">View all activity →</a>
+    </div>
+    <div class="ui-panel ops-activity-list">
+      {{range .RecentEdits}}
+      {{$type := "Other"}}
+      {{if hasPrefix .Action "proxy_"}}{{$type = "Proxy"}}{{end}}
+      {{if hasPrefix .Action "redirect_"}}{{$type = "Redirect"}}{{end}}
+      {{if hasPrefix .Action "raw_"}}{{$type = "Advanced"}}{{end}}
+      {{if hasPrefix .Action "cert_"}}{{$type = "Certificate"}}{{end}}
+      {{if hasPrefix .Action "group_"}}{{$type = "Group"}}{{end}}
+      {{if hasPrefix .Action "api_token_"}}{{$type = "API token"}}{{end}}
+      {{$verb := .Action}}
+      {{if hasSuffix .Action "_create"}}{{$verb = "created"}}{{end}}
+      {{if hasSuffix .Action "_update"}}{{$verb = "updated"}}{{end}}
+      {{if hasSuffix .Action "_delete"}}{{$verb = "deleted"}}{{end}}
+      {{if hasSuffix .Action "_revoke"}}{{$verb = "revoked"}}{{end}}
+      {{if hasSuffix .Action "_enable"}}{{$verb = "enabled"}}{{end}}
+      {{if hasSuffix .Action "_disable"}}{{$verb = "disabled"}}{{end}}
+      {{if eq .Action "caddyfile_import"}}{{$verb = "imported"}}{{end}}
+      {{if eq .Action "raw_reclassify"}}{{$verb = "re-classified"}}{{end}}
+      <div class="ops-activity-row">
+        <span class="ui-status ui-status--neutral">{{$type}}</span>
+        <div class="ops-activity-row__summary"><strong>{{.Actor}}</strong> {{$verb}} <span class="font-mono">{{if .Target}}{{.Target}}{{else}}—{{end}}</span>{{if .Detail}} <span>({{.Detail}})</span>{{end}}</div>
+        <time class="ops-activity-row__time" title="{{fmtIn .CreatedAt "Jan 2, 2006 15:04"}}">{{fmtRel .CreatedAt}}</time>
+      </div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
+  <section class="ops-data-section" aria-labelledby="recent-proxies-title">
+    <div class="ui-section-header">
+      <div>
+        <h2 class="ui-section-header__title" id="recent-proxies-title">Proxy hosts</h2>
+        <p class="ui-section-header__description">Recent routes and live upstream reachability</p>
+      </div>
+      <a href="/proxy-hosts" class="ui-section-header__action">View all hosts →</a>
+    </div>
+
+    <div class="lg:hidden space-y-2">
+      {{range .ProxyHosts}}
+      <a href="/proxy-hosts/{{.ID}}/edit" class="ops-mobile-card" data-host-id="{{.ID}}">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex flex-wrap gap-1 min-w-0">{{range splitDomains .Domains}}<span class="domain-pill break-all">{{.}}</span>{{end}}</div>
+          {{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}
+        </div>
+        <div class="flex items-center gap-1.5 text-xs font-mono text-ink-400 mt-2">
+          <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
+          <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
+          <span class="truncate">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</span>
+        </div>
+      </a>
+      {{else}}
+      <div class="ui-panel ui-empty">
+        <div class="ui-empty__title">No proxy hosts yet</div>
+        <div class="ui-empty__body">Create a route to begin sending traffic to an upstream service.</div>
+        <a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Create proxy host</a>
+      </div>
+      {{end}}
+    </div>
+
+    <div class="hidden lg:block ui-table-wrap">
+      <table class="ui-table">
+        <thead><tr><th>Source</th><th>Destination</th><th>Status</th></tr></thead>
+        <tbody>
+          {{range .ProxyHosts}}
+          <tr data-host-id="{{.ID}}">
+            <td>
+              <div class="flex flex-wrap items-center gap-1">
+                {{$hostID := .ID}}
+                {{range splitDomains .Domains}}<span class="inline-flex items-center gap-0.5">
+                  <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
+                  <a href="/proxy-hosts/{{$hostID}}/edit" title="Edit proxy host" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-brand-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  </a>
+                </span>{{end}}
+              </div>
+            </td>
+            <td class="font-mono text-xs text-ink-600">
+              <span class="inline-flex items-center gap-1.5">
+                <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
+                <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
+                {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
+              </span>
+            </td>
+            <td>{{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}</td>
+          </tr>
+          {{else}}
+          <tr><td colspan="3"><div class="ui-empty"><div class="ui-empty__title">No proxy hosts yet</div><div class="ui-empty__body">Create a route to begin sending traffic to an upstream service.</div><a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Create proxy host</a></div></td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {{if .RawRoutes}}
+  <section class="ops-data-section" aria-labelledby="advanced-routes-title">
+    <div class="ui-section-header">
+      <div>
+        <h2 class="ui-section-header__title" id="advanced-routes-title">Advanced routes</h2>
+        <p class="ui-section-header__description">Recent raw route definitions on the active server</p>
+      </div>
+      <a href="/raw-routes" class="ui-section-header__action">View all routes →</a>
+    </div>
+    <div class="lg:hidden space-y-2">
+      {{range .RawRoutes}}
+      <a href="/raw-routes/{{.ID}}/edit" class="ops-mobile-card">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0 flex-1">
+            {{$srcHosts := rawRouteSourceHosts .JSONData}}
+            {{if $srcHosts}}<div class="flex flex-wrap gap-1 mb-2">{{range $srcHosts}}<span class="domain-pill break-all">{{.}}</span>{{end}}</div>{{end}}
+            <div class="font-mono text-xs text-ink-500 break-all">{{.Label}}</div>
+          </div>
+          {{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}
+        </div>
+      </a>
+      {{end}}
+    </div>
+    <div class="hidden lg:block ui-table-wrap">
+      <table class="ui-table">
+        <thead><tr><th>Source</th><th>Label</th><th>Status</th></tr></thead>
+        <tbody>
+          {{range .RawRoutes}}
+          <tr>
+            <td>
+              {{$srcHosts := rawRouteSourceHosts .JSONData}}
+              {{if $srcHosts}}
+              <div class="flex flex-wrap items-center gap-1">
+                {{$rid := .ID}}
+                {{range $srcHosts}}<span class="inline-flex items-center gap-0.5">
+                  <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
+                  <a href="/raw-routes/{{$rid}}/edit" title="Edit advanced route" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-purple-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  </a>
+                </span>{{end}}
+              </div>
+              {{else}}<span class="text-ink-300 text-xs italic">No host matcher</span>{{end}}
+            </td>
+            <td class="font-mono text-xs text-ink-600">{{.Label}}</td>
+            <td>{{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
   {{end}}
 </div>
-
-{{/* Desktop table */}}
-<div class="hidden lg:block bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
-  <table class="w-full text-sm">
-    <thead class="bg-ink-50/50 text-left">
-      <tr class="text-xs uppercase tracking-wider text-ink-500">
-        <th class="px-5 py-3 font-medium">Source</th>
-        <th class="px-5 py-3 font-medium">Label</th>
-        <th class="px-5 py-3 font-medium">Status</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{range .RawRoutes}}
-      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
-        <td class="px-5 py-3">
-          {{$srcHosts := rawRouteSourceHosts .JSONData}}
-          {{if $srcHosts}}
-          <div class="flex flex-wrap items-center gap-1">
-            {{$rid := .ID}}
-            {{range $srcHosts}}<span class="inline-flex items-center gap-0.5">
-              <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
-              <a href="/raw-routes/{{$rid}}/edit" title="Edit advanced route" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-purple-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              </a>
-            </span>{{end}}
-          </div>
-          {{else}}
-          <span class="text-ink-300 text-xs italic">— no host matcher</span>
-          {{end}}
-        </td>
-        <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.Label}}</td>
-        <td class="px-5 py-3">
-          {{if .Enabled}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>enabled</span>
-          {{else}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500"><span class="w-1.5 h-1.5 rounded-full bg-ink-400"></span>disabled</span>
-          {{end}}
-        </td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-</div>
-{{end}}
 
 <script>
 {{if eq .User.Role "admin"}}
 // System-stats poller. Gated on role server-side — the #sys-stats element
 // only exists for admins, so for user/viewer this whole block is a no-op.
 (function() {
-  var sid = document.getElementById('sys-stats').dataset.sid || '1';
+  var stats = document.getElementById('sys-stats');
+  if (!stats) return;
+  var sid = stats.dataset.sid || '1';
   fetch('/api/system-stats?sid=' + sid)
     .then(function(r){ return r.json(); })
     .then(function(d){
@@ -582,7 +475,6 @@
 // on load; the poller on the server keeps the cache warm so a reload shows
 // current state.
 (function() {
-  // Port dot — Caddy can open a TCP connection to the upstream.
   function paintPort(dot, h) {
     dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
     if (h.status === 'ok') {
@@ -599,8 +491,6 @@
       dot.title = 'Port: unreachable — ' + (h.error || h.status);
     }
   }
-  // App dot — HTTPS GET / reached the app and it returned something sensible.
-  // Empty app_status = poller hasn't run yet (first ~60s after boot); leave grey.
   function paintApp(dot, h) {
     dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
     var s = h.app_status;
@@ -648,18 +538,18 @@
 // Fetch and display Caddy version.
 (function() {
   fetch('/api/caddy-version')
-    .then(r => r.json())
-    .then(data => {
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
       var el = document.getElementById('caddy-version');
       if (el) el.textContent = data.version || 'unknown';
     })
-    .catch(() => {
+    .catch(function() {
       var el = document.getElementById('caddy-version');
       if (el) el.textContent = 'unavailable';
     });
 })();
 
-// Check for CaddyUI updates
+// Check for CaddyUI updates.
 fetch('/api/version-check').then(function(r){ return r.json(); }).then(function(d){
   if(d.has_update){
     var el=document.getElementById('update-notice');
