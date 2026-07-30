@@ -279,7 +279,7 @@ func (c *Client) send(method, path string, val any) error {
 // directives like `header`, `encode`, `request_body` run on the incoming request
 // before it's proxied.
 func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any {
-	domains := p.DomainList()
+	domains := models.NormalizeHostnames(p.DomainList())
 
 	// Build upstreams list: primary + any extra (Feature D).
 	upstreams := []any{map[string]any{"dial": fmt.Sprintf("%s:%d", p.ForwardHost, p.ForwardPort)}}
@@ -3902,7 +3902,7 @@ func ipBlocklistSubroute(cidrList []string) map[string]any {
 // v2.9.13: prepends IP allowlist subroute and/or maintenance-mode handler
 // before the redirect static_response when those features are enabled.
 func BuildRedirectRoute(r models.RedirectionHost) map[string]any {
-	domains := r.DomainList()
+	domains := models.NormalizeHostnames(r.DomainList())
 	scheme := r.ForwardScheme
 	if scheme == "auto" || scheme == "" {
 		scheme = "{http.request.scheme}"

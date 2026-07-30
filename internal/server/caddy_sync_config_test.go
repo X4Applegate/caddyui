@@ -176,6 +176,7 @@ func TestManagedCertificateCoverageUsesSingleLabelWildcards(t *testing.T) {
 		want bool
 	}{
 		{"*.example.com", "app.example.com", true},
+		{"*.example.com", "app.example.com:8000", true},
 		{"*.example.com", "APP.EXAMPLE.COM.", true},
 		{"*.example.com", "deep.app.example.com", false},
 		{"*.example.com", "example.com", false},
@@ -199,6 +200,9 @@ func TestManagedWildcardForHost(t *testing.T) {
 
 	if got := managedWildcardForHost(certs, "app.example.com"); got == nil || got.Name != "Example wildcard" {
 		t.Fatalf("managedWildcardForHost() = %#v, want Example wildcard", got)
+	}
+	if got := managedWildcardForHost(certs, "app.example.com:8000"); got == nil || got.Name != "Example wildcard" {
+		t.Fatalf("managedWildcardForHost() with port = %#v, want Example wildcard", got)
 	}
 	if got := managedWildcardForHost(certs, "deep.app.example.com"); got != nil {
 		t.Fatalf("managedWildcardForHost() = %#v, want nil for multi-label host", got)
@@ -235,6 +239,29 @@ func TestManagedWildcardSubjectItselfIsNeverSkipped(t *testing.T) {
 	}
 	if got := buildSkipCertificates(proxies, nil, nil, certs); len(got) != 0 {
 		t.Fatalf("skip certificates = %#v, wildcard subject must remain eligible for issuance", got)
+	}
+}
+
+func TestPortQualifiedHostReusesManagedWildcard(t *testing.T) {
+	proxies := []models.ProxyHost{
+		{Domains: "project.sub.example.com:8000", Enabled: true, SSLEnabled: true},
+	}
+	certs := []models.Certificate{
+		{Source: models.CertSourceManaged, Domains: "*.sub.example.com"},
+	}
+	if got := buildSkipCertificates(proxies, nil, nil, certs); !reflect.DeepEqual(got, []any{"project.sub.example.com"}) {
+		t.Fatalf("skip certificates = %#v, want port-free wildcard-covered hostname", got)
+	}
+
+	route := caddy.BuildProxyRoute(models.ProxyHost{
+		Domains:       "project.sub.example.com:8000",
+		ForwardHost:   "app",
+		ForwardPort:   8080,
+		ForwardScheme: "http",
+	}, nil)
+	match := route["match"].([]any)[0].(map[string]any)
+	if got := match["host"]; !reflect.DeepEqual(got, []any{"project.sub.example.com"}) {
+		t.Fatalf("route host matcher = %#v, want port-free hostname", got)
 	}
 }
 

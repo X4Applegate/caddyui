@@ -225,7 +225,7 @@ API keys are stored in CaddyUI's selected database. The Settings UI never render
 
 ### Community integrations
 
-- [CaddyUI-MCP](https://github.com/loryanstrant/CaddyUI-MCP) — a community-maintained MCP server that wraps CaddyUI's `/api/v1` REST API for agent-driven automation. Use a dedicated CaddyUI user and the narrowest API token scope that fits your workflow.
+- [CaddyUI-MCP](https://github.com/loryanstrant/CaddyUI-MCP) — a community-maintained MCP server that wraps CaddyUI's `/api/v1` REST API for agent-driven automation. `GET /api/v1/servers` supplies the fleet ID/name/type mapping integrations need without scraping HTML. Use a dedicated CaddyUI user and the narrowest API token scope that fits your workflow.
 
 ---
 

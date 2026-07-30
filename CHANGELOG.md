@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.20.2] - 2026-07-30 - Fleet API and TLS/version reliability
+
+### Fixed
+
+- **Version checks now follow every Docker Hub tag page** and select the highest semantic version across the complete repository. Installations no longer report an old `v2.9.x` release after newer tags move beyond the first page.
+- **Port-qualified proxy and redirection domains now use port-free Caddy host matchers and certificate identities**. A host such as `project.sub.example.com:8000` correctly reuses a managed `*.sub.example.com` wildcard instead of attempting an invalid exact certificate order containing `:8000`.
+- DNS-01 automation subjects, custom-certificate exclusions, wildcard discovery, and cross-server wildcard deployment now share the same normalized hostname behavior.
+
+### Added
+
+- **Read-only fleet API**: authenticated clients can call `GET /api/v1/servers` with a session or API token to retrieve server IDs, names, admin URLs, management types, health, Caddy versions, tags, and last-contact timestamps without scraping the Caddy Fleet page.
+- The fleet response intentionally excludes admin credentials and public IP configuration. It is available to every authenticated role, matching the fleet switcher already rendered in the signed-in application shell.
+
+---
+
 ## [2.20.1] - 2026-07-29 - Actionable unused-certificate cleanup
 
 ### Fixed
