@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -769,6 +770,34 @@ func (p ProxyHost) DomainList() []string {
 		d = strings.TrimSpace(d)
 		if d != "" {
 			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// NormalizeHostname returns the DNS/TLS identity represented by a host matcher.
+// Caddy strips an optional request port before matching Host, and automatic
+// HTTPS requires the same port-free value for certificate subjects. Keep the
+// stored form value untouched for display, but use this helper anywhere a
+// hostname is emitted to Caddy or compared with certificate SANs.
+func NormalizeHostname(value string) string {
+	value = strings.TrimSpace(value)
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	} else {
+		// A bracketed IPv6 literal without a port is not accepted by
+		// SplitHostPort, but the brackets are not part of its TLS identity.
+		value = strings.TrimPrefix(value, "[")
+		value = strings.TrimSuffix(value, "]")
+	}
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+}
+
+func NormalizeHostnames(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if host := NormalizeHostname(value); host != "" {
+			out = append(out, host)
 		}
 	}
 	return out

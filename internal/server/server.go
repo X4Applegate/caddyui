@@ -604,6 +604,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/api/v1/raw-routes/{id}", s.apiV1GetRawRoute)
 		r.Get("/api/v1/certificates", s.apiV1ListCertificates)
 		r.Get("/api/v1/certificates/{id}", s.apiV1GetCertificate)
+		r.Get("/api/v1/servers", s.apiV1ListServers)
 
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
@@ -3656,7 +3657,7 @@ func (s *Server) crossDeployProxyHost(actor string, sourceServerID int64, p *mod
 func normalizedDomainSet(domains []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(domains))
 	for _, domain := range domains {
-		domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+		domain = models.NormalizeHostname(domain)
 		if domain != "" {
 			out[domain] = struct{}{}
 		}
@@ -3678,8 +3679,8 @@ func sameDomainSet(a, b []string) bool {
 }
 
 func managedCertificateCovers(certDomain, host string) bool {
-	certDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(certDomain)), ".")
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	certDomain = models.NormalizeHostname(certDomain)
+	host = models.NormalizeHostname(host)
 	if certDomain == "" || host == "" {
 		return false
 	}
@@ -3718,7 +3719,7 @@ func managedWildcardForHost(certs []models.Certificate, host string) *models.Cer
 			continue
 		}
 		for _, certDomain := range certs[i].DomainList() {
-			if strings.HasPrefix(strings.TrimSpace(certDomain), "*.") &&
+			if strings.HasPrefix(models.NormalizeHostname(certDomain), "*.") &&
 				managedCertificateCovers(certDomain, host) {
 				return &certs[i]
 			}
@@ -5929,7 +5930,7 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 			return
 		}
 		for _, raw := range domains {
-			d := strings.ToLower(strings.TrimSpace(raw))
+			d := models.NormalizeHostname(raw)
 			if d == "" {
 				continue
 			}
@@ -6016,7 +6017,12 @@ func buildManagedCertificateRoutes(certs []models.Certificate) []any {
 		}
 		hostValues := make([]any, 0, len(hosts))
 		for _, host := range hosts {
-			hostValues = append(hostValues, strings.ToLower(strings.TrimSpace(host)))
+			if host = models.NormalizeHostname(host); host != "" {
+				hostValues = append(hostValues, host)
+			}
+		}
+		if len(hostValues) == 0 {
+			continue
 		}
 		routes = append(routes, map[string]any{
 			"match": []any{map[string]any{"host": hostValues}},
@@ -8507,7 +8513,9 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 			continue
 		}
 		for _, d := range p.DomainList() {
-			set[d] = struct{}{}
+			if d = models.NormalizeHostname(d); d != "" {
+				set[d] = struct{}{}
+			}
 		}
 	}
 	for _, rd := range redirs {
@@ -8515,7 +8523,9 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 			continue
 		}
 		for _, d := range rd.DomainList() {
-			set[d] = struct{}{}
+			if d = models.NormalizeHostname(d); d != "" {
+				set[d] = struct{}{}
+			}
 		}
 	}
 	// Raw routes don't store their domains as a separate field — the hosts live
@@ -8531,7 +8541,9 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 		}
 		for _, route := range flattenToRouteMaps(decoded) {
 			for _, h := range hostsFromRoute(route) {
-				set[h] = struct{}{}
+				if h = models.NormalizeHostname(h); h != "" {
+					set[h] = struct{}{}
+				}
 			}
 		}
 	}
@@ -8546,7 +8558,7 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 			return
 		}
 		for _, host := range hosts {
-			host = strings.ToLower(strings.TrimSpace(host))
+			host = models.NormalizeHostname(host)
 			if host == "" || strings.HasPrefix(host, "*.") {
 				continue
 			}
@@ -8556,7 +8568,7 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 				}
 				covered := false
 				for _, certDomain := range cert.DomainList() {
-					if strings.HasPrefix(strings.TrimSpace(certDomain), "*.") && managedCertificateCovers(certDomain, host) {
+					if strings.HasPrefix(models.NormalizeHostname(certDomain), "*.") && managedCertificateCovers(certDomain, host) {
 						covered = true
 						break
 					}
@@ -12476,28 +12488,53 @@ func (s *Server) apiVersionCheck(w http.ResponseWriter, r *http.Request) {
 
 // fetchLatestDockerTag queries Docker Hub for the highest vX.Y.Z tag of image.
 func fetchLatestDockerTag(namespace, image string) (string, error) {
-	url := fmt.Sprintf("https://hub.docker.com/v2/repositories/%s/%s/tags/?page_size=50&ordering=-last_updated", namespace, image)
 	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	var result struct {
+	initialURL := fmt.Sprintf("https://hub.docker.com/v2/repositories/%s/%s/tags/?page_size=100", namespace, image)
+	return fetchLatestDockerTagFrom(context.Background(), client, initialURL)
+}
+
+// fetchLatestDockerTagFrom follows Docker Hub's paginated tag response instead
+// of assuming the newest semantic version is present on the first page.
+func fetchLatestDockerTagFrom(ctx context.Context, client *http.Client, initialURL string) (string, error) {
+	const maxPages = 100
+	type tagPage struct {
+		Next    string `json:"next"`
 		Results []struct {
 			Name string `json:"name"`
 		} `json:"results"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 256<<10)).Decode(&result); err != nil {
-		return "", err
-	}
+
 	best := ""
-	for _, t := range result.Results {
-		if semverValid(t.Name) {
-			if best == "" || semverGT(t.Name, best) {
-				best = t.Name
+	pageURL := initialURL
+	for page := 0; pageURL != ""; page++ {
+		if page >= maxPages {
+			return "", fmt.Errorf("Docker Hub tag pagination exceeded %d pages", maxPages)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode != http.StatusOK {
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+			resp.Body.Close()
+			return "", fmt.Errorf("Docker Hub tags returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+		}
+		var result tagPage
+		err = json.NewDecoder(io.LimitReader(resp.Body, 256<<10)).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
+			return "", err
+		}
+		for _, tag := range result.Results {
+			if semverValid(tag.Name) && (best == "" || semverGT(tag.Name, best)) {
+				best = tag.Name
 			}
 		}
+		pageURL = result.Next
 	}
 	if best == "" {
 		return "", fmt.Errorf("no semver tags found")
@@ -14539,6 +14576,38 @@ func (s *Server) getCaddyConfig(w http.ResponseWriter, r *http.Request) {
 // Write endpoints (POST/PUT/DELETE) additionally require a write-scoped token
 // or an admin/write role — the requireWrite middleware enforces that at the
 // chi group level.
+
+// GET /api/v1/servers
+func (s *Server) apiV1ListServers(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(servers))
+	for _, srv := range servers {
+		var lastContactAt any
+		if srv.LastContactAt.Valid {
+			lastContactAt = srv.LastContactAt.Time.UTC()
+		}
+		out = append(out, map[string]any{
+			"id":              srv.ID,
+			"name":            srv.Name,
+			"admin_url":       srv.AdminURL,
+			"type":            srv.Type,
+			"status":          srv.Status,
+			"version":         srv.Version,
+			"tags":            srv.TagList(),
+			"last_contact_at": lastContactAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
 
 // apiProxyHostInput is the JSON request body for create / update.
 type apiProxyHostInput struct {
