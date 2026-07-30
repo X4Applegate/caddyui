@@ -497,6 +497,7 @@ func (s *Server) Routes() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
 		r.Get("/", s.dashboard)
+		r.Get("/onboarding", s.getOnboarding)
 
 		// Read routes — open to both admin and viewer roles.
 		r.Get("/proxy-hosts", s.listProxyHosts)
@@ -1140,7 +1141,41 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, r, tok, exp)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/onboarding", http.StatusSeeOther)
+}
+
+// getOnboarding renders the guided first-run journey. It deliberately uses
+// live product state instead of a dismissible "completed" flag: returning
+// admins can open the page at any time and immediately see which operational
+// foundations are configured, without onboarding state drifting away from
+// the real Caddy/server/DNS/security configuration.
+func (s *Server) getOnboarding(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	sid := s.currentServerID(r)
+	currentServer, _ := models.GetCaddyServer(s.DB, sid)
+	serverConnected := currentServer != nil && currentServer.Status == models.CaddyServerStatusOnline
+	dnsConfigured := len(s.loadDNSProfiles()) > 0
+
+	var proxyCount int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM proxy_hosts WHERE server_id = ?`, sid).Scan(&proxyCount)
+
+	completed := requiredReadinessSteps(serverConnected, cu.TOTPEnabled, proxyCount > 0)
+
+	s.render(w, r, "onboarding.html", map[string]any{
+		"User":            cu,
+		"CurrentServer":   currentServer,
+		"ServerConnected": serverConnected,
+		"DNSConfigured":   dnsConfigured,
+		"TOTPEnabled":     cu.TOTPEnabled,
+		"ProxyCount":      proxyCount,
+		"CompletedSteps":  completed,
+		"Section":         "onboarding",
+	})
 }
 
 // --- Login ---
@@ -2415,6 +2450,10 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	for _, p := range s.loadDNSProfiles() {
 		dnsProfileIDs[p.ID] = true
 	}
+	currentServer, _ := models.GetCaddyServer(s.DB, sid)
+	serverReady := currentServer != nil && currentServer.Status == models.CaddyServerStatusOnline
+	readinessSteps := requiredReadinessSteps(serverReady, cu != nil && cu.TOTPEnabled, len(hosts) > 0)
+	showReadiness := isAdmin && (!serverReady || len(hosts) == 0 || cu == nil || !cu.TOTPEnabled)
 	snapshots, _ := models.ListSnapshots(s.DB, sid, 1)
 	require2FA := mustGetSetting(s.DB, settingRequire2FA) == "1"
 	requireTOTP := mustGetSetting(s.DB, settingRequireTOTP) == "1"
@@ -2462,6 +2501,8 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		"RecentEdits":          recentEdits,
 		"ServerHealth":         serverHealth,
 		"Recommendations":      recommendations,
+		"ShowReadiness":        showReadiness,
+		"ReadinessSteps":       readinessSteps,
 		"Section":              "dashboard",
 	})
 }
@@ -3856,12 +3897,17 @@ func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 	// only their own + global admin-owned certs, not other users' private
 	// material.
 	certs, _ := s.certListForRequest(r)
+	// New hosts open in the guided publish workflow by default. Experienced
+	// operators can opt into the full several-hundred-field editor explicitly;
+	// edit routes remain advanced so existing configuration is never hidden.
+	guided := r.URL.Query().Get("mode") != "advanced"
 	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
 		"Certificates": certs,
 		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
+		"Guided":       guided,
 		"Section":      "proxy",
 	}))
 }
@@ -8237,6 +8283,7 @@ func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request
 		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Error":        errMsg,
+		"Guided":       r.FormValue("guided") == "1",
 		"Section":      "proxy",
 	}))
 }

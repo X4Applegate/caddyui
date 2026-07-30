@@ -35,11 +35,25 @@
       {{if ne .User.Role "viewer"}}
       <a href="/proxy-hosts/new" class="ui-button ui-button--primary">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-        Create proxy host
+        Publish service
       </a>
       {{end}}
     </div>
   </header>
+
+  {{if .ShowReadiness}}
+  <section class="ops-readiness ui-panel" aria-labelledby="ops-readiness-title">
+    <div class="ops-readiness__mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="m8 12 2.5 2.5L16 9"/></svg>
+    </div>
+    <div class="ops-readiness__copy">
+      <div class="ops-readiness__eyebrow">Environment readiness · {{.ReadinessSteps}} of 4 required</div>
+      <h2 id="ops-readiness-title">Complete the recommended operating foundation</h2>
+      <p>Verify Caddy connectivity, administrator security, and the first published service. Add DNS automation only when your workflow needs it.</p>
+    </div>
+    <a href="/onboarding" class="ui-button ui-button--primary">Continue setup</a>
+  </section>
+  {{end}}
 
   {{if .ExpiringSoon}}
   <div class="ops-alert ops-alert--warning">
@@ -346,7 +360,7 @@
       <div class="ui-panel ui-empty">
         <div class="ui-empty__title">No proxy hosts yet</div>
         <div class="ui-empty__body">Create a route to begin sending traffic to an upstream service.</div>
-        <a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Create proxy host</a>
+        <a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Publish service</a>
       </div>
       {{end}}
     </div>
@@ -378,7 +392,7 @@
             <td>{{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}</td>
           </tr>
           {{else}}
-          <tr><td colspan="3"><div class="ui-empty"><div class="ui-empty__title">No proxy hosts yet</div><div class="ui-empty__body">Create a route to begin sending traffic to an upstream service.</div><a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Create proxy host</a></div></td></tr>
+          <tr><td colspan="3"><div class="ui-empty"><div class="ui-empty__title">No services published yet</div><div class="ui-empty__body">Create a route to begin sending traffic to an upstream service.</div><a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Publish service</a></div></td></tr>
           {{end}}
         </tbody>
       </table>

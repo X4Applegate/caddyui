@@ -59,12 +59,13 @@
     First-time setup
   </h2>
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
-    <p>If you're reading this, you're already logged in — so the hardest part is done. For reference, a full first-time setup looks like this:</p>
+    <p>If you're reading this, you're already logged in. CaddyUI keeps the setup journey available under <a href="/onboarding" class="text-brand-600 hover:text-brand-700">Getting Started</a>, where progress is calculated from the active environment instead of a one-time tutorial checkbox.</p>
     <ol class="list-decimal ml-5 space-y-1.5">
       <li>Start Caddy with its admin API exposed on <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">:2019</code> (Docker or bare metal — both work).</li>
       <li>Start CaddyUI with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">CADDY_ADMIN_URL</code> pointed at that address (the sample <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">docker-compose.yml</code> does this automatically).</li>
-      <li>Visit <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/setup</code> and create the first admin user. This page only appears when the DB is empty.</li>
-      <li>Optional: visit <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings</a> and enable Cloudflare Turnstile, 2FA, or email notifications.</li>
+      <li>Visit <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/setup</code> and create the first administrator. The account wizard only appears while the database is empty.</li>
+      <li>Follow <strong>Getting Started</strong> to verify Caddy connectivity, enable TOTP, and publish the first service.</li>
+      <li>Optional: save a DNS provider profile when you need managed records, DNS-01, or wildcard certificates. DNS is not required for ordinary HTTP-01 proxy hosts.</li>
     </ol>
     <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
       <strong>Don't expose port 2019</strong> to the internet. It has full control over Caddy. Keep it on <code class="px-1 bg-amber-100 rounded font-mono">localhost</code>, a Docker network, or a WireGuard VPN.
@@ -82,15 +83,15 @@
   </h2>
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
     <p>A <strong>proxy host</strong> says: <em>"requests for <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">my.domain.com</code> should be forwarded to this internal service."</em></p>
-    <p>Click <a href="/proxy-hosts/new" class="text-brand-600 hover:text-brand-700">Proxy Hosts → + New</a> and fill in:</p>
-    <ul class="list-disc ml-5 space-y-1.5">
-      <li><strong>Domain names</strong> — one or more hostnames (comma-separated).</li>
-      <li><strong>Scheme + Host + Port</strong> — where your backend service lives (e.g. <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">http://192.168.1.50:3000</code>).</li>
-      <li><strong>Auto SSL</strong> — leave on unless you want to use a custom certificate. Caddy will auto-provision via Let's Encrypt / ZeroSSL.</li>
-      <li><strong>WebSockets / HTTP/2 / HTTP/3</strong> — all on by default.</li>
-      <li><strong>Access control</strong> — optional IP allow/deny list.</li>
-    </ul>
-    <p>Hit <strong>Save</strong> and the rule is live in Caddy immediately. The source domain pill on the list page is clickable — it opens the domain in a new tab to verify.</p>
+    <p>Choose <a href="/proxy-hosts/new" class="text-brand-600 hover:text-brand-700">Publish a service</a>. New hosts use a four-stage workflow:</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li><strong>Hostname</strong> — enter one or more public names and choose any canonical redirect behavior.</li>
+      <li><strong>Upstream</strong> — select the scheme, host, and port for the backend (for example <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">http://192.168.1.50:3000</code>), then optionally test reachability.</li>
+      <li><strong>Policy</strong> — confirm whether the host is enabled, choose automatic HTTPS or a custom certificate, and configure DNS automation when needed.</li>
+      <li><strong>Review</strong> — inspect the effective hostname, upstream, HTTPS/DNS policy, deployment scope, and initial state before selecting <strong>Deploy service</strong>.</li>
+    </ol>
+    <p>The guided flow uses the same underlying form and safe defaults as the complete editor. Choose <strong>Use advanced editor</strong> when you need request headers, access control, path-based upstreams, health checks, transport tuning, or the rest of CaddyUI's detailed proxy policy.</p>
+    <p>After deployment, the source-domain pill on the list page opens the service in a new tab for verification.</p>
     <div class="bg-ink-50 border border-ink-200 rounded-lg px-4 py-3 text-xs text-ink-600">
       <strong class="text-ink-800">Tip:</strong> use the <strong>Enabled</strong> toggle to temporarily turn a rule off without deleting it. Great for maintenance windows.
     </div>
