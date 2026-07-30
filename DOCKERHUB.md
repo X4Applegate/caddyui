@@ -72,6 +72,17 @@ The container will print a clear error message at startup if the directory isn't
 
 ## ✨ Headline features
 
+### 🧹 Actionable certificate cleanup
+
+CaddyUI v2.20.1 makes the Operations **Unused custom certificates**
+recommendation precise and controllable:
+
+- Names the affected PEM/file-path certificates directly
+- Opens a filtered certificate list with an **Unused** marker on every affected row
+- Excludes standalone managed ACME and wildcard definitions from the unused count
+- Lets administrators dismiss the recommendation for the selected environment
+- Automatically shows it again if the unused-certificate set changes
+
 ### 🧭 Guided enterprise operations
 
 CaddyUI v2.20 organizes setup and daily work around operator intent and the active environment:
@@ -183,7 +194,7 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.20.0`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.20.1`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 

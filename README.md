@@ -48,7 +48,13 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### What's new in v2.20.0
+### What's new in v2.20.1
+
+- **Unused certificates are now named** — the Operations recommendation identifies affected PEM/file-path certificates and opens a filtered cleanup view with an **Unused** marker on each row.
+- **No false positives for managed ACME** — standalone and wildcard certificates automated by Caddy are no longer classified as unused simply because they are not attached through a resource certificate ID.
+- **Dismiss without permanent silence** — administrators can hide the recommendation for the selected environment. It returns automatically when the set of unused certificates changes.
+
+### Enterprise workflows in v2.20
 
 - **Guided first-run journey** — create the administrator account, verify the Caddy control plane, secure access, optionally configure DNS automation, and publish the first service through one live readiness guide.
 - **Publish-service wizard** — new proxy hosts follow Hostname → Upstream → Policy → Review, with native validation and a deployment summary before anything is written to Caddy.

@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.20.1] - 2026-07-29 - Actionable unused-certificate cleanup
+
+### Fixed
+
+- **Unused certificate recommendations now identify the certificates** instead of linking to an unfiltered list with only a count.
+- **Managed ACME definitions are no longer reported as unused**. Standalone managed and wildcard certificates are intentionally automated by Caddy and are not attached through a resource `certificate_id`.
+- Certificate usage is checked against every proxy host, redirection, and advanced route in the current environment, preventing tenant-scoped views from incorrectly labeling a shared certificate as unused.
+
+### Added
+
+- **Filtered cleanup view**: the Operations recommendation opens `/certificates?usage=unused`, where only unassigned PEM/file-path certificates appear and every row carries an **Unused** marker.
+- **Named dashboard detail**: the recommendation includes the first affected certificate names before the operator leaves Operations.
+- **Persistent dismissal**: administrators can dismiss the cleanup recommendation for the selected Caddy environment. The exact unused-certificate set is remembered; the recommendation automatically returns if a different certificate becomes unused later.
+- **Cleanup guidance** explains that assigning or deleting the listed certificates clears the condition.
+
+---
+
 ## [2.20.0] - 2026-07-29 - Enterprise workflows and guided operations
 
 ### Added

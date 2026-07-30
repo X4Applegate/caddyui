@@ -66,6 +66,42 @@ func TestBuildDashboardRecommendationsAdminHardening(t *testing.T) {
 	}
 }
 
+func TestBuildDashboardRecommendationsNamesAndFiltersUnusedCustomCertificates(t *testing.T) {
+	input := dashboardRecommendationInput{
+		IsAdmin: true,
+		Certificates: []models.Certificate{
+			{ID: 10, Name: "legacy-api", Source: models.CertSourcePEM},
+			{ID: 11, Name: "old-file", Source: models.CertSourcePath},
+			{ID: 12, Name: "managed-wildcard", Source: models.CertSourceManaged},
+		},
+		Now: time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC),
+	}
+	recs := buildDashboardRecommendations(input)
+	rec, ok := findRecommendation(recs, "Unused custom certificates")
+	if !ok {
+		t.Fatalf("missing unused certificate recommendation in %#v", recs)
+	}
+	if rec.URL != "/certificates?usage=unused" {
+		t.Fatalf("unused recommendation URL = %q", rec.URL)
+	}
+	if !strings.Contains(rec.Detail, "legacy-api, old-file") {
+		t.Fatalf("unused recommendation does not name certificates: %q", rec.Detail)
+	}
+	if strings.Contains(rec.Detail, "managed-wildcard") {
+		t.Fatalf("managed ACME certificate was incorrectly reported unused: %q", rec.Detail)
+	}
+
+	input.DismissedUnused = "10,11"
+	if _, ok := findRecommendation(buildDashboardRecommendations(input), "Unused custom certificates"); ok {
+		t.Fatal("dismissed unused-certificate set was still recommended")
+	}
+
+	input.Certificates = append(input.Certificates, models.Certificate{ID: 13, Name: "new-unused", Source: models.CertSourcePEM})
+	if _, ok := findRecommendation(buildDashboardRecommendations(input), "Unused custom certificates"); !ok {
+		t.Fatal("recommendation did not return after the unused-certificate set changed")
+	}
+}
+
 func TestBuildDashboardRecommendationsCapsNoise(t *testing.T) {
 	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
 	recs := buildDashboardRecommendations(dashboardRecommendationInput{
@@ -87,12 +123,17 @@ func TestBuildDashboardRecommendationsCapsNoise(t *testing.T) {
 }
 
 func hasRecommendation(recs []dashboardRecommendation, title string) bool {
+	_, ok := findRecommendation(recs, title)
+	return ok
+}
+
+func findRecommendation(recs []dashboardRecommendation, title string) (dashboardRecommendation, bool) {
 	for _, rec := range recs {
 		if rec.Title == title {
-			return true
+			return rec, true
 		}
 	}
-	return false
+	return dashboardRecommendation{}, false
 }
 
 func testCertificatePEM(t *testing.T, notAfter time.Time) string {
