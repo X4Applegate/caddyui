@@ -48,7 +48,14 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### What's new in v2.18.0
+### What's new in v2.19.0
+
+- **MariaDB backend** — keep embedded SQLite for simple installs or connect CaddyUI to MariaDB for concurrent enterprise workloads, replication, and platform-managed backups.
+- **Safe database migration** — copy an existing SQLite installation into an empty MariaDB database with a read-only, batched migration command. Large analytics histories can be intentionally skipped.
+- **Faster Proxy Hosts** — request counters now use domain-scoped index lookups instead of scanning the complete analytics history, and live probes wait until after the initial browser paint.
+- **Database-aware operations** — automatic schema migrations, portable sessions/retention/rollups, MariaDB-specific backup guidance, a Compose overlay, and dedicated MariaDB CI coverage.
+
+### Enterprise operations UI in v2.18
 
 - **Enterprise operations center** — the dashboard now leads with the active environment, route inventory, live system and upstream health, prioritized risks, fleet status, and recent configuration activity instead of a loose collection of cards.
 - **Workflow-first application shell** — navigation is regrouped around Traffic, Observe, Configuration, Developer, and Administration workflows. The current Caddy environment is always visible and switching servers is faster.
@@ -131,7 +138,8 @@ Your Caddy build must include the matching `caddy-dns` provider module. The repo
 
 ### Operational
 
-- **Snapshots** — one-click SQLite database backup; auto-snapshot on sync
+- **SQLite or MariaDB** — embedded SQLite by default; optional MariaDB backend for concurrent enterprise workloads, replication, and managed backups
+- **Snapshots** — automatic and manual Caddy configuration snapshots on both backends; one-click full-file backup on SQLite
 - **Email notifications** — SMTP support (STARTTLS / TLS / plain) for cert-expiry and upstream-health alerts
 - **Webhook notifications** — generic JSON POST for cert-expiry (pair with any notifier that accepts webhooks)
 - **Update notifications** — sidebar badge when a newer Docker Hub release is available
@@ -195,7 +203,7 @@ If you want a different persona, in-house naming conventions, or a leaner / chat
 
 ### Privacy
 
-API keys are stored in CaddyUI's SQLite database. The Settings UI never renders saved keys back to the form (a `••••••••` placeholder shows when one is set; leave the field blank to keep the existing key). Local Ollama means the conversation never leaves your machine; cloud backends send the conversation to your chosen provider per their respective terms.
+API keys are stored in CaddyUI's selected database. The Settings UI never renders saved keys back to the form (a `••••••••` placeholder shows when one is set; leave the field blank to keep the existing key). Local Ollama means the conversation never leaves your machine; cloud backends send the conversation to your chosen provider per their respective terms.
 
 ### Community integrations
 
@@ -270,6 +278,54 @@ docker run -d \
   -e CADDY_ADMIN_URL=http://your-caddy-host:2019 \
   applegater/caddyui:latest
 ```
+
+### MariaDB (optional enterprise backend)
+
+SQLite remains the zero-configuration default. MariaDB is available for larger
+installations that need concurrent UI reads, continuous analytics ingestion,
+database replication, or platform-managed backups.
+
+Use the included Compose overlay:
+
+```bash
+export CADDYUI_MARIADB_PASSWORD='replace-with-a-long-random-password'
+export CADDYUI_MARIADB_ROOT_PASSWORD='replace-with-a-different-random-password'
+docker compose -f docker-compose.yml -f docker-compose.mariadb.yml up -d
+```
+
+For an existing MariaDB server, configure CaddyUI directly:
+
+```yaml
+environment:
+  CADDYUI_DB_DRIVER: mariadb
+  CADDYUI_DB_DSN: caddyui:password@tcp(mariadb.example.internal:3306)/caddyui
+```
+
+Create the database and user before starting CaddyUI. CaddyUI creates and
+migrates its tables automatically. The DSN is never written to application
+logs.
+
+To copy an existing SQLite installation, first create a timestamped copy of
+`caddyui.db`, stop the normal CaddyUI container, start the empty MariaDB
+service, and run:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mariadb.yml up -d mariadb
+docker compose -f docker-compose.yml -f docker-compose.mariadb.yml run --rm --no-deps \
+  caddyui migrate-db \
+  --from-sqlite /data/caddyui.db
+docker compose -f docker-compose.yml -f docker-compose.mariadb.yml up -d
+```
+
+The source SQLite file is opened read-only and the MariaDB destination must be
+empty. Add `--skip-analytics` to migrate configuration, users, certificates,
+health history, and activity while leaving large `access_events` and
+`access_daily` tables behind. This is strongly recommended when the SQLite
+database grew primarily because of visitor analytics.
+
+MariaDB backups are managed with `mariadb-dump`, snapshots, or your database
+platform's backup/PITR tooling. Caddy configuration snapshots inside CaddyUI
+continue to work on both backends.
 
 ### Non-Docker systemd install
 
@@ -373,7 +429,9 @@ edge.
 
 | Variable | Default | Description |
 |---|---|---|
+| `CADDYUI_DB_DRIVER` | `sqlite` | Database backend: `sqlite` or `mariadb` |
 | `CADDYUI_DB` | `/data/caddyui.db` | Path to the SQLite database |
+| `CADDYUI_DB_DSN` | *(unset)* | MariaDB DSN; required when `CADDYUI_DB_DRIVER=mariadb` |
 | `CADDYUI_LISTEN` | `:8080` | Listen address |
 | `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy admin API base URL |
 | `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Path to Caddyfile (optional) |
@@ -463,7 +521,7 @@ docker build --build-arg VERSION=v1.0.0 -t caddyui:v1.0.0 .
 
 - [Go 1.25+](https://go.dev/)
 - [Caddy 2.x](https://caddyserver.com/) with the admin API enabled (default)
-- No external database required — uses embedded SQLite
+- No external database required — embedded SQLite is the default; MariaDB is optional
 
 ---
 
@@ -474,7 +532,7 @@ cmd/caddyui/        Entry point, env config, startup
 internal/
   auth/             Session, password hashing, TOTP
   caddy/            Admin API client, Caddyfile parser, importer
-  db/               SQLite init & migrations
+  db/               SQLite/MariaDB init, migrations, and data migration
   models/           Data types and DB queries
   server/           HTTP handlers, routes, notifiers, health poller
 web/
@@ -482,7 +540,7 @@ web/
   static/           CSS, icons, PWA manifest & service worker
 ```
 
-CaddyUI stores all state in a single SQLite file. It communicates with Caddy exclusively through Caddy's HTTP admin API — no SSH, no file manipulation.
+CaddyUI stores state in SQLite by default or MariaDB when configured. It communicates with Caddy exclusively through Caddy's HTTP admin API — no SSH and no direct Caddy configuration-file manipulation.
 
 ---
 

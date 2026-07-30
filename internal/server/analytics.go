@@ -51,11 +51,11 @@ const (
 // Called both by the /settings handler (to render the form) and by the
 // save-then-enable path below (to know what target to pass to EnableAccessLogs).
 type analyticsConfig struct {
-	Enabled      bool
-	Target       string   // host:port, resolved (default applied if blank)
-	TargetRaw    string   // the admin's literal input, possibly ""
-	ExcludeIPs   []string // one entry per line of the admin's list
-	ExcludeRaw   string   // the admin's literal textarea value, for re-render
+	Enabled    bool
+	Target     string   // host:port, resolved (default applied if blank)
+	TargetRaw  string   // the admin's literal input, possibly ""
+	ExcludeIPs []string // one entry per line of the admin's list
+	ExcludeRaw string   // the admin's literal textarea value, for re-render
 }
 
 func loadAnalyticsConfig(db *sql.DB) analyticsConfig {
@@ -523,19 +523,19 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 
 	cfg := loadAnalyticsConfig(s.DB)
 	s.render(w, r, "analytics.html", map[string]any{
-		"User":             u,
-		"IsAdmin":          isAdmin,
-		"Today":            todayTotals,
-		"SevenDay":         sevenTotals,
-		"LiveVisitors":     liveVisitors,
-		"Hosts":            hostRows,
-		"Sparkline":           sparkline,
+		"User":               u,
+		"IsAdmin":            isAdmin,
+		"Today":              todayTotals,
+		"SevenDay":           sevenTotals,
+		"LiveVisitors":       liveVisitors,
+		"Hosts":              hostRows,
+		"Sparkline":          sparkline,
 		"BandwidthSparkline": bwSparkline,
 		"BandwidthTotal":     bwTotal,
 		"BandwidthMax":       bwMax,
-		"Status":              statusBuckets,
-		"IngestStats":      ingestStats,
-		"AnalyticsEnabled": cfg.Enabled,
+		"Status":             statusBuckets,
+		"IngestStats":        ingestStats,
+		"AnalyticsEnabled":   cfg.Enabled,
 		// Server-switcher data. AllServers feeds the <select>; the template
 		// only renders the picker when len > 1 so a one-server deployment
 		// doesn't get a useless dropdown. SelectedServerID is 0 for "all
@@ -648,29 +648,29 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 	buckets := fillBuckets(rawBuckets, since, now, bucketSec)
 
 	s.render(w, r, "analytics_host.html", map[string]any{
-		"User":               u,
-		"IsAdmin":            isAdmin,
-		"Host":               host,
-		"Window":             window,
-		"WindowLabel":        formatWindow(window),
-		"Totals":             totals,
-		"Paths":              paths,
-		"Clients":            clients,
-		"Status":             status,
-		"Buckets":            buckets,
-		"BucketSeconds":      bucketSec,
-		"ResponseTime":       rtStats,
-		"Bandwidth":          bandwidth,
-		"ErrorPaths":         errorPaths,
-		"Browsers":           browsers,
-		"Section":            "analytics",
-		"ViewsChange":        viewsChange,
-		"ViewsUp":            viewsUp,
-		"ViewsChangeAbs":     viewsChangeAbs,
-		"VisitorsChange":     visitorsChange,
-		"VisitorsUp":         visitorsUp,
-		"VisitorsChangeAbs":  visitorsChangeAbs,
-		"PrevPeriod":         fmt.Sprintf("prev %s", formatWindow(window)),
+		"User":              u,
+		"IsAdmin":           isAdmin,
+		"Host":              host,
+		"Window":            window,
+		"WindowLabel":       formatWindow(window),
+		"Totals":            totals,
+		"Paths":             paths,
+		"Clients":           clients,
+		"Status":            status,
+		"Buckets":           buckets,
+		"BucketSeconds":     bucketSec,
+		"ResponseTime":      rtStats,
+		"Bandwidth":         bandwidth,
+		"ErrorPaths":        errorPaths,
+		"Browsers":          browsers,
+		"Section":           "analytics",
+		"ViewsChange":       viewsChange,
+		"ViewsUp":           viewsUp,
+		"ViewsChangeAbs":    viewsChangeAbs,
+		"VisitorsChange":    visitorsChange,
+		"VisitorsUp":        visitorsUp,
+		"VisitorsChangeAbs": visitorsChangeAbs,
+		"PrevPeriod":        fmt.Sprintf("prev %s", formatWindow(window)),
 	})
 }
 
@@ -899,13 +899,13 @@ func (s *Server) getSessions(w http.ResponseWriter, r *http.Request) {
 		dbRows, err = s.DB.Query(
 			`SELECT s.token, u.email, s.expires_at FROM sessions s
 			   JOIN users u ON u.id = s.user_id
-			  WHERE s.expires_at > datetime('now')
-			  ORDER BY s.expires_at DESC`)
+			  WHERE s.expires_at > ?
+			  ORDER BY s.expires_at DESC`, time.Now().UTC())
 	} else {
 		dbRows, err = s.DB.Query(
 			`SELECT token, ?, expires_at FROM sessions
-			  WHERE user_id = ? AND expires_at > datetime('now')
-			  ORDER BY expires_at DESC`, u.Email, u.ID)
+			  WHERE user_id = ? AND expires_at > ?
+			  ORDER BY expires_at DESC`, u.Email, u.ID, time.Now().UTC())
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -914,11 +914,9 @@ func (s *Server) getSessions(w http.ResponseWriter, r *http.Request) {
 	defer dbRows.Close()
 	for dbRows.Next() {
 		var row SessionRow
-		var expStr string
-		if err := dbRows.Scan(&row.Token, &row.UserEmail, &expStr); err != nil {
+		if err := dbRows.Scan(&row.Token, &row.UserEmail, &row.ExpiresAt); err != nil {
 			continue
 		}
-		row.ExpiresAt, _ = time.Parse("2006-01-02 15:04:05", expStr)
 		row.IsCurrent = row.Token == currentToken
 		rows = append(rows, row)
 	}

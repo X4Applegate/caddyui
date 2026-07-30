@@ -15,6 +15,12 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 docker pull applegater/caddyui:latest
 ```
 
+SQLite is included and remains the zero-configuration default. For larger
+installations, CaddyUI also supports MariaDB with concurrent connections,
+platform-managed backups, and a built-in read-only SQLite → MariaDB migration
+command. See the GitHub README's **MariaDB (optional enterprise backend)**
+section and the included `docker-compose.mariadb.yml` overlay.
+
 ### Docker Compose
 
 ```yaml
@@ -169,7 +175,7 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.17.3`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.19.0`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 
@@ -182,7 +188,9 @@ Multi-arch: `linux/amd64` + `linux/arm64`. Scratch base image, runs as non-root 
 | Environment variable | Default | Purpose |
 |---|---|---|
 | `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy's admin API (the docker service name in the same compose network) |
+| `CADDYUI_DB_DRIVER` | `sqlite` | Database backend: `sqlite` or `mariadb` |
 | `CADDYUI_DB` | `/data/caddyui.db` | SQLite database path |
+| `CADDYUI_DB_DSN` | (none) | MariaDB DSN; required when `CADDYUI_DB_DRIVER=mariadb` |
 | `CADDYUI_LISTEN` | `:8080` | HTTP listen address |
 | `CADDYUI_INGEST_LISTEN` | `:9019` | Visitor-analytics TCP ingest from Caddy's `net` log writer (empty string disables) |
 | `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Optional — only read if you mount a Caddyfile into the CaddyUI container for the paste-import auto-classifier reference |

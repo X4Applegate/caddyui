@@ -159,15 +159,15 @@ func accessTotalsFromRollup(db *sql.DB, from, to time.Time, host string) (Access
 // rollup-vs-events math would double-count.
 //
 // Idempotent: re-runs only fill missing days, which makes it safe to invoke
-// from a startup hook and again from a periodic ticker. INSERT OR REPLACE
-// guarantees a consistent row even if the same day was partially inserted.
+// from a startup hook and again from a periodic ticker. REPLACE guarantees a
+// consistent row even if the same day was partially inserted.
 //
 // v2.9.207: also populates per-status-class buckets (s2xx/s3xx/s4xx/s5xx/
 // s_other) so StatusBucketsSince can read the rollup for past days.
 //
 // Returns the number of days written so callers can log progress.
 func AggregateAccessDaily(db *sql.DB) (int, error) {
-	todayStr := time.Now().UTC().Format("2006-01-02")
+	today := time.Now().UTC().Truncate(24 * time.Hour)
 	// v2.9.207: detect rollup rows that were written by a pre-status-bucket
 	// build. Those rows have non-zero views but all zero status counters,
 	// which can't be the real distribution unless the day was empty (and an
@@ -189,31 +189,45 @@ func AggregateAccessDaily(db *sql.DB) (int, error) {
 		}
 		rows.Close()
 	}
-	// Step 1: list every distinct UTC day in events older than today
-	// that doesn't already have a rollup row. Caps the work per pass at
-	// 365 days to keep the first run on a freshly-imported DB bounded.
-	rows, err := db.Query(`
-		SELECT DISTINCT date(ts, 'unixepoch') AS day
-		  FROM access_events
-		 WHERE date(ts, 'unixepoch') < ?
-		   AND date(ts, 'unixepoch') NOT IN (SELECT day FROM access_daily)
-		 ORDER BY day
-		 LIMIT 365`, todayStr)
+	// Step 1: find the event date range and compare it with the small rollup
+	// table in Go. This avoids engine-specific epoch/date functions and lets
+	// both SQLite and MariaDB use the ts index.
+	var firstTS sql.NullInt64
+	err := db.QueryRow(
+		`SELECT ts FROM access_events WHERE ts < ? ORDER BY ts ASC LIMIT 1`,
+		today.Unix(),
+	).Scan(&firstTS)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, err
+	}
+	existingDays := map[string]struct{}{}
+	rows, err := db.Query(`SELECT DISTINCT day FROM access_daily`)
 	if err != nil {
 		return 0, err
 	}
-	var missingDays []string
 	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
+		var day string
+		if err := rows.Scan(&day); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		missingDays = append(missingDays, d)
+		existingDays[day] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
 	}
 	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
+
+	var missingDays []string
+	if firstTS.Valid {
+		firstDay := time.Unix(firstTS.Int64, 0).UTC().Truncate(24 * time.Hour)
+		for day := firstDay; day.Before(today) && len(missingDays) < 365; day = day.Add(24 * time.Hour) {
+			dayText := day.Format("2006-01-02")
+			if _, ok := existingDays[dayText]; !ok {
+				missingDays = append(missingDays, dayText)
+			}
+		}
 	}
 	dedup := map[string]struct{}{}
 	var todo []string
@@ -232,10 +246,14 @@ func AggregateAccessDaily(db *sql.DB) (int, error) {
 	// INSERT…SELECT, no application-side accumulation needed.
 	written := 0
 	for _, day := range todo {
+		dayStart, err := time.ParseInLocation("2006-01-02", day, time.UTC)
+		if err != nil {
+			return written, err
+		}
 		if _, err := db.Exec(`
-			INSERT OR REPLACE INTO access_daily
+			REPLACE INTO access_daily
 			    (day, host, views, unique_visitors, s2xx, s3xx, s4xx, s5xx, s_other)
-			SELECT date(ts, 'unixepoch') AS day,
+			SELECT ? AS day,
 			       host,
 			       COUNT(*) AS views,
 			       COUNT(DISTINCT client_ip) AS unique_visitors,
@@ -245,8 +263,10 @@ func AggregateAccessDaily(db *sql.DB) (int, error) {
 			       SUM(CASE WHEN status >= 500 AND status < 600 THEN 1 ELSE 0 END) AS s5xx,
 			       SUM(CASE WHEN status <  200 OR  status >= 600 THEN 1 ELSE 0 END) AS s_other
 			  FROM access_events
-			 WHERE date(ts, 'unixepoch') = ?
-			 GROUP BY date(ts, 'unixepoch'), host`, day); err != nil {
+			 WHERE ts >= ? AND ts < ?
+			 GROUP BY host`,
+			day, dayStart.Unix(), dayStart.Add(24*time.Hour).Unix(),
+		); err != nil {
 			return written, err
 		}
 		written++
@@ -487,10 +507,10 @@ func TopPaths(db *sql.DB, since time.Time, host string, limit int) ([]PathStats,
 // StatusBuckets returns the count of events in each HTTP-status class (2xx,
 // 3xx, 4xx, 5xx) over the window. Drives the pie-chart on the overview.
 type StatusBuckets struct {
-	S2xx int
-	S3xx int
-	S4xx int
-	S5xx int
+	S2xx   int
+	S3xx   int
+	S4xx   int
+	S5xx   int
 	SOther int
 }
 
@@ -831,28 +851,78 @@ func parseUA(ua string) string {
 	}
 }
 
-// DomainRequestsToday returns a map of lowercase hostname → request count
-// for events since midnight UTC today. Used by the proxy-hosts list to show
-// per-host traffic indicators without N+1 queries.
-func DomainRequestsToday(db *sql.DB) (map[string]int, error) {
+// DomainRequestsTodayForDomains returns a map of lowercase hostname → request
+// count for events since midnight UTC today, restricted to domains displayed
+// by the caller.
+//
+// The restriction is important on installations with a large analytics
+// history. An unscoped GROUP BY can make SQLite scan the complete
+// (host, ts) index—even when only today's rows are requested. Supplying the
+// visible domains turns the same index into a set of small host/time range
+// scans and avoids making /proxy-hosts proportional to total database size.
+func DomainRequestsTodayForDomains(db *sql.DB, domains []string) (map[string]int, error) {
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour).Unix()
-	rows, err := db.Query(
-		`SELECT host, COUNT(*) FROM access_events WHERE ts >= ? GROUP BY host`,
-		todayStart)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := map[string]int{}
-	for rows.Next() {
-		var host string
-		var cnt int
-		if err := rows.Scan(&host, &cnt); err != nil {
+
+	unique := make([]string, 0, len(domains))
+	seen := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" {
 			continue
 		}
-		out[strings.ToLower(host)] = cnt
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		unique = append(unique, domain)
 	}
-	return out, rows.Err()
+	if len(unique) == 0 {
+		return out, nil
+	}
+
+	// Stay below SQLite's default bind-variable limit and keep MariaDB
+	// packets modest on unusually large installations.
+	const chunkSize = 500
+	for start := 0; start < len(unique); start += chunkSize {
+		end := start + chunkSize
+		if end > len(unique) {
+			end = len(unique)
+		}
+		chunk := unique[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, 0, len(chunk)+1)
+		for i, domain := range chunk {
+			placeholders[i] = "?"
+			args = append(args, domain)
+		}
+		args = append(args, todayStart)
+
+		rows, err := db.Query(
+			`SELECT host, COUNT(*) FROM access_events
+			 WHERE host IN (`+strings.Join(placeholders, ",")+`) AND ts >= ?
+			 GROUP BY host`,
+			args...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var host string
+			var count int
+			if err := rows.Scan(&host, &count); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[strings.ToLower(host)] += count
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 // TopBrowsers returns browser categories sorted by count descending for the

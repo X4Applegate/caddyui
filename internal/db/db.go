@@ -223,7 +223,14 @@ CREATE TABLE IF NOT EXISTS proxy_health (
 CREATE INDEX IF NOT EXISTS idx_proxy_health_host_ts ON proxy_health(proxy_host_id, checked_at);
 `
 
+// Open opens the default SQLite backend. It remains the compatibility entry
+// point used by tests and existing installations; new multi-backend callers
+// should use OpenConfig.
 func Open(path string) (*sql.DB, error) {
+	return openSQLite(path)
+}
+
+func openSQLite(path string) (*sql.DB, error) {
 	// v2.9.206: tune SQLite for analytics workloads.
 	//   cache_size=-262144  → 256 MiB page cache (default ~2 MiB)
 	//   mmap_size=268435456 → 256 MiB mmap window for index scans
@@ -254,6 +261,7 @@ func Open(path string) (*sql.DB, error) {
 	if err := migrate(conn); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	registerBackend(conn, BackendSQLite)
 	return conn, nil
 }
 
@@ -545,8 +553,8 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(`ALTER TABLE caddy_servers ADD COLUMN public_ip TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add public_ip to caddy_servers: %w", err)
 		}
-		if _, err := db.Exec(`UPDATE caddy_servers SET public_ip = (SELECT value FROM settings WHERE key='cf_server_ip')
-			WHERE public_ip = '' AND EXISTS (SELECT 1 FROM settings WHERE key='cf_server_ip' AND value != '')`); err != nil {
+		if _, err := db.Exec("UPDATE caddy_servers SET public_ip = (SELECT value FROM settings WHERE `key`='cf_server_ip') " +
+			"WHERE public_ip = '' AND EXISTS (SELECT 1 FROM settings WHERE `key`='cf_server_ip' AND value != '')"); err != nil {
 			return fmt.Errorf("backfill public_ip from legacy global setting: %w", err)
 		}
 	}
@@ -1134,6 +1142,16 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "redirection_hosts", "sort_order") {
 		_, _ = db.Exec(`ALTER TABLE redirection_hosts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`)
 	}
+	// List-page indexes. These keep ordering and last-sync lookups predictable
+	// as an enterprise installation grows beyond a few dozen resources.
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_proxy_hosts_server_sort
+		ON proxy_hosts(server_id, sort_order, id DESC)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_raw_routes_server_id
+		ON raw_routes(server_id, id)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_certificates_server_id
+		ON certificates(server_id, id DESC)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_activity_log_server_action_id
+		ON activity_log(server_id, action, id DESC)`)
 
 	// v2.9.41: allowed_methods — HTTP method allowlist (empty = allow all; complement to blocked_methods denylist)
 	if !columnExists2(db, "proxy_hosts", "allowed_methods") {
@@ -2110,6 +2128,16 @@ func columnExists2(db *sql.DB, table, col string) bool {
 }
 
 func columnExists(db *sql.DB, table, col string) (bool, error) {
+	if BackendOf(db) == BackendMariaDB {
+		var count int
+		err := db.QueryRow(`
+			SELECT COUNT(*)
+			  FROM information_schema.columns
+			 WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+			table, col,
+		).Scan(&count)
+		return count > 0, err
+	}
 	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
 		return false, err
