@@ -775,6 +775,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/servers/{id}/config", s.viewServerConfig)
 			r.Post("/servers/{id}", s.updateServer)
 			r.Post("/servers/{id}/delete", s.deleteServer)
+			r.Post("/dashboard/recommendations/unused-certificates/dismiss", s.dismissUnusedCertificateRecommendation)
 
 			// v2.7.2: create/edit moved up to the requireWrite group so
 			// user-role accounts can manage their own certs. The remaining
@@ -2125,6 +2126,7 @@ type dashboardRecommendationInput struct {
 	RequireTOTP       bool
 	AdminAllowlistSet bool
 	AutoSnapshots     bool
+	DismissedUnused   string
 	Now               time.Time
 }
 
@@ -2156,11 +2158,8 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 	sslOff := 0
 	incompleteDNS := 0
 	missingProfiles := 0
-	referencedCerts := map[int64]bool{}
+	referencedCerts := referencedCertificateIDs(in.ProxyHosts, in.RedirectionHosts, in.RawRoutes)
 	for _, h := range in.ProxyHosts {
-		if h.CertificateID != 0 {
-			referencedCerts[h.CertificateID] = true
-		}
 		if h.Enabled && !h.SSLEnabled {
 			sslOff++
 		}
@@ -2172,9 +2171,6 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 		}
 	}
 	for _, h := range in.RedirectionHosts {
-		if h.CertificateID != 0 {
-			referencedCerts[h.CertificateID] = true
-		}
 		if h.DNSProvider != "" && h.DNSZoneID == "" {
 			incompleteDNS++
 		}
@@ -2183,9 +2179,6 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 		}
 	}
 	for _, rr := range in.RawRoutes {
-		if rr.CertificateID != 0 {
-			referencedCerts[rr.CertificateID] = true
-		}
 		if rr.DNSProvider != "" && rr.DNSZoneID == "" {
 			incompleteDNS++
 		}
@@ -2205,10 +2198,10 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 
 	expiringSoon := 0
 	expired := 0
-	unusedCustomCerts := 0
+	var unusedCustomCerts []models.Certificate
 	for _, c := range in.Certificates {
-		if c.ID != 0 && !referencedCerts[c.ID] {
-			unusedCustomCerts++
+		if isUnusedCustomCertificate(c, referencedCerts) {
+			unusedCustomCerts = append(unusedCustomCerts, c)
 		}
 		if c.Source != models.CertSourcePEM {
 			continue
@@ -2226,8 +2219,15 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 	} else if expiringSoon > 0 {
 		add("warning", "Custom certificates expire soon", fmt.Sprintf("%d uploaded PEM certificate(s) expire within 30 days.", expiringSoon), "/certificates", "Review certs")
 	}
-	if unusedCustomCerts > 0 {
-		add("info", "Unused custom certificates", fmt.Sprintf("%d certificate(s) are not assigned to any resource.", unusedCustomCerts), "/certificates", "Clean up")
+	unusedFingerprint := unusedCertificateFingerprint(in.Certificates, referencedCerts)
+	if in.IsAdmin && len(unusedCustomCerts) > 0 && unusedFingerprint != in.DismissedUnused {
+		add(
+			"info",
+			"Unused custom certificates",
+			fmt.Sprintf("%d certificate(s) are not assigned to any resource: %s.", len(unusedCustomCerts), summarizeCertificateNames(unusedCustomCerts, 3)),
+			"/certificates?usage=unused",
+			"Show unused",
+		)
 	}
 
 	resourceCount := len(in.ProxyHosts) + len(in.RedirectionHosts) + len(in.RawRoutes)
@@ -2458,6 +2458,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	require2FA := mustGetSetting(s.DB, settingRequire2FA) == "1"
 	requireTOTP := mustGetSetting(s.DB, settingRequireTOTP) == "1"
 	adminAllowlistSet := strings.TrimSpace(mustGetSetting(s.DB, settingAdminAllowlist)) != ""
+	dismissedUnused := mustGetSetting(s.DB, unusedCertificateDismissalKey(sid))
 	recommendations := buildDashboardRecommendations(dashboardRecommendationInput{
 		IsAdmin:           isAdmin,
 		ProxyHosts:        hosts,
@@ -2474,6 +2475,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		RequireTOTP:       requireTOTP,
 		AdminAllowlistSet: adminAllowlistSet,
 		AutoSnapshots:     s.autoSnapshotsEnabled(),
+		DismissedUnused:   dismissedUnused,
 		Now:               time.Now(),
 	})
 
@@ -3815,6 +3817,7 @@ type certView struct {
 	ExpiresAt *time.Time
 	DaysLeft  int  // positive = days until expiry; negative = already expired
 	CanEdit   bool // per-row ownership (see above)
+	IsUnused  bool // custom PEM/path certificate with no resource reference
 }
 
 type autoDomainView struct {
@@ -6686,13 +6689,33 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	views := make([]certView, len(certs))
-	for i, c := range certs {
+	// Usage must be calculated against the complete environment, not only
+	// resources visible to the current user. Otherwise a global certificate
+	// used by another tenant could be incorrectly labeled as unused.
+	allHosts, _ := models.ListProxyHosts(s.DB, sid, 0, true, nil)
+	allRedirs, _ := models.ListRedirectionHosts(s.DB, sid, 0, true, nil)
+	allRoutes, _ := models.ListRawRoutes(s.DB, sid, 0, true, nil)
+	referencedCerts := referencedCertificateIDs(allHosts, allRedirs, allRoutes)
+	usageFilter := ""
+	if r.URL.Query().Get("usage") == "unused" {
+		usageFilter = "unused"
+	}
+
+	views := make([]certView, 0, len(certs))
+	unusedCount := 0
+	for _, c := range certs {
 		// Edit/delete predicate: admin → always; user-role → their own rows
 		// only (not global admin-owned ones, even though they're visible in
 		// the list for the dropdown-reference case).
 		canEdit := isAdmin || (c.OwnerID.Valid && viewerID != 0 && c.OwnerID.Int64 == viewerID)
-		views[i] = certView{Certificate: c, CanEdit: canEdit}
+		view := certView{
+			Certificate: c,
+			CanEdit:     canEdit,
+			IsUnused:    isUnusedCustomCertificate(c, referencedCerts),
+		}
+		if view.IsUnused {
+			unusedCount++
+		}
 		var exp *time.Time
 		switch c.Source {
 		case models.CertSourcePEM:
@@ -6703,15 +6726,18 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if exp != nil {
-			views[i].ExpiresAt = exp
-			views[i].DaysLeft = int(time.Until(*exp).Hours() / 24)
+			view.ExpiresAt = exp
+			view.DaysLeft = int(time.Until(*exp).Hours() / 24)
+		}
+		if usageFilter == "" || view.IsUnused {
+			views = append(views, view)
 		}
 	}
+	unusedDismissed := unusedCount > 0 &&
+		mustGetSetting(s.DB, unusedCertificateDismissalKey(sid)) == unusedCertificateFingerprint(certs, referencedCerts)
 
 	// Collect domains auto-managed by Caddy (ssl_enabled, no custom cert).
 	// Use admin view to see all hosts regardless of owner.
-	hosts, _ := models.ListProxyHosts(s.DB, sid, 0, true, nil)
-	redirs, _ := models.ListRedirectionHosts(s.DB, sid, 0, true, nil)
 	seen := map[string]bool{}
 	var autoDomains []autoDomainView
 	addAutoDomain := func(domain string) {
@@ -6729,7 +6755,7 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		}
 		autoDomains = append(autoDomains, view)
 	}
-	for _, h := range hosts {
+	for _, h := range allHosts {
 		if !h.Enabled || !h.SSLEnabled || h.CertificateID != 0 {
 			continue
 		}
@@ -6737,7 +6763,7 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 			addAutoDomain(d)
 		}
 	}
-	for _, rh := range redirs {
+	for _, rh := range allRedirs {
 		if !rh.Enabled || !rh.SSLEnabled || rh.CertificateID != 0 {
 			continue
 		}
@@ -6751,10 +6777,36 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "certificates.html", map[string]any{
 		"User":              s.currentUser(r),
 		"Certs":             views,
+		"UnusedCount":       unusedCount,
+		"UsageFilter":       usageFilter,
+		"UnusedDismissed":   unusedDismissed,
 		"AutoDomains":       autoDomains,
 		"PorkbunConfigured": pbAPIKey != "" && pbSecretKey != "",
 		"Section":           "certs",
 	})
+}
+
+func (s *Server) dismissUnusedCertificateRecommendation(w http.ResponseWriter, r *http.Request) {
+	sid := s.currentServerID(r)
+	certs, err := models.ListCertificates(s.DB, sid)
+	if err != nil {
+		http.Error(w, "load certificates: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	hosts, _ := models.ListProxyHosts(s.DB, sid, 0, true, nil)
+	redirs, _ := models.ListRedirectionHosts(s.DB, sid, 0, true, nil)
+	routes, _ := models.ListRawRoutes(s.DB, sid, 0, true, nil)
+	fingerprint := unusedCertificateFingerprint(certs, referencedCertificateIDs(hosts, redirs, routes))
+	if err := models.SetSetting(s.DB, unusedCertificateDismissalKey(sid), fingerprint); err != nil {
+		http.Error(w, "save dismissal: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	actor := ""
+	if user := s.currentUser(r); user != nil {
+		actor = user.Email
+	}
+	_ = models.LogActivity(s.DB, sid, actor, "recommendation_dismiss", "unused_custom_certificates", fingerprint, true)
+	http.Redirect(w, r, "/certificates?usage=unused", http.StatusSeeOther)
 }
 
 // getCertificateInspect parses the stored PEM and renders detailed certificate
