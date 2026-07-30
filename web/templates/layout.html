@@ -392,7 +392,7 @@
     }
   </style>
 </head>
-<body class="min-h-screen bg-ink-50 text-ink-800 antialiased font-sans">
+<body class="app-body min-h-screen bg-ink-50 text-ink-800 antialiased font-sans">
 {{/* v2.12.46: skip-to-main-content link for keyboard users. The CSS
      keeps it visually hidden (positioned off-screen) until focused —
      pressing Tab as the very first action surfaces it as a brand-coloured
@@ -409,57 +409,29 @@ if ('serviceWorker' in navigator) {
 }
 </script>
   {{if .User}}
-  <header class="lg:hidden sticky top-0 z-20 flex items-center justify-between bg-white border-b border-ink-200 px-4 py-3">
-    <a href="/" class="flex items-center gap-2 min-w-0">
-      <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-500 shadow-card shrink-0">
-        <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-      </span>
-      {{if .CurrentServer}}
-      <span class="text-sm font-semibold tracking-tight text-ink-900 truncate">{{.CurrentServer.Name}}</span>
-      {{/* v2.12.26: status dot is always emerald-green for "online" — never
-           themed via brand-* (which orange theme paints orange). Online =
-           green is a universal UI convention; we don't want to break that
-           just to honour a color theme. Same change at the persistent top
-           bar dot below. */}}
-      {{if eq .CurrentServer.Status "online"}}<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
-      {{else if eq .CurrentServer.Status "offline"}}<span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
-      {{else}}<span class="w-1.5 h-1.5 rounded-full bg-ink-400 shrink-0"></span>{{end}}
-      {{else}}
-      <span class="text-base font-semibold tracking-tight text-ink-900">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}</span>
-      {{end}}
-    </a>
-    <div class="flex items-center gap-1">
-      <button type="button" data-theme-toggle aria-label="Toggle theme" title="Theme: auto" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 dark:text-slate-400 dark:hover:bg-slate-800 transition">
-        <svg data-theme-icon="auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12a9 9 0 0 0 18 0"/></svg>
-        <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden"><circle cx="12" cy="12" r="4"/><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>
-        <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-      </button>
-      <button type="button" aria-label="Open navigation" onclick="document.getElementById('sidebar').classList.remove('-translate-x-full');document.getElementById('sidebar-scrim').classList.remove('hidden');" class="inline-flex items-center justify-center w-10 h-10 rounded-lg text-ink-600 hover:bg-ink-100 transition">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-    </div>
-  </header>
   <div id="sidebar-scrim" class="hidden lg:hidden fixed inset-0 z-20 bg-ink-900/40" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');this.classList.add('hidden');"></div>
-  <div class="flex min-h-screen lg:h-screen lg:overflow-hidden">
-    <aside id="sidebar" class="fixed lg:static inset-y-0 left-0 z-30 w-60 shrink-0 bg-slate-900 border-r border-slate-800 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform">
-      <div class="px-5 py-5 border-b border-slate-800 flex items-center justify-between sidebar-brand-line">
-        <a href="/" class="flex items-center gap-2.5">
-          <span class="relative inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 shadow-card ring-1 ring-brand-400/30">
+  <div class="app-shell flex min-h-screen lg:h-screen lg:overflow-hidden">
+    <aside id="sidebar" class="app-sidebar fixed lg:static inset-y-0 left-0 z-30 shrink-0 bg-slate-900 border-r border-slate-800 flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform">
+      <div class="app-brand px-5 py-4 border-b border-slate-800 flex items-center justify-between sidebar-brand-line">
+        <a href="/" class="flex items-center gap-2.5 min-w-0">
+          <span class="app-brand__mark relative inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-600 shrink-0">
             <svg viewBox="0 0 24 24" fill="none" class="w-4 h-4 text-white"><path d="M4 7l8-4 8 4v10l-8 4-8-4V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 7l8 4 8-4M12 11v10" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
           </span>
-          <span class="text-base font-semibold tracking-tight text-white">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}</span>
+          <span class="app-brand__name text-sm font-semibold tracking-tight text-white">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}</span>
         </a>
         <button type="button" aria-label="Close navigation" onclick="document.getElementById('sidebar').classList.add('-translate-x-full');document.getElementById('sidebar-scrim').classList.add('hidden');" class="lg:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-slate-400 hover:bg-slate-800 transition">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
 
-      {{if and .Servers (gt (len .Servers) 1)}}
-      <div class="px-3 py-2 border-b border-slate-800">
-        <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Active Server</p>
+      {{if .CurrentServer}}
+      <div class="app-environment">
+        <p class="app-environment__eyebrow">Current environment</p>
+        {{if and .Servers (gt (len .Servers) 1)}}
         <form id="server-picker-form" method="post" action="">
           <select onchange="var _id=parseInt(this.value,10);if(_id>0){document.getElementById('server-picker-form').action='/servers/'+_id+'/select';document.getElementById('server-picker-form').submit();}"
-            class="w-full text-xs bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-slate-200 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/20">
+            aria-label="Current Caddy server"
+            class="app-environment__select">
             {{range .Servers}}
             <option value="{{.ID}}" {{if and $.CurrentServer (eq $.CurrentServer.ID .ID)}}selected{{end}}>
               {{.Name}}{{if eq .Status "online"}} ●{{else if eq .Status "offline"}} ○{{end}}
@@ -467,48 +439,62 @@ if ('serviceWorker' in navigator) {
             {{end}}
           </select>
         </form>
+        {{else}}
+        <div class="app-environment__identity">
+          {{if eq .CurrentServer.Status "online"}}<span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
+          {{else if eq .CurrentServer.Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-500 shrink-0"></span>
+          {{else}}<span class="w-2 h-2 rounded-full bg-slate-500 shrink-0"></span>{{end}}
+          <span class="app-environment__name">{{.CurrentServer.Name}}</span>
+        </div>
+        {{end}}
+        <div class="app-environment__url" title="{{.CurrentServer.AdminURL}}">{{.CurrentServer.AdminURL}}</div>
       </div>
       {{end}}
-      <nav class="flex-1 overflow-y-auto px-3 py-4 text-sm">
+      <nav class="app-nav flex-1 overflow-y-auto text-sm" aria-label="Primary navigation">
         {{$sec := .Section}}
-        {{template "navItem" (dict "Section" $sec "Active" "dashboard" "Href" "/" "Label" "Dashboard" "Icon" "dashboard")}}
-
-        {{/* v2.12.25: hairline divider with inline label — replaces the
-             standalone caps text that previously floated in space.
-             Reads as a quieter, more elegant section break. */}}
-        <div class="flex items-center gap-2.5 mt-7 mb-2 px-2">
-          <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 shrink-0">Routes</div>
-          <div class="flex-1 h-px bg-slate-700/50"></div>
+        <div class="app-nav__group">
+          <span class="app-nav__label">Overview</span>
+          {{template "navItem" (dict "Section" $sec "Active" "dashboard" "Href" "/" "Label" "Operations" "Icon" "dashboard")}}
         </div>
-        {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" "Proxy Hosts" "Icon" "proxy")}}
-        {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" "Redirections" "Icon" "redirect")}}
-        {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" "Advanced" "Icon" "code")}}
 
-        <div class="flex items-center gap-2.5 mt-7 mb-2 px-2">
-          <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 shrink-0">Config</div>
-          <div class="flex-1 h-px bg-slate-700/50"></div>
+        <div class="app-nav__group">
+          <span class="app-nav__label">Traffic</span>
+          {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" "Proxy Hosts" "Icon" "proxy")}}
+          {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" "Redirections" "Icon" "redirect")}}
+          {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" "Advanced Routes" "Icon" "code")}}
         </div>
-        {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" "Certificates" "Icon" "lock")}}
-        {{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}
-        {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
 
-        <div class="flex items-center gap-2.5 mt-7 mb-2 px-2">
-          <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 shrink-0">System</div>
-          <div class="flex-1 h-px bg-slate-700/50"></div>
+        <div class="app-nav__group">
+          <span class="app-nav__label">Observe</span>
+          {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" "Analytics" "Icon" "chart")}}
+          {{template "navItem" (dict "Section" $sec "Active" "live_traffic" "Href" "/live-traffic" "Label" "Live Traffic" "Icon" "lightning")}}
+          {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" "Activity Log" "Icon" "pulse")}}
         </div>
-        {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" "Analytics" "Icon" "chart")}}
-        {{template "navItem" (dict "Section" $sec "Active" "live_traffic" "Href" "/live-traffic" "Label" "Live Traffic" "Icon" "lightning")}}
-        {{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}
-        {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" "Activity" "Icon" "pulse")}}
-        {{template "navItem" (dict "Section" $sec "Active" "caddy_config" "Href" "/caddy-config" "Label" "Caddy Config" "Icon" "code")}}
-        {{template "navItem" (dict "Section" $sec "Active" "docs" "Href" "/docs" "Label" "Docs / Tutorial" "Icon" "book")}}
-        {{template "navItem" (dict "Section" $sec "Active" "api_docs" "Href" "/api/docs" "Label" "API" "Icon" "code")}}
-        {{template "navItem" (dict "Section" $sec "Active" "api_tokens" "Href" "/api-tokens" "Label" "API Tokens" "Icon" "key")}}
+
+        <div class="app-nav__group">
+          <span class="app-nav__label">Configuration</span>
+          {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" "Certificates" "Icon" "lock")}}
+          {{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}
+          {{template "navItem" (dict "Section" $sec "Active" "caddy_config" "Href" "/caddy-config" "Label" "Caddy Config" "Icon" "code")}}
+          {{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}
+          {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
+        </div>
+
+        <div class="app-nav__group">
+          <span class="app-nav__label">Developer</span>
+          {{template "navItem" (dict "Section" $sec "Active" "api_docs" "Href" "/api/docs" "Label" "API Reference" "Icon" "code")}}
+          {{template "navItem" (dict "Section" $sec "Active" "api_tokens" "Href" "/api-tokens" "Label" "API Tokens" "Icon" "key")}}
+          {{template "navItem" (dict "Section" $sec "Active" "docs" "Href" "/docs" "Label" "Documentation" "Icon" "book")}}
+        </div>
+
         {{if eq .User.Role "admin"}}
-        {{template "navItem" (dict "Section" $sec "Active" "servers" "Href" "/servers" "Label" "Caddy Servers" "Icon" "server")}}
-        {{template "navItem" (dict "Section" $sec "Active" "users" "Href" "/users" "Label" "Users" "Icon" "users")}}
-        {{template "navItem" (dict "Section" $sec "Active" "groups" "Href" "/groups" "Label" "Groups" "Icon" "group")}}
-        {{template "navItem" (dict "Section" $sec "Active" "settings" "Href" "/settings" "Label" "Settings" "Icon" "settings")}}
+        <div class="app-nav__group">
+          <span class="app-nav__label">Administration</span>
+          {{template "navItem" (dict "Section" $sec "Active" "servers" "Href" "/servers" "Label" "Caddy Servers" "Icon" "server")}}
+          {{template "navItem" (dict "Section" $sec "Active" "users" "Href" "/users" "Label" "Users" "Icon" "users")}}
+          {{template "navItem" (dict "Section" $sec "Active" "groups" "Href" "/groups" "Label" "Groups" "Icon" "group")}}
+          {{template "navItem" (dict "Section" $sec "Active" "settings" "Href" "/settings" "Label" "Settings" "Icon" "settings")}}
+        </div>
         {{end}}
       </nav>
 
@@ -516,7 +502,7 @@ if ('serviceWorker' in navigator) {
            copyright / GitHub / License on a second line. Profile cluster
            (email, role, 2FA, sign out, dark toggle) lives in the top bar
            since v2.6.2 — the sidebar footer is pure project-meta now. */}}
-      <div class="border-t border-slate-800 px-4 py-3 space-y-1.5">
+      <div class="app-sidebar__footer border-t border-slate-800 px-4 py-3 space-y-1.5">
         {{if .AppVersion}}
         <div class="text-xs flex items-center gap-1.5">
           <span class="text-[10px] font-mono text-slate-500">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}} {{.AppVersion}}</span>
@@ -546,7 +532,10 @@ if ('serviceWorker' in navigator) {
       {{/* v2.12.26: data-topbar hook so the orange theme can paint a
            branded orange bottom border / warmer dark surface here without
            bleeding the rule into every other .border-b on the page. */}}
-      <div data-topbar class="sticky top-0 z-10 border-b border-ink-100 bg-white/95 backdrop-blur-sm px-4 sm:px-6 md:px-8 py-2 flex items-center gap-3 min-w-0">
+      <div data-topbar class="app-topbar sticky top-0 z-10 border-b border-ink-100 bg-white/95 backdrop-blur-sm flex items-center gap-3 min-w-0">
+        <button type="button" aria-label="Open navigation" onclick="document.getElementById('sidebar').classList.remove('-translate-x-full');document.getElementById('sidebar-scrim').classList.remove('hidden');" class="lg:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-600 hover:bg-ink-100 dark:text-slate-400 dark:hover:bg-slate-800 transition shrink-0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
         {{if .CurrentServer}}
         {{/* v2.12.28: clickable server picker. The current server's status
              dot + name + URL live inside a button that opens a dropdown
@@ -558,7 +547,7 @@ if ('serviceWorker' in navigator) {
              non-button variant renders so we don't pretend there's
              anywhere to switch to. */}}
         {{if and .Servers (gt (len .Servers) 1)}}
-        <div class="relative min-w-0" data-server-menu>
+        <div class="app-topbar__environment relative min-w-0" data-server-menu>
           <button type="button" data-server-menu-toggle aria-label="Switch Caddy server" aria-haspopup="menu" aria-expanded="false"
                   class="flex items-center gap-2 -mx-1 px-2 py-1 rounded-lg hover:bg-ink-100 dark:hover:bg-slate-800 transition min-w-0 max-w-full">
             {{if eq .CurrentServer.Status "online"}}
@@ -633,20 +622,33 @@ if ('serviceWorker' in navigator) {
              with the user-related actions. Dropdown is plain CSS toggle
              via .hidden — JS handler at the bottom of layout.html
              closes it on outside-click and on Esc. */}}
-        <div class="ml-auto flex items-center gap-1 shrink-0">
-          <a href="/search" aria-label="Search" title="Search" class="inline-flex items-center justify-center w-8 h-8 rounded-full text-ink-500 hover:text-ink-800 hover:bg-ink-100 dark:hover:bg-slate-800 dark:hover:text-slate-100 transition shrink-0">
+        <button type="button"
+                class="app-command-trigger"
+                data-command-palette-trigger
+                aria-label="Open command palette"
+                aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span class="truncate">Search resources and actions</span>
+          <kbd>⌘K</kbd>
+        </button>
+        <div class="flex items-center gap-1 shrink-0">
+          <a href="/search" aria-label="Search" title="Search" class="lg:hidden inline-flex items-center justify-center w-8 h-8 rounded-full text-ink-500 hover:text-ink-800 hover:bg-ink-100 dark:hover:bg-slate-800 dark:hover:text-slate-100 transition shrink-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           </a>
-          <button data-theme-toggle type="button" aria-label="Toggle theme" title="Theme: auto" class="hidden lg:inline-flex items-center justify-center w-8 h-8 rounded-full text-ink-500 hover:text-ink-800 hover:bg-ink-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 transition shrink-0">
+          <button data-theme-toggle type="button" aria-label="Toggle theme" title="Theme: auto" class="inline-flex items-center justify-center w-8 h-8 rounded-full text-ink-500 hover:text-ink-800 hover:bg-ink-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 transition shrink-0">
             <svg data-theme-icon="auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12a9 9 0 0 0 18 0"/></svg>
             <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><circle cx="12" cy="12" r="4"/><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>
             <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 hidden"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           </button>
           <div class="relative ml-1" data-user-menu>
             <button type="button" data-user-menu-toggle aria-label="Account menu" aria-haspopup="menu" aria-expanded="false"
-                    class="inline-flex items-center gap-1.5 p-1 pr-2 rounded-full hover:bg-ink-100 dark:hover:bg-slate-800 transition shrink-0">
+                    class="inline-flex items-center gap-2 p-1 pr-2 rounded-lg hover:bg-ink-100 dark:hover:bg-slate-800 transition shrink-0">
               <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-brand-500 text-white font-semibold text-[11px] shrink-0" title="{{.User.Email}}">
                 {{if .User.Email}}{{slice .User.Email 0 1}}{{else}}?{{end}}
+              </span>
+              <span class="hidden xl:block max-w-36 text-left">
+                <span class="block text-[11px] font-semibold text-ink-800 truncate">{{.User.Email}}</span>
+                <span class="block text-[9px] uppercase tracking-wider text-ink-400">{{.User.Role}}</span>
               </span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3 text-ink-400 shrink-0"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
@@ -678,8 +680,8 @@ if ('serviceWorker' in navigator) {
         </div>
       </div>
       {{end}}
-      <main id="main-content" class="flex-1">
-        <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+      <main id="main-content" class="app-main flex-1">
+        <div class="app-content">
           {{block "content" .}}{{end}}
         </div>
       </main>
@@ -762,7 +764,7 @@ if ('serviceWorker' in navigator) {
   </div>
 
   {{/* v2.11.5: ⌘K / Ctrl+K command palette — global resource search. */}}
-  <div id="cmd-palette" class="hidden fixed inset-0 z-50 bg-ink-900/60 backdrop-blur-sm flex items-start justify-center p-4 pt-[15vh]" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div id="cmd-palette" role="dialog" aria-modal="true" aria-label="Search resources and actions" class="hidden fixed inset-0 z-50 bg-ink-900/60 backdrop-blur-sm flex items-start justify-center p-4 pt-[15vh]" onclick="if(event.target===this)this.classList.add('hidden')">
     <div class="bg-white dark:bg-slate-800 border border-ink-200 dark:border-slate-700 rounded-xl shadow-card max-w-xl w-full overflow-hidden">
       <div class="flex items-center gap-3 px-4 py-3 border-b border-ink-100 dark:border-slate-700">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-ink-400 dark:text-slate-500 shrink-0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -792,8 +794,8 @@ if ('serviceWorker' in navigator) {
 </html>{{end}}
 
 {{define "navItem"}}
-<a href="{{.Href}}"{{if eq .Section .Active}} aria-current="page"{{end}} class="group flex items-center gap-2.5 px-2.5 py-2 rounded-md transition {{if eq .Section .Active}}nav-active-item text-white font-medium{{else}}text-slate-400 hover:bg-slate-800 hover:text-slate-100{{end}}">
-  <span class="w-4 h-4 shrink-0 {{if eq .Section .Active}}text-blue-300{{else}}text-slate-500 group-hover:text-slate-300{{end}}" aria-hidden="true">{{template "icon" .Icon}}</span>
+<a href="{{.Href}}"{{if eq .Section .Active}} aria-current="page"{{end}} class="app-nav__item group">
+  <span class="app-nav__icon" aria-hidden="true">{{template "icon" .Icon}}</span>
   <span>{{.Label}}</span>
 </a>
 {{end}}

@@ -109,6 +109,7 @@ function caddyuiDelayFetch(ms, fn) {
   var modal = document.getElementById('cmd-palette');
   var input = document.getElementById('cmd-input');
   var results = document.getElementById('cmd-results');
+  var triggers = document.querySelectorAll('[data-command-palette-trigger]');
   if (!modal || !input || !results) return;
   var data = null;
   var dataAt = 0;
@@ -146,6 +147,9 @@ function caddyuiDelayFetch(ms, fn) {
     }
   }
   function close() { modal.classList.add('hidden'); }
+  triggers.forEach(function(trigger) {
+    trigger.addEventListener('click', open);
+  });
   function render(q) {
     if (!data) {
       results.innerHTML = '<div class="px-3 py-6 text-center text-sm text-ink-400 dark:text-slate-500">Loading…</div>';
@@ -767,4 +771,3 @@ function caddyuiDelayFetch(ms, fn) {
       '</svg>';
   }
 })();
-

@@ -48,7 +48,16 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### What's new in v2.17.3
+### What's new in v2.18.0
+
+- **Enterprise operations center** — the dashboard now leads with the active environment, route inventory, live system and upstream health, prioritized risks, fleet status, and recent configuration activity instead of a loose collection of cards.
+- **Workflow-first application shell** — navigation is regrouped around Traffic, Observe, Configuration, Developer, and Administration workflows. The current Caddy environment is always visible and switching servers is faster.
+- **Visible command search and primary actions** — search resources from the persistent top bar, create a proxy host, sync Caddy, or manage the fleet without hunting through menus. Read-only viewers never see the create action.
+- **Shared enterprise design system** — semantic surfaces, status treatments, panels, buttons, metrics, tables, focus states, and responsive rules now provide a durable foundation for the rest of the product.
+- **First-class mobile operations** — one compact mobile toolbar, responsive route/system metrics, stacked attention queues, fleet cards, and mobile host cards preserve the full operational picture without horizontal scrolling.
+- **Theme and accessibility coverage** — the redesign supports light, dark, Carbon Orange, Forest, Rose, and Indigo themes, with keyboard focus visibility and reduced-motion handling.
+
+### Certificate automation in v2.17
 
 - **Visible Auto TLS certificate selection** — the **Caddy-managed (ACME)** table now names the managed wildcard used by each covered domain and labels uncovered hosts **Direct certificate**, so the UI no longer implies every hostname received a separate certificate. *(v2.17.3)*
 - **Enforced Auto wildcard reuse** — Auto TLS suppresses redundant exact-host issuance when a managed wildcard covers the name. *(v2.17.2)*

@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.18.0] - 2026-07-29 - Enterprise operations UI
+
+### Added
+
+- **Enterprise operations center**: the dashboard now organizes active-server identity, route inventory, host health, traffic, system telemetry, recommendations, fleet status, recent changes, and live upstream reachability into one operational hierarchy.
+- **Semantic design system**: reusable surface, border, text, brand, status, spacing, radius, shadow, panel, button, metric, table, and empty-state primitives establish a consistent foundation for future page migrations.
+- **Persistent command search**: desktop users can open the existing resource search directly from the top bar; the button uses the same reset, fetch, focus, and keyboard navigation workflow as `Ctrl/⌘+K`.
+- **Workflow-first actions**: Create proxy host, Sync Caddy, and Manage servers are visible at the point of use. The create action remains hidden for read-only viewers.
+
+### Changed
+
+- **Application navigation**: destinations are regrouped into Overview, Traffic, Observe, Configuration, Developer, and Administration sections without changing routes or role-based access.
+- **Environment context**: the active Caddy server and status are promoted in both the sidebar and persistent top bar, with faster switching in multi-server installations.
+- **Mobile shell**: the previous stacked mobile toolbars are consolidated into one compact bar with navigation, environment, search, theme, and account controls.
+- **Dashboard density**: redundant cards are consolidated into structured panels and responsive data grids that scale from a phone to a wide operations display.
+- **Dashboard documentation**: the README screenshot now reflects the enterprise operations layout.
+
+### Accessibility
+
+- **Keyboard focus visibility** is standardized across links, buttons, inputs, selects, textareas, and disclosure controls.
+- **Reduced-motion support** disables nonessential application-shell transitions and animations when requested by the operating system.
+- **Responsive validation** covers 390 px mobile and 1440 px desktop layouts without horizontal page overflow.
+
+---
+
 ## [2.17.3] - 2026-07-29 - Visible certificate selection for Auto TLS
 
 ### Added
