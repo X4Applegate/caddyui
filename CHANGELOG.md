@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.17.3] - 2026-07-29 - Visible certificate selection for Auto TLS
+
+### Added
+
+- **Certificate identity in the Caddy-managed table**: the Certificates page now shows which certificate each Auto TLS domain uses. Hosts covered by a managed wildcard display that certificate's CaddyUI name; hosts without wildcard coverage display **Direct certificate**.
+- **Responsive certificate identity**: the same wildcard/direct distinction appears in both the desktop table and mobile certificate cards.
+
+---
+
 ## [2.17.2] - 2026-07-29 - Enforced wildcard reuse and live renewal visibility
 
 ### Fixed
