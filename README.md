@@ -48,8 +48,9 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### What's new in v2.17.2
+### What's new in v2.17.3
 
+- **Visible Auto TLS certificate selection** — the **Caddy-managed (ACME)** table now names the managed wildcard used by each covered domain and labels uncovered hosts **Direct certificate**, so the UI no longer implies every hostname received a separate certificate. *(v2.17.3)*
 - **Enforced Auto wildcard reuse** — Auto TLS suppresses redundant exact-host issuance when a managed wildcard covers the name. *(v2.17.2)*
 - **Live per-server renewal status** — edit a managed certificate to inspect each server's live expiry, issuer, deployment, and renewal health. *(v2.17.2)*
 - **Multi-server managed wildcard reuse** — copy managed certificate definitions to selected Caddy instances, or let proxy **Also deploy to** automatically discover and replicate a covering wildcard on each target. Every server keeps its own ACME order and private key. *(v2.17.1)*

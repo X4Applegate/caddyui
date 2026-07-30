@@ -261,17 +261,28 @@
     <span class="text-xs text-ink-400">Auto-issued by Let's Encrypt / ZeroSSL</span>
   </div>
   <div class="bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden">
-    <table class="w-full text-sm hidden md:table">
+    <table class="w-full text-sm hidden lg:table">
       <thead class="bg-ink-100 text-left border-b border-ink-200">
         <tr class="text-xs uppercase tracking-wider text-ink-500">
           <th class="px-5 py-3 font-medium">Domain</th>
+          <th class="px-5 py-3 font-medium">Certificate</th>
           <th class="px-5 py-3 font-medium">Managed by</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-ink-200">
         {{range .AutoDomains}}
         <tr class="bg-white hover:bg-brand-50/30 transition">
-          <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.}}</td>
+          <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.Domain}}</td>
+          <td class="px-5 py-3">
+            {{if .UsesWildcard}}
+              <span class="inline-flex items-center gap-1.5 text-xs text-ink-700" title="Auto TLS is reusing this managed wildcard certificate">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-brand-500"><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1"/></svg>
+                {{.CertificateName}}
+              </span>
+            {{else}}
+              <span class="text-xs text-ink-500" title="Caddy obtains a certificate specifically for this domain">Direct certificate</span>
+            {{end}}
+          </td>
           <td class="px-5 py-3">
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">
               <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>Caddy / ACME
@@ -283,8 +294,13 @@
     </table>
     <div class="lg:hidden divide-y divide-ink-100">
       {{range .AutoDomains}}
-      <div class="px-4 py-3 flex items-center justify-between">
-        <span class="font-mono text-sm text-ink-800">{{.}}</span>
+      <div class="px-4 py-3 flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="font-mono text-sm text-ink-800 break-all">{{.Domain}}</div>
+          <div class="text-xs mt-1 {{if .UsesWildcard}}text-brand-600{{else}}text-ink-500{{end}}">
+            {{if .UsesWildcard}}Wildcard: {{.CertificateName}}{{else}}Direct certificate{{end}}
+          </div>
+        </div>
         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0">
           <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>ACME
         </span>

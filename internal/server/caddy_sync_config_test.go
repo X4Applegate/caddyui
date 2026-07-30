@@ -190,6 +190,27 @@ func TestManagedCertificateCoverageUsesSingleLabelWildcards(t *testing.T) {
 	}
 }
 
+func TestManagedWildcardForHost(t *testing.T) {
+	certs := []models.Certificate{
+		{ID: 1, Name: "Direct managed", Domains: "app.example.com", Source: models.CertSourceManaged},
+		{ID: 2, Name: "Example wildcard", Domains: "*.example.com", Source: models.CertSourceManaged},
+		{ID: 3, Name: "Uploaded wildcard", Domains: "*.example.net", Source: models.CertSourcePEM},
+	}
+
+	if got := managedWildcardForHost(certs, "app.example.com"); got == nil || got.Name != "Example wildcard" {
+		t.Fatalf("managedWildcardForHost() = %#v, want Example wildcard", got)
+	}
+	if got := managedWildcardForHost(certs, "deep.app.example.com"); got != nil {
+		t.Fatalf("managedWildcardForHost() = %#v, want nil for multi-label host", got)
+	}
+	if got := managedWildcardForHost(certs, "app.example.net"); got != nil {
+		t.Fatalf("managedWildcardForHost() = %#v, want nil for uploaded PEM wildcard", got)
+	}
+	if got := managedWildcardForHost(certs, "uncovered.example.org"); got != nil {
+		t.Fatalf("managedWildcardForHost() = %#v, want nil for uncovered host", got)
+	}
+}
+
 func TestManagedWildcardSkipsCoveredExactCertificateIssuance(t *testing.T) {
 	proxies := []models.ProxyHost{
 		{Domains: "project.sub.example.com", Enabled: true, SSLEnabled: true},

@@ -3659,6 +3659,25 @@ func certificateCoversAnyDomain(cert models.Certificate, hosts []string) bool {
 	return false
 }
 
+// managedWildcardForHost returns the managed wildcard definition that Auto TLS
+// will reuse for host. Exact managed subjects are intentionally excluded: the
+// skip_certificates behavior only suppresses exact-host issuance when a
+// wildcard already covers that host.
+func managedWildcardForHost(certs []models.Certificate, host string) *models.Certificate {
+	for i := range certs {
+		if certs[i].Source != models.CertSourceManaged {
+			continue
+		}
+		for _, certDomain := range certs[i].DomainList() {
+			if strings.HasPrefix(strings.TrimSpace(certDomain), "*.") &&
+				managedCertificateCovers(certDomain, host) {
+				return &certs[i]
+			}
+		}
+	}
+	return nil
+}
+
 // ensureManagedCertificateOnServer copies a managed certificate definition
 // only when the target does not already have an equivalent subject set. The
 // Caddy instances still manage their own keys and ACME orders independently;
@@ -3749,6 +3768,12 @@ type certView struct {
 	ExpiresAt *time.Time
 	DaysLeft  int  // positive = days until expiry; negative = already expired
 	CanEdit   bool // per-row ownership (see above)
+}
+
+type autoDomainView struct {
+	Domain          string
+	CertificateName string
+	UsesWildcard    bool
 }
 
 // dnsProviderViewData builds the template data describing which DNS
@@ -6635,16 +6660,28 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	hosts, _ := models.ListProxyHosts(s.DB, sid, 0, true, nil)
 	redirs, _ := models.ListRedirectionHosts(s.DB, sid, 0, true, nil)
 	seen := map[string]bool{}
-	var autoDomains []string
+	var autoDomains []autoDomainView
+	addAutoDomain := func(domain string) {
+		if seen[domain] {
+			return
+		}
+		seen[domain] = true
+		view := autoDomainView{
+			Domain:          domain,
+			CertificateName: "Direct certificate",
+		}
+		if cert := managedWildcardForHost(certs, domain); cert != nil {
+			view.CertificateName = cert.Name
+			view.UsesWildcard = true
+		}
+		autoDomains = append(autoDomains, view)
+	}
 	for _, h := range hosts {
 		if !h.Enabled || !h.SSLEnabled || h.CertificateID != 0 {
 			continue
 		}
 		for _, d := range h.DomainList() {
-			if !seen[d] {
-				seen[d] = true
-				autoDomains = append(autoDomains, d)
-			}
+			addAutoDomain(d)
 		}
 	}
 	for _, rh := range redirs {
@@ -6652,10 +6689,7 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, d := range rh.DomainList() {
-			if !seen[d] {
-				seen[d] = true
-				autoDomains = append(autoDomains, d)
-			}
+			addAutoDomain(d)
 		}
 	}
 
