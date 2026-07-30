@@ -1002,11 +1002,18 @@
 {{/* ── Backup ── */}}
 <div id="settings-backup" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-5">
   <div class="text-sm font-semibold text-ink-800 mb-1">Database Backup</div>
+  {{if eq .DatabaseBackend "mariadb"}}
+  <p class="text-xs text-ink-500 mb-3">MariaDB is active. Use <code class="bg-ink-100 px-1 rounded text-xs">mariadb-dump</code>, your hosting provider, or your database platform's scheduled backup and point-in-time recovery tools.</p>
+  <span class="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 text-sm font-medium px-4 py-2 rounded-lg border border-emerald-200">
+    MariaDB managed backup
+  </span>
+  {{else}}
   <p class="text-xs text-ink-500 mb-3">Download a consistent snapshot of the CaddyUI database. To restore, stop the server, replace the <code class="bg-ink-100 px-1 rounded text-xs">caddyui.db</code> file, and restart.</p>
   <a href="/backup" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     Download Backup
   </a>
+  {{end}}
 </div>
 
 <script>

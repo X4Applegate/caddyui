@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.19.0] - 2026-07-29 - MariaDB and large-installation performance
+
+### Added
+
+- **Optional MariaDB backend**: set `CADDYUI_DB_DRIVER=mariadb` and `CADDYUI_DB_DSN` to run CaddyUI on MariaDB while SQLite remains the default.
+- **Automatic MariaDB schema and migrations**: fresh databases receive the complete CaddyUI schema, including all current proxy-host fields and performance indexes.
+- **Read-only SQLite → MariaDB migration command**: `caddyui migrate-db --from-sqlite /data/caddyui.db` preserves IDs and relationships, copies in bounded transactions, rejects non-empty destinations, and supports `--skip-analytics` for oversized traffic histories.
+- **MariaDB deployment overlay and CI**: `docker-compose.mariadb.yml` provides a health-checked MariaDB 11.4 service; CI validates schema parity, core resource queries, and cross-database migration.
+
+### Performance
+
+- **Proxy Hosts traffic lookup** now queries only domains visible on the page. SQLite uses the existing `(host, ts)` covering index instead of scanning the complete analytics history.
+- **Post-render upstream checks** start after the browser's initial paint and pause while the tab is hidden.
+- **List-page indexes** cover proxy ordering, advanced routes, certificate options, and last-sync activity lookups.
+- **Portable daily rollups** use timestamp ranges instead of engine-specific date conversion, improving index use on both SQLite and MariaDB.
+
+### Changed
+
+- Sessions, login throttling, activity retention, settings upserts, and analytics rollups now use portable SQL shared by both database backends.
+- Settings explains that MariaDB backups belong to the database platform; Caddy configuration snapshots continue to work normally.
+
+---
+
 ## [2.18.0] - 2026-07-29 - Enterprise operations UI
 
 ### Added

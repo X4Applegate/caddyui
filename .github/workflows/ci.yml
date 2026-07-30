@@ -28,3 +28,36 @@ jobs:
 
       - name: Build binary
         run: go build ./cmd/caddyui
+
+  mariadb:
+    name: MariaDB integration
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_DATABASE: caddyui_test
+          MARIADB_USER: caddyui
+          MARIADB_PASSWORD: test-password
+          MARIADB_ROOT_PASSWORD: test-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run MariaDB schema and migration tests
+        env:
+          CADDYUI_TEST_MARIADB_DSN: caddyui:test-password@tcp(127.0.0.1:3306)/caddyui_test
+        run: go test ./internal/db -v

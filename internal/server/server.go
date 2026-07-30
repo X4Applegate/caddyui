@@ -37,6 +37,7 @@ import (
 	"github.com/X4Applegate/caddyui/internal/analytics"
 	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
+	appdb "github.com/X4Applegate/caddyui/internal/db"
 	"github.com/X4Applegate/caddyui/internal/dns"
 	"github.com/X4Applegate/caddyui/internal/models"
 	"github.com/X4Applegate/caddyui/internal/porkbun"
@@ -1805,8 +1806,9 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		if maxAttempts, err := strconv.Atoi(strings.TrimSpace(maxStr)); err == nil && maxAttempts > 0 {
 			var failCount int
 			_ = s.DB.QueryRow(
-				`SELECT COUNT(*) FROM activity_log WHERE action = 'login_fail' AND detail LIKE ? AND created_at > datetime('now', '-15 minutes')`,
+				`SELECT COUNT(*) FROM activity_log WHERE action = 'login_fail' AND detail LIKE ? AND created_at > ?`,
 				"%ip:"+clientIP+"%",
+				time.Now().UTC().Add(-15*time.Minute),
 			).Scan(&failCount)
 			if failCount >= maxAttempts {
 				renderLoginErr("Too many failed login attempts. Please wait 15 minutes and try again.")
@@ -2594,7 +2596,11 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 
 	// Per-host today request counts (best-effort — zero if analytics disabled).
 	hostRequestsToday := make(map[int64]int)
-	if domainCounts, err := models.DomainRequestsToday(s.DB); err == nil {
+	visibleDomains := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		visibleDomains = append(visibleDomains, h.DomainList()...)
+	}
+	if domainCounts, err := models.DomainRequestsTodayForDomains(s.DB, visibleDomains); err == nil {
 		for _, h := range hosts {
 			total := 0
 			for _, d := range h.DomainList() {
@@ -6462,8 +6468,9 @@ func (s *Server) uploadSnapshot(w http.ResponseWriter, r *http.Request) {
 // Everything here is static, so no DB call is needed.
 func (s *Server) getDocs(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "docs.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Section": "docs",
+		"User":            s.currentUser(r),
+		"Section":         "docs",
+		"DatabaseBackend": string(appdb.BackendOf(s.DB)),
 	})
 }
 
@@ -7904,8 +7911,8 @@ func (s *Server) pruneActivityLog() {
 		return // disabled
 	}
 	res, err := s.DB.Exec(
-		`DELETE FROM activity_log WHERE created_at < datetime('now', ?)`,
-		fmt.Sprintf("-%d days", days),
+		`DELETE FROM activity_log WHERE created_at < ?`,
+		time.Now().UTC().AddDate(0, 0, -days),
 	)
 	if err != nil {
 		log.Printf("activity log cleanup: %v", err)
@@ -13354,6 +13361,10 @@ func semverParts(v string) [3]int {
 }
 
 func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
+	if appdb.BackendOf(s.DB) == appdb.BackendMariaDB {
+		http.Error(w, "MariaDB backups are managed by your database server. Use mariadb-dump or your platform's scheduled backup tooling.", http.StatusNotImplemented)
+		return
+	}
 	// Write the VACUUM INTO temp file next to the live DB rather than /tmp.
 	// Rationale: the scratch-based final image has no /tmp directory and the
 	// process runs as a non-root UID, so `os.TempDir()` returns "/tmp" but
@@ -13664,6 +13675,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"ActivityLogDays":   mustGetSetting(s.DB, settingActivityLogDays),
 		"MaxLoginAttempts":  mustGetSetting(s.DB, settingMaxLoginAttempts),
 		"DisableHTTP3":      mustGetSetting(s.DB, settingDisableHTTP3),
+		"DatabaseBackend":   string(appdb.BackendOf(s.DB)),
 		"Section":           "settings",
 	})
 }

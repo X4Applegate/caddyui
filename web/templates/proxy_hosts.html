@@ -708,8 +708,22 @@ function fetchUpstreams() {
       .then(function(data) { if (data) applyHealth(data); })
       .catch(function() {});
   }
-  fetchHealth();
-  setInterval(fetchHealth, 30000);
+  // Keep live network probes out of the initial render path. The persisted
+  // public-health result is already present in the HTML; port/app probes can
+  // fill in after the browser has painted and is idle.
+  function startHealthPolling() {
+    if (document.visibilityState === 'visible') fetchHealth();
+    setInterval(function() {
+      if (document.visibilityState === 'visible') fetchHealth();
+    }, 30000);
+  }
+  if ('requestIdleCallback' in window) {
+    requestIdleCallback(startHealthPolling, { timeout: 2000 });
+  } else {
+    window.addEventListener('load', function() {
+      setTimeout(startHealthPolling, 500);
+    }, { once: true });
+  }
 })();
 
 (function() {

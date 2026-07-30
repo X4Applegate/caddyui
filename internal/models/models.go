@@ -3747,7 +3747,7 @@ func DeleteRawRoute(db *sql.DB, id int64) error {
 
 func GetSetting(db *sql.DB, key string) (string, error) {
 	var v string
-	err := db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
+	err := db.QueryRow("SELECT value FROM settings WHERE `key` = ?", key).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -3755,9 +3755,19 @@ func GetSetting(db *sql.DB, key string) (string, error) {
 }
 
 func SetSetting(db *sql.DB, key, value string) error {
-	_, err := db.Exec(`
-        INSERT INTO settings (key, value) VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	result, err := db.Exec("UPDATE settings SET value = ? WHERE `key` = ?", value, key)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected > 0 {
+		return nil
+	}
+	if _, err := db.Exec("INSERT INTO settings (`key`, value) VALUES (?, ?)", key, value); err == nil {
+		return nil
+	}
+	// A concurrent first write may have inserted the row after our UPDATE.
+	// Retrying the UPDATE is portable across SQLite and MariaDB.
+	_, err = db.Exec("UPDATE settings SET value = ? WHERE `key` = ?", value, key)
 	return err
 }
 

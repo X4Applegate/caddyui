@@ -1,0 +1,39 @@
+# Optional MariaDB overlay.
+#
+# Usage:
+#   export CADDYUI_MARIADB_PASSWORD='replace-with-a-long-random-password'
+#   export CADDYUI_MARIADB_ROOT_PASSWORD='replace-with-another-random-password'
+#   docker compose -f docker-compose.yml -f docker-compose.mariadb.yml up -d
+#
+# The regular docker-compose.yml remains SQLite-first. This overlay adds
+# MariaDB and switches only CaddyUI's database backend.
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: caddyui-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: caddyui
+      MARIADB_USER: caddyui
+      MARIADB_PASSWORD: ${CADDYUI_MARIADB_PASSWORD:?set CADDYUI_MARIADB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${CADDYUI_MARIADB_ROOT_PASSWORD:?set CADDYUI_MARIADB_ROOT_PASSWORD}
+    volumes:
+      - caddyui_mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - caddyui
+
+  caddyui:
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      CADDYUI_DB_DRIVER: mariadb
+      CADDYUI_DB_DSN: caddyui:${CADDYUI_MARIADB_PASSWORD}@tcp(mariadb:3306)/caddyui
+
+volumes:
+  caddyui_mariadb:

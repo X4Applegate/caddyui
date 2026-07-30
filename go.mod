@@ -4,12 +4,14 @@ go 1.25.0
 
 require (
 	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/pquerna/otp v1.5.0
 	golang.org/x/crypto v0.52.0
 	modernc.org/sqlite v1.29.5
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.3.0 // indirect

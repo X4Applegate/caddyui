@@ -457,7 +457,7 @@
   </h2>
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
     <p>Every time you save a rule, CaddyUI records a <strong>snapshot</strong> of the full Caddy config. If something goes wrong, open <a href="/snapshots" class="text-brand-600 hover:text-brand-700">Snapshots</a> and restore an earlier version with one click.</p>
-    <p>You can also download the raw config JSON to keep off-box. Admins get a <a href="/backup" class="text-brand-600 hover:text-brand-700">full database backup</a> endpoint for disaster recovery.</p>
+    <p>You can also download the raw config JSON to keep off-box. {{if eq .DatabaseBackend "mariadb"}}MariaDB installations use <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">mariadb-dump</code> or platform-managed backups for disaster recovery.{{else}}Admins get a <a href="/backup" class="text-brand-600 hover:text-brand-700">full SQLite database backup</a> endpoint for disaster recovery.{{end}}</p>
   </div>
 </section>
 
@@ -647,14 +647,22 @@ docker network inspect caddy-net</code></pre>
     <details class="group">
       <summary class="font-medium text-ink-800 cursor-pointer">"attempt to write a readonly database" / "database is locked"</summary>
       <div class="mt-2 text-ink-600 space-y-1.5">
+        {{if eq .DatabaseBackend "mariadb"}}
+        <p>This message applies to SQLite installations. MariaDB connection or permission errors appear in the CaddyUI container log; verify <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">CADDYUI_DB_DSN</code>, network reachability, and the database user's grants.</p>
+        {{else}}
         <p><strong>Readonly:</strong> the data volume isn't writable by the container's user (UID 10001). Fix with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">chown -R 10001:10001 /path/to/caddyui_data</code> and add <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">user: "10001:10001"</code> to your compose file.</p>
         <p><strong>Locked:</strong> transient — CaddyUI uses WAL + busy-timeout to survive contention. If you see it constantly, your storage is very slow (NFS, SMB, etc.). Put the DB on local disk.</p>
+        {{end}}
       </div>
     </details>
     <details class="group">
       <summary class="font-medium text-ink-800 cursor-pointer">Can I back up just the CaddyUI settings and re-import them?</summary>
       <div class="mt-2 text-ink-600">
+        {{if eq .DatabaseBackend "mariadb"}}
+        <p>Back up MariaDB with <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">mariadb-dump</code>, a volume snapshot, or your database platform's backup and point-in-time recovery tools. Caddy configuration snapshots remain downloadable from the Snapshots page.</p>
+        {{else}}
         <p>Yes. Admins can download a full DB backup from <a href="/backup" class="text-brand-600 hover:text-brand-700">/backup</a>. To restore, stop the container, replace <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">/data/caddyui.db</code> with the backup file, start it again.</p>
+        {{end}}
       </div>
     </details>
     <details class="group">

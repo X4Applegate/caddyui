@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -20,7 +21,14 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate-db" {
+		runDatabaseMigration(os.Args[2:])
+		return
+	}
+
+	dbDriver := strings.ToLower(strings.TrimSpace(envOr("CADDYUI_DB_DRIVER", "sqlite")))
 	dbPath := envOr("CADDYUI_DB", "/data/caddyui.db")
+	dbDSN := os.Getenv("CADDYUI_DB_DSN")
 	listen := envOr("CADDYUI_LISTEN", ":8080")
 	caddyAdmin := envOr("CADDY_ADMIN_URL", "http://caddy:2019")
 	caddyfilePath := envOr("CADDYFILE_PATH", "/etc/caddy/Caddyfile")
@@ -42,17 +50,23 @@ func main() {
 	// "unable to open database file (1)" when the DB parent directory is
 	// owned by another user. Probe with a temp-file write BEFORE db.Open so
 	// the error message is actionable.
-	if err := probeDataDir(dbPath); err != nil {
-		log.Fatalf(`data directory is not writable by the current user (uid %d): %v
+	if dbDriver == string(db.BackendSQLite) {
+		if err := probeDataDir(dbPath); err != nil {
+			log.Fatalf(`data directory is not writable by the current user (uid %d): %v
 
 Fix by:
   • chown the data directory for the user running CaddyUI:
         sudo chown -R <user>:<group> /path/to/caddyui_data
   • OR use a writable named Docker volume for container installs
   • OR run the container with a matching --user value for your bind mount`, os.Geteuid(), err)
+		}
 	}
 
-	conn, err := db.Open(dbPath)
+	conn, err := db.OpenConfig(db.Config{
+		Backend:    db.Backend(dbDriver),
+		SQLitePath: dbPath,
+		MariaDBDSN: dbDSN,
+	})
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
@@ -120,7 +134,7 @@ Fix by:
 	}
 
 	go func() {
-		log.Printf("caddyui listening on %s (db=%s caddy=%s caddyfile=%s)", listen, dbPath, caddyAdmin, caddyfilePath)
+		log.Printf("caddyui listening on %s (db_driver=%s caddy=%s caddyfile=%s)", listen, dbDriver, caddyAdmin, caddyfilePath)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}
@@ -136,6 +150,34 @@ Fix by:
 	if ingest != nil {
 		ingest.Stop()
 	}
+}
+
+func runDatabaseMigration(args []string) {
+	flags := flag.NewFlagSet("migrate-db", flag.ExitOnError)
+	fromSQLite := flags.String("from-sqlite", "", "path to the source caddyui.db")
+	toMariaDB := flags.String("to-mariadb-dsn", os.Getenv("CADDYUI_DB_DSN"), "MariaDB DSN (or set CADDYUI_DB_DSN)")
+	skipAnalytics := flags.Bool("skip-analytics", false, "skip access_events and access_daily")
+	batchSize := flags.Int("batch-size", 1000, "rows per MariaDB transaction")
+	_ = flags.Parse(args)
+
+	if strings.TrimSpace(*fromSQLite) == "" || strings.TrimSpace(*toMariaDB) == "" {
+		flags.Usage()
+		log.Fatal("both --from-sqlite and a MariaDB DSN are required")
+	}
+	log.Printf("starting read-only SQLite to MariaDB migration (skip_analytics=%t)", *skipAnalytics)
+	err := db.MigrateSQLiteToMariaDB(context.Background(), *fromSQLite, *toMariaDB, db.DataMigrationOptions{
+		SkipAnalytics: *skipAnalytics,
+		BatchSize:     *batchSize,
+		Progress: func(table string, copied, total int64) {
+			if copied == 0 || copied == total || copied%100000 == 0 {
+				log.Printf("migration: %-20s %d/%d", table, copied, total)
+			}
+		},
+	})
+	if err != nil {
+		log.Fatalf("database migration failed: %v", err)
+	}
+	log.Printf("database migration completed successfully")
 }
 
 // Version is set at build time via -ldflags "-X main.Version=vX.Y.Z".
