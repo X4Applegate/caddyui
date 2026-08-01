@@ -17,7 +17,7 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 docker pull applegater/caddyui:latest
 ```
 
-Multi-arch: `linux/amd64` + `linux/arm64` (runs on your Raspberry Pi). SBOM + provenance signed. Non-root (UID 10001).
+Current Docker images target `linux/amd64` and include SBOM/provenance attestations. The CaddyUI container runs non-root (UID 10001). Native Linux release archives remain available for both `amd64` and `arm64`.
 
 Docker remains the recommended install path, but tagged releases also include
 native Linux binary archives for `amd64` and `arm64` hosts. See the
@@ -48,7 +48,14 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### What's new in v2.20.1
+### What's new in v2.21
+
+- **Fleet file access logs** — independently write native JSON or console access logs to selected Caddy servers with HTTP/HTTPS scope and rotation controls while preserving CaddyUI Visitor Analytics.
+- **CrowdSec request protection** — configure the LAPI, masked bouncer key, streaming, refresh, hard-fail, selected environments, host/path exclusions, module validation, and live connection testing from Settings.
+- **Correct client IPs** — configure `client_ip_headers` alongside trusted proxy ranges so logging and CrowdSec evaluate Caddy's resolved client address behind Cloudflare or another load balancer.
+- **Batteries-included custom Caddy** — `Dockerfile.caddy` includes the CrowdSec HTTP bouncer module and the repository Compose stack persists `/var/log/caddy`.
+
+### Certificate cleanup in v2.20.1
 
 - **Unused certificates are now named** — the Operations recommendation identifies affected PEM/file-path certificates and opens a filtered cleanup view with an **Unused** marker on each row.
 - **No false positives for managed ACME** — standalone and wildcard certificates automated by Caddy are no longer classified as unused simply because they are not attached through a resource certificate ID.

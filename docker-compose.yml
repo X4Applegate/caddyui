@@ -15,6 +15,7 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+      - caddy_logs:/var/log/caddy
     environment:
       CADDY_ADMIN: 0.0.0.0:2019
       # Timezone for Caddy access logs and cert-renewal timestamps. Any
@@ -75,6 +76,7 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  caddy_logs:
   caddyui_data:
 
 networks:

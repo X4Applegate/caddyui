@@ -219,6 +219,42 @@ func (c *Client) DeletePath(path string) error {
 	return nil
 }
 
+// PostAdminJSON calls a non-config Caddy admin endpoint and decodes its JSON
+// response. Community modules (for example CrowdSec) expose operational health
+// routes alongside Caddy's core /config API, so they need the same transport
+// and Basic Auth handling as the rest of this client.
+func (c *Client) PostAdminJSON(path string, val any, out any) error {
+	body, err := json.Marshal(val)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.AdminURL+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.applyAuth(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("caddy POST %s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	if out == nil || len(responseBody) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(responseBody, out); err != nil {
+		return fmt.Errorf("decode caddy POST %s: %w", path, err)
+	}
+	return nil
+}
+
 // AdaptResult is what /adapt returns: the fully-resolved Caddy JSON config under
 // "result", plus any warnings the adapter emitted (unknown directives, deprecations).
 type AdaptResult struct {
@@ -2885,8 +2921,8 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		switch rule.Type {
 		case "strip_prefix":
 			// Rewrite /prefix/rest → /rest
-			handlers = append(handlers, map[string]any{
-				"handler":            "rewrite",
+				handlers = append(handlers, map[string]any{
+					"handler":            "rewrite",
 				"strip_path_prefix": from,
 			})
 		case "add_prefix":
