@@ -791,6 +791,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/settings", s.postSettings)
 			r.Post("/settings/test-webhook", s.postTestWebhook)
 			r.Post("/settings/test-email", s.postTestEmail)
+			r.Post("/settings/test-crowdsec", s.postTestCrowdSec)
 			r.Post("/settings/dns-provider/{id}/clear", s.postClearDNSProvider)
 		})
 	})
@@ -8126,8 +8127,12 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		}
 	}
 
+	accessLogCfg := loadFleetAccessLogConfig(s.DB)
+	crowdSecCfg := loadCrowdSecConfig(s.DB)
 	routes := append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
+	routes = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
+	httpRoutes = protectRoutesWithCrowdSec(httpRoutes, crowdSecCfg, serverID)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws, certs)
 	skipAccessLogs := buildSkipAccessLogs(proxies)
@@ -8156,7 +8161,9 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, skipAccessLogs)
 	applyTLSConnectionPolicies(proposed, tlsConnPolicies)
-	applyTrustedProxies(proposed, s.DB, serverID)
+	applyClientIPSettings(proposed, s.DB)
+	applyFleetAccessLog(proposed, accessLogCfg, loadAnalyticsConfig(s.DB).Enabled, serverID)
+	applyCrowdSecApp(proposed, crowdSecCfg, serverID)
 	// v2.4.12: branded 404/502/503/504 pages with error ID + timestamp so
 	// users hitting a restart window see something nicer than Caddy's
 	// plaintext fallback and ops can correlate to access logs via {err.id}.
@@ -8178,7 +8185,20 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		_ = models.PruneAutoSnapshots(s.DB, serverID, 20)
 	}
 
-	// Apply. Each subtree write is atomic in Caddy.
+	// Apply. Each subtree write is atomic in Caddy. CrowdSec's app must be
+	// provisioned before routes that reference its HTTP handler. When disabling,
+	// the inverse happens below: routes are cleared first, then the app.
+	crowdSecEnabled := crowdSecCfg.enabledFor(serverID)
+	if crowdSecEnabled {
+		if err := s.writeCrowdSecApp(proposed, true); err != nil {
+			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_crowdsec_failed", "", err.Error(), false)
+			return fmt.Errorf("apply CrowdSec app: %w", err)
+		}
+	}
+	if err := s.writeLoggingConfig(proposed); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_access_logger_failed", "", err.Error(), false)
+		return fmt.Errorf("apply access logger: %w", err)
+	}
 	if err := s.writeRoutesSubtree(routes); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_routes_failed", "", err.Error(), false)
 		return err
@@ -8230,6 +8250,16 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		// Non-fatal: protocol restriction is a UX feature; failure here
 		// shouldn't roll back the primary sync.
 		log.Printf("caddy sync: protocols write failed (non-fatal): %v", err)
+	}
+	if err := s.writeFleetServerOptions(proposed); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_fleet_options_failed", "", err.Error(), false)
+		return fmt.Errorf("apply fleet server options: %w", err)
+	}
+	if !crowdSecEnabled {
+		if err := s.writeCrowdSecApp(proposed, false); err != nil {
+			_ = models.LogActivity(s.DB, serverID, "system", "sync_remove_crowdsec_failed", "", err.Error(), false)
+			return fmt.Errorf("remove CrowdSec app: %w", err)
+		}
 	}
 
 	// Hosts with Managed DNS selected use that provider for ACME DNS-01.
@@ -13625,6 +13655,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	// for managed DNS to work — either a server row has public_ip set or
 	// the legacy global fallback is populated.
 	caddyServers, _ := models.ListCaddyServers(s.DB)
+	accessLogCfg := loadFleetAccessLogConfig(s.DB)
+	crowdSecCfg := loadCrowdSecConfig(s.DB)
 	hasAnyServerIP := strings.TrimSpace(serverIP) != ""
 	for _, sr := range caddyServers {
 		if strings.TrimSpace(sr.PublicIP) != "" {
@@ -13794,6 +13826,25 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AnalyticsTargetPlaceholder": defaultAnalyticsIngestTarget,
 		"AnalyticsExcludeRaw":        analyticsCfg.ExcludeRaw,
 		"AnalyticsIngestStats":       analyticsIngestSnap,
+		// Fleet access logging and CrowdSec integrations (v2.21.0).
+		"AccessLogEnabled":        accessLogCfg.Enabled,
+		"AccessLogPath":           accessLogCfg.Path,
+		"AccessLogFormat":         accessLogCfg.Format,
+		"AccessLogScope":          accessLogCfg.Scope,
+		"AccessLogRollSize":       accessLogCfg.RollSizeMB,
+		"AccessLogRollKeep":       accessLogCfg.RollKeep,
+		"AccessLogRollDays":       accessLogCfg.RollKeepDays,
+		"AccessLogServerSelected": integrationServerSelection(caddyServers, accessLogCfg.ServerIDs),
+		"ClientIPHeaders":         mustGetSetting(s.DB, settingClientIPHeaders),
+		"CrowdSecEnabled":         crowdSecCfg.Enabled,
+		"CrowdSecAPIURL":          crowdSecCfg.APIURL,
+		"CrowdSecAPIKeySet":       strings.TrimSpace(crowdSecCfg.APIKey) != "",
+		"CrowdSecStreaming":       crowdSecCfg.Streaming,
+		"CrowdSecTicker":          crowdSecCfg.Ticker,
+		"CrowdSecHardFails":       crowdSecCfg.HardFails,
+		"CrowdSecServerSelected":  integrationServerSelection(caddyServers, crowdSecCfg.ServerIDs),
+		"CrowdSecExcludedHosts":   mustGetSetting(s.DB, settingCrowdSecExcludeHost),
+		"CrowdSecExcludedPaths":   mustGetSetting(s.DB, settingCrowdSecExcludePath),
 		// v2.9.5: 2FA enforcement policy
 		"Require2FA":  mustGetSetting(s.DB, settingRequire2FA),
 		"RequireTOTP": mustGetSetting(s.DB, settingRequireTOTP),
@@ -13818,6 +13869,29 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
+	integrationSettingsPresent := r.FormValue("fleet_integrations_present") == "1"
+	accessLogFormCfg := loadFleetAccessLogConfig(s.DB)
+	crowdSecFormCfg := loadCrowdSecConfig(s.DB)
+	if integrationSettingsPresent {
+		var err error
+		accessLogFormCfg, err = fleetAccessLogConfigFromForm(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		previousCrowdSec := crowdSecFormCfg
+		crowdSecFormCfg, err = crowdSecConfigFromForm(r, s.DB)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if crowdSecFormCfg.Enabled && (crowdSecConfigFingerprint(previousCrowdSec) != crowdSecConfigFingerprint(crowdSecFormCfg) || strings.TrimSpace(r.FormValue("crowdsec_api_key")) != "") {
+			if err := s.validateCrowdSecServers(crowdSecFormCfg); err != nil {
+				http.Error(w, "CrowdSec validation failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
 	webhookURL := strings.TrimSpace(r.FormValue("webhook_url"))
 	webhookSecret := strings.TrimSpace(r.FormValue("webhook_secret"))
 	// v2.12.51: ntfy.sh URL stored verbatim; token uses keep-blank-to-preserve
@@ -14033,6 +14107,14 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			return "0"
 		}(),
 	}
+	if integrationSettingsPresent {
+		for key, value := range fleetIntegrationSettings(accessLogFormCfg, crowdSecFormCfg, r.FormValue("client_ip_headers")) {
+			kv[key] = value
+		}
+		if key := strings.TrimSpace(r.FormValue("crowdsec_api_key")); key != "" {
+			kv[settingCrowdSecAPIKey] = key
+		}
+	}
 	if sessionDays := strings.TrimSpace(r.FormValue("session_duration_days")); sessionDays != "" {
 		kv[settingSessionDays] = sessionDays
 	}
@@ -14191,11 +14273,25 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// this, users had to manually click Sync Caddy after Save and
 	// wondered why their setting "didn't work." Best-effort — failures
 	// are logged but don't block the redirect.
-	go func(serverID int64) {
-		if err := s.syncCaddy(serverID, false); err != nil {
-			log.Printf("settings: auto-sync after save failed (non-fatal): %v", err)
+	serverIDsToSync := []int64{s.currentServerID(r)}
+	if integrationSettingsPresent {
+		serverIDsToSync = serverIDsToSync[:0]
+		if servers, err := models.ListCaddyServers(s.DB); err == nil {
+			for _, srv := range servers {
+				if srv.Type != models.CaddyServerTypeExternal {
+					serverIDsToSync = append(serverIDsToSync, srv.ID)
+				}
+			}
 		}
-	}(s.currentServerID(r))
+	}
+	go func(serverIDs []int64) {
+		// syncCaddy temporarily swaps s.Caddy, so fleet syncs stay sequential.
+		for _, serverID := range serverIDs {
+			if err := s.syncCaddy(serverID, false); err != nil {
+				log.Printf("settings: auto-sync server %d after save failed (non-fatal): %v", serverID, err)
+			}
+		}
+	}(serverIDsToSync)
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }

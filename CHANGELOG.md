@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.21.0] - 2026-08-01 - Fleet access logging and CrowdSec protection
+
+### Added
+
+- **Independent Caddy file access logs** in Settings, with fleet-server targeting, HTTP/HTTPS scope, native JSON or console encoding, absolute file path, maximum size, retained-file count, and retention-period controls.
+- **Analytics-safe logging composition** preserves CaddyUI's existing network analytics logger when file logging is enabled; disabling either destination leaves the other destination intact.
+- **CrowdSec bouncer integration** configures the `crowdsec` Caddy app and injects `http.handlers.crowdsec` before every protected CaddyUI-generated proxy, redirect, advanced, and plain-HTTP route.
+- **CrowdSec fleet controls** include selected servers, masked keep-existing API keys, streaming mode, refresh interval, hard-fail policy, exact-host exclusions, path-pattern exclusions, pre-save module validation, and a live LAPI connection test.
+- **Configurable client IP headers** complement trusted proxy ranges so CrowdSec and access logs can use Caddy's resolved client IP behind Cloudflare or another load balancer.
+- The repository's custom Caddy build now includes `github.com/hslatman/caddy-crowdsec-bouncer/http`, and the Compose stack persists `/var/log/caddy` in a named volume.
+
+### Fixed
+
+- Trusted proxy and client-IP-header settings are now written to both CaddyUI-generated HTTP servers during sync and stale values are removed when cleared.
+
+---
+
 ## [2.20.2] - 2026-07-30 - Fleet API and TLS/version reliability
 
 ### Fixed

@@ -72,6 +72,19 @@ The container will print a clear error message at startup if the directory isn't
 
 ## ✨ Headline features
 
+### 🛡️ Fleet access logging and CrowdSec
+
+CaddyUI v2.21 adds independent rotating file access logs and CrowdSec request protection:
+
+- Target selected Caddy servers and HTTP, HTTPS, or both generated server types
+- Keep Visitor Analytics active alongside native JSON or console file logs
+- Configure rotation size, retained files, retention days, trusted proxies, and client IP headers
+- Validate the `crowdsec` and `http.handlers.crowdsec` modules before enabling protection
+- Store the CrowdSec API key without rendering it back into Settings
+- Exclude exact hosts or Caddy path patterns and test LAPI connectivity after sync
+
+The repository `Dockerfile.caddy` includes the required CrowdSec HTTP bouncer module. Custom Caddy images must include `github.com/hslatman/caddy-crowdsec-bouncer/http`.
+
 ### 🧹 Actionable certificate cleanup
 
 CaddyUI v2.20.1 makes the Operations **Unused custom certificates**

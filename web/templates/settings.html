@@ -21,6 +21,8 @@
   <a href="#settings-dns-providers" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">DNS Providers</a>
   <a href="#settings-captcha"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CAPTCHA</a>
   <a href="#settings-security"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Security</a>
+  <a href="#settings-access-logs" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Access logs</a>
+  <a href="#settings-crowdsec"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CrowdSec</a>
   <a href="#analytics"            class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Analytics</a>
   <a href="#settings-notifier"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifier</a>
   <a href="#settings-backup"      class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Backup</a>
@@ -37,6 +39,7 @@
 {{end}}
 
 <form method="post" action="/settings" class="max-w-2xl space-y-8">
+  <input type="hidden" name="fleet_integrations_present" value="1">
 
   {{/* ── General ── */}}
   <div id="settings-general" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
@@ -845,6 +848,13 @@
         placeholder="103.21.244.0/22&#10;103.22.200.0/22&#10;10.0.0.0/8"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.TrustedProxies}}</textarea>
     </div>
+    <div class="py-4 border-b border-ink-100">
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">Client IP headers</label>
+      <p class="text-xs text-ink-500 mb-2">Checked in order after the direct peer matches Trusted proxy IPs/CIDRs. Caddy defaults to X-Forwarded-For; Cloudflare users can put CF-Connecting-IP first.</p>
+      <input type="text" name="client_ip_headers" value="{{.ClientIPHeaders}}"
+        placeholder="CF-Connecting-IP, X-Forwarded-For"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    </div>
     <div class="py-4 border-b border-ink-100 flex items-start justify-between gap-4">
       <div>
         <label class="block text-sm font-medium text-ink-900 mb-1">Disable HTTP/3 (QUIC)</label>
@@ -890,6 +900,159 @@
         <input type="checkbox" name="require_totp" value="1" {{if eq .RequireTOTP "1"}}checked{{end}} class="sr-only peer">
         <div class="w-10 h-5 bg-ink-200 rounded-full peer peer-checked:bg-brand-500 peer-focus:ring-2 peer-focus:ring-brand-500/30 transition-all after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5"></div>
       </label>
+    </div>
+  </div>
+
+  {{/* ── Caddy fleet file access logs (v2.21.0) ── */}}
+  <div id="settings-access-logs" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="flex items-center gap-2 mb-0.5">
+        <div class="text-sm font-semibold text-ink-900">Caddy file access logs</div>
+        {{if .AccessLogEnabled}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">enabled</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>{{end}}
+      </div>
+      <p class="text-xs text-ink-500">Write Caddy access events to a rotating file independently from CaddyUI Visitor Analytics. The analytics network writer is preserved when both features are enabled.</p>
+    </div>
+
+    <div class="flex items-start gap-2">
+      <input type="hidden" name="fleet_access_log_enabled" value="0">
+      <input id="fleet_access_log_enabled" name="fleet_access_log_enabled" type="checkbox" value="1" {{if .AccessLogEnabled}}checked{{end}} class="mt-0.5 accent-brand-600 cursor-pointer">
+      <label for="fleet_access_log_enabled" class="text-sm text-ink-700 cursor-pointer">Enable file access logging</label>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Apply to Caddy servers</label>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {{range .Servers}}
+          {{if ne .Type "external"}}
+          <label class="flex items-center gap-2 rounded-lg border border-ink-200 px-3 py-2 text-sm text-ink-700 cursor-pointer">
+            <input type="checkbox" name="fleet_access_log_server_ids" value="{{.ID}}" {{if index $.AccessLogServerSelected .ID}}checked{{end}} class="accent-brand-600">
+            <span>{{.Name}}</span><span class="ml-auto text-xs text-ink-400">{{.Status}}</span>
+          </label>
+          {{end}}
+        {{end}}
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Log file path</label>
+        <input type="text" name="fleet_access_log_path" value="{{.AccessLogPath}}" required
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Generated HTTP servers</label>
+        <select name="fleet_access_log_scope" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+          <option value="all" {{if eq .AccessLogScope "all"}}selected{{end}}>HTTP and HTTPS</option>
+          <option value="https" {{if eq .AccessLogScope "https"}}selected{{end}}>HTTPS only</option>
+          <option value="http" {{if eq .AccessLogScope "http"}}selected{{end}}>HTTP only</option>
+        </select>
+      </div>
+    </div>
+    <p class="text-xs text-ink-400 -mt-3">The path is inside each Caddy container. Mount its parent directory if logs must survive container replacement.</p>
+
+    <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Format</label>
+        <select name="fleet_access_log_format" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white">
+          <option value="json" {{if eq .AccessLogFormat "json"}}selected{{end}}>Native JSON</option>
+          <option value="console" {{if eq .AccessLogFormat "console"}}selected{{end}}>Console</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Max size (MB)</label>
+        <input type="number" min="1" max="1000000" name="fleet_access_log_roll_size_mb" value="{{.AccessLogRollSize}}" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Retained files</label>
+        <input type="number" min="0" max="100000" name="fleet_access_log_roll_keep" value="{{.AccessLogRollKeep}}" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-ink-700 mb-1">Retention (days)</label>
+        <input type="number" min="0" max="36500" name="fleet_access_log_roll_keep_days" value="{{.AccessLogRollDays}}" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white">
+      </div>
+    </div>
+
+    <div class="pt-3 border-t border-ink-100">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save and sync fleet</button>
+    </div>
+  </div>
+
+  {{/* ── CrowdSec bouncer (v2.21.0) ── */}}
+  <div id="settings-crowdsec" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="flex items-center gap-2 mb-0.5">
+        <div class="text-sm font-semibold text-ink-900">CrowdSec bouncer</div>
+        {{if .CrowdSecEnabled}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">enabled</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>{{end}}
+      </div>
+      <p class="text-xs text-ink-500">Synchronize remediation decisions from CrowdSec LAPI and run the CrowdSec handler before every protected CaddyUI-generated route.</p>
+    </div>
+
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      Requires a custom Caddy build containing <code class="font-mono">crowdsec</code> and <code class="font-mono">http.handlers.crowdsec</code> from <code class="font-mono">github.com/hslatman/caddy-crowdsec-bouncer/http</code>. CaddyUI validates both modules before enabling the integration.
+    </div>
+
+    <div class="flex items-start gap-2">
+      <input type="hidden" name="crowdsec_enabled" value="0">
+      <input id="crowdsec_enabled" name="crowdsec_enabled" type="checkbox" value="1" {{if .CrowdSecEnabled}}checked{{end}} class="mt-0.5 accent-brand-600 cursor-pointer">
+      <label for="crowdsec_enabled" class="text-sm text-ink-700 cursor-pointer">Enable CrowdSec bouncer</label>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Apply to Caddy servers</label>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {{range .Servers}}
+          {{if ne .Type "external"}}
+          <div class="rounded-lg border border-ink-200 px-3 py-2">
+            <label class="flex items-center gap-2 text-sm text-ink-700 cursor-pointer">
+              <input type="checkbox" name="crowdsec_server_ids" value="{{.ID}}" {{if index $.CrowdSecServerSelected .ID}}checked{{end}} class="accent-brand-600">
+              <span>{{.Name}}</span><span class="ml-auto text-xs text-ink-400">{{.Status}}</span>
+            </label>
+            {{if and $.CrowdSecEnabled (index $.CrowdSecServerSelected .ID)}}
+            <button type="button" onclick="testCrowdSec({{.ID}}, this)" class="mt-2 text-xs text-brand-600 hover:underline">Test LAPI connection</button>
+            {{end}}
+          </div>
+          {{end}}
+        {{end}}
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">CrowdSec LAPI URL</label>
+        <input type="url" name="crowdsec_api_url" value="{{.CrowdSecAPIURL}}" required placeholder="http://crowdsec:8080/" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Bouncer API key {{if .CrowdSecAPIKeySet}}<span class="font-normal text-ink-400">(leave blank to keep)</span>{{end}}</label>
+        <input type="password" name="crowdsec_api_key" value="" autocomplete="new-password" placeholder="{{if .CrowdSecAPIKeySet}}•••••••• (key set){{else}}Required{{end}}" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white">
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Decision refresh interval</label>
+        <input type="text" name="crowdsec_ticker_interval" value="{{.CrowdSecTicker}}" required placeholder="15s" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white">
+      </div>
+      <div class="space-y-3 pt-1">
+        <label class="flex items-start gap-2 text-sm text-ink-700 cursor-pointer"><input type="hidden" name="crowdsec_streaming" value="0"><input type="checkbox" name="crowdsec_streaming" value="1" {{if .CrowdSecStreaming}}checked{{end}} class="mt-0.5 accent-brand-600"><span>Streaming mode <span class="block text-xs text-ink-400">Cache active decisions locally.</span></span></label>
+        <label class="flex items-start gap-2 text-sm text-ink-700 cursor-pointer"><input type="hidden" name="crowdsec_hard_fails" value="0"><input type="checkbox" name="crowdsec_hard_fails" value="1" {{if .CrowdSecHardFails}}checked{{end}} class="mt-0.5 accent-red-600"><span>Hard-fail when LAPI is unavailable <span class="block text-xs text-ink-400">Off by default to preserve service availability.</span></span></label>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Excluded hosts</label>
+        <textarea name="crowdsec_excluded_hosts" rows="3" placeholder="status.example.com&#10;health.example.com" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white">{{.CrowdSecExcludedHosts}}</textarea>
+        <p class="text-xs text-ink-400 mt-1">Exact hostnames, one per line. A multi-domain route is excluded when any hostname matches.</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Excluded paths</label>
+        <textarea name="crowdsec_excluded_paths" rows="3" placeholder="/health*&#10;/webhooks/crowdsec*" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white">{{.CrowdSecExcludedPaths}}</textarea>
+        <p class="text-xs text-ink-400 mt-1">Caddy path patterns, one per line. Matching requests bypass only CrowdSec and continue to the normal route.</p>
+      </div>
+    </div>
+
+    <div class="pt-3 border-t border-ink-100">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Validate, save, and sync fleet</button>
     </div>
   </div>
 
@@ -1061,6 +1224,32 @@ function testWebhook() {
     .finally(function() {
       btn.disabled = false;
       btn.textContent = 'Send test webhook';
+    });
+}
+
+function testCrowdSec(serverID, btn) {
+  var original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  fetch('/settings/test-crowdsec', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'server_id=' + encodeURIComponent(serverID)
+  })
+    .then(function(r) {
+      return r.json().then(function(d) { return {ok: r.ok && d.ok, data: d}; });
+    })
+    .then(function(result) {
+      btn.textContent = result.ok ? '✓ LAPI connection healthy' : 'Failed: ' + (result.data.error || 'unknown error');
+      btn.className = result.ok ? 'mt-2 text-xs text-brand-700' : 'mt-2 text-xs text-red-700';
+    })
+    .catch(function(e) {
+      btn.textContent = 'Error: ' + e.message;
+      btn.className = 'mt-2 text-xs text-red-700';
+    })
+    .finally(function() {
+      btn.disabled = false;
+      setTimeout(function() { btn.textContent = original; btn.className = 'mt-2 text-xs text-brand-600 hover:underline'; }, 5000);
     });
 }
 
