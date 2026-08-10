@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,5 +102,72 @@ func TestAPIV1ListServersAllowsAuthenticatedNonAdmin(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestValidateProxyAdvancedUsesSelectedFleetServer(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	var primaryAdaptCalls int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/adapt" {
+			primaryAdaptCalls++
+			http.Error(w, "wrong server", http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer primary.Close()
+
+	var selectedAdaptCalls int
+	selected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/adapt" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		selectedAdaptCalls++
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "header X-Test value") {
+			t.Fatalf("adapt body = %q, want advanced config snippet", string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"result":{"apps":{"http":{"servers":{"srv0":{"routes":[{"handle":[{"handler":"headers"}]}]}}}}}}`)
+	}))
+	defer selected.Close()
+
+	if _, err := models.CreateCaddyServer(conn, &models.CaddyServer{
+		Name:     "Primary",
+		AdminURL: primary.URL,
+		Type:     models.CaddyServerTypeManaged,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	selectedID, err := models.CreateCaddyServer(conn, &models.CaddyServer{
+		Name:     "Remote",
+		AdminURL: selected.URL,
+		Type:     models.CaddyServerTypeManaged,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{DB: conn}
+	req := httptest.NewRequest(http.MethodPost, "/proxy-hosts", nil)
+	req.AddCookie(&http.Cookie{Name: serverCookie, Value: strconv.FormatInt(selectedID, 10)})
+
+	if errMsg := s.validateProxyAdvanced(s.caddyForRequest(req), &models.ProxyHost{
+		AdvancedConfig: "header X-Test value",
+	}); errMsg != "" {
+		t.Fatalf("validateProxyAdvanced() = %q, want success", errMsg)
+	}
+	if primaryAdaptCalls != 0 {
+		t.Fatalf("primary adapt calls = %d, want 0", primaryAdaptCalls)
+	}
+	if selectedAdaptCalls != 1 {
+		t.Fatalf("selected adapt calls = %d, want 1", selectedAdaptCalls)
 	}
 }
