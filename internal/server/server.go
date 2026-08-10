@@ -4588,7 +4588,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
-	if errMsg := s.validateProxyAdvanced(p); errMsg != "" {
+	if errMsg := s.validateProxyAdvanced(s.caddyForRequest(r), p); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
@@ -4747,7 +4747,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
-	if errMsg := s.validateProxyAdvanced(p); errMsg != "" {
+	if errMsg := s.validateProxyAdvanced(s.caddyForRequest(r), p); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
@@ -8308,7 +8308,7 @@ func (s *Server) renderRedirectionHostFormError(w http.ResponseWriter, r *http.R
 	}))
 }
 
-func (s *Server) validateProxyAdvanced(p *models.ProxyHost) string {
+func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHost) string {
 	if strings.TrimSpace(p.AdvancedConfig) == "" {
 		return ""
 	}
@@ -8322,7 +8322,7 @@ func (s *Server) validateProxyAdvanced(p *models.ProxyHost) string {
 	if bad := scanTopLevelDirective(p.AdvancedConfig, banned); bad != "" {
 		return fmt.Sprintf("Advanced config can't contain `%s` — this field runs BEFORE the proxy's own reverse_proxy handler. Put request-side directives here (header, encode, request_body, rewrite, etc.) and let the Forward host/port handle the upstream.", bad)
 	}
-	if _, err := s.adaptProxyAdvanced(*p); err != nil {
+	if _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p); err != nil {
 		return "Advanced config rejected by Caddy: " + err.Error()
 	}
 	return ""
@@ -8387,8 +8387,12 @@ func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request
 // directive order inside the site block, so we get a handle[] list in the
 // correct order — we return that list untouched for the caller to splice in.
 func (s *Server) adaptProxyAdvanced(p models.ProxyHost) ([]any, error) {
+	return s.adaptProxyAdvancedWithClient(s.Caddy, p)
+}
+
+func (s *Server) adaptProxyAdvancedWithClient(caddyCl *caddy.Client, p models.ProxyHost) ([]any, error) {
 	src := fmt.Sprintf("localhost {\n%s\n}\n", p.AdvancedConfig)
-	adapted, err := s.Caddy.Adapt(src)
+	adapted, err := caddyCl.Adapt(src)
 	if err != nil {
 		return nil, err
 	}
