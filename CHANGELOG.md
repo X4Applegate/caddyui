@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.21.1] - 2026-08-10 - Proxy advanced config fleet validation
+
+### Fixed
+
+- **Proxy-host Advanced Config now validates against the selected Caddy Fleet server** instead of always adapting snippets through the default bootstrap client. Hosts saved while a non-primary server is selected no longer fail Advanced Config validation just because that environment uses a different admin URL or module set. ([#21](https://github.com/X4Applegate/caddyui/issues/21))
+- Added a regression test covering request-scoped Advanced Config validation so future fleet changes keep using the active server's admin API during proxy-host save operations.
+
+---
+
 ## [2.21.0] - 2026-08-01 - Fleet access logging and CrowdSec protection
 
 ### Added
