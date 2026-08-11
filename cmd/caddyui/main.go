@@ -116,6 +116,14 @@ Fix by:
 			srv.SetAnalyticsIngest(ingest)
 		}
 	}
+	// Refresh an enabled analytics logger on startup so upgrades can add
+	// connection safeguards (for example soft_start) to Caddy's persisted
+	// config without waiting for an administrator to save Settings again.
+	// Failures are non-fatal because CaddyUI must still start when one fleet
+	// server is temporarily unreachable.
+	if err := srv.ReconcileAnalyticsAccessLogs(); err != nil {
+		log.Printf("analytics: startup reconciliation: %v", err)
+	}
 
 	// Opt-in startup sync. Default: no initial sync — pushing an empty config
 	// would wipe Caddy's existing routes. Set CADDYUI_SYNC_ON_START=1 once all

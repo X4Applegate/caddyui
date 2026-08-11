@@ -13,10 +13,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/models"
 )
 
-// Settings-table keys for the v2.7.0 visitor-analytics feature. All three
+// Settings-table keys for the visitor-analytics feature. All values
 // are stored as plain strings via models.GetSetting/SetSetting.
 const (
 	// settingAnalyticsEnabled is "1" when the admin has turned on access-log
@@ -40,29 +41,51 @@ const (
 	// subnet, the office public IP, an uptime-monitor provider's /24.
 	settingAnalyticsExcludeIPs = "analytics_exclude_ips"
 
+	// settingAnalyticsSoftStart controls whether Caddy may load its config
+	// while CaddyUI's analytics listener is unavailable. It defaults on so
+	// CaddyUI is never a hard startup dependency for Caddy.
+	settingAnalyticsSoftStart = "analytics_soft_start"
+
+	// settingAnalyticsDialTimeoutSec limits the initial/reconnect wait for
+	// Caddy's net log writer. The value is stored as whole seconds.
+	settingAnalyticsDialTimeoutSec = "analytics_dial_timeout_sec"
+
 	// defaultAnalyticsIngestTarget is what the ingest configuration card
 	// pre-fills when no value has been saved yet. Chosen to match the
 	// docker-compose example in the README — a copy-paste config that
 	// works out of the box for users who didn't customise their stack.
 	defaultAnalyticsIngestTarget = "caddyui:9019"
+
+	defaultAnalyticsDialTimeoutSec = 5
 )
 
-// loadAnalyticsConfig reads the three analytics settings into a tidy struct.
+// loadAnalyticsConfig reads the analytics settings into a tidy struct.
 // Called both by the /settings handler (to render the form) and by the
 // save-then-enable path below (to know what target to pass to EnableAccessLogs).
 type analyticsConfig struct {
-	Enabled    bool
-	Target     string   // host:port, resolved (default applied if blank)
-	TargetRaw  string   // the admin's literal input, possibly ""
-	ExcludeIPs []string // one entry per line of the admin's list
-	ExcludeRaw string   // the admin's literal textarea value, for re-render
+	Enabled     bool
+	Target      string   // host:port, resolved (default applied if blank)
+	TargetRaw   string   // the admin's literal input, possibly ""
+	ExcludeIPs  []string // one entry per line of the admin's list
+	ExcludeRaw  string   // the admin's literal textarea value, for re-render
+	SoftStart   bool
+	DialTimeout time.Duration
 }
 
 func loadAnalyticsConfig(db *sql.DB) analyticsConfig {
+	softStartRaw := strings.TrimSpace(mustGetSetting(db, settingAnalyticsSoftStart))
+	dialTimeoutSec := defaultAnalyticsDialTimeoutSec
+	if raw := strings.TrimSpace(mustGetSetting(db, settingAnalyticsDialTimeoutSec)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 1 && n <= 60 {
+			dialTimeoutSec = n
+		}
+	}
 	cfg := analyticsConfig{
-		Enabled:    mustGetSetting(db, settingAnalyticsEnabled) == "1",
-		TargetRaw:  strings.TrimSpace(mustGetSetting(db, settingAnalyticsIngestTarget)),
-		ExcludeRaw: mustGetSetting(db, settingAnalyticsExcludeIPs),
+		Enabled:     mustGetSetting(db, settingAnalyticsEnabled) == "1",
+		TargetRaw:   strings.TrimSpace(mustGetSetting(db, settingAnalyticsIngestTarget)),
+		ExcludeRaw:  mustGetSetting(db, settingAnalyticsExcludeIPs),
+		SoftStart:   softStartRaw != "0",
+		DialTimeout: time.Duration(dialTimeoutSec) * time.Second,
 	}
 	cfg.Target = cfg.TargetRaw
 	if cfg.Target == "" {
@@ -93,7 +116,7 @@ func parseExcludeIPs(raw string) []string {
 	return out
 }
 
-// applyAnalyticsToggle is called from postSettings after the three settings
+// applyAnalyticsToggle is called from postSettings after the analytics settings
 // keys have been saved. It does two things:
 //
 //  1. Pushes the new exclude-IP list to the live ingest listener so the
@@ -133,7 +156,9 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 	// via s.Caddy directly so the first-boot analytics enable still works.
 	if len(servers) == 0 {
 		if cfg.Enabled {
-			if err := s.Caddy.EnableAccessLogs(cfg.Target); err != nil {
+			if err := s.Caddy.EnableAccessLogs(cfg.Target, caddy.AccessLogOptions{
+				SoftStart: cfg.SoftStart, DialTimeout: cfg.DialTimeout,
+			}); err != nil {
 				return fmt.Errorf("enable access logs: %w", err)
 			}
 			return nil
@@ -155,7 +180,9 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 		}
 		cli := newCaddyClient(sr.AdminURL, sr.AdminUsername, sr.AdminPassword)
 		if cfg.Enabled {
-			if err := cli.EnableAccessLogs(cfg.Target); err != nil {
+			if err := cli.EnableAccessLogs(cfg.Target, caddy.AccessLogOptions{
+				SoftStart: cfg.SoftStart, DialTimeout: cfg.DialTimeout,
+			}); err != nil {
 				errMsgs = append(errMsgs, fmt.Sprintf("server %q (%s): enable: %v", sr.Name, sr.AdminURL, err))
 				continue
 			}
@@ -170,6 +197,23 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 		return fmt.Errorf("analytics toggle: %s", strings.Join(errMsgs, "; "))
 	}
 	return nil
+}
+
+// ReconcileAnalyticsAccessLogs refreshes an enabled analytics logger during
+// CaddyUI startup. This is important for upgrades: it writes newly introduced
+// writer safeguards such as soft_start into Caddy's persisted config without
+// requiring an admin to revisit Settings and click Save. Disabled analytics is
+// left untouched here; the explicit Settings toggle remains responsible for
+// removing a previously enabled logger.
+func (s *Server) ReconcileAnalyticsAccessLogs() error {
+	cfg := loadAnalyticsConfig(s.DB)
+	if !cfg.Enabled {
+		if s.analyticsIngest != nil {
+			s.analyticsIngest.SetExcludeIPs(cfg.ExcludeIPs)
+		}
+		return nil
+	}
+	return s.applyAnalyticsToggle(cfg)
 }
 
 // userAllowedHosts returns the list of host strings (as Caddy would see them

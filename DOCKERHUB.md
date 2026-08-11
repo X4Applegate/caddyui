@@ -184,7 +184,7 @@ Per-host export also available from the proxy-host edit page.
 - **2FA / TOTP**, login CAPTCHA (Turnstile or reCAPTCHA), session management
 - **Snapshots** — one-click DB backup, auto-snapshot on sync
 - **Notifications** — email (SMTP), webhook, [ntfy.sh](https://ntfy.sh) for cert-expiry + upstream-health alerts
-- **Visitor analytics** — opt-in per-host traffic counters, top hosts, status-code mix, 24 h sparkline
+- **Visitor analytics** — opt-in per-host traffic counters, top hosts, status-code mix, 24 h sparkline, with soft-start log forwarding so Caddy can boot while CaddyUI is offline
 - **Carbon Orange theme** — alternative palette with cross-device sync via per-user DB column
 - **PWA** — installable on desktop and mobile; offline-capable service worker
 
@@ -207,7 +207,7 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.21.1`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.21.2`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 
