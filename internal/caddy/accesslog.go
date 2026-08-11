@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // AccessLogLoggerName is the ID under logging.logs where CaddyUI installs
@@ -18,6 +19,15 @@ const AccessLogLoggerName = "caddyui_access"
 // (404 is fine), which is why DisableAccessLogs doesn't treat "not found"
 // as an error.
 const AccessLogDeleteMethod = http.MethodDelete
+
+// AccessLogOptions controls how Caddy connects to CaddyUI's analytics ingest
+// listener. SoftStart prevents an unavailable listener from blocking Caddy's
+// config load; DialTimeout limits how long a failed connection may block log
+// emission before Caddy falls back to stderr.
+type AccessLogOptions struct {
+	SoftStart   bool
+	DialTimeout time.Duration
+}
 
 // EnableAccessLogs configures the live Caddy instance to stream its access
 // logs to target over plain TCP (NDJSON, one request per line). target is a
@@ -41,7 +51,7 @@ const AccessLogDeleteMethod = http.MethodDelete
 // Returns an error if Caddy's admin API rejects any step. Callers should
 // fall back to DisableAccessLogs on failure to avoid leaving the config in
 // a half-enabled state where the logger exists but no server emits events.
-func (c *Client) EnableAccessLogs(target string) error {
+func (c *Client) EnableAccessLogs(target string, opts AccessLogOptions) error {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return fmt.Errorf("EnableAccessLogs: target is empty")
@@ -49,11 +59,18 @@ func (c *Client) EnableAccessLogs(target string) error {
 
 	// Step 1: install the net-writer logger. Use PUT on the specific key so
 	// the call is create-or-replace — PATCH would 404 on first run.
+	writer := map[string]any{
+		"output":  "net",
+		"address": target,
+	}
+	if opts.SoftStart {
+		writer["soft_start"] = true
+	}
+	if opts.DialTimeout > 0 {
+		writer["dial_timeout"] = opts.DialTimeout.String()
+	}
 	logger := map[string]any{
-		"writer": map[string]any{
-			"output":  "net",
-			"address": target,
-		},
+		"writer": writer,
 		"encoder": map[string]any{
 			"format": "json",
 		},

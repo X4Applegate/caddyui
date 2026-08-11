@@ -1106,6 +1106,24 @@
       </p>
     </div>
 
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div class="flex items-start gap-2">
+        <input type="hidden" name="analytics_soft_start" value="0" />
+        <input id="analytics_soft_start" name="analytics_soft_start" type="checkbox" value="1" {{if .AnalyticsSoftStart}}checked{{end}}
+          class="mt-0.5 accent-brand-600 cursor-pointer" />
+        <label for="analytics_soft_start" class="text-sm text-ink-700 cursor-pointer">
+          Allow Caddy to start without CaddyUI
+          <span class="block text-xs text-ink-400 font-normal mt-0.5">Recommended. Adds <code class="font-mono">soft_start</code> so an unavailable analytics listener cannot prevent Caddy from loading its config. Logs fall back to stderr until the connection recovers.</span>
+        </label>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Connection timeout <span class="text-ink-400 font-normal text-xs">(seconds)</span></label>
+        <input name="analytics_dial_timeout_sec" value="{{.AnalyticsDialTimeoutSec}}" type="number" min="1" max="60" step="1"
+          class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <p class="text-xs text-ink-500 mt-1.5">Limits how long Caddy waits for the analytics socket before falling back. Default: <code class="font-mono">5s</code>.</p>
+      </div>
+    </div>
+
     <div>
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Exclude IPs <span class="text-ink-400 font-normal text-xs">(one per line or comma-separated)</span></label>
       <textarea name="analytics_exclude_ips" rows="3" placeholder="10.0.0.0/8&#10;192.168.1.42&#10;2001:db8::/32"

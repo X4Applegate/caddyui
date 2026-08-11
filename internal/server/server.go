@@ -13829,6 +13829,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AnalyticsTarget":            analyticsCfg.TargetRaw,
 		"AnalyticsTargetPlaceholder": defaultAnalyticsIngestTarget,
 		"AnalyticsExcludeRaw":        analyticsCfg.ExcludeRaw,
+		"AnalyticsSoftStart":         analyticsCfg.SoftStart,
+		"AnalyticsDialTimeoutSec":    int(analyticsCfg.DialTimeout / time.Second),
 		"AnalyticsIngestStats":       analyticsIngestSnap,
 		// Fleet access logging and CrowdSec integrations (v2.21.0).
 		"AccessLogEnabled":        accessLogCfg.Enabled,
@@ -13991,6 +13993,29 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	analyticsTarget := strings.TrimSpace(r.FormValue("analytics_ingest_target"))
 	analyticsExclude := r.FormValue("analytics_exclude_ips") // preserve whitespace for textarea re-render
+	currentAnalyticsCfg := loadAnalyticsConfig(s.DB)
+	analyticsSoftStart := "0"
+	if currentAnalyticsCfg.SoftStart {
+		analyticsSoftStart = "1"
+	}
+	if values, present := r.PostForm["analytics_soft_start"]; present {
+		analyticsSoftStart = "0"
+		for _, v := range values {
+			if v == "1" {
+				analyticsSoftStart = "1"
+				break
+			}
+		}
+	}
+	analyticsDialTimeoutSec := int(currentAnalyticsCfg.DialTimeout / time.Second)
+	if raw, present := r.PostForm["analytics_dial_timeout_sec"]; present && len(raw) > 0 && strings.TrimSpace(raw[0]) != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(raw[0]))
+		if err != nil || n < 1 || n > 60 {
+			http.Error(w, "analytics connection timeout must be between 1 and 60 seconds", http.StatusBadRequest)
+			return
+		}
+		analyticsDialTimeoutSec = n
+	}
 
 	// Shared server IP — the public IP every DNS provider writes as its
 	// record content. Form field name stays as "cf_server_ip" for
@@ -14092,9 +14117,11 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingServerIP:           newServerIP,
 		settingCFProxied:          cfProxied,
 		// v2.7.0: visitor analytics
-		settingAnalyticsEnabled:      analyticsEnabled,
-		settingAnalyticsIngestTarget: analyticsTarget,
-		settingAnalyticsExcludeIPs:   analyticsExclude,
+		settingAnalyticsEnabled:        analyticsEnabled,
+		settingAnalyticsIngestTarget:   analyticsTarget,
+		settingAnalyticsExcludeIPs:     analyticsExclude,
+		settingAnalyticsSoftStart:      analyticsSoftStart,
+		settingAnalyticsDialTimeoutSec: strconv.Itoa(analyticsDialTimeoutSec),
 		// v2.10.0: trusted proxies + custom site title
 		settingTrustedProxies: strings.TrimSpace(r.FormValue("trusted_proxies")),
 		settingSiteTitle:      strings.TrimSpace(r.FormValue("site_title")),

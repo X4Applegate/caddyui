@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.21.2] - 2026-08-10 - Resilient analytics log forwarding
+
+### Added
+
+- **Analytics log forwarding can no longer make Caddy depend on CaddyUI at startup.** Settings → Analytics now exposes Caddy's network-writer `soft_start` option and enables it by default, so Caddy loads its config when the CaddyUI ingest listener is unavailable and sends logs to stderr until the connection recovers. ([#22](https://github.com/X4Applegate/caddyui/issues/22))
+- **Configurable analytics connection timeout** limits network-writer connection attempts to 1–60 seconds and defaults to 5 seconds.
+
+### Changed
+
+- Enabled analytics loggers are reconciled across managed fleet servers when CaddyUI starts, allowing upgrades to apply the safer writer defaults without requiring an administrator to re-save Settings.
+- Added regression tests for generated `soft_start` / `dial_timeout` JSON, upgrade defaults, explicit overrides, and startup reconciliation.
+
+---
+
 ## [2.21.1] - 2026-08-10 - Proxy advanced config fleet validation
 
 ### Fixed
