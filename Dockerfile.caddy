@@ -6,6 +6,7 @@ RUN xcaddy build \
     --with github.com/caddy-dns/godaddy \
     --with github.com/caddy-dns/digitalocean \
     --with github.com/caddy-dns/hetzner/v2 \
+    --with github.com/caddy-dns/route53@v1.6.2 \
     --with github.com/hslatman/caddy-crowdsec-bouncer/http
 
 FROM caddy:2-alpine

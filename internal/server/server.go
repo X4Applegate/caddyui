@@ -1226,6 +1226,14 @@ const (
 	// Hetzner DNS (v2.3.0).
 	settingHetznerAPIToken = "hetzner_api_token"
 
+	// Amazon Route 53 (v2.23.0). Region defaults to us-east-1 in both the
+	// CaddyUI API adapter and the caddy-dns/route53 module. Session token is
+	// optional and supports temporary STS credentials.
+	settingRoute53AccessKeyID     = "route53_access_key_id"
+	settingRoute53SecretAccessKey = "route53_secret_access_key"
+	settingRoute53SessionToken    = "route53_session_token"
+	settingRoute53Region          = "route53_region"
+
 	// Multiple DNS credential profiles (v2.16.0). JSON array of
 	// dnsCredentialProfile. Empty/missing means legacy per-provider
 	// settings remain the only credential source.
@@ -1245,6 +1253,7 @@ var dnsProviderCredKeys = map[string][]string{
 	dns.GoDaddy:      {settingGDAPIKey, settingGDAPISecret},
 	dns.DigitalOcean: {settingDOAPIToken},
 	dns.Hetzner:      {settingHetznerAPIToken},
+	dns.Route53:      {settingRoute53AccessKeyID, settingRoute53SecretAccessKey, settingRoute53SessionToken, settingRoute53Region},
 }
 
 type dnsCredentialProfile struct {
@@ -6115,6 +6124,26 @@ func caddyDNSProviderConfig(providerID string, creds map[string]string) map[stri
 			return nil
 		}
 		return map[string]any{"name": "hetzner", "api_token": token}
+	case dns.Route53:
+		accessKey := strings.TrimSpace(creds[settingRoute53AccessKeyID])
+		secretKey := strings.TrimSpace(creds[settingRoute53SecretAccessKey])
+		if accessKey == "" || secretKey == "" {
+			return nil
+		}
+		region := strings.TrimSpace(creds[settingRoute53Region])
+		if region == "" {
+			region = "us-east-1"
+		}
+		cfg := map[string]any{
+			"name":              "route53",
+			"access_key_id":     accessKey,
+			"secret_access_key": secretKey,
+			"region":            region,
+		}
+		if token := strings.TrimSpace(creds[settingRoute53SessionToken]); token != "" {
+			cfg["session_token"] = token
+		}
+		return cfg
 	}
 	return nil
 }
@@ -12614,7 +12643,7 @@ func fetchLatestDockerTagFrom(ctx context.Context, client *http.Client, initialU
 // pbClient/pbCreateDNSRecord/...) with a single code path driven by the
 // dns.Provider registry. A proxy_hosts row carries four DNS columns:
 //   dns_provider  — the provider ID ("cloudflare", "porkbun", ...)
-//   dns_zone_id   — the provider-native zone ID (opaque for CF/Hetzner;
+//   dns_zone_id   — the provider-native zone ID (opaque for CF/Hetzner/Route53;
 //                   domain name for PB/DO/GD/NC)
 //   dns_zone_name — the base domain in human-readable form ("example.com")
 //   dns_record_id — the record identifier returned by the provider
@@ -12941,7 +12970,7 @@ func (s *Server) dnsUpdateAllRecords(serverID int64, newIP string) {
 // apiPBDomains endpoints with a single handler.
 //
 // Response shape is always [{id, name}] so the form's zone-picker JS
-// renders every provider with the same code path. Cloudflare and Hetzner
+// renders every provider with the same code path. Cloudflare, Hetzner, and Route 53
 // return real opaque zone IDs; for Porkbun/DO/GoDaddy/Namecheap the ID
 // and name are the same string (the bare domain).
 func (s *Server) apiDNSZones(w http.ResponseWriter, r *http.Request) {
@@ -13026,7 +13055,7 @@ func (s *Server) apiDNSCheckRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Zone name is optional on the wire — most providers use ID==Name so
-	// we can recover it. Cloudflare and Hetzner have opaque IDs, so when
+	// we can recover it. Cloudflare, Hetzner, and Route 53 have opaque IDs, so when
 	// the client omits zone_name we fall back to zoneID (which will fail
 	// SubdomainOf but still works for Cloudflare's server-side filter).
 	if zoneName == "" {
@@ -13739,7 +13768,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		for _, c := range d.Credentials {
 			v, _ := models.GetSetting(s.DB, c.Key)
 			set := v != ""
-			if !set {
+			if !set && !c.Optional {
 				allFilled = false
 			}
 			cv := credView{CredentialField: c, Configured: set}
@@ -14209,17 +14238,13 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// Walk every registered DNS provider and pick up credential fields
 	// from the form. Same keep-blank-to-preserve UX as SMTP password:
 	// leaving a field empty keeps the stored value, so users don't have
-	// to re-enter secrets just to toggle a checkbox. The one exception
-	// is the Namecheap client IP — it's not a secret and users will
-	// expect to edit it inline, so we always overwrite that field.
-	nonSecretKeys := map[string]bool{
-		settingNCAPIUser:  true,
-		settingNCClientIP: true,
-	}
+	// to re-enter secrets just to toggle a checkbox. Non-secret fields
+	// (for example Namecheap's API user/client IP and Route 53's region/
+	// access-key ID) are always overwritten so users can edit or clear them.
 	for _, d := range dns.Descriptors() {
 		for _, c := range d.Credentials {
 			v := strings.TrimSpace(r.FormValue(c.Key))
-			if v == "" && !nonSecretKeys[c.Key] {
+			if v == "" && c.Secret {
 				// Empty + secret field → preserve existing value.
 				continue
 			}

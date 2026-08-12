@@ -457,7 +457,7 @@ func migrate(db *sql.DB) error {
 	// state the row is in. Further DNS providers (Namecheap, GoDaddy,
 	// DigitalOcean, Hetzner) write only to the new columns.
 	for _, col := range []struct{ name, def string }{
-		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},  // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
+		{"dns_provider", "TEXT NOT NULL DEFAULT ''"},  // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner | route53
 		{"dns_zone_id", "TEXT NOT NULL DEFAULT ''"},   // provider-native zone ID (opaque or domain)
 		{"dns_zone_name", "TEXT NOT NULL DEFAULT ''"}, // base domain for display
 		{"dns_record_id", "TEXT NOT NULL DEFAULT ''"}, // record ID returned by the provider after create

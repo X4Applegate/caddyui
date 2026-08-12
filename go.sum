@@ -1,5 +1,17 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
+github.com/aws/aws-sdk-go-v2 v1.43.5 h1:yKT5GYnFWhuDo+DqKvE5ZPwVn3RjC4MAeBtZGlh6AVM=
+github.com/aws/aws-sdk-go-v2 v1.43.5/go.mod h1:wZjAJppCntyOGgVSmgVTfDyRJK5PHOasO6Wsy8U7Axk=
+github.com/aws/aws-sdk-go-v2/credentials v1.19.35 h1:Cxua2RVdRwL0sfjHM/SnQoOnQ7xKng9m5EQBO8BnZlg=
+github.com/aws/aws-sdk-go-v2/credentials v1.19.35/go.mod h1:9XQ+RSIGPkycr+oCJYnB1uTv5kMVVR+rd2vYK0Hxj2w=
+github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.36 h1:5CrzwxDqf4w3x1Vs3/NiZ0nsC34Hbm3pIDMWbsLebOE=
+github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.36/go.mod h1:A3gHdKZIvG/QXERzZwcxNS3RNDFcRCuhhTFBYp+V/nw=
+github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.36 h1:A4N2f4YPcST0v+dWtX+xrpPPCL9VTBhoIFFUWYqbacE=
+github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.36/go.mod h1:B/Qr859uxWUEfZeGotK5KAEoof4Q9YWgNtPSwV6jcyk=
+github.com/aws/aws-sdk-go-v2/service/route53 v1.65.7 h1:UOoL3uUHKk5LFMlaDN8SZa5IKMFPGrKI4ff5I77xLEw=
+github.com/aws/aws-sdk-go-v2/service/route53 v1.65.7/go.mod h1:Mr0ZxxRxQlWlr+iUu8ie9F4n6KUrwir5LdW9Txa88L8=
+github.com/aws/smithy-go v1.27.7 h1:Zgj5z4LfcDYoQIVk+n/yGdTkP/2y6ZT5vYxe0fp7bqE=
+github.com/aws/smithy-go v1.27.7/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
 github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc h1:biVzkmvwrH8WK8raXaxBx6fRVTlJILwEwQGL1I/ByEI=
 github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc/go.mod h1:paBWMcWSl3LHKBqUq+rly7CNSldXjb2rDl3JlRe0mD8=
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
