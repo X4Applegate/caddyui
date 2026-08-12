@@ -1,6 +1,6 @@
 // Package dns exposes a unified interface over the DNS providers CaddyUI
 // knows how to drive (currently Cloudflare, Porkbun, Namecheap, GoDaddy,
-// DigitalOcean, Hetzner).
+// DigitalOcean, Hetzner, Amazon Route 53).
 //
 // The goal is a single set of operations — list zones, create/delete a record
 // pointing at the proxy-host's server IP, test credentials — that server.go
@@ -11,7 +11,7 @@
 //
 // A proxy_hosts row carries three unified columns:
 //
-//	dns_provider    — one of Cloudflare/Porkbun/Namecheap/GoDaddy/DigitalOcean/Hetzner IDs, or empty
+//	dns_provider    — one of Cloudflare/Porkbun/Namecheap/GoDaddy/DigitalOcean/Hetzner/Route53 IDs, or empty
 //	dns_zone_id     — provider-native zone identifier (opaque for CF/Hetzner; bare domain for others)
 //	dns_zone_name   — base domain name for display ("example.com")
 //	dns_record_id   — provider-native record identifier, set after CreateRecord
@@ -36,6 +36,7 @@ const (
 	GoDaddy      = "godaddy"
 	DigitalOcean = "digitalocean"
 	Hetzner      = "hetzner"
+	Route53      = "route53"
 )
 
 // Zone is a provider-agnostic view of a DNS zone on the user's account.
@@ -43,7 +44,7 @@ const (
 // reads z.id / z.name — without tags Go would marshal "ID"/"Name" and
 // the dropdown would show "undefined".
 type Zone struct {
-	ID   string `json:"id"`   // provider-native identifier (CF: opaque ID; PB/DO/GD/NC: domain name; Hetzner: opaque ID)
+	ID   string `json:"id"`   // provider-native identifier (CF/Hetzner/Route53: opaque ID; PB/DO/GD/NC: domain name)
 	Name string `json:"name"` // base domain, e.g. "example.com"
 }
 
@@ -120,6 +121,7 @@ type CredentialField struct {
 	Help        string // inline help text shown under the field
 	Placeholder string // input placeholder
 	Secret      bool   // render as password-style (masked, with paste-to-reveal)
+	Optional    bool   // omit from the provider's configured/complete decision
 }
 
 // Descriptor is the registration record for a provider — metadata plus a
@@ -201,6 +203,9 @@ func CredsComplete(id string, creds map[string]string) bool {
 		return false
 	}
 	for _, f := range d.Credentials {
+		if f.Optional {
+			continue
+		}
 		if strings.TrimSpace(creds[f.Key]) == "" {
 			return false
 		}

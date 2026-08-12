@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.23.0] - 2026-08-12 - Amazon Route 53 managed DNS
+
+### Added
+
+- **Amazon Route 53 provider support** for public hosted-zone discovery and managed A-record creation, collision detection, retargeting, and cleanup across proxy hosts, redirections, and advanced routes. Existing records are never overwritten automatically. ([#24](https://github.com/X4Applegate/caddyui/issues/24))
+- Route 53 credentials in Settings support long-lived IAM access keys plus optional STS session tokens and partition-specific regions. The access-key pair is also emitted to Caddy for ordinary and wildcard DNS-01 certificate issuance.
+- The custom Caddy image now builds `github.com/caddy-dns/route53` v1.6.2, with regression tests covering provider configuration, pagination, aliases, and exact record-set deletion.
+- The in-app guide includes a scoped IAM policy template covering the CaddyUI record lifecycle and Caddy's DNS-01 challenge flow.
+
+### Security
+
+- Private Route 53 hosted zones are intentionally excluded from the managed-DNS picker because public ACME resolvers cannot query them and split-horizon duplicate names are easy to select accidentally.
+- Record cleanup preserves the complete Route 53 record-set shape for the exact-delete semantics required by AWS. CaddyUI refuses to delete Traffic Flow-managed records so it cannot leave a billable traffic-policy instance orphaned.
+
+### Changed
+
+- DNS credential descriptors can now mark region/session fields optional, and blank non-secret settings can be cleared without disturbing saved secret values.
+
+---
+
 ## [2.22.0] - 2026-08-12 - Idempotent fleet configuration sync
 
 ### Added

@@ -22,6 +22,7 @@
     <li><a href="#godaddy" class="text-brand-600 hover:text-brand-700 hover:underline">GoDaddy DNS</a></li>
     <li><a href="#digitalocean" class="text-brand-600 hover:text-brand-700 hover:underline">DigitalOcean DNS</a></li>
     <li><a href="#hetzner" class="text-brand-600 hover:text-brand-700 hover:underline">Hetzner DNS</a></li>
+    <li><a href="#route53" class="text-brand-600 hover:text-brand-700 hover:underline">Amazon Route 53 DNS</a></li>
     <li><a href="#import" class="text-brand-600 hover:text-brand-700 hover:underline">Import from Caddy</a></li>
     <li><a href="#snapshots" class="text-brand-600 hover:text-brand-700 hover:underline">Snapshots & Backup</a></li>
     <li><a href="#multiserver" class="text-brand-600 hover:text-brand-700 hover:underline">Multi-server</a></li>
@@ -360,7 +361,7 @@
     Namecheap DNS
   </h2>
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
-    <p>Namecheap's API is the most finicky of the six — worth reading this whole section before enabling it. The rough edges are all Namecheap's, not ours, but CaddyUI shields you from most of them.</p>
+    <p>Namecheap's API is the most finicky of the supported providers — worth reading this whole section before enabling it. The rough edges are all Namecheap's, not ours, but CaddyUI shields you from most of them.</p>
     <ol class="list-decimal ml-5 space-y-1.5">
       <li>Log in to Namecheap and go to <a href="https://ap.www.namecheap.com/settings/tools/apiaccess/" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">Profile → Tools → API Access</a>. Enable <em>API Access</em> and generate a key.</li>
       <li>On the same page, add your server's public IP to the <strong>Whitelisted IPs</strong> list. Every request carries the IP and Namecheap rejects mismatches.</li>
@@ -427,6 +428,56 @@
       <li>The zone (domain) must already be created in Hetzner DNS Console and the registrar's nameservers must point at <code class="font-mono">hydrogen.ns.hetzner.com</code> + <code class="font-mono">helium.ns.hetzner.de</code> + <code class="font-mono">oxygen.ns.hetzner.com</code>.</li>
     </ol>
     <p class="text-xs text-ink-500">Hetzner returns opaque zone IDs (not the domain name) — CaddyUI stores both so the proxy-host list and log lines can display the human-readable zone name.</p>
+  </div>
+</section>
+
+{{/* ── Amazon Route 53 DNS ── */}}
+<section id="route53" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M12 2l8 4.5v11L12 22l-8-4.5v-11L12 2z"/><path d="M4 6.5l8 4.5 8-4.5M12 11v11"/></svg>
+    </span>
+    Amazon Route 53 DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>CaddyUI can discover your public Route 53 hosted zones, create and clean up managed A records, and reuse the same credentials for Caddy DNS-01 certificate issuance.</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>Create a dedicated IAM user or role for CaddyUI. Do not use the AWS account root user's access keys.</li>
+      <li>Attach a least-privilege policy like the example below. Replace <code class="font-mono">Z0123456789EXAMPLE</code> with each public hosted-zone ID CaddyUI may manage.</li>
+      <li>Create an access key for that IAM principal, then paste the <em>Access Key ID</em> and <em>Secret Access Key</em> into <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Amazon Route 53</a>.</li>
+      <li>Leave <em>AWS Region</em> blank for the standard AWS partition (<code class="font-mono">us-east-1</code> is used). A session token is needed only when you supply temporary STS credentials.</li>
+    </ol>
+    <pre class="overflow-x-auto rounded-lg bg-ink-950 text-ink-100 p-4 text-xs leading-relaxed"><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListResourceRecordSets",
+        "route53:ChangeResourceRecordSets"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/Z0123456789EXAMPLE"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "route53:GetChange",
+      "Resource": "arn:aws:route53:::change/*"
+    }
+  ]
+}</code></pre>
+    <p>Add another hosted-zone ARN to the second statement when CaddyUI should manage more than one zone. AWS documents access-key creation in the <a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">IAM User Guide</a>.</p>
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <strong>Public zones only:</strong> private hosted zones are intentionally hidden. Public ACME DNS-01 validation cannot query them, and hiding them prevents choosing the wrong zone in split-horizon setups.
+    </div>
+    <p class="text-xs text-ink-500">Route 53 has no record-set ID, so CaddyUI stores the complete definition of every record it creates and uses that exact definition during cleanup. Existing records are reported as collisions and never overwritten automatically. Traffic Flow-managed records are also never deleted automatically; remove their traffic policy instance in AWS first.</p>
   </div>
 </section>
 

@@ -68,8 +68,8 @@ type ProxyHost struct {
 	// identifies which adapter in internal/dns handles lifecycle calls.
 	// Empty DNSProvider means "no managed DNS" — the host's A record is
 	// whatever the user set manually.
-	DNSProvider  string // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner
-	DNSZoneID    string // provider-native zone ID (opaque for CF/Hetzner; domain for others)
+	DNSProvider  string // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner | route53
+	DNSZoneID    string // provider-native zone ID (opaque for CF/Hetzner/Route53; domain for others)
 	DNSZoneName  string // base domain, e.g. "example.com", for display
 	DNSRecordID  string // record ID returned by the provider after create
 	DNSProfileID string // optional credential profile ID; empty uses legacy provider settings

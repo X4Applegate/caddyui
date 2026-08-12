@@ -239,7 +239,7 @@
     </div>
 
     {{if .Host.DNSRecordID}}
-    <p class="text-xs text-green-600 mt-3">✓ DNS record(s) active &mdash; record IDs: <span class="font-mono">{{.Host.DNSRecordID}}</span></p>
+    <p class="text-xs text-green-600 mt-3">✓ DNS record(s) active &mdash; record IDs: <span class="font-mono break-all">{{.Host.DNSRecordID}}</span></p>
     {{end}}
   </details>
 
@@ -253,6 +253,13 @@
     var zoneSel     = document.getElementById('dns-zone-select');
     var zoneWrap    = document.getElementById('dns-zone-wrap');
     var zoneNameIn  = document.getElementById('dns-zone-name');
+    var zoneHint    = document.getElementById('dns-zone-hint');
+    var hints = {
+      'porkbun':   'Domain must have API Access toggled ON in the Porkbun control panel.',
+      'namecheap': 'Namecheap must have your server IP whitelisted against this API key.',
+      'godaddy':   'GoDaddy API access requires 10+ domains on your account or a Discount Domain Club membership.',
+      'route53':   'Amazon Route 53 requires IAM permissions to list hosted zones and manage record sets in the selected public zone.'
+    };
     if (!providerSel || !zoneSel) return;
     function selectedProviderID() {
       if (!providerSel || providerSel.selectedIndex < 0) return '';
@@ -273,6 +280,11 @@
     }
 
     function loadZones(providerID) {
+      if (zoneHint) {
+        var hint = hints[providerID] || '';
+        zoneHint.textContent = hint;
+        zoneHint.classList.toggle('hidden', !hint);
+      }
       if (!providerID) {
         zoneSel.replaceChildren(new Option('Select a provider first', ''));
         if (zoneWrap) zoneWrap.classList.add('hidden');
