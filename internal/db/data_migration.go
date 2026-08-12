@@ -30,6 +30,7 @@ var migrationTableOrder = []string{
 	"proxy_hosts",
 	"redirection_hosts",
 	"raw_routes",
+	"fleet_deployments",
 	"user_groups",
 	"sessions",
 	"api_tokens",

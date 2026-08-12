@@ -147,7 +147,7 @@ func assertMariaDBSchemaMatchesSQLite(t *testing.T, maria *sql.DB) {
 	tables := []string{
 		"users", "sessions", "proxy_hosts", "redirection_hosts", "raw_routes",
 		"settings", "config_snapshots", "activity_log", "certificates",
-		"caddy_servers", "access_events", "access_daily", "groups",
+		"caddy_servers", "fleet_deployments", "access_events", "access_daily", "groups",
 		"user_groups", "api_tokens", "proxy_health",
 	}
 	for _, table := range tables {
@@ -270,7 +270,7 @@ func cleanMariaDBTestTables(t *testing.T, conn interface {
 	tables := []string{
 		"access_events", "proxy_health", "access_daily", "activity_log",
 		"config_snapshots", "api_tokens", "sessions", "user_groups",
-		"raw_routes", "redirection_hosts", "proxy_hosts", "certificates",
+		"fleet_deployments", "raw_routes", "redirection_hosts", "proxy_hosts", "certificates",
 		"settings", "caddy_servers", "groups", "users",
 	}
 	for _, table := range tables {

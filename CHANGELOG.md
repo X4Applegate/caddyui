@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.22.0] - 2026-08-12 - Idempotent fleet configuration sync
+
+### Added
+
+- **One-click full routing sync** on Administration → Caddy Fleet merges every proxy host, redirection, advanced route, and managed certificate definition from the environment selected in the application shell into another managed Caddy server. Target-only routes remain intact, while target-specific DNS records and custom certificate choices are preserved. ([#23](https://github.com/X4Applegate/caddyui/issues/23))
+- Fleet deployments now persist source-to-target resource mappings so later source edits—including hostname, label, and managed-certificate subject changes—update the same target rows.
+
+### Fixed
+
+- **“Also deploy to” is now idempotent.** Repeating a proxy, redirection, or managed-certificate deployment updates the existing target resource instead of inserting a duplicate.
+- Cross-deploy validates managed source/target environments and applies the same proxy/redirect domain-collision safeguards as ordinary resource creation.
+- Fleet copies no longer carry source DNS record IDs or custom certificate IDs into another server's configuration.
+
+### Changed
+
+- Added regression coverage for repeated deployment, tracked hostname changes, target-policy preservation, domain collisions, full routing sync, and SQLite/MariaDB schema parity.
+
+---
+
 ## [2.21.2] - 2026-08-10 - Resilient analytics log forwarding
 
 ### Added

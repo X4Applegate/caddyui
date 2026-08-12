@@ -143,6 +143,9 @@ func SetCaddyServerPublicIP(db *sql.DB, id int64, ip string) (old string, err er
 }
 
 func DeleteCaddyServer(db *sql.DB, id int64) error {
+	if err := DeleteFleetDeploymentsForServer(db, id); err != nil {
+		return err
+	}
 	_, err := db.Exec(`DELETE FROM caddy_servers WHERE id=?`, id)
 	return err
 }

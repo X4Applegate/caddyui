@@ -16,6 +16,13 @@
     </div>
   </header>
 
+  {{if .Flash}}
+  <div class="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-xl text-sm" role="status">{{.Flash}}</div>
+  {{end}}
+  {{if .Error}}
+  <div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl text-sm" role="alert">{{.Error}}</div>
+  {{end}}
+
   <section class="fleet-context ui-panel">
     <div class="fleet-context__metric">
       <span>Registered environments</span>
@@ -35,7 +42,7 @@
     <div class="ui-section-header">
       <div>
         <h2 class="ui-section-header__title" id="fleet-inventory-title">Environment inventory</h2>
-        <p class="ui-section-header__description">Health refreshes every 30 seconds. Green means reachable; red means the health threshold has failed.</p>
+        <p class="ui-section-header__description">Health refreshes every 30 seconds. Use <strong>Sync from current</strong> to merge all proxy hosts, redirects, advanced routes, and managed certificate definitions from the environment selected in the application shell. Matching routes are updated; target-only routes, DNS records, and custom certificate choices are preserved.</p>
       </div>
     </div>
 
@@ -81,6 +88,13 @@
               <div class="fleet-actions">
                 {{if not (and $.CurrentServer (eq $.CurrentServer.ID .ID))}}
                 <form method="post" action="/servers/{{.ID}}/select"><button class="ui-button ui-button--secondary">Select</button></form>
+                {{end}}
+                {{if and $.CurrentServer (eq .Type "managed") (eq $.CurrentServer.Type "managed")}}
+                {{if ne $.CurrentServer.ID .ID}}
+                <form method="post" action="/servers/{{.ID}}/sync-from-current" onsubmit="return confirm('Merge every managed route from the current environment into this target? Matching routes will be updated; target-only routes will remain.')">
+                  <button class="ui-button ui-button--secondary">Sync from current</button>
+                </form>
+                {{end}}
                 {{end}}
                 <a href="/servers/{{.ID}}/config" class="ui-button ui-button--quiet">Config</a>
                 <a href="/servers/{{.ID}}/edit" class="ui-button ui-button--quiet">Edit</a>
@@ -128,6 +142,13 @@
         <div class="fleet-actions">
           {{if not (and $.CurrentServer (eq $.CurrentServer.ID .ID))}}
           <form method="post" action="/servers/{{.ID}}/select"><button class="ui-button ui-button--secondary">Select</button></form>
+          {{end}}
+          {{if and $.CurrentServer (eq .Type "managed") (eq $.CurrentServer.Type "managed")}}
+          {{if ne $.CurrentServer.ID .ID}}
+          <form method="post" action="/servers/{{.ID}}/sync-from-current" onsubmit="return confirm('Merge every managed route from the current environment into this target? Matching routes will be updated; target-only routes will remain.')">
+            <button class="ui-button ui-button--secondary">Sync from current</button>
+          </form>
+          {{end}}
           {{end}}
           <a href="/servers/{{.ID}}/config" class="ui-button ui-button--quiet">Config</a>
           <a href="/servers/{{.ID}}/edit" class="ui-button ui-button--quiet">Edit</a>

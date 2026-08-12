@@ -80,6 +80,11 @@ type Server struct {
 	appHealthMu sync.RWMutex
 	appHealth   map[int64]appHealthEntry
 
+	// Serializes source-to-target fleet copies inside this process. The
+	// deployment mapping table supplies durable idempotency; this mutex closes
+	// the check-then-create race between concurrent UI submissions.
+	fleetDeployMu sync.Mutex
+
 	// v2.7.0: handle to the analytics ingest listener. Wired by main.go
 	// via SetAnalyticsIngest after Server construction (rather than as a
 	// New() arg) so the wiring order stays readable — the ingest owns a
@@ -775,6 +780,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/servers/{id}/edit", s.editServerPage)
 			r.Get("/servers/{id}/config", s.viewServerConfig)
 			r.Post("/servers/{id}", s.updateServer)
+			r.Post("/servers/{id}/sync-from-current", s.syncServerFromCurrent)
 			r.Post("/servers/{id}/delete", s.deleteServer)
 			r.Post("/dashboard/recommendations/unused-certificates/dismiss", s.dismissUnusedCertificateRecommendation)
 
@@ -3619,38 +3625,50 @@ func parseDeployTo(r *http.Request) []int64 {
 	return out
 }
 
-// crossDeployProxyHost creates a copy of the given proxy host on each target
-// server and triggers a Caddy sync on each. It always creates a new record
-// (ID=0) so the target server can manage it independently.
+// crossDeployProxyHost creates or updates the source host's paired row on each
+// target server and triggers one Caddy sync per target. The durable deployment
+// mapping keeps later edits attached even when the hostname changes. Target
+// DNS records and custom certificate selections remain server-specific.
 // Cross-deployed records are always global/admin-owned (ownerID=0).
 func (s *Server) crossDeployProxyHost(actor string, sourceServerID int64, p *models.ProxyHost, serverIDs []int64) {
+	s.fleetDeployMu.Lock()
+	defer s.fleetDeployMu.Unlock()
+
 	sourceCerts, _ := models.ListCertificates(s.DB, sourceServerID)
 	for _, sid := range serverIDs {
+		if _, _, err := s.validateFleetPair(sourceServerID, sid); err != nil {
+			log.Printf("cross-deploy proxy target %d: %v", sid, err)
+			_ = models.LogActivity(s.DB, sourceServerID, actor, "proxy_cross_deploy", fmt.Sprintf("server:%d", sid), err.Error(), false)
+			continue
+		}
 		// Managed wildcard certificates are not attached by certificate_id;
 		// Caddy selects them automatically by SNI. Copy every source-server
 		// managed certificate that covers this host so the target behaves the
 		// same instead of obtaining an unrelated per-host certificate.
 		for _, cert := range sourceCerts {
 			if cert.Source == models.CertSourceManaged && certificateCoversAnyDomain(cert, p.DomainList()) {
-				if _, err := s.ensureManagedCertificateOnServer(actor, sid, cert); err != nil {
+				if _, err := s.ensureManagedCertificateOnServer(actor, sourceServerID, sid, cert, 0); err != nil {
 					log.Printf("cross-deploy managed certificate to server %d: %v", sid, err)
 				}
 			}
 		}
-		cp := *p
-		cp.ID = 0
-		// Certificate IDs are per-server — don't carry them across
-		cp.CertificateID = 0
-		id, err := models.CreateProxyHost(s.DB, sid, 0, &cp)
+		result, err := s.upsertFleetProxyHost(sourceServerID, sid, *p, 0)
 		if err != nil {
 			log.Printf("cross-deploy proxy to server %d: %v", sid, err)
 			_ = models.LogActivity(s.DB, sid, actor, "proxy_cross_deploy", "proxy:new", p.Domains, false)
 			continue
 		}
-		_ = models.UpdateProxyHostDNSProfile(s.DB, id, cp.DNSProfileID)
-		_ = models.LogActivity(s.DB, sid, actor, "proxy_cross_deploy", fmt.Sprintf("proxy:%d", id), p.Domains, true)
-		if err := s.syncCaddy(sid, false); err != nil {
-			log.Printf("cross-deploy proxy sync server %d: %v", sid, err)
+		detail := "already current " + p.Domains
+		if result.Created {
+			detail = "created " + p.Domains
+		} else if result.Changed {
+			detail = "updated " + p.Domains
+		}
+		_ = models.LogActivity(s.DB, sid, actor, "proxy_cross_deploy", fmt.Sprintf("proxy:%d", result.ID), detail, true)
+		if result.Changed {
+			if err := s.syncCaddy(sid, false); err != nil {
+				log.Printf("cross-deploy proxy sync server %d: %v", sid, err)
+			}
 		}
 	}
 }
@@ -3729,65 +3747,75 @@ func managedWildcardForHost(certs []models.Certificate, host string) *models.Cer
 	return nil
 }
 
-// ensureManagedCertificateOnServer copies a managed certificate definition
-// only when the target does not already have an equivalent subject set. The
-// Caddy instances still manage their own keys and ACME orders independently;
-// only the declarative DNS-01 configuration is replicated.
-func (s *Server) ensureManagedCertificateOnServer(actor string, serverID int64, source models.Certificate) (bool, error) {
-	certs, err := models.ListCertificates(s.DB, serverID)
+// ensureManagedCertificateOnServer creates or updates the paired managed
+// certificate definition. The Caddy instances still manage their own keys and
+// ACME orders independently; only declarative DNS-01 configuration is copied.
+func (s *Server) ensureManagedCertificateOnServer(actor string, sourceServerID, targetServerID int64, source models.Certificate, ownerID int64) (bool, error) {
+	result, err := s.upsertFleetManagedCertificate(sourceServerID, targetServerID, source, ownerID)
 	if err != nil {
 		return false, err
 	}
-	for _, existing := range certs {
-		if existing.Source == models.CertSourceManaged && sameDomainSet(existing.DomainList(), source.DomainList()) {
-			return false, nil
-		}
+	detail := "already current " + source.Domains
+	if result.Created {
+		detail = "created " + source.Domains
+	} else if result.Changed {
+		detail = "updated " + source.Domains
 	}
-	copy := source
-	copy.ID = 0
-	copy.OwnerID = sql.NullInt64{}
-	copy.OwnerEmail = ""
-	copy.CreatedAt = time.Time{}
-	copy.UpdatedAt = time.Time{}
-	id, err := models.CreateCertificate(s.DB, serverID, 0, &copy)
-	if err != nil {
-		return false, err
-	}
-	_ = models.LogActivity(s.DB, serverID, actor, "cert_cross_deploy", fmt.Sprintf("cert:%d", id), copy.Domains, true)
-	return true, nil
+	_ = models.LogActivity(s.DB, targetServerID, actor, "cert_cross_deploy", fmt.Sprintf("cert:%d", result.ID), detail, true)
+	return result.Changed, nil
 }
 
-func (s *Server) crossDeployManagedCertificate(actor string, cert models.Certificate, serverIDs []int64) {
-	for _, serverID := range serverIDs {
-		created, err := s.ensureManagedCertificateOnServer(actor, serverID, cert)
-		if err != nil {
-			log.Printf("cross-deploy managed certificate to server %d: %v", serverID, err)
-			_ = models.LogActivity(s.DB, serverID, actor, "cert_cross_deploy", "cert:new", cert.Domains, false)
+func (s *Server) crossDeployManagedCertificate(actor string, sourceServerID int64, cert models.Certificate, serverIDs []int64) {
+	s.fleetDeployMu.Lock()
+	defer s.fleetDeployMu.Unlock()
+
+	for _, targetServerID := range serverIDs {
+		if _, _, err := s.validateFleetPair(sourceServerID, targetServerID); err != nil {
+			log.Printf("cross-deploy managed certificate target %d: %v", targetServerID, err)
 			continue
 		}
-		if created {
-			s.trySyncCaddy(serverID, true)
+		changed, err := s.ensureManagedCertificateOnServer(actor, sourceServerID, targetServerID, cert, 0)
+		if err != nil {
+			log.Printf("cross-deploy managed certificate to server %d: %v", targetServerID, err)
+			_ = models.LogActivity(s.DB, targetServerID, actor, "cert_cross_deploy", "cert:new", cert.Domains, false)
+			continue
+		}
+		if changed {
+			s.trySyncCaddy(targetServerID, true)
 		}
 	}
 }
 
-// crossDeployRedirectionHost creates a copy of the given redirect on each target
-// server and triggers a Caddy sync on each.
+// crossDeployRedirectionHost creates or updates the paired redirect on each
+// target server and triggers a Caddy sync on each.
 // Cross-deployed records are always global/admin-owned (ownerID=0).
-func (s *Server) crossDeployRedirectionHost(actor string, rh *models.RedirectionHost, serverIDs []int64) {
+func (s *Server) crossDeployRedirectionHost(actor string, sourceServerID int64, rh *models.RedirectionHost, serverIDs []int64) {
+	s.fleetDeployMu.Lock()
+	defer s.fleetDeployMu.Unlock()
+
 	for _, sid := range serverIDs {
-		cp := *rh
-		cp.ID = 0
-		cp.CertificateID = 0
-		id, err := models.CreateRedirectionHost(s.DB, sid, 0, &cp)
+		if _, _, err := s.validateFleetPair(sourceServerID, sid); err != nil {
+			log.Printf("cross-deploy redirect target %d: %v", sid, err)
+			_ = models.LogActivity(s.DB, sourceServerID, actor, "redirect_cross_deploy", fmt.Sprintf("server:%d", sid), err.Error(), false)
+			continue
+		}
+		result, err := s.upsertFleetRedirectionHost(sourceServerID, sid, *rh, 0)
 		if err != nil {
 			log.Printf("cross-deploy redirect to server %d: %v", sid, err)
 			_ = models.LogActivity(s.DB, sid, actor, "redirect_cross_deploy", "redirect:new", rh.Domains, false)
 			continue
 		}
-		_ = models.LogActivity(s.DB, sid, actor, "redirect_cross_deploy", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
-		if err := s.syncCaddy(sid, false); err != nil {
-			log.Printf("cross-deploy redirect sync server %d: %v", sid, err)
+		detail := "already current " + rh.Domains
+		if result.Created {
+			detail = "created " + rh.Domains
+		} else if result.Changed {
+			detail = "updated " + rh.Domains
+		}
+		_ = models.LogActivity(s.DB, sid, actor, "redirect_cross_deploy", fmt.Sprintf("redirect:%d", result.ID), detail, true)
+		if result.Changed {
+			if err := s.syncCaddy(sid, false); err != nil {
+				log.Printf("cross-deploy redirect sync server %d: %v", sid, err)
+			}
 		}
 	}
 }
@@ -4653,6 +4681,8 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	p.ID = id
+	p.ServerID = s.currentServerID(r)
 	if err := models.UpdateProxyHostDNSProfile(s.DB, id, p.DNSProfileID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -5128,6 +5158,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	rh.ID = id
 	// v2.12.2: auto-create A record(s) per hostname when Managed DNS is set.
 	if rh.DNSProvider != "" && rh.DNSZoneID != "" {
 		s.dnsCreateRecordForRedirection(s.currentServerID(r), id, rh)
@@ -5135,7 +5166,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_create", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
 	s.trySyncCaddy(s.currentServerID(r), rh.CertificateID != 0)
 	if len(deployTo) > 0 {
-		s.crossDeployRedirectionHost(s.currentUserEmail(r), rh, deployTo)
+		s.crossDeployRedirectionHost(s.currentUserEmail(r), s.currentServerID(r), rh, deployTo)
 	}
 	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
 }
@@ -5243,7 +5274,7 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	forceTLS := old != nil && old.CertificateID != rh.CertificateID
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	if len(deployTo) > 0 {
-		s.crossDeployRedirectionHost(s.currentUserEmail(r), rh, deployTo)
+		s.crossDeployRedirectionHost(s.currentUserEmail(r), s.currentServerID(r), rh, deployTo)
 	}
 	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
 }
@@ -7170,10 +7201,11 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	c.ID = id
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	if c.Source == models.CertSourceManaged {
-		s.crossDeployManagedCertificate(s.currentUserEmail(r), *c, parseDeployTo(r))
+		s.crossDeployManagedCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	}
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
@@ -7271,7 +7303,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	if c.Source == models.CertSourceManaged {
-		s.crossDeployManagedCertificate(s.currentUserEmail(r), *c, parseDeployTo(r))
+		s.crossDeployManagedCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	}
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
