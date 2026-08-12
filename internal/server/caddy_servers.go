@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +63,43 @@ func (s *Server) listServersPage(w http.ResponseWriter, r *http.Request) {
 		"User":    s.currentUser(r),
 		"Servers": servers,
 		"Section": "servers",
+		"Flash":   strings.TrimSpace(r.URL.Query().Get("flash")),
+		"Error":   strings.TrimSpace(r.URL.Query().Get("error")),
 	})
+}
+
+// syncServerFromCurrent performs a one-way merge of every CaddyUI-managed
+// route from the environment selected in the application shell into the target
+// fleet member. Target-only rows, target DNS records, and custom certificate
+// choices stay intact; repeated runs update the same paired rows.
+func (s *Server) syncServerFromCurrent(w http.ResponseWriter, r *http.Request) {
+	targetServerID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || targetServerID <= 0 {
+		http.Error(w, "invalid target environment", http.StatusBadRequest)
+		return
+	}
+	sourceServerID := s.currentServerID(r)
+	source, target, err := s.validateFleetPair(sourceServerID, targetServerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	summary, copyErr := s.syncFleetConfiguration(s.currentUserEmail(r), sourceServerID, targetServerID)
+	applyErr := s.syncCaddy(targetServerID, summary.CertificatesCreated+summary.CertificatesUpdated > 0)
+	if copyErr != nil || applyErr != nil {
+		parts := []string{fmt.Sprintf("Configuration sync from %s to %s was incomplete (%s).", source.Name, target.Name, summary.String())}
+		if copyErr != nil {
+			parts = append(parts, copyErr.Error())
+		}
+		if applyErr != nil {
+			parts = append(parts, "Caddy apply failed: "+applyErr.Error())
+		}
+		http.Redirect(w, r, "/servers?error="+url.QueryEscape(strings.Join(parts, " ")), http.StatusSeeOther)
+		return
+	}
+	message := fmt.Sprintf("Synced configuration from %s to %s — %s. Target-only routes, DNS records, and custom certificate choices were preserved.", source.Name, target.Name, summary.String())
+	http.Redirect(w, r, "/servers?flash="+url.QueryEscape(message), http.StatusSeeOther)
 }
 
 func (s *Server) newServerPage(w http.ResponseWriter, r *http.Request) {

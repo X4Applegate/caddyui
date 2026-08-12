@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS caddy_servers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS fleet_deployments (
+    source_server_id BIGINT NOT NULL,
+    resource_kind VARCHAR(32) NOT NULL,
+    source_resource_id BIGINT NOT NULL,
+    target_server_id BIGINT NOT NULL,
+    target_resource_id BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_server_id, resource_kind, source_resource_id, target_server_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS access_events (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     ts BIGINT NOT NULL,

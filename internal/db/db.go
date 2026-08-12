@@ -118,6 +118,20 @@ CREATE TABLE IF NOT EXISTS caddy_servers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tracks one-way Caddy Fleet deployments so repeating "Also deploy to" or a
+-- full configuration sync updates the same target row instead of inserting a
+-- duplicate. Resource rows remain independently editable on each server.
+CREATE TABLE IF NOT EXISTS fleet_deployments (
+    source_server_id INTEGER NOT NULL,
+    resource_kind VARCHAR(32) NOT NULL,
+    source_resource_id INTEGER NOT NULL,
+    target_server_id INTEGER NOT NULL,
+    target_resource_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_server_id, resource_kind, source_resource_id, target_server_id)
+);
+
 -- v2.7.0: raw visitor-analytics events. One row per request handled by any
 -- Caddy server shipping its JSON access log to the ingest TCP listener.
 -- Retention defaults to 30 days (pruned by a background goroutine); the

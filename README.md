@@ -494,6 +494,8 @@ Configure under **Administration → Settings → Email (SMTP)**:
 
 Add additional Caddy instances under **Administration → Caddy Fleet**. Switch the active environment with the selector in the application shell. All proxy hosts, redirections, routes, and certificates are scoped per server.
 
+To deploy the selected environment's complete managed routing configuration to another Caddy, choose **Sync from current** on the target fleet row. The sync is a non-destructive merge: it creates missing proxy hosts, redirects, advanced routes, and managed certificate definitions; updates resources paired by earlier deployments; and leaves target-only resources in place. Target DNS records, custom certificate selections, ACME private keys, and uploaded private keys remain server-specific. Repeating either a full sync or an individual form's **Also deploy to** action is idempotent and does not create duplicate routes.
+
 Edge / remote hosts do **not** need to run a CaddyUI container — just Caddy with its admin API reachable over a private network (WireGuard, Tailscale, VPC). See [Agent mode](#agent-mode-edge-only-caddy-no-caddyui) for the minimal compose file.
 
 ---

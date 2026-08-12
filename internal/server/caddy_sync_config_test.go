@@ -278,6 +278,12 @@ func TestEnsureManagedCertificateOnServerDeduplicatesEquivalentSubjects(t *testi
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	sourceServerID, err := models.CreateCaddyServer(conn, &models.CaddyServer{
+		Name: "source", AdminURL: "http://source:2019", Type: models.CaddyServerTypeManaged,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	targetID, err := models.CreateCaddyServer(conn, &models.CaddyServer{
 		Name: "target", AdminURL: "http://target:2019", Type: models.CaddyServerTypeManaged,
 	})
@@ -289,12 +295,16 @@ func TestEnsureManagedCertificateOnServerDeduplicatesEquivalentSubjects(t *testi
 		Name: "wildcard", Domains: "*.example.com, example.com", Source: models.CertSourceManaged,
 		DNSProvider: dns.Cloudflare,
 	}
-	created, err := s.ensureManagedCertificateOnServer("test", targetID, source)
+	source.ID, err = models.CreateCertificate(conn, sourceServerID, 0, &source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.ensureManagedCertificateOnServer("test", sourceServerID, targetID, source, 0)
 	if err != nil || !created {
 		t.Fatalf("first ensure = created %v, err %v; want created", created, err)
 	}
 	source.Domains = "example.com, *.example.com"
-	created, err = s.ensureManagedCertificateOnServer("test", targetID, source)
+	created, err = s.ensureManagedCertificateOnServer("test", sourceServerID, targetID, source, 0)
 	if err != nil || created {
 		t.Fatalf("second ensure = created %v, err %v; want existing equivalent", created, err)
 	}

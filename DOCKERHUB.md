@@ -179,7 +179,7 @@ Per-host export also available from the proxy-host edit page.
 - **Standalone managed wildcards** — create auto-renewed DNS-01 wildcard certificates without a proxy host or pasted private key
 - **Visible Auto TLS certificate selection** — the Caddy-managed table names the wildcard reused by each covered domain and labels per-host certificates clearly
 - **Managed DNS** for Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap — auto-creates A records on save and reuses the credentials for DNS-01
-- **Multi-server fleet management** — manage multiple Caddy instances from one UI; switch with a dropdown
+- **Multi-server fleet management** — manage multiple Caddy instances from one UI, switch with a dropdown, and idempotently sync the selected environment's complete managed routing configuration to another server
 - **Three-role RBAC** — admin / user / view, with per-user resource ownership and group-based shared visibility
 - **2FA / TOTP**, login CAPTCHA (Turnstile or reCAPTCHA), session management
 - **Snapshots** — one-click DB backup, auto-snapshot on sync
@@ -207,7 +207,7 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.21.2`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.22.0`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 

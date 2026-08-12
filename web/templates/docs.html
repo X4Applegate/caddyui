@@ -483,7 +483,8 @@
     <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900 my-3">
       <strong>🚨 Don't ever expose port 2019 directly on the internet.</strong> The Caddy admin API has no built-in authentication — whoever reaches it owns your server. Pick one of the options above instead.
     </div>
-    <p>The <em>Also deploy to</em> checkboxes on each form let you push the same rule to several servers at once. Certificates are <em>not</em> mirrored — each server provisions its own.</p>
+    <p>The <em>Also deploy to</em> checkboxes on each form create or update the same paired rule on several servers. Repeating a deployment is safe: CaddyUI tracks the source-to-target relationship and updates the existing target row instead of creating a duplicate.</p>
+    <p>To copy every managed route at once, select the source environment in the application shell, open <a href="/servers" class="text-brand-600 hover:text-brand-700">Caddy Fleet</a>, and choose <strong>Sync from current</strong> on the target. This non-destructive merge includes proxy hosts, redirects, advanced routes, and managed certificate definitions while retaining target-only routes. Target DNS records and custom certificate choices stay unchanged. ACME keys and uploaded private keys are never transferred; each Caddy server provisions and stores its own keys.</p>
   </div>
 </section>
 
