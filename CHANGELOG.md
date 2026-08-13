@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.23.2] - 2026-08-13 - Persistent guidance toast fix
+
+### Fixed
+
+- Permanent Settings guidance for Ollama model sizing, Porkbun API access, Route 53 IAM permissions, and CrowdSec modules now remains inline instead of being recreated as warning toasts on every page load.
+- Toast auto-conversion now uses explicit `data-toast` markers rather than inferring notification intent from presentation colors. Transient success, warning, and error feedback still appears as toasts without swallowing informational cards, status pills, or documentation callouts.
+
 ## [2.23.1] - 2026-08-12 - Route 53 DNS-01 reliability
 
 ### Fixed

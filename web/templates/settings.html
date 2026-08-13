@@ -29,13 +29,13 @@
 </nav>
 
 {{if .Success}}
-<div class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">Settings saved successfully.</div>
+<div data-toast="success" class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">Settings saved successfully.</div>
 {{end}}
 {{if .ClearedName}}
-<div class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.ClearedName}} credentials cleared. The provider is now disabled until you enter new credentials below.</div>
+<div data-toast="warning" class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.ClearedName}} credentials cleared. The provider is now disabled until you enter new credentials below.</div>
 {{end}}
 {{if .Error}}
-<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.Error}}</div>
+<div data-toast="error" class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.Error}}</div>
 {{end}}
 
 <form method="post" action="/settings" class="max-w-2xl space-y-8">

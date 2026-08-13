@@ -23,10 +23,10 @@
 </div>
 
 {{if .Invited}}
-<div class="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg mb-4 text-sm">Invite sent successfully.</div>
+<div data-toast="success" class="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg mb-4 text-sm">Invite sent successfully.</div>
 {{end}}
 {{if .Error}}
-<div class="bg-red-50 border border-red-200 text-red-800 px-3 py-2 rounded-lg mb-4 text-sm">{{.Error}}</div>
+<div data-toast="error" class="bg-red-50 border border-red-200 text-red-800 px-3 py-2 rounded-lg mb-4 text-sm">{{.Error}}</div>
 {{end}}
 
 <div id="invite-form-panel" class="hidden mb-6 bg-white border border-ink-200 rounded-xl shadow-card p-5">
