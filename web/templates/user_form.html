@@ -9,7 +9,7 @@
 </div>
 
 {{if .Error}}
-<div class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm max-w-2xl">{{.Error}}</div>
+<div data-toast="error" class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm max-w-2xl">{{.Error}}</div>
 {{end}}
 
 <form id="user-form" method="post" action="{{if .Target.ID}}/users/{{.Target.ID}}{{else}}/users{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-2xl">

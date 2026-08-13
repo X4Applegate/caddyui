@@ -61,7 +61,7 @@
     </form>
   </div>
   {{else}}
-  {{if .Error}}<div class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg mb-4">{{.Error}}</div>{{end}}
+  {{if .Error}}<div data-toast="error" class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg mb-4">{{.Error}}</div>{{end}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
     <h2 class="text-sm font-semibold text-ink-800 mb-3">Setup authenticator</h2>
     <ol class="text-sm text-ink-600 space-y-2 mb-4">

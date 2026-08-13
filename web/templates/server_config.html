@@ -15,7 +15,7 @@
 </div>
 
 {{if .Error}}
-<div class="p-4 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+<div data-toast="error" class="p-4 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
   <div class="font-medium mb-1">Couldn't reach this server</div>
   <div class="font-mono text-xs break-all">{{.Error}}</div>
 </div>

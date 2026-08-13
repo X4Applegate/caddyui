@@ -639,7 +639,7 @@ function caddyuiDelayFetch(ms, fn) {
 // window.caddyuiToast(msg, type, duration)
 //   type: 'success' | 'error' | 'info' | 'warning'
 //   duration: ms before auto-dismiss (default 4000)
-// Also auto-converts existing static banner divs on page load to toasts.
+// Also auto-converts banners explicitly marked with data-toast on page load.
 (function() {
   var container = document.getElementById('toast-container');
   if (!container) return;
@@ -696,33 +696,21 @@ function caddyuiDelayFetch(ms, fn) {
     return el;
   };
 
-  // Auto-convert existing static success/error banners to toasts on page load.
-  // Finds .bg-brand-50 (success) and .bg-red-50 (error) banner divs in <main>,
-  // reads their text, fires a toast, then hides the original so there's no duplicate.
+  // Auto-convert only explicit, transient banners to toasts on page load.
+  // Earlier versions inferred notification intent from Tailwind colour classes.
+  // That also matched permanent help callouts, status pills, and warning cards,
+  // causing them to pop up again on every navigation. data-toast is the semantic
+  // boundary: instructional content stays inline; post-action feedback becomes
+  // a toast.
   document.addEventListener('DOMContentLoaded', function() {
     var main = document.getElementById('main-content');
     if (!main) return;
-    // Success banners: bg-brand-50 border-brand-200
-    main.querySelectorAll('.bg-brand-50.border-brand-200').forEach(function(el) {
+    main.querySelectorAll('[data-toast]').forEach(function(el) {
       var text = el.innerText.trim();
       if (!text) return;
-      window.caddyuiToast(text, 'success', 5000);
-      el.style.display = 'none';
-    });
-    // Error banners: bg-red-50 border-red-200
-    main.querySelectorAll('.bg-red-50.border-red-200').forEach(function(el) {
-      var text = el.innerText.trim();
-      if (!text) return;
-      window.caddyuiToast(text, 'error', 0); // 0 = no auto-dismiss for errors
-      el.style.display = 'none';
-    });
-    // Warning banners: bg-amber-50 border-amber-200
-    main.querySelectorAll('.bg-amber-50.border-amber-200').forEach(function(el) {
-      // Maintenance banners are important — keep visible, don't toast
-      if (el.textContent.indexOf('maintenance') !== -1) return;
-      var text = el.innerText.trim();
-      if (!text) return;
-      window.caddyuiToast(text, 'warning', 6000);
+      var type = el.getAttribute('data-toast') || 'info';
+      var duration = type === 'error' ? 0 : (type === 'warning' ? 6000 : 5000);
+      window.caddyuiToast(text, type, duration);
       el.style.display = 'none';
     });
   });
