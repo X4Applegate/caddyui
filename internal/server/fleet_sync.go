@@ -105,6 +105,7 @@ func preserveProxyTargetPolicy(copy *models.ProxyHost, existing *models.ProxyHos
 		copy.DNSZoneID = ""
 		copy.DNSZoneName = ""
 		copy.DNSRecordID = ""
+		copy.DNSSkipRecord = false
 		copy.CFDNSRecordID = ""
 		copy.CFZoneID = ""
 		copy.PBDNSRecordID = ""
@@ -118,6 +119,7 @@ func preserveProxyTargetPolicy(copy *models.ProxyHost, existing *models.ProxyHos
 	copy.DNSZoneID = existing.DNSZoneID
 	copy.DNSZoneName = existing.DNSZoneName
 	copy.DNSRecordID = existing.DNSRecordID
+	copy.DNSSkipRecord = existing.DNSSkipRecord
 	copy.CFDNSRecordID = existing.CFDNSRecordID
 	copy.CFZoneID = existing.CFZoneID
 	copy.PBDNSRecordID = existing.PBDNSRecordID
@@ -195,6 +197,7 @@ func preserveRedirectTargetPolicy(copy *models.RedirectionHost, existing *models
 		copy.DNSZoneID = ""
 		copy.DNSZoneName = ""
 		copy.DNSRecordID = ""
+		copy.DNSSkipRecord = false
 		return
 	}
 	copy.ID = existing.ID
@@ -204,6 +207,7 @@ func preserveRedirectTargetPolicy(copy *models.RedirectionHost, existing *models
 	copy.DNSZoneID = existing.DNSZoneID
 	copy.DNSZoneName = existing.DNSZoneName
 	copy.DNSRecordID = existing.DNSRecordID
+	copy.DNSSkipRecord = existing.DNSSkipRecord
 }
 
 func (s *Server) upsertFleetRedirectionHost(sourceServerID, targetServerID int64, source models.RedirectionHost, ownerID int64) (fleetUpsertResult, error) {
@@ -285,6 +289,7 @@ func preserveRawRouteTargetPolicy(copy *models.RawRoute, existing *models.RawRou
 		copy.DNSZoneID = ""
 		copy.DNSZoneName = ""
 		copy.DNSRecordID = ""
+		copy.DNSSkipRecord = false
 		return
 	}
 	copy.ID = existing.ID
@@ -294,6 +299,7 @@ func preserveRawRouteTargetPolicy(copy *models.RawRoute, existing *models.RawRou
 	copy.DNSZoneID = existing.DNSZoneID
 	copy.DNSZoneName = existing.DNSZoneName
 	copy.DNSRecordID = existing.DNSRecordID
+	copy.DNSSkipRecord = existing.DNSSkipRecord
 }
 
 func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, source models.RawRoute, ownerID int64) (fleetUpsertResult, error) {

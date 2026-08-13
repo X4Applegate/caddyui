@@ -1591,6 +1591,7 @@ func (s *Server) applyDNSFormSelection(p *models.ProxyHost) {
 	p.DNSProvider, p.DNSProfileID = provider, profileID
 	if provider == "" {
 		p.DNSZoneID, p.DNSZoneName, p.DNSRecordID = "", "", ""
+		p.DNSSkipRecord = false
 	}
 }
 
@@ -1599,6 +1600,7 @@ func (s *Server) applyRedirectionDNSFormSelection(rh *models.RedirectionHost) {
 	rh.DNSProvider, rh.DNSProfileID = provider, profileID
 	if provider == "" {
 		rh.DNSZoneID, rh.DNSZoneName, rh.DNSRecordID = "", "", ""
+		rh.DNSSkipRecord = false
 	}
 }
 
@@ -1607,7 +1609,15 @@ func (s *Server) applyRawDNSFormSelection(rr *models.RawRoute) {
 	rr.DNSProvider, rr.DNSProfileID = provider, profileID
 	if provider == "" {
 		rr.DNSZoneID, rr.DNSZoneName, rr.DNSRecordID = "", "", ""
+		rr.DNSSkipRecord = false
 	}
+}
+
+func (s *Server) validateManagedDNSRecordTarget(serverID int64, providerID, zoneID string, skipRecord bool) string {
+	if providerID == "" || zoneID == "" || skipRecord || strings.TrimSpace(s.serverIPFor(serverID)) != "" {
+		return ""
+	}
+	return "Managed DNS cannot create a public A record because this Caddy server has no public IP configured. Set its public IP under Settings → DNS, or turn off “Create public A records” to use DNS-01 only."
 }
 
 func (s *Server) dnsProfileViews() []dnsProfileView {
@@ -4115,6 +4125,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		DNSZoneID:              zoneID,
 		DNSZoneName:            zoneName,
 		DNSProfileID:           profileID,
+		DNSSkipRecord:          provider != "" && r.FormValue("dns_create_record") != "on",
 		CompressionEnabled:     r.FormValue("compression_enabled") == "on",
 		SecurityHeadersEnabled: r.FormValue("security_headers_enabled") == "on",
 		MaintenanceMode:        r.FormValue("maintenance_mode") == "on",
@@ -4653,6 +4664,10 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
+	if errMsg := s.validateManagedDNSRecordTarget(s.currentServerID(r), p.DNSProvider, p.DNSZoneID, p.DNSSkipRecord); errMsg != "" {
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	// Parse and hash basic auth users.
 	if r.FormValue("basicauth_enabled") == "on" {
 		p.BasicAuthEnabled = true
@@ -4705,10 +4720,9 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	// to clear it by hand in the provider console — CaddyUI never
 	// deletes records it doesn't own. Safer on shared zones, and avoids
 	// any chance of wiping an unrelated service's A record here.
-	dnsCreated := false
-	if p.DNSProvider != "" && p.DNSZoneID != "" {
+	dnsWorkflow := p.DNSProvider != "" && p.DNSZoneID != ""
+	if dnsWorkflow && !p.DNSSkipRecord {
 		s.dnsCreateRecord(s.currentServerID(r), id, p)
-		dnsCreated = true
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	s.trySyncCaddy(s.currentServerID(r), p.CertificateID != 0)
@@ -4730,7 +4744,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	// v2.5.2: when a managed DNS record was created, park the user on the
 	// deploying page so they can watch DNS propagate + cert issue instead
 	// of landing on an "active" row that can't actually be opened yet.
-	if dnsCreated {
+	if dnsWorkflow {
 		http.Redirect(w, r, fmt.Sprintf("/proxy-hosts/%d/deploying", id), http.StatusSeeOther)
 		return
 	}
@@ -4808,6 +4822,10 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
+	if errMsg := s.validateManagedDNSRecordTarget(s.currentServerID(r), p.DNSProvider, p.DNSZoneID, p.DNSSkipRecord); errMsg != "" {
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	// Parse and hash basic auth users; preserve existing hashes if password left blank.
 	if r.FormValue("basicauth_enabled") == "on" {
 		p.BasicAuthEnabled = true
@@ -4848,8 +4866,9 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	providerChanged := old != nil && old.DNSProvider != p.DNSProvider
 	profileChanged := old != nil && old.DNSProfileID != p.DNSProfileID
 	zoneChanged := old != nil && old.DNSZoneID != p.DNSZoneID
+	recordModeChanged := old != nil && old.DNSSkipRecord != p.DNSSkipRecord
 	needDelete := old != nil && old.DNSRecordID != "" &&
-		(p.DNSProvider == "" || providerChanged || profileChanged || zoneChanged || domainChanged)
+		(p.DNSProvider == "" || p.DNSSkipRecord || providerChanged || profileChanged || zoneChanged || domainChanged || recordModeChanged)
 	if needDelete {
 		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 		p.DNSRecordID = ""
@@ -4859,8 +4878,8 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		// without this the DB save would clear it.
 		p.DNSRecordID = old.DNSRecordID
 	}
-	needCreate := p.DNSProvider != "" && p.DNSZoneID != "" &&
-		(p.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || domainChanged)
+	needCreate := p.DNSProvider != "" && p.DNSZoneID != "" && !p.DNSSkipRecord &&
+		(p.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || domainChanged || recordModeChanged)
 
 	if err := models.UpdateProxyHost(s.DB, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -5118,10 +5137,11 @@ func parseRedirectionHostForm(r *http.Request) (*models.RedirectionHost, error) 
 		// v2.9.232: sunset_at — accept ISO date YYYY-MM-DD; empty disables.
 		SunsetAt: strings.TrimSpace(r.FormValue("sunset_at")),
 		// v2.12.2: Managed DNS — wired to the same picker as proxy hosts.
-		DNSProvider:  provider,
-		DNSZoneID:    zoneID,
-		DNSZoneName:  zoneName,
-		DNSProfileID: profileID,
+		DNSProvider:   provider,
+		DNSZoneID:     zoneID,
+		DNSZoneName:   zoneName,
+		DNSProfileID:  profileID,
+		DNSSkipRecord: provider != "" && r.FormValue("dns_create_record") != "on",
 	}, nil
 }
 
@@ -5147,6 +5167,14 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once — edit the existing entry or remove it before reusing the name.", conflict))
 		return
 	}
+	if errMsg := validateZoneMatchesHostname(rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, rh.DomainList()); errMsg != "" {
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
+	}
+	if errMsg := s.validateManagedDNSRecordTarget(s.currentServerID(r), rh.DNSProvider, rh.DNSZoneID, rh.DNSSkipRecord); errMsg != "" {
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
+	}
 	deployTo := parseDeployTo(r)
 	cu := s.currentUser(r)
 	var rhOwnerID int64
@@ -5169,7 +5197,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	rh.ID = id
 	// v2.12.2: auto-create A record(s) per hostname when Managed DNS is set.
-	if rh.DNSProvider != "" && rh.DNSZoneID != "" {
+	if rh.DNSProvider != "" && rh.DNSZoneID != "" && !rh.DNSSkipRecord {
 		s.dnsCreateRecordForRedirection(s.currentServerID(r), id, rh)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_create", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
@@ -5238,6 +5266,14 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once.", conflict))
 		return
 	}
+	if errMsg := validateZoneMatchesHostname(rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, rh.DomainList()); errMsg != "" {
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
+	}
+	if errMsg := s.validateManagedDNSRecordTarget(s.currentServerID(r), rh.DNSProvider, rh.DNSZoneID, rh.DNSSkipRecord); errMsg != "" {
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
+	}
 	deployTo := parseDeployTo(r)
 	old, _ := models.GetRedirectionHost(s.DB, id)
 	// v2.12.2: preserve existing record IDs across UPDATE so delete-on-change
@@ -5256,16 +5292,18 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		oldKey := old.DNSProvider + "|" + old.DNSZoneID
 		newKey := rh.DNSProvider + "|" + rh.DNSProfileID + "|" + rh.DNSZoneID
 		oldKey = old.DNSProvider + "|" + old.DNSProfileID + "|" + old.DNSZoneID
-		if oldKey != newKey {
+		domainChanged := !slices.Equal(old.DomainList(), rh.DomainList())
+		recordModeChanged := old.DNSSkipRecord != rh.DNSSkipRecord
+		if oldKey != newKey || domainChanged || recordModeChanged {
 			if old.DNSRecordID != "" {
 				s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 				_ = models.UpdateRedirectionHostDNSRecord(s.DB, rh.ID, rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, "")
 				rh.DNSRecordID = ""
 			}
-			if rh.DNSProvider != "" && rh.DNSZoneID != "" {
+			if rh.DNSProvider != "" && rh.DNSZoneID != "" && !rh.DNSSkipRecord {
 				s.dnsCreateRecordForRedirection(s.currentServerID(r), rh.ID, rh)
 			}
-		} else if rh.DNSProvider != "" && rh.DNSZoneID != "" && rh.DNSRecordID == "" {
+		} else if rh.DNSProvider != "" && rh.DNSZoneID != "" && !rh.DNSSkipRecord && rh.DNSRecordID == "" {
 			// Same provider, but no record yet (first save with DNS chosen on edit).
 			s.dnsCreateRecordForRedirection(s.currentServerID(r), rh.ID, rh)
 		}
@@ -5900,28 +5938,12 @@ func extractAdaptedAutomationPolicies(cfg map[string]any) []map[string]any {
 	return out
 }
 
-// mergeAutomationPolicies combines adapter-emitted policies into the live
-// apps.tls.automation.policies[] array without clobbering hosts that already
-// have a policy. Subjects already covered by an existing per-subject policy
-// are stripped from the incoming policy; a new policy whose subjects are all
-// already covered is dropped entirely. Remaining new policies are prepended
-// so more-specific (with-subject) policies are evaluated before any catch-all
-// policy Caddy has in place. Caddy scans policies in order and uses the first
-// match, so prepend order matters.
+// mergeAutomationPolicies makes incoming subject-scoped policies authoritative
+// for those subjects while preserving unrelated and catch-all live policies.
+// This is reconciliation rather than append-only merging: changing a Managed
+// DNS provider/zone must replace the stale policy that previously owned a name.
 func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
-	existingSubjects := map[string]bool{}
-	for _, p := range existing {
-		m, ok := p.(map[string]any)
-		if !ok {
-			continue
-		}
-		subs, _ := m["subjects"].([]any)
-		for _, s := range subs {
-			if str, ok := s.(string); ok {
-				existingSubjects[str] = true
-			}
-		}
-	}
+	claimed := map[string]bool{}
 	var prepend []any
 	for _, p := range incoming {
 		subs, _ := p["subjects"].([]any)
@@ -5931,9 +5953,9 @@ func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
 			if !ok {
 				continue
 			}
-			if !existingSubjects[str] {
+			if !claimed[str] {
 				keptSubs = append(keptSubs, str)
-				existingSubjects[str] = true
+				claimed[str] = true
 			}
 		}
 		if len(keptSubs) == 0 {
@@ -5946,7 +5968,36 @@ func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
 		cp["subjects"] = keptSubs
 		prepend = append(prepend, cp)
 	}
-	return append(prepend, existing...)
+	var preserved []any
+	for _, policy := range existing {
+		m, ok := policy.(map[string]any)
+		if !ok {
+			preserved = append(preserved, policy)
+			continue
+		}
+		subs, hasSubjects := m["subjects"].([]any)
+		if !hasSubjects {
+			preserved = append(preserved, policy) // catch-all policy
+			continue
+		}
+		kept := make([]any, 0, len(subs))
+		for _, subject := range subs {
+			name, ok := subject.(string)
+			if !ok || !claimed[name] {
+				kept = append(kept, subject)
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		cp := map[string]any{}
+		for k, v := range m {
+			cp[k] = v
+		}
+		cp["subjects"] = kept
+		preserved = append(preserved, cp)
+	}
+	return append(prepend, preserved...)
 }
 
 // buildDNSAutomationPolicies scans SSL-enabled hosts that have Managed DNS
@@ -5960,13 +6011,14 @@ func mergeAutomationPolicies(existing []any, incoming []map[string]any) []any {
 func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) []map[string]any {
 	type bucket struct {
 		providerID string
+		zoneID     string
 		subjects   []string
 		seen       map[string]bool
 		creds      map[string]string
 	}
 	byProvider := map[string]*bucket{}
 
-	add := func(domains []string, providerID, profileID string, sslOn, enabled bool, certificateID int64) {
+	add := func(domains []string, providerID, profileID, zoneID string, sslOn, enabled bool, certificateID int64) {
 		if !enabled || !sslOn || certificateID != 0 || providerID == "" {
 			return
 		}
@@ -5976,6 +6028,9 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 				continue
 			}
 			key := providerID + "|" + profileID
+			if providerID == dns.Route53 {
+				key += "|" + strings.TrimSpace(zoneID)
+			}
 			b, ok := byProvider[key]
 			if !ok {
 				if _, found := dns.Lookup(providerID); !found {
@@ -5983,6 +6038,7 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 				}
 				b = &bucket{
 					providerID: providerID,
+					zoneID:     strings.TrimSpace(zoneID),
 					creds:      s.dnsCredsFor(providerID, profileID),
 					seen:       map[string]bool{},
 				}
@@ -5996,17 +6052,17 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 		}
 	}
 	for _, p := range proxies {
-		add(p.DomainList(), p.DNSProvider, p.DNSProfileID, p.SSLEnabled, p.Enabled, p.CertificateID)
+		add(p.DomainList(), p.DNSProvider, p.DNSProfileID, p.DNSZoneID, p.SSLEnabled, p.Enabled, p.CertificateID)
 	}
 	for _, rd := range redirs {
-		add(rd.DomainList(), rd.DNSProvider, rd.DNSProfileID, rd.SSLEnabled, rd.Enabled, rd.CertificateID)
+		add(rd.DomainList(), rd.DNSProvider, rd.DNSProfileID, rd.DNSZoneID, rd.SSLEnabled, rd.Enabled, rd.CertificateID)
 	}
 	for _, rr := range raws {
-		add(rawRouteHosts(rr), rr.DNSProvider, rr.DNSProfileID, true, rr.Enabled, rr.CertificateID)
+		add(rawRouteHosts(rr), rr.DNSProvider, rr.DNSProfileID, rr.DNSZoneID, true, rr.Enabled, rr.CertificateID)
 	}
 	for _, cert := range certs {
 		if cert.Source == models.CertSourceManaged {
-			add(cert.DomainList(), cert.DNSProvider, cert.DNSProfileID, true, true, 0)
+			add(cert.DomainList(), cert.DNSProvider, cert.DNSProfileID, "", true, true, 0)
 		}
 	}
 
@@ -6015,7 +6071,7 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 		if len(b.subjects) == 0 {
 			continue
 		}
-		cfg := caddyDNSProviderConfig(b.providerID, b.creds)
+		cfg := caddyDNSProviderConfig(b.providerID, b.creds, b.zoneID)
 		if cfg == nil {
 			log.Printf("automation: skipping provider %q — DNS-01 mapping not implemented or credentials missing", b.providerID)
 			continue
@@ -6086,7 +6142,7 @@ func buildManagedCertificateRoutes(certs []models.Certificate) []any {
 // (xcaddy or a custom Dockerfile). The default `caddy:2-alpine` image
 // has no DNS plugins — Caddy will reject the config with "unknown module"
 // at apply time, surfacing as a sync_apply_tls_failed activity log.
-func caddyDNSProviderConfig(providerID string, creds map[string]string) map[string]any {
+func caddyDNSProviderConfig(providerID string, creds map[string]string, zoneID string) map[string]any {
 	switch providerID {
 	case dns.Cloudflare:
 		token := creds["cf_api_token"]
@@ -6143,6 +6199,9 @@ func caddyDNSProviderConfig(providerID string, creds map[string]string) map[stri
 		if token := strings.TrimSpace(creds[settingRoute53SessionToken]); token != "" {
 			cfg["session_token"] = token
 		}
+		if zoneID = strings.TrimSpace(zoneID); zoneID != "" {
+			cfg["hosted_zone_id"] = zoneID
+		}
 		return cfg
 	}
 	return nil
@@ -6157,6 +6216,17 @@ func (s *Server) pushAutomationPolicies(r *http.Request, incoming []map[string]a
 		return nil
 	}
 	return pushAutomationPoliciesVia(s.caddyForRequest(r), incoming)
+}
+
+func applyAutomationPolicies(cfg map[string]any, incoming []map[string]any) {
+	if len(incoming) == 0 {
+		return
+	}
+	apps := ensureMap(cfg, "apps")
+	tlsApp := ensureMap(apps, "tls")
+	automation := ensureMap(tlsApp, "automation")
+	existing, _ := automation["policies"].([]any)
+	automation["policies"] = mergeAutomationPolicies(existing, incoming)
 }
 
 // pushAutomationPoliciesVia — v2.12.0: client-explicit variant of
@@ -7175,7 +7245,7 @@ func (s *Server) parseCertificateForm(r *http.Request) (*models.Certificate, str
 		if c.DNSProvider == "" {
 			return nil, "Choose DNS credentials for a managed ACME certificate"
 		}
-		if caddyDNSProviderConfig(c.DNSProvider, s.dnsCredsFor(c.DNSProvider, c.DNSProfileID)) == nil {
+		if caddyDNSProviderConfig(c.DNSProvider, s.dnsCredsFor(c.DNSProvider, c.DNSProfileID), "") == nil {
 			return nil, "The selected DNS credential profile is missing required credentials"
 		}
 	}
@@ -7487,6 +7557,7 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 		DNSZoneID:           zoneID,
 		DNSZoneName:         zoneName,
 		DNSProfileID:        profileID,
+		DNSSkipRecord:       provider != "" && r.FormValue("dns_create_record") != "on",
 	}, ""
 }
 
@@ -7587,6 +7658,7 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 	removeUnsupportedSkipRedirects(proposed)
 	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, buildSkipAccessLogs(proxies))
+	applyAutomationPolicies(proposed, s.buildDNSAutomationPolicies(proxies, redirs, raws, certs))
 	// Mirror syncCaddy: preview-validation must match the config we'd push
 	// for real, otherwise a raw_route edit could validate clean here but
 	// fail with errors.routes rejection at sync time.
@@ -7617,6 +7689,10 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
+	if errMsg := s.validateManagedDNSRecordTarget(s.currentServerID(r), rr.DNSProvider, rr.DNSZoneID, rr.DNSSkipRecord); errMsg != "" && len(rawRouteHosts(*rr)) > 0 {
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
 	cu := s.currentUser(r)
 	var rrOwnerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
@@ -7638,7 +7714,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 	// v2.5.6: Managed DNS parity with proxy hosts — auto-create the A
 	// record when the user picked a provider + zone. No-op otherwise.
 	// Skipped for routes without a host matcher (no FQDN to target).
-	if rr.DNSProvider != "" && rr.DNSZoneID != "" && firstRawRouteHost(rr.JSONData) != "" {
+	if rr.DNSProvider != "" && rr.DNSZoneID != "" && !rr.DNSSkipRecord && firstRawRouteHost(rr.JSONData) != "" {
 		s.dnsCreateRecordForRaw(s.currentServerID(r), id, rr)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_create", fmt.Sprintf("raw:%d", id), rr.Label, true)
@@ -7681,6 +7757,7 @@ func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request,
 			DNSZoneID:           zoneID,
 			DNSZoneName:         zoneName,
 			DNSProfileID:        strings.TrimSpace(r.FormValue("dns_profile_id")),
+			DNSSkipRecord:       provider != "" && r.FormValue("dns_create_record") != "on",
 		}
 		s.applyRawDNSFormSelection(rr)
 	}
@@ -7748,6 +7825,10 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
+	if errMsg := s.validateManagedDNSRecordTarget(s.currentServerID(r), rr.DNSProvider, rr.DNSZoneID, rr.DNSSkipRecord); errMsg != "" && len(rawRouteHosts(*rr)) > 0 {
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
 	// Preserve the Caddyfile source on JSON-only edits: when the form didn't
 	// submit caddyfile_src (textarea was hidden because the row had none, or
 	// user cleared it), keep the existing snippet as long as the JSON matches
@@ -7781,8 +7862,9 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	providerChanged := old != nil && old.DNSProvider != rr.DNSProvider
 	profileChanged := old != nil && old.DNSProfileID != rr.DNSProfileID
 	zoneChanged := old != nil && old.DNSZoneID != rr.DNSZoneID
+	recordModeChanged := old != nil && old.DNSSkipRecord != rr.DNSSkipRecord
 	needDelete := old != nil && old.DNSRecordID != "" &&
-		(rr.DNSProvider == "" || providerChanged || profileChanged || zoneChanged || fqdnChanged)
+		(rr.DNSProvider == "" || rr.DNSSkipRecord || providerChanged || profileChanged || zoneChanged || fqdnChanged || recordModeChanged)
 	if needDelete {
 		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 		rr.DNSRecordID = ""
@@ -7792,8 +7874,8 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		// the DB save would clear it.
 		rr.DNSRecordID = old.DNSRecordID
 	}
-	needCreate := rr.DNSProvider != "" && rr.DNSZoneID != "" && len(newHosts) > 0 &&
-		(rr.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || fqdnChanged)
+	needCreate := rr.DNSProvider != "" && rr.DNSZoneID != "" && !rr.DNSSkipRecord && len(newHosts) > 0 &&
+		(rr.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || fqdnChanged || recordModeChanged)
 
 	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
@@ -8201,6 +8283,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	// host has a min version configured — writeTLSConnectionPoliciesSubtree
 	// handles the nil case by clearing stale policies that may exist.
 	tlsConnPolicies := caddy.BuildTLSConnectionPolicies(proxies)
+	dnsPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
 
 	current, currentJSON, err := s.Caddy.FetchConfig()
 	if err != nil {
@@ -8222,6 +8305,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, skipAccessLogs)
 	applyTLSConnectionPolicies(proposed, tlsConnPolicies)
+	applyAutomationPolicies(proposed, dnsPolicies)
 	applyClientIPSettings(proposed, s.DB)
 	applyFleetAccessLog(proposed, accessLogCfg, loadAnalyticsConfig(s.DB).Enabled, serverID)
 	applyCrowdSecApp(proposed, crowdSecCfg, serverID)
@@ -8323,16 +8407,15 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		}
 	}
 
-	// Hosts with Managed DNS selected use that provider for ACME DNS-01.
-	// Non-fatal: a remote Caddy without the matching caddy-dns module still
-	// keeps the successfully-applied routes, and the module error is logged.
-	if dnsPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs); len(dnsPolicies) > 0 {
+	// Hosts with Managed DNS selected use that provider for ACME DNS-01. The
+	// same policies were included in validation above, so a missing Caddy DNS
+	// module is reported before any subtrees are modified.
+	if len(dnsPolicies) > 0 {
 		if err := pushAutomationPoliciesVia(s.Caddy, dnsPolicies); err != nil {
-			log.Printf("caddy sync: DNS-01 automation-policy push failed (non-fatal): %v", err)
 			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_automation_failed", "", err.Error(), false)
-		} else {
-			log.Printf("caddy sync: pushed %d DNS-01 automation polic(ies)", len(dnsPolicies))
+			return fmt.Errorf("apply DNS-01 automation policies: %w", err)
 		}
+		log.Printf("caddy sync: pushed %d DNS-01 automation polic(ies)", len(dnsPolicies))
 	}
 
 	detail := fmt.Sprintf("proxies=%d redirects=%d passthrough=%d certs=%d",
@@ -13160,6 +13243,10 @@ func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request
 		"dns_ready":    false,
 		"cert_ready":   false,
 		"resolved_ips": []string{},
+		"dns_skipped":  host.DNSProvider != "" && host.DNSSkipRecord,
+	}
+	if host.DNSProvider != "" && host.DNSSkipRecord {
+		resp["dns_ready"] = true
 	}
 	if fqdn == "" {
 		resp["error"] = "host has no domain"
@@ -13176,21 +13263,23 @@ func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request
 	// DNS check via Cloudflare DNS-over-HTTPS. Silent on error — the
 	// client keeps polling, and a transient DoH failure should just
 	// look like "not ready yet".
-	if ips, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
-		resp["resolved_ips"] = ips
-		if resp["proxied"] == true {
-			resp["dns_ready"] = len(ips) > 0
-		} else if expectedIP != "" {
-			for _, ip := range ips {
-				if ip == expectedIP {
-					resp["dns_ready"] = true
-					break
+	if !host.DNSSkipRecord {
+		if ips, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
+			resp["resolved_ips"] = ips
+			if resp["proxied"] == true {
+				resp["dns_ready"] = len(ips) > 0
+			} else if expectedIP != "" {
+				for _, ip := range ips {
+					if ip == expectedIP {
+						resp["dns_ready"] = true
+						break
+					}
 				}
+			} else {
+				// No expected IP configured — fall back to "any A record".
+				// Otherwise we'd always report not-ready.
+				resp["dns_ready"] = len(ips) > 0
 			}
-		} else {
-			// No expected IP configured — fall back to "any A record".
-			// Otherwise we'd always report not-ready.
-			resp["dns_ready"] = len(ips) > 0
 		}
 	}
 	// Cert check: skipped when SSL is off on the host, and deferred
@@ -13430,6 +13519,10 @@ func (s *Server) apiRawRouteDeployStatus(w http.ResponseWriter, r *http.Request)
 		"dns_ready":    false,
 		"cert_ready":   false,
 		"resolved_ips": []string{},
+		"dns_skipped":  rr.DNSProvider != "" && rr.DNSSkipRecord,
+	}
+	if rr.DNSProvider != "" && rr.DNSSkipRecord {
+		resp["dns_ready"] = true
 	}
 	if fqdn == "" {
 		resp["error"] = "route has no host matcher"
@@ -13443,21 +13536,23 @@ func (s *Server) apiRawRouteDeployStatus(w http.ResponseWriter, r *http.Request)
 	// the resolved IP shape rather than the setting: if DoH returns a CF
 	// edge IP (known-proxied ranges), treat it as proxied.
 	var ips []string
-	if got, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
-		ips = got
-		resp["resolved_ips"] = got
-		if looksLikeCloudflareEdge(got) {
-			resp["proxied"] = true
-			resp["dns_ready"] = len(got) > 0
-		} else if expectedIP != "" {
-			for _, ip := range got {
-				if ip == expectedIP {
-					resp["dns_ready"] = true
-					break
+	if !rr.DNSSkipRecord {
+		if got, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
+			ips = got
+			resp["resolved_ips"] = got
+			if looksLikeCloudflareEdge(got) {
+				resp["proxied"] = true
+				resp["dns_ready"] = len(got) > 0
+			} else if expectedIP != "" {
+				for _, ip := range got {
+					if ip == expectedIP {
+						resp["dns_ready"] = true
+						break
+					}
 				}
+			} else {
+				resp["dns_ready"] = len(got) > 0
 			}
-		} else {
-			resp["dns_ready"] = len(got) > 0
 		}
 	}
 	if resp["dns_ready"] == true {

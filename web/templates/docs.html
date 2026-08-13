@@ -440,12 +440,13 @@
     Amazon Route 53 DNS
   </h2>
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
-    <p>CaddyUI can discover your public Route 53 hosted zones, create and clean up managed A records, and reuse the same credentials for Caddy DNS-01 certificate issuance.</p>
+    <p>CaddyUI can discover your public Route 53 hosted zones, optionally create and clean up managed A records, and reuse the same credentials for Caddy DNS-01 certificate issuance. The selected hosted-zone ID is passed directly to Caddy so `_acme-challenge` TXT records cannot drift into a similarly named split-horizon zone.</p>
     <ol class="list-decimal ml-5 space-y-1.5">
       <li>Create a dedicated IAM user or role for CaddyUI. Do not use the AWS account root user's access keys.</li>
       <li>Attach a least-privilege policy like the example below. Replace <code class="font-mono">Z0123456789EXAMPLE</code> with each public hosted-zone ID CaddyUI may manage.</li>
       <li>Create an access key for that IAM principal, then paste the <em>Access Key ID</em> and <em>Secret Access Key</em> into <a href="/settings" class="text-brand-600 hover:text-brand-700">Settings → Amazon Route 53</a>.</li>
       <li>Leave <em>AWS Region</em> blank for the standard AWS partition (<code class="font-mono">us-east-1</code> is used). A session token is needed only when you supply temporary STS credentials.</li>
+      <li>On a proxy, redirection, or advanced route, turn off <em>Create public A records</em> when the hostname is internal or managed by split DNS. DNS-01 TXT automation remains enabled in the selected public zone.</li>
     </ol>
     <pre class="overflow-x-auto rounded-lg bg-ink-950 text-ink-100 p-4 text-xs leading-relaxed"><code>{
   "Version": "2012-10-17",
