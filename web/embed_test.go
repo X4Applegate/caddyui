@@ -55,3 +55,22 @@ func TestSettingsGuidanceStaysInline(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsPrometheusMetricsControls(t *testing.T) {
+	settingsHTML, err := FS.ReadFile("templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	html := string(settingsHTML)
+	for _, field := range []string{
+		`name="prometheus_metrics_enabled"`,
+		`name="prometheus_metrics_per_host"`,
+		`name="prometheus_metrics_observe_catchall_hosts"`,
+		`name="prometheus_metrics_server_ids"`,
+		`{{index $.MetricsScrapeTargets .ID}}`,
+	} {
+		if !strings.Contains(html, field) {
+			t.Fatalf("settings template missing metrics control %s", field)
+		}
+	}
+}

@@ -33,6 +33,10 @@ const (
 	settingCrowdSecServerIDs   = "crowdsec_server_ids"
 	settingCrowdSecExcludeHost = "crowdsec_excluded_hosts"
 	settingCrowdSecExcludePath = "crowdsec_excluded_paths"
+	settingMetricsEnabled      = "prometheus_metrics_enabled"
+	settingMetricsPerHost      = "prometheus_metrics_per_host"
+	settingMetricsCatchAll     = "prometheus_metrics_observe_catchall_hosts"
+	settingMetricsServerIDs    = "prometheus_metrics_server_ids"
 
 	fleetAccessLoggerName = "caddyui_file_access"
 )
@@ -46,6 +50,51 @@ type fleetAccessLogConfig struct {
 	RollKeep     int
 	RollKeepDays int
 	ServerIDs    map[int64]bool
+}
+
+// prometheusMetricsConfig owns only the HTTP app's metrics enablement,
+// per_host, and observe_catchall_hosts fields on explicitly selected Caddy
+// servers. Unselected servers are deliberately untouched so a global metrics
+// block loaded from a Caddyfile or maintained through the admin API survives
+// every CaddyUI sync.
+type prometheusMetricsConfig struct {
+	Enabled             bool
+	PerHost             bool
+	ObserveCatchAllHost bool
+	ServerIDs           map[int64]bool
+}
+
+func loadPrometheusMetricsConfig(db *sql.DB) prometheusMetricsConfig {
+	return prometheusMetricsConfig{
+		Enabled:             mustGetSetting(db, settingMetricsEnabled) == "1",
+		PerHost:             mustGetSetting(db, settingMetricsPerHost) == "1",
+		ObserveCatchAllHost: mustGetSetting(db, settingMetricsCatchAll) == "1",
+		ServerIDs:           parseServerIDs(mustGetSetting(db, settingMetricsServerIDs)),
+	}
+}
+
+func (c prometheusMetricsConfig) manages(serverID int64) bool {
+	return c.ServerIDs[serverID]
+}
+
+func prometheusMetricsConfigFromForm(r *http.Request) (prometheusMetricsConfig, error) {
+	cfg := prometheusMetricsConfig{
+		Enabled:             formHasValue(r, "prometheus_metrics_enabled", "1"),
+		PerHost:             formHasValue(r, "prometheus_metrics_per_host", "1"),
+		ObserveCatchAllHost: formHasValue(r, "prometheus_metrics_observe_catchall_hosts", "1"),
+		ServerIDs:           parseServerIDs(strings.Join(r.PostForm["prometheus_metrics_server_ids"], ",")),
+	}
+	return cfg, validatePrometheusMetricsConfig(cfg)
+}
+
+func validatePrometheusMetricsConfig(cfg prometheusMetricsConfig) error {
+	if cfg.ObserveCatchAllHost && !cfg.PerHost {
+		return fmt.Errorf("observe catch-all hosts requires per-host metrics")
+	}
+	if cfg.Enabled && len(cfg.ServerIDs) == 0 {
+		return fmt.Errorf("select at least one Caddy server for Prometheus metrics")
+	}
+	return nil
 }
 
 func loadFleetAccessLogConfig(db *sql.DB) fleetAccessLogConfig {
@@ -182,7 +231,7 @@ func formHasValue(r *http.Request, key, wanted string) bool {
 	return false
 }
 
-func fleetIntegrationSettings(access fleetAccessLogConfig, crowd crowdSecConfig, clientIPHeaders string) map[string]string {
+func fleetIntegrationSettings(access fleetAccessLogConfig, crowd crowdSecConfig, metrics prometheusMetricsConfig, clientIPHeaders string) map[string]string {
 	boolString := func(v bool) string {
 		if v {
 			return "1"
@@ -213,7 +262,20 @@ func fleetIntegrationSettings(access fleetAccessLogConfig, crowd crowdSecConfig,
 		settingCrowdSecServerIDs:   serverIDsCSV(mapKeys(crowd.ServerIDs)),
 		settingCrowdSecExcludeHost: strings.Join(hosts, "\n"),
 		settingCrowdSecExcludePath: pathList,
+		settingMetricsEnabled:      boolString(metrics.Enabled),
+		settingMetricsPerHost:      boolString(metrics.PerHost),
+		settingMetricsCatchAll:     boolString(metrics.ObserveCatchAllHost),
+		settingMetricsServerIDs:    serverIDsCSV(mapKeys(metrics.ServerIDs)),
 	}
+}
+
+func prometheusMetricsConfigFingerprint(cfg prometheusMetricsConfig) string {
+	return strings.Join([]string{
+		strconv.FormatBool(cfg.Enabled),
+		strconv.FormatBool(cfg.PerHost),
+		strconv.FormatBool(cfg.ObserveCatchAllHost),
+		serverIDsCSV(mapKeys(cfg.ServerIDs)),
+	}, "\x00")
 }
 
 func mapKeys(values map[int64]bool) []string {
@@ -361,6 +423,139 @@ func validateCrowdSecConfig(cfg crowdSecConfig) error {
 		return fmt.Errorf("CrowdSec decision refresh interval must be a positive duration such as 15s")
 	}
 	return nil
+}
+
+// applyPrometheusMetrics updates only the fields CaddyUI explicitly manages.
+// When the server is not selected, the complete live metrics object is left
+// alone. This is the important round-trip guarantee for issue #25: Caddyfile
+// global options and direct JSON/API configuration must not be downgraded by a
+// routine route sync.
+func applyPrometheusMetrics(cfg map[string]any, metricsCfg prometheusMetricsConfig, serverID int64) {
+	if !metricsCfg.manages(serverID) {
+		return
+	}
+
+	var apps, httpApp map[string]any
+	if metricsCfg.Enabled {
+		apps = ensureMap(cfg, "apps")
+		httpApp = ensureMap(apps, "http")
+	} else {
+		// Disabling an already-absent feature must not synthesize an empty HTTP
+		// app in the validation copy.
+		apps, _ = cfg["apps"].(map[string]any)
+		if apps == nil {
+			return
+		}
+		httpApp, _ = apps["http"].(map[string]any)
+		if httpApp == nil {
+			return
+		}
+	}
+	metrics, _ := httpApp["metrics"].(map[string]any)
+	if metrics == nil {
+		if !metricsCfg.Enabled {
+			return
+		}
+		metrics = map[string]any{}
+	}
+
+	if metricsCfg.Enabled {
+		if metricsCfg.PerHost {
+			metrics["per_host"] = true
+		} else {
+			delete(metrics, "per_host")
+		}
+		if metricsCfg.ObserveCatchAllHost {
+			metrics["observe_catchall_hosts"] = true
+		} else {
+			delete(metrics, "observe_catchall_hosts")
+		}
+		// An empty object is meaningful: it enables the base HTTP metrics.
+		httpApp["metrics"] = metrics
+		return
+	}
+
+	// Disabling removes only CaddyUI's two detailed-metrics options. Preserve
+	// future/externally-owned fields such as otlp rather than replacing the
+	// entire metrics object.
+	delete(metrics, "per_host")
+	delete(metrics, "observe_catchall_hosts")
+	if len(metrics) == 0 {
+		delete(httpApp, "metrics")
+	} else {
+		httpApp["metrics"] = metrics
+	}
+}
+
+func (s *Server) writePrometheusMetricsConfig(proposed map[string]any, metricsCfg prometheusMetricsConfig, serverID int64) error {
+	if !metricsCfg.manages(serverID) {
+		return nil
+	}
+	var want any
+	if apps, _ := proposed["apps"].(map[string]any); apps != nil {
+		if httpApp, _ := apps["http"].(map[string]any); httpApp != nil {
+			want = httpApp["metrics"]
+		}
+	}
+	return s.writeOptionalConfigValue("/config/apps/http/metrics", want)
+}
+
+// validatePrometheusMetricsServers lets each selected Caddy validate its own
+// schema before settings are persisted. In particular,
+// observe_catchall_hosts requires Caddy 2.11+, while per_host works on older
+// releases. Using /load?validate_only=true also supports custom builds without
+// relying on a manually-entered version string.
+func (s *Server) validatePrometheusMetricsServers(metricsCfg prometheusMetricsConfig) error {
+	if !metricsCfg.Enabled {
+		return nil
+	}
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		return fmt.Errorf("list Caddy servers: %w", err)
+	}
+	seen := map[int64]bool{}
+	for _, srv := range servers {
+		if !metricsCfg.manages(srv.ID) {
+			continue
+		}
+		seen[srv.ID] = true
+		if srv.Type == models.CaddyServerTypeExternal {
+			return fmt.Errorf("Prometheus metrics cannot be managed on read-only server %q", srv.Name)
+		}
+		client := newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
+		current, _, err := client.FetchConfig()
+		if err != nil {
+			return fmt.Errorf("check metrics support on %s: %w", srv.Name, err)
+		}
+		probe, err := deepCopyMap(current)
+		if err != nil {
+			return fmt.Errorf("build metrics check for %s: %w", srv.Name, err)
+		}
+		applyPrometheusMetrics(probe, metricsCfg, srv.ID)
+		if err := client.Validate(probe); err != nil {
+			if metricsCfg.ObserveCatchAllHost {
+				return fmt.Errorf("Caddy server %q rejected detailed metrics; observe_catchall_hosts requires Caddy 2.11 or newer: %w", srv.Name, err)
+			}
+			return fmt.Errorf("Caddy server %q rejected Prometheus metrics: %w", srv.Name, err)
+		}
+	}
+	for id := range metricsCfg.ServerIDs {
+		if !seen[id] {
+			return fmt.Errorf("selected metrics server %d no longer exists", id)
+		}
+	}
+	return nil
+}
+
+func prometheusScrapeTarget(adminURL string) string {
+	adminURL = strings.TrimRight(strings.TrimSpace(adminURL), "/")
+	if strings.HasPrefix(adminURL, "unix://") {
+		return adminURL + " (/metrics)"
+	}
+	if adminURL == "" {
+		return "/metrics"
+	}
+	return adminURL + "/metrics"
 }
 
 func applyClientIPSettings(cfg map[string]any, db *sql.DB) {

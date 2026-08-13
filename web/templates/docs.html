@@ -26,6 +26,7 @@
     <li><a href="#import" class="text-brand-600 hover:text-brand-700 hover:underline">Import from Caddy</a></li>
     <li><a href="#snapshots" class="text-brand-600 hover:text-brand-700 hover:underline">Snapshots & Backup</a></li>
     <li><a href="#multiserver" class="text-brand-600 hover:text-brand-700 hover:underline">Multi-server</a></li>
+    <li><a href="#prometheus" class="text-brand-600 hover:text-brand-700 hover:underline">Prometheus metrics</a></li>
     <li><a href="#users" class="text-brand-600 hover:text-brand-700 hover:underline">Users & 2FA</a></li>
     <li><a href="#docker-networking" class="text-brand-600 hover:text-brand-700 hover:underline">Docker networking</a></li>
     <li><a href="#faq" class="text-brand-600 hover:text-brand-700 hover:underline">FAQ & Troubleshooting</a></li>
@@ -537,6 +538,29 @@
     </div>
     <p>The <em>Also deploy to</em> checkboxes on each form create or update the same paired rule on several servers. Repeating a deployment is safe: CaddyUI tracks the source-to-target relationship and updates the existing target row instead of creating a duplicate.</p>
     <p>To copy every managed route at once, select the source environment in the application shell, open <a href="/servers" class="text-brand-600 hover:text-brand-700">Caddy Fleet</a>, and choose <strong>Sync from current</strong> on the target. This non-destructive merge includes proxy hosts, redirects, advanced routes, and managed certificate definitions while retaining target-only routes. Target DNS records and custom certificate choices stay unchanged. ACME keys and uploaded private keys are never transferred; each Caddy server provisions and stores its own keys.</p>
+  </div>
+</section>
+
+{{/* ── Prometheus metrics ── */}}
+<section id="prometheus" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 4-7"/></svg>
+    </span>
+    Prometheus metrics
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>Open <a href="/settings#settings-metrics" class="text-brand-600 hover:text-brand-700">Settings → Metrics</a>, select the managed Caddy servers CaddyUI should own, and enable the metric detail you need.</p>
+    <ul class="list-disc ml-5 space-y-1">
+      <li><strong>Prometheus metrics</strong> enables Caddy's base HTTP measurements.</li>
+      <li><strong>Per-host labels</strong> adds a host label to HTTP metrics.</li>
+      <li><strong>Observe catch-all hosts</strong> includes hostnames outside explicit route matchers. It requires Caddy 2.11+, requires per-host labels, and can create unbounded cardinality on public HTTP listeners.</li>
+    </ul>
+    <p>The card shows each selected server's scrape target, normally <code class="px-1 py-0.5 bg-ink-100 rounded font-mono text-xs">http://private-caddy:2019/metrics</code>. Configure Prometheus to reach that address over the same private Docker, LAN, loopback, or VPN network as CaddyUI.</p>
+    <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
+      <strong>Keep the admin endpoint private.</strong> Port 2019 controls the complete Caddy configuration and has no built-in authentication. Do not expose it publicly just to make <code class="px-1 bg-amber-100 rounded font-mono">/metrics</code> reachable.
+    </div>
+    <p>Only checked servers are managed. Existing metrics on every unselected server—including Caddyfile global options and direct JSON/API changes—remain untouched during route sync. See <a href="https://caddyserver.com/docs/metrics" target="_blank" rel="noopener" class="text-brand-600 hover:text-brand-700">Caddy's metrics guide</a> for Prometheus queries and metric names.</p>
   </div>
 </section>
 

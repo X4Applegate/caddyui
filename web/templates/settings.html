@@ -22,6 +22,7 @@
   <a href="#settings-captcha"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CAPTCHA</a>
   <a href="#settings-security"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Security</a>
   <a href="#settings-access-logs" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Access logs</a>
+  <a href="#settings-metrics"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Metrics</a>
   <a href="#settings-crowdsec"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CrowdSec</a>
   <a href="#analytics"            class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Analytics</a>
   <a href="#settings-notifier"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifier</a>
@@ -981,6 +982,64 @@
 
     <div class="pt-3 border-t border-ink-100">
       <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save and sync fleet</button>
+    </div>
+  </div>
+
+  {{/* ── Prometheus metrics (v2.24.0) ── */}}
+  <div id="settings-metrics" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
+    <div>
+      <div class="flex items-center gap-2 mb-0.5">
+        <div class="text-sm font-semibold text-ink-900">Prometheus metrics</div>
+        {{if .MetricsEnabled}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">enabled</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>{{end}}
+      </div>
+      <p class="text-xs text-ink-500">Enable Caddy's HTTP metrics and preserve the detailed global metrics configuration across every CaddyUI route sync.</p>
+    </div>
+
+    <div class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+      Prometheus scrapes <code class="font-mono">/metrics</code> on Caddy's protected admin endpoint. Keep that endpoint on a private network or loopback address; never publish the unauthenticated admin port to the internet.
+    </div>
+
+    <div class="flex items-start gap-2">
+      <input type="hidden" name="prometheus_metrics_enabled" value="0">
+      <input id="prometheus_metrics_enabled" name="prometheus_metrics_enabled" type="checkbox" value="1" {{if .MetricsEnabled}}checked{{end}} class="mt-0.5 accent-brand-600 cursor-pointer">
+      <label for="prometheus_metrics_enabled" class="text-sm text-ink-700 cursor-pointer">Enable Prometheus metrics on selected servers</label>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <label class="flex items-start gap-2 rounded-lg border border-ink-200 px-3 py-3 text-sm text-ink-700 cursor-pointer">
+        <input type="hidden" name="prometheus_metrics_per_host" value="0">
+        <input type="checkbox" name="prometheus_metrics_per_host" value="1" {{if .MetricsPerHost}}checked{{end}} class="mt-0.5 accent-brand-600">
+        <span>Per-host labels <span class="block text-xs text-ink-400 mt-0.5">Adds the request host to HTTP metric labels.</span></span>
+      </label>
+      <label class="flex items-start gap-2 rounded-lg border border-ink-200 px-3 py-3 text-sm text-ink-700 cursor-pointer">
+        <input type="hidden" name="prometheus_metrics_observe_catchall_hosts" value="0">
+        <input type="checkbox" name="prometheus_metrics_observe_catchall_hosts" value="1" {{if .MetricsObserveCatchAll}}checked{{end}} class="mt-0.5 accent-amber-600">
+        <span>Observe catch-all hosts <span class="block text-xs text-ink-400 mt-0.5">Requires per-host labels and Caddy 2.11+. May create high-cardinality data on public HTTP listeners.</span></span>
+      </label>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Manage metrics on Caddy servers</label>
+      <div class="space-y-2">
+        {{range .Servers}}
+          {{if ne .Type "external"}}
+          <label class="block rounded-lg border border-ink-200 px-3 py-2.5 text-sm text-ink-700 cursor-pointer">
+            <span class="flex items-center gap-2">
+              <input type="checkbox" name="prometheus_metrics_server_ids" value="{{.ID}}" {{if index $.MetricsServerSelected .ID}}checked{{end}} class="accent-brand-600">
+              <span>{{.Name}}</span><span class="ml-auto text-xs text-ink-400">{{.Status}}</span>
+            </span>
+            {{if index $.MetricsServerSelected .ID}}
+            <span class="block mt-1.5 pl-6 text-xs text-ink-500">Scrape target: <code class="font-mono break-all">{{index $.MetricsScrapeTargets .ID}}</code></span>
+            {{end}}
+          </label>
+          {{end}}
+        {{end}}
+      </div>
+      <p class="text-xs text-ink-400 mt-2">Only checked servers are managed. CaddyUI leaves metrics on every unselected server untouched, including settings loaded from a Caddyfile or written directly through the admin API.</p>
+    </div>
+
+    <div class="pt-3 border-t border-ink-100">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Validate, save, and sync fleet</button>
     </div>
   </div>
 

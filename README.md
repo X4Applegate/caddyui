@@ -156,6 +156,7 @@ Your Caddy build must include the matching `caddy-dns` provider module. The repo
 
 ### Observability
 
+- **Prometheus metrics** *(v2.24.0)* — enable base HTTP metrics, per-host labels, and Caddy 2.11+ catch-all host observation on selected fleet servers. CaddyUI validates each target, preserves metrics it does not own, and shows the protected Admin URL's `/metrics` scrape target
 - **Visitor analytics** *(v2.7.0)* — opt-in per-host traffic counters; top hosts, 24 h sparkline, status-code mix, unique visitors. Per-server filter for multi-Caddy fleets. The Caddy log writer uses soft-start failover so Caddy can boot while CaddyUI is offline
 - **Upstream health** — live health check per proxy; polls Caddy's own admin API so Docker-internal hostnames work correctly
 - **App health** — detects whether the upstream actually responds, not just whether its TCP port is open

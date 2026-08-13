@@ -8204,6 +8204,36 @@ func (s *Server) trySyncCaddy(serverID int64, forceTLS bool) {
 	}
 }
 
+// syncPrometheusMetricsOnly handles selected fleet members that do not yet
+// have any CaddyUI-managed routes or certificates. The normal empty-database
+// guard must still protect user routes, but metrics management should work on
+// a fresh server without forcing the administrator to create a dummy host.
+func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheusMetricsConfig) error {
+	current, currentJSON, err := s.Caddy.FetchConfig()
+	if err != nil {
+		return fmt.Errorf("fetch current config for metrics: %w", err)
+	}
+	proposed, err := deepCopyMap(current)
+	if err != nil {
+		return fmt.Errorf("clone config for metrics: %w", err)
+	}
+	applyPrometheusMetrics(proposed, metricsCfg, serverID)
+	if err := s.Caddy.Validate(proposed); err != nil {
+		return fmt.Errorf("caddy rejected Prometheus metrics config: %w", err)
+	}
+	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
+		if _, err := models.CreateSnapshot(s.DB, serverID, models.SnapshotSourceAuto, "auto: before Prometheus metrics sync", currentJSON); err != nil {
+			log.Printf("metrics snapshot failed (non-fatal): %v", err)
+		}
+	}
+	if err := s.writePrometheusMetricsConfig(proposed, metricsCfg, serverID); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_metrics_failed", "", err.Error(), false)
+		return fmt.Errorf("apply Prometheus metrics: %w", err)
+	}
+	_ = models.LogActivity(s.DB, serverID, "system", "sync_metrics_applied", "", "metrics-only sync", true)
+	return nil
+}
+
 func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	// Load the target server so we can use its AdminURL for the Caddy client.
 	srv, err := models.GetCaddyServer(s.DB, serverID)
@@ -8222,6 +8252,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	origClient := s.Caddy
 	s.Caddy = newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	defer func() { s.Caddy = origClient }()
+	metricsCfg := loadPrometheusMetricsConfig(s.DB)
 
 	// Use admin view for sync — all routes must be pushed to Caddy regardless of owner.
 	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true, nil)
@@ -8241,6 +8272,9 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		return err
 	}
 	if len(proxies) == 0 && len(redirs) == 0 && len(raws) == 0 && len(certs) == 0 {
+		if metricsCfg.manages(serverID) {
+			return s.syncPrometheusMetricsOnly(serverID, metricsCfg)
+		}
 		log.Printf("caddy sync skipped: no entries in DB for server %d (refusing to push empty routes)", serverID)
 		return nil
 	}
@@ -8308,6 +8342,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	applyAutomationPolicies(proposed, dnsPolicies)
 	applyClientIPSettings(proposed, s.DB)
 	applyFleetAccessLog(proposed, accessLogCfg, loadAnalyticsConfig(s.DB).Enabled, serverID)
+	applyPrometheusMetrics(proposed, metricsCfg, serverID)
 	applyCrowdSecApp(proposed, crowdSecCfg, serverID)
 	// v2.4.12: branded 404/502/503/504 pages with error ID + timestamp so
 	// users hitting a restart window see something nicer than Caddy's
@@ -8343,6 +8378,10 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	if err := s.writeLoggingConfig(proposed); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_access_logger_failed", "", err.Error(), false)
 		return fmt.Errorf("apply access logger: %w", err)
+	}
+	if err := s.writePrometheusMetricsConfig(proposed, metricsCfg, serverID); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_metrics_failed", "", err.Error(), false)
+		return fmt.Errorf("apply Prometheus metrics: %w", err)
 	}
 	if err := s.writeRoutesSubtree(routes); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_routes_failed", "", err.Error(), false)
@@ -13817,6 +13856,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	caddyServers, _ := models.ListCaddyServers(s.DB)
 	accessLogCfg := loadFleetAccessLogConfig(s.DB)
 	crowdSecCfg := loadCrowdSecConfig(s.DB)
+	metricsCfg := loadPrometheusMetricsConfig(s.DB)
+	metricsScrapeTargets := make(map[int64]string, len(caddyServers))
+	for _, sr := range caddyServers {
+		metricsScrapeTargets[sr.ID] = prometheusScrapeTarget(sr.AdminURL)
+	}
 	hasAnyServerIP := strings.TrimSpace(serverIP) != ""
 	for _, sr := range caddyServers {
 		if strings.TrimSpace(sr.PublicIP) != "" {
@@ -14007,6 +14051,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"CrowdSecServerSelected":  integrationServerSelection(caddyServers, crowdSecCfg.ServerIDs),
 		"CrowdSecExcludedHosts":   mustGetSetting(s.DB, settingCrowdSecExcludeHost),
 		"CrowdSecExcludedPaths":   mustGetSetting(s.DB, settingCrowdSecExcludePath),
+		"MetricsEnabled":          metricsCfg.Enabled,
+		"MetricsPerHost":          metricsCfg.PerHost,
+		"MetricsObserveCatchAll":  metricsCfg.ObserveCatchAllHost,
+		"MetricsServerSelected":   integrationServerSelection(caddyServers, metricsCfg.ServerIDs),
+		"MetricsScrapeTargets":    metricsScrapeTargets,
 		// v2.9.5: 2FA enforcement policy
 		"Require2FA":  mustGetSetting(s.DB, settingRequire2FA),
 		"RequireTOTP": mustGetSetting(s.DB, settingRequireTOTP),
@@ -14034,6 +14083,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	integrationSettingsPresent := r.FormValue("fleet_integrations_present") == "1"
 	accessLogFormCfg := loadFleetAccessLogConfig(s.DB)
 	crowdSecFormCfg := loadCrowdSecConfig(s.DB)
+	metricsFormCfg := loadPrometheusMetricsConfig(s.DB)
 	if integrationSettingsPresent {
 		var err error
 		accessLogFormCfg, err = fleetAccessLogConfigFromForm(r)
@@ -14050,6 +14100,18 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		if crowdSecFormCfg.Enabled && (crowdSecConfigFingerprint(previousCrowdSec) != crowdSecConfigFingerprint(crowdSecFormCfg) || strings.TrimSpace(r.FormValue("crowdsec_api_key")) != "") {
 			if err := s.validateCrowdSecServers(crowdSecFormCfg); err != nil {
 				http.Error(w, "CrowdSec validation failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		previousMetrics := metricsFormCfg
+		metricsFormCfg, err = prometheusMetricsConfigFromForm(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if metricsFormCfg.Enabled && prometheusMetricsConfigFingerprint(previousMetrics) != prometheusMetricsConfigFingerprint(metricsFormCfg) {
+			if err := s.validatePrometheusMetricsServers(metricsFormCfg); err != nil {
+				http.Error(w, "Prometheus metrics validation failed: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		}
@@ -14295,7 +14357,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		}(),
 	}
 	if integrationSettingsPresent {
-		for key, value := range fleetIntegrationSettings(accessLogFormCfg, crowdSecFormCfg, r.FormValue("client_ip_headers")) {
+		for key, value := range fleetIntegrationSettings(accessLogFormCfg, crowdSecFormCfg, metricsFormCfg, r.FormValue("client_ip_headers")) {
 			kv[key] = value
 		}
 		if key := strings.TrimSpace(r.FormValue("crowdsec_api_key")); key != "" {

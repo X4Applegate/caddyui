@@ -72,6 +72,18 @@ The container will print a clear error message at startup if the directory isn't
 
 ## ✨ Headline features
 
+### 📈 Detailed Prometheus metrics
+
+CaddyUI v2.24 manages Caddy metrics without clobbering global options loaded elsewhere:
+
+- Enable HTTP metrics and per-host labels on selected fleet servers
+- Opt into `observe_catchall_hosts` with target-side Caddy 2.11+ validation
+- Preserve unselected and externally-owned metrics configuration, including OTLP fields
+- Copy each server's private Admin URL `/metrics` scrape target from Settings
+- Apply metrics to fresh servers even before the first managed route exists
+
+Keep the Caddy admin endpoint private. Prometheus should reach it through the same Docker, LAN, loopback, WireGuard, or Tailscale network used by CaddyUI.
+
 ### 🛡️ Fleet access logging and CrowdSec
 
 CaddyUI v2.21 adds independent rotating file access logs and CrowdSec request protection:
