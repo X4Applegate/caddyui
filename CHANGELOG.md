@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.24.0] - 2026-08-13 - Detailed Prometheus metrics
+
+### Added
+
+- **Fleet-scoped Prometheus metrics controls** in Settings enable Caddy HTTP metrics, per-host labels, and `observe_catchall_hosts` on explicitly selected managed servers. The latter is validated against each target and requires Caddy 2.11 or newer. ([#25](https://github.com/X4Applegate/caddyui/issues/25))
+- The Metrics card shows the private `/metrics` scrape target derived from each selected server's protected Admin URL and warns against exposing Caddy's unauthenticated admin port publicly.
+- Metrics can be configured even on a fresh Caddy server with no CaddyUI-managed routes or certificates.
+
+### Fixed
+
+- Routine CaddyUI route syncs now have an explicit regression guarantee that global/app-level metrics loaded from a Caddyfile or written through the admin API remain untouched unless the administrator selects that server for CaddyUI metrics management. Detailed `per_host`, `observe_catchall_hosts`, and externally managed fields such as `otlp` are preserved.
+
+### Changed
+
+- The repository's custom Caddy image is pinned to Caddy 2.11.4 so the shipped Compose build supports catch-all host metrics deterministically.
+
 ## [2.23.2] - 2026-08-13 - Persistent guidance toast fix
 
 ### Fixed
