@@ -68,11 +68,12 @@ type ProxyHost struct {
 	// identifies which adapter in internal/dns handles lifecycle calls.
 	// Empty DNSProvider means "no managed DNS" — the host's A record is
 	// whatever the user set manually.
-	DNSProvider  string // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner | route53
-	DNSZoneID    string // provider-native zone ID (opaque for CF/Hetzner/Route53; domain for others)
-	DNSZoneName  string // base domain, e.g. "example.com", for display
-	DNSRecordID  string // record ID returned by the provider after create
-	DNSProfileID string // optional credential profile ID; empty uses legacy provider settings
+	DNSProvider   string // "" | cloudflare | porkbun | namecheap | godaddy | digitalocean | hetzner | route53
+	DNSZoneID     string // provider-native zone ID (opaque for CF/Hetzner/Route53; domain for others)
+	DNSZoneName   string // base domain, e.g. "example.com", for display
+	DNSRecordID   string // record ID returned by the provider after create
+	DNSProfileID  string // optional credential profile ID; empty uses legacy provider settings
+	DNSSkipRecord bool   // use provider for DNS-01 but do not create public A records
 	// Legacy CF/PB columns. Kept for rollback safety — the v2.3.0 migration
 	// copies these into the unified columns above. New writes only touch
 	// the unified columns, so these stay frozen at whatever the last v2.2.x
@@ -867,11 +868,12 @@ type RedirectionHost struct {
 	// v2.12.2: unified Managed DNS — same triple as proxy_hosts and
 	// raw_routes. CaddyUI auto-creates an A record per hostname in
 	// Domains when DNSProvider is set, deletes them on row removal.
-	DNSProvider  string
-	DNSZoneID    string
-	DNSZoneName  string
-	DNSRecordID  string
-	DNSProfileID string
+	DNSProvider   string
+	DNSZoneID     string
+	DNSZoneName   string
+	DNSRecordID   string
+	DNSProfileID  string
+	DNSSkipRecord bool // use provider for DNS-01 but do not create public A records
 	// v2.9.13: access control + maintenance mode (parity with proxy hosts)
 	AccessList      string // comma/newline-separated CIDR allowlist (empty = allow all)
 	MaintenanceMode bool   // when true, respond 503 before redirecting
@@ -1702,14 +1704,15 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.add_x_request_method_override,0),
     COALESCE(ph.proxy_redirect_rules,''),
     COALESCE(ph.additional_upstream_rules,''),
-    COALESCE(ph.disable_upstream_compression,0)`
+    COALESCE(ph.disable_upstream_compression,0),
+    COALESCE(ph.dns_skip_record,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
 func scanProxyHost(s interface {
 	Scan(dest ...any) error
 }, p *ProxyHost, ownerEmail *string) error {
-	var ws, bce, ssl, sslf, h2, en, bae int
+	var ws, bce, ssl, sslf, h2, en, bae, dnsSkipRecord int
 	var ownerID int64
 	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt, addXFwdMethod, addXReqOrigHost, addXReqDNT, addXReqSecure, addXReqQueryCount, addXReqIDHdrResp, addXRobotsNoindex, blockBotUA, blockAdminPaths, addXCSPDis, addXMethodOverride, disableUpstreamCompression int
 	dst := []any{
@@ -2020,6 +2023,7 @@ func scanProxyHost(s interface {
 		&p.ProxyRedirectRules,
 		&p.AdditionalUpstreamRules,
 		&disableUpstreamCompression, // v2.12.52
+		&dnsSkipRecord,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -2135,6 +2139,7 @@ func scanProxyHost(s interface {
 	p.AddXCSPDisabled = addXCSPDis == 1
 	p.AddXRequestMethodOverride = addXMethodOverride == 1
 	p.DisableUpstreamCompression = disableUpstreamCompression == 1 // v2.12.52
+	p.DNSSkipRecord = dnsSkipRecord == 1
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -2558,7 +2563,14 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err := UpdateProxyHostDNSSkipRecord(db, id, p.DNSSkipRecord); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
@@ -3180,7 +3192,10 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		boolInt(p.DisableUpstreamCompression), // v2.12.52
 		p.ID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return UpdateProxyHostDNSSkipRecord(db, p.ID, p.DNSSkipRecord)
 }
 
 // SetProxyHostOwner reassigns a proxy host to a new owner. ownerID == 0
@@ -3217,6 +3232,15 @@ func UpdateProxyHostDNSProfile(db *sql.DB, id int64, profileID string) error {
 		SET dns_profile_id=?, updated_at=CURRENT_TIMESTAMP
 		WHERE id=?`,
 		profileID, id)
+	return err
+}
+
+// UpdateProxyHostDNSSkipRecord persists DNS-01-only mode separately from the
+// very large legacy proxy-host UPDATE statement.
+func UpdateProxyHostDNSSkipRecord(db *sql.DB, id int64, skip bool) error {
+	_, err := db.Exec(`UPDATE proxy_hosts
+		SET dns_skip_record=?, updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`, boolInt(skip), id)
 	return err
 }
 
@@ -3321,7 +3345,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.sunset_at,''),
                COALESCE(rh.dns_provider,''), COALESCE(rh.dns_zone_id,''),
                COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,''),
-               COALESCE(rh.dns_profile_id,'')
+               COALESCE(rh.dns_profile_id,''), COALESCE(rh.dns_skip_record,0)
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ? ORDER BY rh.sort_order ASC, rh.id DESC`, serverID)
@@ -3348,7 +3372,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
                COALESCE(rh.sunset_at,''),
                COALESCE(rh.dns_provider,''), COALESCE(rh.dns_zone_id,''),
                COALESCE(rh.dns_zone_name,''), COALESCE(rh.dns_record_id,''),
-               COALESCE(rh.dns_profile_id,'')
+               COALESCE(rh.dns_profile_id,''), COALESCE(rh.dns_skip_record,0)
         FROM redirection_hosts rh
         LEFT JOIN users u ON u.id = rh.owner_id
         WHERE rh.server_id = ?
@@ -3364,7 +3388,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 		var r RedirectionHost
 		var pp, ssl, sslf, en, maintMode int
 		var ownerID int64
-		var hstsSubdomains, hstsPreload, wildcardSub int
+		var hstsSubdomains, hstsPreload, wildcardSub, dnsSkipRecord int
 		if err := rows.Scan(&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain,
 			&r.ForwardHTTPCode, &pp, &ssl, &sslf, &en, &r.CertificateID,
 			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail,
@@ -3375,7 +3399,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 			&r.AdvancedConfig, &r.Color,
 			&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
 			&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt,
-			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID); err != nil {
+			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord); err != nil {
 			return nil, err
 		}
 		r.PreservePath = pp == 1
@@ -3386,6 +3410,7 @@ func ListRedirectionHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bo
 		r.HSTSIncludeSubdomains = hstsSubdomains == 1
 		r.HSTSPreload = hstsPreload == 1
 		r.RedirectWildcardSubdomain = wildcardSub == 1
+		r.DNSSkipRecord = dnsSkipRecord == 1
 		if ownerID != 0 {
 			r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -3398,7 +3423,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 	var r RedirectionHost
 	var pp, ssl, sslf, en, maintMode int
 	var ownerID int64
-	var hstsSubdomains, hstsPreload, wildcardSub int
+	var hstsSubdomains, hstsPreload, wildcardSub, dnsSkipRecord int
 	err := db.QueryRow(`
         SELECT id, domains, forward_scheme, forward_domain, forward_http_code,
                preserve_path, ssl_enabled, ssl_forced, enabled,
@@ -3419,7 +3444,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
                COALESCE(sunset_at,''),
                COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
                COALESCE(dns_zone_name,''), COALESCE(dns_record_id,''),
-               COALESCE(dns_profile_id,'')
+               COALESCE(dns_profile_id,''), COALESCE(dns_skip_record,0)
         FROM redirection_hosts WHERE id = ?`, id).Scan(
 		&r.ID, &r.Domains, &r.ForwardScheme, &r.ForwardDomain, &r.ForwardHTTPCode,
 		&pp, &ssl, &sslf, &en, &r.CertificateID, &r.CreatedAt, &r.UpdatedAt,
@@ -3430,7 +3455,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 		&r.AdvancedConfig, &r.Color,
 		&r.MaintenanceStatusCode, &r.SortOrder, &r.RedirectRules,
 		&r.RedirectStripPathPrefix, &wildcardSub, &r.SunsetAt,
-		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID,
+		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord,
 	)
 	if err != nil {
 		return nil, err
@@ -3443,6 +3468,7 @@ func GetRedirectionHost(db *sql.DB, id int64) (*RedirectionHost, error) {
 	r.HSTSIncludeSubdomains = hstsSubdomains == 1
 	r.HSTSPreload = hstsPreload == 1
 	r.RedirectWildcardSubdomain = wildcardSub == 1
+	r.DNSSkipRecord = dnsSkipRecord == 1
 	if ownerID != 0 {
 		r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -3470,8 +3496,8 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
             hsts_max_age_sec, hsts_include_subdomains, hsts_preload, advanced_config, color,
             maintenance_status_code, sort_order, redirect_rules,
             redirect_strip_path_prefix, redirect_wildcard_subdomain, sunset_at,
-            dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id, dns_skip_record)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -3483,7 +3509,7 @@ func CreateRedirectionHost(db *sql.DB, serverID int64, ownerID int64, r *Redirec
 		r.AdvancedConfig, r.Color,
 		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
 		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
 	)
 	if err != nil {
 		return 0, err
@@ -3511,7 +3537,7 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
             advanced_config=?, color=?,
             maintenance_status_code=?, sort_order=?, redirect_rules=?,
             redirect_strip_path_prefix=?, redirect_wildcard_subdomain=?, sunset_at=?,
-            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?,
+            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?, dns_skip_record=?,
             updated_at=CURRENT_TIMESTAMP WHERE id = ?`,
 		r.Domains, r.ForwardScheme, r.ForwardDomain, r.ForwardHTTPCode,
 		boolInt(r.PreservePath), boolInt(r.SSLEnabled), boolInt(r.SSLForced),
@@ -3522,7 +3548,7 @@ func UpdateRedirectionHost(db *sql.DB, r *RedirectionHost) error {
 		r.AdvancedConfig, r.Color,
 		r.MaintenanceStatusCode, r.SortOrder, r.RedirectRules,
 		r.RedirectStripPathPrefix, boolInt(r.RedirectWildcardSubdomain), r.SunsetAt,
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
 		r.ID,
 	)
 	return err
@@ -3572,38 +3598,40 @@ type RawRoute struct {
 	// Populated on save when the user picks a provider + zone in the form;
 	// empty means "no managed DNS, user wires A records manually." Same
 	// semantics as the proxy-host columns — see models.ProxyHost.
-	DNSProvider  string
-	DNSZoneID    string
-	DNSZoneName  string
-	DNSRecordID  string
-	DNSProfileID string
-	OwnerID      sql.NullInt64
-	OwnerEmail   string // populated via JOIN for display
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	DNSProvider   string
+	DNSZoneID     string
+	DNSZoneName   string
+	DNSRecordID   string
+	DNSProfileID  string
+	DNSSkipRecord bool // use provider for DNS-01 but do not create public A records
+	OwnerID       sql.NullInt64
+	OwnerEmail    string // populated via JOIN for display
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 const rawRouteCols = `id, label, json_data, COALESCE(caddyfile_src, ''), enabled,
     COALESCE(certificate_id, 0), COALESCE(force_ssl, 0), COALESCE(block_common_exploits, 0),
     COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
     COALESCE(dns_zone_name,''), COALESCE(dns_record_id,''),
-    COALESCE(dns_profile_id,''),
+    COALESCE(dns_profile_id,''), COALESCE(dns_skip_record,0),
     created_at, updated_at, COALESCE(owner_id, 0)`
 
 func scanRawRoute(s interface {
 	Scan(dest ...any) error
 }) (RawRoute, error) {
 	var r RawRoute
-	var en, force, block int
+	var en, force, block, dnsSkipRecord int
 	var ownerID int64
 	err := s.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 		&r.CertificateID, &force, &block,
-		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID,
+		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord,
 		&r.CreatedAt, &r.UpdatedAt, &ownerID)
 	if err == nil {
 		r.Enabled = en == 1
 		r.ForceSSL = force == 1
 		r.BlockCommonExploits = block == 1
+		r.DNSSkipRecord = dnsSkipRecord == 1
 		if ownerID != 0 {
 			r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -3624,7 +3652,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.certificate_id, 0), COALESCE(rr.force_ssl, 0), COALESCE(rr.block_common_exploits, 0),
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
-               COALESCE(rr.dns_profile_id,''),
+               COALESCE(rr.dns_profile_id,''), COALESCE(rr.dns_skip_record,0),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3637,7 +3665,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.certificate_id, 0), COALESCE(rr.force_ssl, 0), COALESCE(rr.block_common_exploits, 0),
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
-               COALESCE(rr.dns_profile_id,''),
+               COALESCE(rr.dns_profile_id,''), COALESCE(rr.dns_skip_record,0),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3652,17 +3680,18 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
 	var out []RawRoute
 	for rows.Next() {
 		var r RawRoute
-		var en, force, block int
+		var en, force, block, dnsSkipRecord int
 		var ownerID int64
 		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 			&r.CertificateID, &force, &block,
-			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID,
+			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord,
 			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail); err != nil {
 			return nil, err
 		}
 		r.Enabled = en == 1
 		r.ForceSSL = force == 1
 		r.BlockCommonExploits = block == 1
+		r.DNSSkipRecord = dnsSkipRecord == 1
 		if ownerID != 0 {
 			r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -3675,12 +3704,12 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
 func CreateRawRoute(db *sql.DB, serverID int64, ownerID int64, r *RawRoute) (int64, error) {
 	res, err := db.Exec(`INSERT INTO raw_routes (server_id, label, json_data, caddyfile_src, enabled,
             certificate_id, force_ssl, block_common_exploits,
-            dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id,
+            dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id, dns_skip_record,
             owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID, r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
 		nilIfZero(ownerID))
 	if err != nil {
 		return 0, err
@@ -3699,11 +3728,11 @@ func GetRawRoute(db *sql.DB, id int64) (*RawRoute, error) {
 func UpdateRawRoute(db *sql.DB, r *RawRoute) error {
 	_, err := db.Exec(`UPDATE raw_routes SET label=?, json_data=?, caddyfile_src=?, enabled=?,
             certificate_id=?, force_ssl=?, block_common_exploits=?,
-            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?,
+            dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?, dns_skip_record=?,
             updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
-		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID,
+		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
 		r.ID)
 	return err
 }

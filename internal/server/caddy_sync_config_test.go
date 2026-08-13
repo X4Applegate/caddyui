@@ -110,10 +110,81 @@ func TestCaddyDNSProviderConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := caddyDNSProviderConfig(tt.provider, tt.creds); !reflect.DeepEqual(got, tt.want) {
+			if got := caddyDNSProviderConfig(tt.provider, tt.creds, ""); !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("config = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRoute53ProviderConfigPinsSelectedHostedZone(t *testing.T) {
+	got := caddyDNSProviderConfig(dns.Route53, map[string]string{
+		"route53_access_key_id":     "AKIAEXAMPLE",
+		"route53_secret_access_key": "secret",
+	}, "Z0123456789")
+	if got["hosted_zone_id"] != "Z0123456789" {
+		t.Fatalf("hosted_zone_id = %#v, want selected zone", got["hosted_zone_id"])
+	}
+}
+
+func TestDNSAutomationPoliciesSeparateRoute53ZonesAndKeepDNSOnlyHosts(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	for key, value := range map[string]string{
+		settingRoute53AccessKeyID:     "AKIAEXAMPLE",
+		settingRoute53SecretAccessKey: "secret",
+	} {
+		if err := models.SetSetting(conn, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{DB: conn}
+	policies := s.buildDNSAutomationPolicies([]models.ProxyHost{
+		{Domains: "public.example.com", Enabled: true, SSLEnabled: true, DNSProvider: dns.Route53, DNSZoneID: "ZPUBLIC"},
+		{Domains: "internal.example.net", Enabled: true, SSLEnabled: true, DNSProvider: dns.Route53, DNSZoneID: "ZINTERNAL", DNSSkipRecord: true},
+	}, nil, nil, nil)
+	if len(policies) != 2 {
+		t.Fatalf("policies = %d, want one per Route53 hosted zone", len(policies))
+	}
+	want := map[string]string{"ZPUBLIC": "public.example.com", "ZINTERNAL": "internal.example.net"}
+	for _, policy := range policies {
+		issuers := policy["issuers"].([]any)
+		issuer := issuers[0].(map[string]any)
+		challenge := issuer["challenges"].(map[string]any)["dns"].(map[string]any)
+		provider := challenge["provider"].(map[string]any)
+		zone, _ := provider["hosted_zone_id"].(string)
+		subjects := policy["subjects"].([]any)
+		if len(subjects) != 1 || subjects[0] != want[zone] {
+			t.Fatalf("zone %q subjects = %#v, want %q", zone, subjects, want[zone])
+		}
+		delete(want, zone)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing Route53 zone policies: %#v", want)
+	}
+}
+
+func TestMergeAutomationPoliciesReplacesDesiredSubjectsOnly(t *testing.T) {
+	existing := []any{
+		map[string]any{"subjects": []any{"replace.example.com", "keep.example.com"}, "issuer": "old"},
+		map[string]any{"issuer": "catch-all"},
+	}
+	incoming := []map[string]any{{"subjects": []any{"replace.example.com"}, "issuer": "new"}}
+	got := mergeAutomationPolicies(existing, incoming)
+	if len(got) != 3 {
+		t.Fatalf("policies = %#v, want incoming + trimmed existing + catch-all", got)
+	}
+	if got[0].(map[string]any)["issuer"] != "new" {
+		t.Fatalf("first policy = %#v, want incoming authoritative policy", got[0])
+	}
+	if !reflect.DeepEqual(got[1].(map[string]any)["subjects"], []any{"keep.example.com"}) {
+		t.Fatalf("preserved subjects = %#v", got[1])
+	}
+	if got[2].(map[string]any)["issuer"] != "catch-all" {
+		t.Fatalf("catch-all policy was not preserved: %#v", got[2])
 	}
 }
 
@@ -320,10 +391,10 @@ func TestEnsureManagedCertificateOnServerDeduplicatesEquivalentSubjects(t *testi
 }
 
 func TestCaddyDNSProviderConfigRejectsIncompleteCredentials(t *testing.T) {
-	if got := caddyDNSProviderConfig(dns.Porkbun, map[string]string{"pb_api_key": "key"}); got != nil {
+	if got := caddyDNSProviderConfig(dns.Porkbun, map[string]string{"pb_api_key": "key"}, ""); got != nil {
 		t.Fatalf("incomplete credentials returned config %#v", got)
 	}
-	if got := caddyDNSProviderConfig(dns.Route53, map[string]string{"route53_access_key_id": "AKIAEXAMPLE"}); got != nil {
+	if got := caddyDNSProviderConfig(dns.Route53, map[string]string{"route53_access_key_id": "AKIAEXAMPLE"}, ""); got != nil {
 		t.Fatalf("incomplete Route 53 credentials returned config %#v", got)
 	}
 }

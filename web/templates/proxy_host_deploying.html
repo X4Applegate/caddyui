@@ -20,8 +20,13 @@
       <li id="step-dns-created" class="flex items-start gap-3" data-state="ready">
         <span class="step-icon flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-green-100 text-green-700">✓</span>
         <div class="flex-1 min-w-0">
+          {{if .Host.DNSSkipRecord}}
+          <div class="text-sm font-medium text-ink-800">DNS-01 enabled with {{.ProviderName}}</div>
+          <div class="text-xs text-ink-500 mt-0.5">Public A-record creation skipped; ACME TXT records use zone <span class="font-mono">{{.Host.DNSZoneName}}</span></div>
+          {{else}}
           <div class="text-sm font-medium text-ink-800">DNS record created in {{.ProviderName}}</div>
           <div class="text-xs text-ink-500 mt-0.5">A record added to zone <span class="font-mono">{{.Host.DNSZoneName}}</span>{{if .Host.DNSRecordID}} · record ID <span class="font-mono">{{.Host.DNSRecordID}}</span>{{end}}</div>
+          {{end}}
         </div>
       </li>
       {{end}}
@@ -160,7 +165,9 @@
         if (data.dns_ready) {
           setState(dnsStep, 'ready');
           if (dnsDetail) {
-            if (data.proxied) {
+            if (data.dns_skipped) {
+              dnsDetail.textContent = 'Public A-record verification skipped — testing Caddy directly with SNI';
+            } else if (data.proxied) {
               dnsDetail.textContent = 'Resolved via Cloudflare edge: ' + (ips.join(', ') || '(proxied)');
             } else {
               dnsDetail.textContent = 'Resolved to ' + (ips.join(', ') || expectedIP);

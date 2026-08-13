@@ -207,11 +207,11 @@
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Managed DNS <span class="font-normal normal-case">(optional)</span>
     </summary>
-    <p class="text-xs text-ink-400 mt-3 mb-3">CaddyUI can automatically create an A record for <strong>every domain</strong> in this redirect, pointing at this server's public IP. When Auto SSL is enabled, the same credentials are reused for Let's Encrypt's <strong>DNS-01</strong> challenge. Records are deleted when the redirect is removed. Existing records are skipped (CaddyUI never overwrites a record it didn't create).</p>
+    <p class="text-xs text-ink-400 mt-3 mb-3">Choose credentials and the authoritative zone for Let's Encrypt's <strong>DNS-01</strong> challenge. Public A-record creation is optional for internal or split-DNS redirects.</p>
     {{if .CurrentServerIP}}
     <p class="text-xs text-ink-500 mb-3">A records will point at <span class="font-mono text-ink-700">{{.CurrentServerIP}}</span> (this server's public IP). Change per-server IPs under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a>.</p>
     {{else}}
-    <p class="text-xs text-amber-700 mb-3">No public IP configured for this Caddy server yet — set it under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a> before enabling managed DNS.</p>
+    <p class="text-xs text-amber-700 mb-3">No public IP is configured. Set one under <a href="/settings" class="text-brand-600 hover:underline">Settings → DNS</a> to create A records, or turn that option off below for DNS-01 only.</p>
     {{end}}
 
     <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
@@ -238,8 +238,16 @@
       </div>
     </div>
 
+    <label class="mt-3 flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer">
+      <input type="checkbox" name="dns_create_record" {{if not .Host.DNSSkipRecord}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span>Create public A records<span class="block text-xs text-ink-500 mt-0.5 font-normal">Turn off for internal or split-DNS services. DNS-01 TXT records remain enabled.</span></span>
+    </label>
+
     {{if .Host.DNSRecordID}}
     <p class="text-xs text-green-600 mt-3">✓ DNS record(s) active &mdash; record IDs: <span class="font-mono break-all">{{.Host.DNSRecordID}}</span></p>
+    {{end}}
+    {{if and .Host.DNSProvider .Host.DNSSkipRecord}}
+    <p class="text-xs text-blue-600 mt-3">DNS-01 only &mdash; public A-record creation is disabled.</p>
     {{end}}
   </details>
 

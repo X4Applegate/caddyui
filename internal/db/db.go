@@ -303,6 +303,19 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	// Managed DNS can be used for ACME DNS-01 without publishing a public
+	// A record. Defaulting to 0 preserves pre-v2.23.1 behaviour.
+	for _, tbl := range []string{"proxy_hosts", "redirection_hosts", "raw_routes"} {
+		has, err := columnExists(db, tbl, "dns_skip_record")
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN dns_skip_record INTEGER NOT NULL DEFAULT 0`, tbl)); err != nil {
+				return fmt.Errorf("add dns_skip_record to %s: %w", tbl, err)
+			}
+		}
+	}
 	has, err := columnExists(db, "raw_routes", "caddyfile_src")
 	if err != nil {
 		return err

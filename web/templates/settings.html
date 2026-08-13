@@ -660,7 +660,7 @@
 
     {{if eq .ID "route53"}}
     <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-      <strong>Use a dedicated IAM principal:</strong> grant only hosted-zone listing plus record-set read/write permissions for the zones CaddyUI manages. The setup guide includes a least-privilege policy template. Private hosted zones are intentionally hidden because public ACME DNS-01 validation cannot query them.
+      <strong>Use a dedicated IAM principal:</strong> grant only hosted-zone listing plus record-set read/write permissions for the zones CaddyUI manages. The setup guide includes a least-privilege policy template. CaddyUI pins DNS-01 to the selected public hosted-zone ID; private zones remain hidden because public ACME resolvers cannot query them.
     </div>
     {{end}}
 

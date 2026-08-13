@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.23.1] - 2026-08-12 - Route 53 DNS-01 reliability
+
+### Fixed
+
+- Route 53 DNS-01 automation now pins Caddy's provider configuration to the exact public hosted zone selected in CaddyUI. This prevents `_acme-challenge` TXT records from landing in a similarly named or split-horizon zone. ([#24](https://github.com/X4Applegate/caddyui/issues/24))
+- Managed DNS automation policies now replace stale policies for the same certificate subjects while preserving unrelated and catch-all policies.
+- DNS-01 provider configuration is included in Caddy's preflight validation, so a missing provider module or invalid configuration is reported before route subtrees are changed.
+- Saving managed DNS with public A-record creation enabled now gives an actionable form error when the selected Caddy server has no public IP, instead of failing later at the provider.
+
+### Added
+
+- Proxy hosts, redirections, and advanced routes can disable **Create public A records** while continuing to use the selected provider and zone for ACME DNS-01. This supports internal and split-DNS services without publishing a WAN address.
+- DNS-01-only mode is persisted across SQLite and MariaDB, preserved as target-specific policy during fleet sync, and shown explicitly in deployment status.
+
 ## [2.23.0] - 2026-08-12 - Amazon Route 53 managed DNS
 
 ### Added

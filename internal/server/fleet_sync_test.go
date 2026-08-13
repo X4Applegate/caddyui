@@ -74,6 +74,7 @@ func TestFleetProxyUpsertTracksSourceAndPreservesTargetPolicy(t *testing.T) {
 	target.DNSZoneID = "target-zone"
 	target.DNSZoneName = "example.com"
 	target.DNSRecordID = "target-record"
+	target.DNSSkipRecord = true
 	if err := models.UpdateProxyHost(s.DB, target); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestFleetProxyUpsertTracksSourceAndPreservesTargetPolicy(t *testing.T) {
 	if got.Domains != "renamed.example.com" || got.ForwardHost != "app-v2" {
 		t.Fatalf("target route = %#v, want renamed app-v2 route", got)
 	}
-	if got.CertificateID != targetCertID || got.DNSProvider != "target-provider" || got.DNSProfileID != "target-profile" || got.DNSRecordID != "target-record" {
+	if got.CertificateID != targetCertID || got.DNSProvider != "target-provider" || got.DNSProfileID != "target-profile" || got.DNSRecordID != "target-record" || !got.DNSSkipRecord {
 		t.Fatalf("target-specific policy was overwritten: %#v", got)
 	}
 
