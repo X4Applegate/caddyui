@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.25.1] - 2026-08-14 - SQLite upgrade hotfix
+
+### Fixed
+
+- Existing SQLite installations now add the new analytics `server_id` and `server_name` columns before creating the fleet-attribution index. This fixes the CaddyUI startup crash introduced by v2.25.0 while preserving existing analytics rows as legacy/unattributed data.
+- Added a regression test that opens and migrates the pre-v2.25.0 analytics schema, verifies the original event data, and confirms the new index is created.
+
 ## [2.25.0] - 2026-08-14 - Fleet observability and certificate lifecycle
 
 ### Added
