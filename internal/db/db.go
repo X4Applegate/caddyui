@@ -155,7 +155,6 @@ CREATE TABLE IF NOT EXISTS access_events (
 );
 CREATE INDEX IF NOT EXISTS idx_access_events_ts      ON access_events(ts);
 CREATE INDEX IF NOT EXISTS idx_access_events_host_ts ON access_events(host, ts);
-CREATE INDEX IF NOT EXISTS idx_access_events_server_ts ON access_events(server_id, ts);
 -- v2.9.206: indexes for status-code breakdown card and unique-visitor count.
 -- (path, ts) intentionally omitted — path values are high-cardinality and the
 -- index would be larger than the table itself; top-paths queries already use
@@ -2175,7 +2174,9 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("add server_name to access_events: %w", err)
 		}
 	}
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_access_events_server_ts ON access_events(server_id, ts)`)
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_access_events_server_ts ON access_events(server_id, ts)`); err != nil {
+		return fmt.Errorf("create access_events server index: %w", err)
+	}
 
 	return nil
 }
