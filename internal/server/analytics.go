@@ -182,6 +182,7 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 		if cfg.Enabled {
 			if err := cli.EnableAccessLogs(cfg.Target, caddy.AccessLogOptions{
 				SoftStart: cfg.SoftStart, DialTimeout: cfg.DialTimeout,
+				ServerID: sr.ID, ServerName: sr.Name,
 			}); err != nil {
 				errMsgs = append(errMsgs, fmt.Sprintf("server %q (%s): enable: %v", sr.Name, sr.AdminURL, err))
 				continue
@@ -240,8 +241,7 @@ func (s *Server) userAllowedHosts(u *models.User) ([]string, error) {
 //	  - non-admin → union of owned hosts across every server.
 //
 //	serverID > 0 → scoped to that one server.
-//	  - admin    → every host routed by that server (a *concrete* list so
-//	              the existing per-host-list query paths apply).
+//	  - admin    → nil host filter; access_events.server_id is authoritative.
 //	  - non-admin → intersection of "owned" with "routed by this server"
 //	              (i.e. the same ListProxyHosts/ListRawRoutes call with
 //	              viewerID + isAdmin=false).
@@ -253,9 +253,10 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 		return []string{}, nil
 	}
 	isAdmin := u.Role == models.RoleAdmin
-	// Cross-fleet + admin → no filter. Single-query hot path through
-	// AccessTotalsSince("") / TopHostsSince(...).
-	if isAdmin && serverID == 0 {
+	// Admin views never infer node ownership from current route hostnames.
+	// The stamped access_events.server_id is authoritative, including for
+	// shared hostnames and routes that were changed after an event arrived.
+	if isAdmin {
 		return nil, nil
 	}
 
@@ -279,21 +280,11 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 		}
 	}
 
-	// viewerID is only consulted when isAdmin=false. For admin + specific
-	// server we pass ID=0 + isAdmin=true so the ListProxyHosts path returns
-	// every row; non-admin passes the user's ID + isAdmin=false so only
-	// owned rows come back.
-	viewerID := int64(0)
-	queryAsAdmin := true
-	var peers []int64
-	if !isAdmin {
-		viewerID = u.ID
-		queryAsAdmin = false
-		// v2.7.4: analytics visibility follows list visibility — if a user can
-		// see a teammate's proxy host on the hosts page, they should also see
-		// its traffic in the analytics picker.
-		peers, _ = models.GroupPeerIDs(s.DB, u.ID)
-	}
+	viewerID := u.ID
+	queryAsAdmin := false
+	// Analytics visibility follows list visibility — if a user can see a
+	// teammate's proxy host, they should also see its traffic.
+	peers, _ := models.GroupPeerIDs(s.DB, u.ID)
 
 	var hosts []string
 	seen := make(map[string]bool)
@@ -347,14 +338,28 @@ func (s *Server) scopedHostsForAnalytics(u *models.User, serverID int64) ([]stri
 	return hosts, nil
 }
 
+// analyticsServerScope resolves the inline server filter. Bare analytics
+// pages follow the globally selected server; an explicit "all" requests the
+// cross-fleet view.
+func (s *Server) analyticsServerScope(r *http.Request) int64 {
+	if !r.URL.Query().Has("server") {
+		return s.currentServerID(r)
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("server"))
+	if raw == "" || raw == "0" || raw == "all" {
+		return 0
+	}
+	serverID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || serverID <= 0 {
+		return 0
+	}
+	return serverID
+}
+
 // getAnalytics renders the /analytics overview page. Shows totals (today +
 // last 7d), the "live now" visitor count, a per-host table, a 24-hour
 // hourly sparkline, and a status-code breakdown. Scope is admin-see-all
 // vs non-admin-see-only-my-hosts, driven by scopedHostsForAnalytics above.
-//
-// v2.7.1 added the `?server=<id>` query-param for the inline server filter
-// — an admin with 5+ Caddy servers can now narrow the dashboard to one
-// server without changing their global CurrentServer selection.
 func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 
@@ -364,21 +369,7 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	// "show me what's happening on the server I picked." Explicit
 	// ?server=all (or ?server=0 for back-compat with old bookmarks)
 	// still gets you the cross-fleet view.
-	var serverScopeID int64
-	q := r.URL.Query()
-	if q.Has("server") {
-		raw := strings.TrimSpace(q.Get("server"))
-		switch raw {
-		case "", "0", "all":
-			serverScopeID = 0
-		default:
-			if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
-				serverScopeID = n
-			}
-		}
-	} else {
-		serverScopeID = s.currentServerID(r)
-	}
+	serverScopeID := s.analyticsServerScope(r)
 
 	allowedHosts, err := s.scopedHostsForAnalytics(u, serverScopeID)
 	if err != nil {
@@ -420,44 +411,44 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	)
 	if !scoped {
 		var err2 error
-		todayTotals, err2 = models.AccessTotalsSince(s.DB, todayStart, "")
+		todayTotals, err2 = models.AccessTotalsSince(s.DB, todayStart, "", serverScopeID)
 		if err2 != nil {
 			log.Printf("analytics: AccessTotalsSince(today): %v", err2)
 		}
-		sevenTotals, err2 = models.AccessTotalsSince(s.DB, sevenDaysAgo, "")
+		sevenTotals, err2 = models.AccessTotalsSince(s.DB, sevenDaysAgo, "", serverScopeID)
 		if err2 != nil {
 			log.Printf("analytics: AccessTotalsSince(7d): %v", err2)
 		}
-		liveVisitors, err2 = models.AccessLiveVisitors(s.DB, 5*time.Minute)
+		liveVisitors, err2 = models.AccessLiveVisitors(s.DB, 5*time.Minute, serverScopeID)
 		if err2 != nil {
 			log.Printf("analytics: AccessLiveVisitors: %v", err2)
 		}
 	} else {
 		for _, h := range allowedHosts {
-			t1, _ := models.AccessTotalsSince(s.DB, todayStart, h)
+			t1, _ := models.AccessTotalsSince(s.DB, todayStart, h, serverScopeID)
 			todayTotals.Views += t1.Views
 			todayTotals.Visitors += t1.Visitors
-			t7, _ := models.AccessTotalsSince(s.DB, sevenDaysAgo, h)
+			t7, _ := models.AccessTotalsSince(s.DB, sevenDaysAgo, h, serverScopeID)
 			sevenTotals.Views += t7.Views
 			sevenTotals.Visitors += t7.Visitors
 		}
 		// Live: distinct IPs across owned hosts. Per-host counts aren't
 		// additive (an IP visiting two hosts would double-count), so we
 		// union in code rather than sum.
-		liveVisitors = s.liveVisitorsAcrossHosts(allowedHosts, 5*time.Minute)
+		liveVisitors = s.liveVisitorsAcrossHosts(allowedHosts, 5*time.Minute, serverScopeID)
 	}
 
 	// Per-host table: top 50 by views in last 7 days.
 	var hostRows []models.HostStats
 	if !scoped {
 		var err2 error
-		hostRows, err2 = models.TopHostsSince(s.DB, sevenDaysAgo, 50)
+		hostRows, err2 = models.TopHostsSince(s.DB, sevenDaysAgo, 50, serverScopeID)
 		if err2 != nil {
 			log.Printf("analytics: TopHostsSince: %v", err2)
 		}
 	} else {
 		var err2 error
-		hostRows, err2 = models.HostStatsForHosts(s.DB, sevenDaysAgo, allowedHosts)
+		hostRows, err2 = models.HostStatsForHosts(s.DB, sevenDaysAgo, allowedHosts, serverScopeID)
 		if err2 != nil {
 			log.Printf("analytics: HostStatsForHosts: %v", err2)
 		}
@@ -468,7 +459,7 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	var rawBuckets []models.HourlyBucket
 	if !scoped {
 		var err2 error
-		rawBuckets, err2 = models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "")
+		rawBuckets, err2 = models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "", serverScopeID)
 		if err2 != nil {
 			log.Printf("analytics: AccessBuckets(unscoped): %v", err2)
 		}
@@ -477,7 +468,7 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		// single host string, so loop and merge by hour.
 		merged := make(map[int64]models.HourlyBucket)
 		for _, h := range allowedHosts {
-			bs, _ := models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, h)
+			bs, _ := models.AccessBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, h, serverScopeID)
 			for _, b := range bs {
 				key := b.Hour.Unix()
 				m := merged[key]
@@ -496,11 +487,11 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	// Bandwidth (bytes_out) sparkline — same window and bucket as request sparkline.
 	var bwBuckets []models.BandwidthBucket
 	if !scoped {
-		bwBuckets, _ = models.BandwidthBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "")
+		bwBuckets, _ = models.BandwidthBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, "", serverScopeID)
 	} else {
 		bwMap := make(map[int64]models.BandwidthBucket)
 		for _, h := range allowedHosts {
-			bs, _ := models.BandwidthBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, h)
+			bs, _ := models.BandwidthBuckets(s.DB, twentyFourHoursAgo, now, bucketSec, h, serverScopeID)
 			for _, b := range bs {
 				key := b.Hour.Unix()
 				m := bwMap[key]
@@ -531,13 +522,13 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	var statusBuckets models.StatusBuckets
 	if !scoped {
 		var err2 error
-		statusBuckets, err2 = models.StatusBucketsSince(s.DB, sevenDaysAgo, "")
+		statusBuckets, err2 = models.StatusBucketsSince(s.DB, sevenDaysAgo, "", serverScopeID)
 		if err2 != nil {
 			log.Printf("analytics: StatusBucketsSince(unscoped): %v", err2)
 		}
 	} else {
 		for _, h := range allowedHosts {
-			b, err2 := models.StatusBucketsSince(s.DB, sevenDaysAgo, h)
+			b, err2 := models.StatusBucketsSince(s.DB, sevenDaysAgo, h, serverScopeID)
 			if err2 != nil {
 				log.Printf("analytics: StatusBucketsSince(%s): %v", h, err2)
 				continue
@@ -602,8 +593,9 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 	}
 	u := s.currentUser(r)
 	isAdmin := u != nil && u.Role == models.RoleAdmin
+	serverScopeID := s.analyticsServerScope(r)
 	if !isAdmin {
-		allowed, err := s.userAllowedHosts(u)
+		allowed, err := s.scopedHostsForAnalytics(u, serverScopeID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -640,8 +632,8 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 	prevSince := since.Add(-window) // start of previous period
 	prevTo := since                 // = start of current period
 
-	totals, _ := models.AccessTotalsBetween(s.DB, since, now, host)
-	prevTotals, _ := models.AccessTotalsBetween(s.DB, prevSince, prevTo, host)
+	totals, _ := models.AccessTotalsBetween(s.DB, since, now, host, serverScopeID)
+	prevTotals, _ := models.AccessTotalsBetween(s.DB, prevSince, prevTo, host, serverScopeID)
 
 	var viewsChange, visitorsChange int
 	var viewsUp, visitorsUp bool
@@ -667,34 +659,43 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 	if visitorsChangeAbs < 0 {
 		visitorsChangeAbs = -visitorsChangeAbs
 	}
-	paths, _ := models.TopPaths(s.DB, since, host, 20)
-	clients, _ := models.TopClientIPs(s.DB, since, host, 20)
-	status, _ := models.StatusBucketsSince(s.DB, since, host)
-	rtStats, err2 := models.ResponseTimeSince(s.DB, since, host)
+	paths, _ := models.TopPaths(s.DB, since, host, 20, serverScopeID)
+	clients, _ := models.TopClientIPs(s.DB, since, host, 20, serverScopeID)
+	status, _ := models.StatusBucketsSince(s.DB, since, host, serverScopeID)
+	rtStats, err2 := models.ResponseTimeSince(s.DB, since, host, serverScopeID)
 	if err2 != nil {
 		log.Printf("analytics: ResponseTimeSince(%s): %v", host, err2)
 	}
-	bandwidth, err3 := models.BandwidthSince(s.DB, since, host)
+	bandwidth, err3 := models.BandwidthSince(s.DB, since, host, serverScopeID)
 	if err3 != nil {
 		log.Printf("analytics: BandwidthSince(%s): %v", host, err3)
 	}
-	errorPaths, err4 := models.TopErrorPaths(s.DB, since, host, 15)
+	errorPaths, err4 := models.TopErrorPaths(s.DB, since, host, 15, serverScopeID)
 	if err4 != nil {
 		log.Printf("analytics: TopErrorPaths(%s): %v", host, err4)
 	}
-	browsers, _ := models.TopBrowsers(s.DB, since, host, 8)
+	browsers, _ := models.TopBrowsers(s.DB, since, host, 8, serverScopeID)
 
 	bucketSec := int64(3600) // 1h buckets regardless of window — keeps the
 	if window >= 30*24*time.Hour {
 		bucketSec = 86400 // ...except 30d+ views where hourly would be 720 bars.
 	}
-	rawBuckets, _ := models.AccessBuckets(s.DB, since, now, bucketSec, host)
+	rawBuckets, _ := models.AccessBuckets(s.DB, since, now, bucketSec, host, serverScopeID)
 	buckets := fillBuckets(rawBuckets, since, now, bucketSec)
+	serverScopeName := "All servers"
+	if serverScopeID > 0 {
+		serverScopeName = fmt.Sprintf("Server %d", serverScopeID)
+		if server, _ := models.GetCaddyServer(s.DB, serverScopeID); server != nil {
+			serverScopeName = server.Name
+		}
+	}
 
 	s.render(w, r, "analytics_host.html", map[string]any{
 		"User":              u,
 		"IsAdmin":           isAdmin,
 		"Host":              host,
+		"SelectedServerID":  serverScopeID,
+		"ServerScopeName":   serverScopeName,
 		"Window":            window,
 		"WindowLabel":       formatWindow(window),
 		"Totals":            totals,
@@ -721,7 +722,7 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 // liveVisitorsAcrossHosts counts distinct client IPs on the given host
 // list over the last `window`. Used by the non-admin path of getAnalytics
 // so an IP visiting two owned hosts is counted once, not twice.
-func (s *Server) liveVisitorsAcrossHosts(hosts []string, window time.Duration) int {
+func (s *Server) liveVisitorsAcrossHosts(hosts []string, window time.Duration, serverIDs ...int64) int {
 	if len(hosts) == 0 {
 		return 0
 	}
@@ -736,6 +737,10 @@ func (s *Server) liveVisitorsAcrossHosts(hosts []string, window time.Duration) i
 		args = append(args, h)
 	}
 	q := `SELECT COUNT(DISTINCT client_ip) FROM access_events WHERE ts >= ? AND host IN (` + string(placeholders) + `)`
+	if len(serverIDs) > 0 && serverIDs[0] > 0 {
+		q += ` AND server_id = ?`
+		args = append(args, serverIDs[0])
+	}
 	var n int
 	if err := s.DB.QueryRow(q, args...).Scan(&n); err != nil {
 		return 0
@@ -1005,6 +1010,10 @@ func (s *Server) exportAnalyticsCSV(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
+	var serverID int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("server")); raw != "" && raw != "all" && raw != "0" {
+		serverID, _ = strconv.ParseInt(raw, 10, 64)
+	}
 
 	// Non-admins: verify they own the requested host.
 	if !isAdmin && host != "" {
@@ -1031,7 +1040,7 @@ func (s *Server) exportAnalyticsCSV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-	rows, err := models.ExportAccessEvents(s.DB, since, host, 50000)
+	rows, err := models.ExportAccessEvents(s.DB, since, host, 50000, serverID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -1045,10 +1054,11 @@ func (s *Server) exportAnalyticsCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s_%dd.csv"`, fname, days))
 
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"timestamp", "host", "path", "method", "status", "client_ip", "user_agent", "duration_ms", "bytes_out"})
+	_ = cw.Write([]string{"timestamp", "server_id", "server_name", "host", "path", "method", "status", "client_ip", "user_agent", "duration_ms", "bytes_out"})
 	for _, e := range rows {
 		_ = cw.Write([]string{
 			e.TS.UTC().Format(time.RFC3339),
+			strconv.FormatInt(e.ServerID, 10), e.ServerName,
 			e.Host, e.Path, e.Method,
 			strconv.Itoa(e.Status),
 			e.ClientIP, e.UserAgent,

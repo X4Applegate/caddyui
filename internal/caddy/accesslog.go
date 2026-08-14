@@ -14,6 +14,14 @@ import (
 // toggles don't leak duplicate loggers into the Caddy config.
 const AccessLogLoggerName = "caddyui_access"
 
+// CertificateLogLoggerName is the low-volume, always-on stream CaddyUI uses
+// to observe certificate issuance and renewal. RuntimeLogLoggerName is the
+// temporary, admin-controlled stream used by the Server Logs page.
+const (
+	CertificateLogLoggerName = "caddyui_certificates"
+	RuntimeLogLoggerName     = "caddyui_runtime"
+)
+
 // AccessLogDeleteMethod is exposed so callers can tell what HTTP verb the
 // cleanup path uses, mostly for tests. Admin API DELETEs are idempotent
 // (404 is fine), which is why DisableAccessLogs doesn't treat "not found"
@@ -27,6 +35,64 @@ const AccessLogDeleteMethod = http.MethodDelete
 type AccessLogOptions struct {
 	SoftStart   bool
 	DialTimeout time.Duration
+	ServerID    int64
+	ServerName  string
+}
+
+func networkLogWriter(target string, opts AccessLogOptions) map[string]any {
+	writer := map[string]any{
+		"output":  "net",
+		"address": target,
+	}
+	if opts.SoftStart {
+		writer["soft_start"] = true
+	}
+	if opts.DialTimeout > 0 {
+		writer["dial_timeout"] = opts.DialTimeout.String()
+	}
+	return writer
+}
+
+// annotatedJSONEncoder stamps every forwarded entry with the CaddyUI fleet
+// server that produced it. The append encoder is part of Caddy core and uses
+// a JSON encoder underneath, so the ingest path receives normal structured
+// logs plus stable source metadata without changing route handlers.
+func annotatedJSONEncoder(opts AccessLogOptions) map[string]any {
+	fields := map[string]any{
+		"caddyui_server_id":   opts.ServerID,
+		"caddyui_server_name": strings.TrimSpace(opts.ServerName),
+	}
+	return map[string]any{
+		"format": "append",
+		"fields": fields,
+		"wrap":   map[string]any{"format": "json"},
+	}
+}
+
+// installNamedLog creates or replaces one entry below logging.logs while
+// preserving unrelated loggers. Fresh Caddy configs often have no logging
+// tree at all, in which case the path API cannot traverse the missing parent;
+// bootstrap the parent object and merge any loggers that do exist.
+func (c *Client) installNamedLog(name string, logger map[string]any) error {
+	if err := c.PutPath("/config/logging/logs/"+name, logger); err == nil {
+		return nil
+	} else if !isCaddyMissingPathErr(err.Error()) {
+		return err
+	}
+
+	logs := map[string]any{name: logger}
+	if cfg, _, cfgErr := c.FetchConfig(); cfgErr == nil {
+		if logging, _ := cfg["logging"].(map[string]any); logging != nil {
+			if existing, _ := logging["logs"].(map[string]any); existing != nil {
+				for key, value := range existing {
+					if key != name {
+						logs[key] = value
+					}
+				}
+			}
+		}
+	}
+	return c.PutPath("/config/logging", map[string]any{"logs": logs})
 }
 
 // EnableAccessLogs configures the live Caddy instance to stream its access
@@ -59,53 +125,13 @@ func (c *Client) EnableAccessLogs(target string, opts AccessLogOptions) error {
 
 	// Step 1: install the net-writer logger. Use PUT on the specific key so
 	// the call is create-or-replace — PATCH would 404 on first run.
-	writer := map[string]any{
-		"output":  "net",
-		"address": target,
-	}
-	if opts.SoftStart {
-		writer["soft_start"] = true
-	}
-	if opts.DialTimeout > 0 {
-		writer["dial_timeout"] = opts.DialTimeout.String()
-	}
 	logger := map[string]any{
-		"writer": writer,
-		"encoder": map[string]any{
-			"format": "json",
-		},
+		"writer":  networkLogWriter(target, opts),
+		"encoder": annotatedJSONEncoder(opts),
 		"include": []string{"http.log.access"},
 	}
-	if err := c.PutPath("/config/logging/logs/"+AccessLogLoggerName, logger); err != nil {
-		// v2.7.1: Caddy's admin API can't traverse through a null parent.
-		// On a fresh Caddy (no `logging` key at all, or `logging` present
-		// but `logging.logs` missing), the call above returns
-		//   {"error":"invalid traversal path at: config/logging/logs"}
-		// Bootstrap by PUT-ing the whole `/config/logging` object with our
-		// logger nested inside. We fetch the current config first so we
-		// preserve any other loggers the admin might have configured
-		// through the Caddyfile or a prior patch — only the null-parent
-		// case hits this fallback, but the merge costs nothing in the
-		// non-null path and makes the call idempotent either way.
-		if !isCaddyMissingPathErr(err.Error()) {
-			return fmt.Errorf("install access-log logger: %w", err)
-		}
-		logs := map[string]any{AccessLogLoggerName: logger}
-		if cfg, _, cfgErr := c.FetchConfig(); cfgErr == nil {
-			if logging, _ := cfg["logging"].(map[string]any); logging != nil {
-				if existing, _ := logging["logs"].(map[string]any); existing != nil {
-					for k, v := range existing {
-						if k == AccessLogLoggerName {
-							continue // our own key wins, skip the old one
-						}
-						logs[k] = v
-					}
-				}
-			}
-		}
-		if err2 := c.PutPath("/config/logging", map[string]any{"logs": logs}); err2 != nil {
-			return fmt.Errorf("install access-log logger (bootstrap logging tree): %w", err2)
-		}
+	if err := c.installNamedLog(AccessLogLoggerName, logger); err != nil {
+		return fmt.Errorf("install access-log logger: %w", err)
 	}
 
 	// Step 2+3: fetch the server names, then patch each one's logs block.
@@ -129,6 +155,64 @@ func (c *Client) EnableAccessLogs(target string, opts AccessLogOptions) error {
 		if err := c.PutPath("/config/apps/http/servers/"+srv+"/logs", logsCfg); err != nil {
 			return fmt.Errorf("enable logs on server %q: %w", srv, err)
 		}
+	}
+	return nil
+}
+
+// EnableCertificateLogs duplicates Caddy's TLS runtime log namespace to the
+// CaddyUI ingest socket. Caddy's default logger remains unchanged, so normal
+// container/journal logs continue to receive the same messages. The stream is
+// intentionally INFO-level and low-volume; CaddyUI persists only the latest
+// lifecycle state per server and certificate identifier.
+func (c *Client) EnableCertificateLogs(target string, opts AccessLogOptions) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("EnableCertificateLogs: target is empty")
+	}
+	logger := map[string]any{
+		"writer":  networkLogWriter(target, opts),
+		"encoder": annotatedJSONEncoder(opts),
+		"include": []string{"tls"},
+		"level":   "INFO",
+	}
+	if err := c.installNamedLog(CertificateLogLoggerName, logger); err != nil {
+		return fmt.Errorf("install certificate logger: %w", err)
+	}
+	return nil
+}
+
+// EnableRuntimeLogs installs a temporary duplicate stream for operational
+// Caddy logs. Access logs are excluded because they already have a dedicated
+// analytics stream; TLS logs are excluded because the certificate monitor
+// supplies them continuously. No existing logger is replaced or redirected.
+func (c *Client) EnableRuntimeLogs(target, level string, opts AccessLogOptions) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("EnableRuntimeLogs: target is empty")
+	}
+	level = strings.ToUpper(strings.TrimSpace(level))
+	switch level {
+	case "DEBUG", "INFO", "WARN", "ERROR":
+	default:
+		level = "INFO"
+	}
+	logger := map[string]any{
+		"writer":  networkLogWriter(target, opts),
+		"encoder": annotatedJSONEncoder(opts),
+		"exclude": []string{"http.log.access", "tls"},
+		"level":   level,
+	}
+	if err := c.installNamedLog(RuntimeLogLoggerName, logger); err != nil {
+		return fmt.Errorf("install runtime logger: %w", err)
+	}
+	return nil
+}
+
+// DisableRuntimeLogs stops the temporary operational stream. It does not
+// touch Caddy's default logger, access analytics, or certificate monitoring.
+func (c *Client) DisableRuntimeLogs() error {
+	if err := c.deletePathIgnoreMissing("/config/logging/logs/" + RuntimeLogLoggerName); err != nil {
+		return fmt.Errorf("remove runtime logger: %w", err)
 	}
 	return nil
 }

@@ -23,6 +23,10 @@
 
   <!-- Filter bar -->
   <div class="flex items-center gap-3">
+    <select id="filter-server" class="text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <option value="all" {{if eq .SelectedServerID 0}}selected{{end}}>All servers</option>
+      {{range .AllServers}}<option value="{{.ID}}" {{if eq $.SelectedServerID .ID}}selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
     <input id="filter-host" type="text" placeholder="Filter by host…"
       class="text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white w-48 focus:outline-none focus:ring-2 focus:ring-blue-500">
     <select id="filter-status" class="text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -37,10 +41,11 @@
 
   <!-- Table -->
   <div class="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm">
-    <table class="w-full text-sm">
+    <table class="w-full text-sm min-w-[1080px]">
       <thead class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
         <tr class="text-left text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">
           <th class="px-4 py-3 font-medium">Time</th>
+          <th class="px-4 py-3 font-medium">Server</th>
           <th class="px-4 py-3 font-medium">Method</th>
           <th class="px-4 py-3 font-medium">Host</th>
           <th class="px-4 py-3 font-medium">Path</th>
@@ -53,8 +58,9 @@
       <tbody id="traffic-tbody" class="divide-y divide-gray-100 dark:divide-gray-800 font-mono text-xs">
         {{range .Events}}
         <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors event-row"
-            data-host="{{.Host}}" data-status="{{.Status}}">
+            data-id="{{.ID}}" data-host="{{.Host}}" data-status="{{.Status}}" data-server-id="{{.ServerID}}">
           <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap">{{.TS.Format "15:04:05"}}</td>
+          <td class="px-4 py-2.5 text-gray-600 dark:text-gray-300 whitespace-nowrap">{{if .ServerName}}{{.ServerName}}{{else if .ServerID}}Server {{.ServerID}}{{else}}Legacy / unknown{{end}}</td>
           <td class="px-4 py-2.5">
             <span class="px-1.5 py-0.5 rounded font-medium text-[11px] {{if eq .Method "GET"}}bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400{{else if eq .Method "POST"}}bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400{{else if eq .Method "DELETE"}}bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400{{else}}bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300{{end}}">
               {{.Method}}
@@ -72,14 +78,12 @@
         {{end}}
       </tbody>
     </table>
-    {{if not .Events}}
-    <div id="empty-state" class="py-16 text-center text-gray-400 dark:text-gray-500">
+    <div id="empty-state" class="py-16 text-center text-gray-400 dark:text-gray-500"{{if .Events}} style="display:none"{{end}}>
       <svg class="w-10 h-10 mx-auto mb-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
       </svg>
       <p class="text-sm">No traffic yet — waiting for requests…</p>
     </div>
-    {{end}}
   </div>
   <p class="text-xs text-gray-400 dark:text-gray-600 text-right">Showing up to 500 most recent rows · older rows pruned automatically</p>
 </div>
@@ -93,6 +97,7 @@
   const clearBtn = document.getElementById('clear-btn');
   const filterHost = document.getElementById('filter-host');
   const filterStatus = document.getElementById('filter-status');
+  const filterServer = document.getElementById('filter-server');
   const emptyState = document.getElementById('empty-state');
 
   let paused = false;
@@ -139,19 +144,27 @@
     return n+' B';
   }
 
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+  }
+
   function buildRow(e) {
     const tr = document.createElement('tr');
     tr.className = 'hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors event-row new-row';
     tr.dataset.host = e.host;
     tr.dataset.status = String(e.status);
     tr.dataset.id = String(e.id);
+    tr.dataset.serverId = String(e.server_id || 0);
     tr.innerHTML = `
       <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap">${fmtTime(e.ts)}</td>
-      <td class="px-4 py-2.5"><span class="px-1.5 py-0.5 rounded font-medium text-[11px] ${methodClass(e.method)}">${e.method}</span></td>
-      <td class="px-4 py-2.5 text-gray-800 dark:text-gray-200 max-w-[180px] truncate">${e.host}</td>
-      <td class="px-4 py-2.5 text-gray-600 dark:text-gray-300 max-w-[260px] truncate">${e.path}</td>
+      <td class="px-4 py-2.5 text-gray-600 dark:text-gray-300 whitespace-nowrap">${esc(e.server_name || (e.server_id ? 'Server ' + e.server_id : 'Legacy / unknown'))}</td>
+      <td class="px-4 py-2.5"><span class="px-1.5 py-0.5 rounded font-medium text-[11px] ${methodClass(e.method)}">${esc(e.method)}</span></td>
+      <td class="px-4 py-2.5 text-gray-800 dark:text-gray-200 max-w-[180px] truncate">${esc(e.host)}</td>
+      <td class="px-4 py-2.5 text-gray-600 dark:text-gray-300 max-w-[260px] truncate">${esc(e.path)}</td>
       <td class="px-4 py-2.5"><span class="font-bold ${statusClass(e.status)}">${e.status}</span></td>
-      <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">${e.client_ip}</td>
+      <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">${esc(e.client_ip)}</td>
       <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">${e.duration_ms}ms</td>
       <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400">${fmtBytes(e.bytes_out)}</td>
     `;
@@ -179,7 +192,7 @@
 
   function connect() {
     if (es) es.close();
-    es = new EventSource('/api/live-traffic/stream?since=' + cursor);
+    es = new EventSource('/api/live-traffic/stream?since=' + cursor + '&server=' + encodeURIComponent(filterServer.value));
     const dot = document.querySelector('#status-dot span.rounded-full');
     const label = document.getElementById('status-dot');
 
@@ -215,6 +228,16 @@
   }
 
   connect();
+
+  filterServer.addEventListener('change', () => {
+    tbody.querySelectorAll('tr.event-row').forEach(tr => tr.remove());
+    cursor = 0;
+    const url = new URL(window.location.href);
+    url.searchParams.set('server', filterServer.value);
+    window.history.replaceState({}, '', url);
+    connect();
+    updateCount();
+  });
 
   pauseBtn.addEventListener('click', () => {
     paused = !paused;

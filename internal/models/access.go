@@ -16,6 +16,8 @@ import (
 type AccessEvent struct {
 	ID         int64
 	TS         time.Time
+	ServerID   int64
+	ServerName string
 	Host       string
 	Path       string
 	Method     string
@@ -33,9 +35,9 @@ type AccessEvent struct {
 // well under SQLite's 1000+ inserts/sec capacity.
 func InsertAccessEvent(db *sql.DB, e AccessEvent) error {
 	_, err := db.Exec(`
-        INSERT INTO access_events (ts, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.TS.Unix(), e.Host, e.Path, e.Method, e.Status, e.ClientIP, e.UserAgent, e.DurationMs, e.BytesOut)
+        INSERT INTO access_events (ts, server_id, server_name, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.TS.Unix(), e.ServerID, e.ServerName, e.Host, e.Path, e.Method, e.Status, e.ClientIP, e.UserAgent, e.DurationMs, e.BytesOut)
 	return err
 }
 
@@ -89,7 +91,28 @@ func hostMatchClause(host string) (string, []any) {
 	return " AND host = ?", []any{host}
 }
 
-func AccessTotalsSince(db *sql.DB, since time.Time, host string) (AccessTotals, error) {
+func requestedServerID(serverIDs []int64) int64 {
+	if len(serverIDs) > 0 && serverIDs[0] > 0 {
+		return serverIDs[0]
+	}
+	return 0
+}
+
+func serverMatchClause(serverID int64) (string, []any) {
+	if serverID <= 0 {
+		return "", nil
+	}
+	return " AND server_id = ?", []any{serverID}
+}
+
+func AccessTotalsSince(db *sql.DB, since time.Time, host string, serverIDs ...int64) (AccessTotals, error) {
+	serverID := requestedServerID(serverIDs)
+	// The long-term rollup intentionally remains fleet-wide. Server-scoped
+	// views cover the UI's retained raw-event window and read access_events
+	// directly so a host served by multiple nodes is attributed accurately.
+	if serverID > 0 {
+		return accessTotalsFromEvents(db, since, time.Time{}, host, serverID)
+	}
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
 	if !since.UTC().Before(todayStart) {
 		// Window starts today or in the future — events table is fast enough
@@ -113,7 +136,7 @@ func AccessTotalsSince(db *sql.DB, since time.Time, host string) (AccessTotals, 
 
 // accessTotalsFromEvents scans access_events directly. When `to` is the zero
 // value the upper bound is unbounded ("ts >= since" only).
-func accessTotalsFromEvents(db *sql.DB, from, to time.Time, host string) (AccessTotals, error) {
+func accessTotalsFromEvents(db *sql.DB, from, to time.Time, host string, serverIDs ...int64) (AccessTotals, error) {
 	var t AccessTotals
 	q := `SELECT COUNT(*), COUNT(DISTINCT client_ip) FROM access_events WHERE ts >= ?`
 	args := []any{from.Unix()}
@@ -124,6 +147,10 @@ func accessTotalsFromEvents(db *sql.DB, from, to time.Time, host string) (Access
 	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
 		q += hostClause
 		args = append(args, hostArgs...)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	err := db.QueryRow(q, args...).Scan(&t.Views, &t.Visitors)
 	if err == sql.ErrNoRows {
@@ -277,13 +304,17 @@ func AggregateAccessDaily(db *sql.DB) (int, error) {
 // AccessTotalsBetween is a variant of AccessTotalsSince with an explicit
 // end time, for finite windows like "yesterday's visitors" where "now" is
 // the wrong upper bound.
-func AccessTotalsBetween(db *sql.DB, from, to time.Time, host string) (AccessTotals, error) {
+func AccessTotalsBetween(db *sql.DB, from, to time.Time, host string, serverIDs ...int64) (AccessTotals, error) {
 	var t AccessTotals
 	q := `SELECT COUNT(*), COUNT(DISTINCT client_ip) FROM access_events WHERE ts >= ? AND ts < ?`
 	args := []any{from.Unix(), to.Unix()}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	err := db.QueryRow(q, args...).Scan(&t.Views, &t.Visitors)
 	if err == sql.ErrNoRows {
@@ -294,10 +325,15 @@ func AccessTotalsBetween(db *sql.DB, from, to time.Time, host string) (AccessTot
 
 // AccessLiveVisitors returns the distinct-IP count over the last `window`
 // (typically 5 minutes). This powers the "Live now" card on /analytics.
-func AccessLiveVisitors(db *sql.DB, window time.Duration) (int, error) {
+func AccessLiveVisitors(db *sql.DB, window time.Duration, serverIDs ...int64) (int, error) {
 	var n int
-	err := db.QueryRow(`SELECT COUNT(DISTINCT client_ip) FROM access_events WHERE ts >= ?`,
-		time.Now().Add(-window).Unix()).Scan(&n)
+	q := `SELECT COUNT(DISTINCT client_ip) FROM access_events WHERE ts >= ?`
+	args := []any{time.Now().Add(-window).Unix()}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	err := db.QueryRow(q, args...).Scan(&n)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
@@ -319,17 +355,23 @@ type HostStats struct {
 // ordered by view count. Limit caps the returned set. TopPath is filled via
 // a second pass (one query per host) to avoid a correlated subquery that
 // produces empty results in modernc.org/sqlite when no host filter is present.
-func TopHostsSince(db *sql.DB, since time.Time, limit int) ([]HostStats, error) {
+func TopHostsSince(db *sql.DB, since time.Time, limit int, serverIDs ...int64) ([]HostStats, error) {
 	sinceUnix := since.Unix()
+	serverID := requestedServerID(serverIDs)
 	// Step 1: aggregate by host — no correlated subquery, no alias in GROUP BY.
-	rows, err := db.Query(
-		`SELECT host, COUNT(*) AS views, COUNT(DISTINCT client_ip) AS visitors, MAX(ts) AS last_ts
+	q := `SELECT host, COUNT(*) AS views, COUNT(DISTINCT client_ip) AS visitors, MAX(ts) AS last_ts
 		   FROM access_events
-		  WHERE ts >= ?
+		  WHERE ts >= ?`
+	args := []any{sinceUnix}
+	if serverClause, serverArgs := serverMatchClause(serverID); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	q += `
 		  GROUP BY host
 		  ORDER BY views DESC
-		  LIMIT `+strconv.Itoa(limit),
-		sinceUnix)
+		  LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -352,13 +394,19 @@ func TopHostsSince(db *sql.DB, since time.Time, limit int) ([]HostStats, error) 
 	// Runs up to `limit` small indexed lookups — fast on the (host, ts) index.
 	for i := range out {
 		var p string
-		_ = db.QueryRow(
-			`SELECT path FROM access_events
+		pathQuery := `SELECT path FROM access_events
 			  WHERE host = ? AND ts >= ?
+			`
+		pathArgs := []any{out[i].Host, sinceUnix}
+		if serverClause, serverArgs := serverMatchClause(serverID); serverClause != "" {
+			pathQuery += serverClause
+			pathArgs = append(pathArgs, serverArgs...)
+		}
+		pathQuery += `
 			  GROUP BY path
 			  ORDER BY COUNT(*) DESC
-			  LIMIT 1`,
-			out[i].Host, sinceUnix).Scan(&p)
+			  LIMIT 1`
+		_ = db.QueryRow(pathQuery, pathArgs...).Scan(&p)
 		out[i].TopPath = p
 	}
 	return out, nil
@@ -368,7 +416,7 @@ func TopHostsSince(db *sql.DB, since time.Time, limit int) ([]HostStats, error) 
 // the allowed host set (the caller computes it from the user's owned
 // proxy/raw-route rows) and only those hosts are returned. Empty set returns
 // nil (not an error) — a non-admin with no owned sites sees an empty table.
-func HostStatsForHosts(db *sql.DB, since time.Time, hosts []string) ([]HostStats, error) {
+func HostStatsForHosts(db *sql.DB, since time.Time, hosts []string, serverIDs ...int64) ([]HostStats, error) {
 	if len(hosts) == 0 {
 		return nil, nil
 	}
@@ -379,8 +427,20 @@ func HostStatsForHosts(db *sql.DB, since time.Time, hosts []string) ([]HostStats
 		hosts = hosts[:500]
 	}
 	placeholders := make([]byte, 0, len(hosts)*2)
-	args := make([]any, 0, len(hosts)+2)
-	args = append(args, since.Unix(), since.Unix())
+	serverID := requestedServerID(serverIDs)
+	args := make([]any, 0, len(hosts)+4)
+	args = append(args, since.Unix())
+	innerServer := ""
+	outerServer := ""
+	if serverID > 0 {
+		innerServer = ` AND server_id = ?`
+		outerServer = ` AND server_id = ?`
+		args = append(args, serverID)
+	}
+	args = append(args, since.Unix())
+	if serverID > 0 {
+		args = append(args, serverID)
+	}
 	for i, h := range hosts {
 		if i > 0 {
 			placeholders = append(placeholders, ',')
@@ -394,12 +454,12 @@ func HostStatsForHosts(db *sql.DB, since time.Time, hosts []string) ([]HostStats
                COUNT(DISTINCT client_ip) AS visitors,
                COALESCE((
                    SELECT path FROM access_events
-                   WHERE host = outer_e.host AND ts >= ?
+                   WHERE host = outer_e.host AND ts >= ?` + innerServer + `
                    GROUP BY path ORDER BY COUNT(*) DESC LIMIT 1
                ), '') AS top_path,
                MAX(ts) AS last_ts
           FROM access_events outer_e
-         WHERE ts >= ? AND host IN (` + string(placeholders) + `)
+         WHERE ts >= ?` + outerServer + ` AND host IN (` + string(placeholders) + `)
          GROUP BY host
          ORDER BY views DESC`
 	rows, err := db.Query(q, args...)
@@ -435,7 +495,7 @@ type HourlyBucket struct {
 // NOT returned — the caller reconstructs the full series by walking the
 // expected range and filling gaps with zeros. Keeps the query cheap when
 // a long/sparse window would otherwise scan millions of near-empty buckets.
-func AccessBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host string) ([]HourlyBucket, error) {
+func AccessBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host string, serverIDs ...int64) ([]HourlyBucket, error) {
 	if bucketSeconds <= 0 {
 		bucketSeconds = 3600
 	}
@@ -446,9 +506,13 @@ func AccessBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host str
           FROM access_events
          WHERE ts >= ? AND ts < ?`
 	args := []any{bucketSeconds, bucketSeconds, from.Unix(), to.Unix()}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	q += ` GROUP BY 1 ORDER BY 1 ASC`
 	rows, err := db.Query(q, args...)
@@ -478,17 +542,21 @@ type PathStats struct {
 	Views  int
 }
 
-func TopPaths(db *sql.DB, since time.Time, host string, limit int) ([]PathStats, error) {
+func TopPaths(db *sql.DB, since time.Time, host string, limit int, serverIDs ...int64) ([]PathStats, error) {
 	if host == "" {
 		return nil, nil
 	}
-	rows, err := db.Query(`
+	q := `
         SELECT path, method, COUNT(*) AS views
           FROM access_events
-         WHERE ts >= ? AND host = ?
-         GROUP BY path, method
-         ORDER BY views DESC
-         LIMIT `+strconv.Itoa(limit), since.Unix(), host)
+		 WHERE ts >= ? AND host = ?`
+	args := []any{since.Unix(), host}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	q += ` GROUP BY path, method ORDER BY views DESC LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +587,11 @@ type StatusBuckets struct {
 // the past) read past-day buckets from the access_daily rollup and only scan
 // access_events for today, dropping the cost from O(window-rows) to
 // O(today-rows + days-in-window).
-func StatusBucketsSince(db *sql.DB, since time.Time, host string) (StatusBuckets, error) {
+func StatusBucketsSince(db *sql.DB, since time.Time, host string, serverIDs ...int64) (StatusBuckets, error) {
+	serverID := requestedServerID(serverIDs)
+	if serverID > 0 {
+		return statusBucketsFromEvents(db, since, time.Time{}, host, serverID)
+	}
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
 	if !since.UTC().Before(todayStart) {
 		return statusBucketsFromEvents(db, since, time.Time{}, host)
@@ -541,7 +613,7 @@ func StatusBucketsSince(db *sql.DB, since time.Time, host string) (StatusBuckets
 	}, nil
 }
 
-func statusBucketsFromEvents(db *sql.DB, from, to time.Time, host string) (StatusBuckets, error) {
+func statusBucketsFromEvents(db *sql.DB, from, to time.Time, host string, serverIDs ...int64) (StatusBuckets, error) {
 	var b StatusBuckets
 	q := `SELECT
 		COALESCE(SUM(CASE WHEN status >= 200 AND status < 300 THEN 1 ELSE 0 END), 0),
@@ -555,9 +627,13 @@ func statusBucketsFromEvents(db *sql.DB, from, to time.Time, host string) (Statu
 		q += ` AND ts < ?`
 		args = append(args, to.Unix())
 	}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	err := db.QueryRow(q, args...).Scan(&b.S2xx, &b.S3xx, &b.S4xx, &b.S5xx, &b.SOther)
 	if err == sql.ErrNoRows {
@@ -592,7 +668,7 @@ type ClientIPStats struct {
 	Views    int
 }
 
-func TopClientIPs(db *sql.DB, since time.Time, host string, limit int) ([]ClientIPStats, error) {
+func TopClientIPs(db *sql.DB, since time.Time, host string, limit int, serverIDs ...int64) ([]ClientIPStats, error) {
 	q := `
         SELECT client_ip, COUNT(*) AS views
           FROM access_events
@@ -601,6 +677,10 @@ func TopClientIPs(db *sql.DB, since time.Time, host string, limit int) ([]Client
 	if host != "" {
 		q += ` AND host = ?`
 		args = append(args, host)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	q += ` GROUP BY client_ip ORDER BY views DESC LIMIT ` + strconv.Itoa(limit)
 	rows, err := db.Query(q, args...)
@@ -630,30 +710,31 @@ type ResponseTimeStats struct {
 // ResponseTimeSince returns avg/min/max/p95 response times for events in the
 // window. P95 is approximated with a second OFFSET query — close enough for a
 // dashboard panel without a full window-function pass.
-func ResponseTimeSince(db *sql.DB, since time.Time, host string) (ResponseTimeStats, error) {
+func ResponseTimeSince(db *sql.DB, since time.Time, host string, serverIDs ...int64) (ResponseTimeStats, error) {
 	var s ResponseTimeStats
 	args := []any{since.Unix()}
-	hostFilter := ""
+	filter := ""
 	if host != "" {
-		hostFilter = " AND host = ?"
+		filter += " AND host = ?"
 		args = append(args, host)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		filter += serverClause
+		args = append(args, serverArgs...)
 	}
 	err := db.QueryRow(
 		`SELECT COALESCE(AVG(duration_ms),0), COALESCE(MIN(duration_ms),0), COALESCE(MAX(duration_ms),0)
-		   FROM access_events WHERE ts >= ?`+hostFilter, args...).Scan(&s.AvgMs, &s.MinMs, &s.MaxMs)
+		   FROM access_events WHERE ts >= ?`+filter, args...).Scan(&s.AvgMs, &s.MinMs, &s.MaxMs)
 	if err != nil && err != sql.ErrNoRows {
 		return s, err
 	}
 	// P95 approximation: the value at the 95th-percentile index.
 	var count int64
-	_ = db.QueryRow(`SELECT COUNT(*) FROM access_events WHERE ts >= ?`+hostFilter, args...).Scan(&count)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM access_events WHERE ts >= ?`+filter, args...).Scan(&count)
 	if count > 0 {
 		offset := count * 95 / 100
-		p95args := make([]any, len(args)*2)
-		copy(p95args, args)
-		copy(p95args[len(args):], args)
 		_ = db.QueryRow(
-			`SELECT COALESCE(duration_ms,0) FROM access_events WHERE ts >= ?`+hostFilter+
+			`SELECT COALESCE(duration_ms,0) FROM access_events WHERE ts >= ?`+filter+
 				` ORDER BY duration_ms LIMIT 1 OFFSET `+strconv.FormatInt(offset, 10), args...).Scan(&s.P95Ms)
 	}
 	return s, nil
@@ -661,13 +742,17 @@ func ResponseTimeSince(db *sql.DB, since time.Time, host string) (ResponseTimeSt
 
 // BandwidthSince returns the total bytes_out for events newer than since,
 // optionally scoped to a single host.
-func BandwidthSince(db *sql.DB, since time.Time, host string) (int64, error) {
+func BandwidthSince(db *sql.DB, since time.Time, host string, serverIDs ...int64) (int64, error) {
 	var total int64
 	q := `SELECT COALESCE(SUM(bytes_out),0) FROM access_events WHERE ts >= ?`
 	args := []any{since.Unix()}
 	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
 		q += hostClause
 		args = append(args, hostArgs...)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	err := db.QueryRow(q, args...).Scan(&total)
 	if err == sql.ErrNoRows {
@@ -685,7 +770,7 @@ type BandwidthBucket struct {
 // BandwidthBuckets returns equally-sized time buckets of bytes_out between
 // `from` and `to`, each covering `bucketSeconds`. Buckets with zero bytes are
 // NOT returned — caller fills gaps. Same contract as AccessBuckets.
-func BandwidthBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host string) ([]BandwidthBucket, error) {
+func BandwidthBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host string, serverIDs ...int64) ([]BandwidthBucket, error) {
 	if bucketSeconds <= 0 {
 		bucketSeconds = 3600
 	}
@@ -695,9 +780,13 @@ func BandwidthBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host 
           FROM access_events
          WHERE ts >= ? AND ts < ?`
 	args := []any{bucketSeconds, bucketSeconds, from.Unix(), to.Unix()}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	q += ` GROUP BY 1 ORDER BY 1 ASC`
 	rows, err := db.Query(q, args...)
@@ -720,13 +809,19 @@ func BandwidthBuckets(db *sql.DB, from, to time.Time, bucketSeconds int64, host 
 
 // RecentAccessEvents returns the most recent `limit` access events, ordered
 // newest-first. Used by the live traffic feed page and its SSE stream.
-func RecentAccessEvents(db *sql.DB, since int64, limit int) ([]AccessEvent, error) {
-	q := `SELECT id, ts, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out
+func RecentAccessEvents(db *sql.DB, since int64, limit int, serverIDs ...int64) ([]AccessEvent, error) {
+	q := `SELECT id, ts, server_id, server_name, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out
 	        FROM access_events
-	       WHERE id > ?
+	       WHERE id > ?`
+	args := []any{since}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	q += `
 	       ORDER BY id DESC
 	       LIMIT ` + strconv.Itoa(limit)
-	rows, err := db.Query(q, since)
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -735,7 +830,7 @@ func RecentAccessEvents(db *sql.DB, since int64, limit int) ([]AccessEvent, erro
 	for rows.Next() {
 		var e AccessEvent
 		var ts int64
-		if err := rows.Scan(&e.ID, &ts, &e.Host, &e.Path, &e.Method, &e.Status, &e.ClientIP, &e.UserAgent, &e.DurationMs, &e.BytesOut); err != nil {
+		if err := rows.Scan(&e.ID, &ts, &e.ServerID, &e.ServerName, &e.Host, &e.Path, &e.Method, &e.Status, &e.ClientIP, &e.UserAgent, &e.DurationMs, &e.BytesOut); err != nil {
 			return nil, err
 		}
 		e.TS = time.Unix(ts, 0)
@@ -747,14 +842,18 @@ func RecentAccessEvents(db *sql.DB, since int64, limit int) ([]AccessEvent, erro
 // ExportAccessEvents returns up to `limit` access events newer than `since`,
 // optionally scoped to one host. Used by the CSV export endpoint. Ordered
 // oldest-first so the CSV reads chronologically.
-func ExportAccessEvents(db *sql.DB, since time.Time, host string, limit int) ([]AccessEvent, error) {
-	q := `SELECT id, ts, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out
+func ExportAccessEvents(db *sql.DB, since time.Time, host string, limit int, serverIDs ...int64) ([]AccessEvent, error) {
+	q := `SELECT id, ts, server_id, server_name, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out
 	        FROM access_events
 	       WHERE ts >= ?`
 	args := []any{since.Unix()}
-	if host != "" {
-		q += ` AND host = ?`
-		args = append(args, host)
+	if hostClause, hostArgs := hostMatchClause(host); hostClause != "" {
+		q += hostClause
+		args = append(args, hostArgs...)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	q += ` ORDER BY ts ASC LIMIT ` + strconv.Itoa(limit)
 	rows, err := db.Query(q, args...)
@@ -766,7 +865,7 @@ func ExportAccessEvents(db *sql.DB, since time.Time, host string, limit int) ([]
 	for rows.Next() {
 		var e AccessEvent
 		var ts int64
-		if err := rows.Scan(&e.ID, &ts, &e.Host, &e.Path, &e.Method, &e.Status,
+		if err := rows.Scan(&e.ID, &ts, &e.ServerID, &e.ServerName, &e.Host, &e.Path, &e.Method, &e.Status,
 			&e.ClientIP, &e.UserAgent, &e.DurationMs, &e.BytesOut); err != nil {
 			return nil, err
 		}
@@ -785,7 +884,7 @@ type ErrorPathStats struct {
 
 // TopErrorPaths returns the paths+methods with the most 4xx/5xx responses
 // in the window, ordered by error count descending.
-func TopErrorPaths(db *sql.DB, since time.Time, host string, limit int) ([]ErrorPathStats, error) {
+func TopErrorPaths(db *sql.DB, since time.Time, host string, limit int, serverIDs ...int64) ([]ErrorPathStats, error) {
 	q := `SELECT path, method, COUNT(*) AS cnt
 		    FROM access_events
 		   WHERE ts >= ? AND status >= 400`
@@ -793,6 +892,10 @@ func TopErrorPaths(db *sql.DB, since time.Time, host string, limit int) ([]Error
 	if host != "" {
 		q += ` AND host = ?`
 		args = append(args, host)
+	}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
 	}
 	q += ` GROUP BY path, method ORDER BY cnt DESC LIMIT ` + strconv.Itoa(limit)
 	rows, err := db.Query(q, args...)
@@ -930,16 +1033,20 @@ func DomainRequestsTodayForDomains(db *sql.DB, domains []string) (map[string]int
 // by a bucketed key so we don't pull millions of strings into Go.
 // Since SQLite doesn't have a Go-callable UDF from SQL, we fetch the top
 // user_agent strings with their counts and classify them in Go.
-func TopBrowsers(db *sql.DB, since time.Time, host string, limit int) ([]UABucket, error) {
+func TopBrowsers(db *sql.DB, since time.Time, host string, limit int, serverIDs ...int64) ([]UABucket, error) {
 	// Fetch top N distinct user_agent values by count — 200 is enough to cover
 	// all meaningful browsers while keeping the result set small.
-	rows, err := db.Query(`
+	q := `
         SELECT user_agent, COUNT(*) AS cnt
         FROM access_events
-        WHERE ts >= ? AND host = ?
-        GROUP BY user_agent
-        ORDER BY cnt DESC
-        LIMIT 200`, since.Unix(), host)
+		WHERE ts >= ? AND host = ?`
+	args := []any{since.Unix(), host}
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	q += ` GROUP BY user_agent ORDER BY cnt DESC LIMIT 200`
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

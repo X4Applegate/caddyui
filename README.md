@@ -48,6 +48,12 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
+### Fleet observability in v2.25
+
+- **Actual node attribution** — Live Traffic, Analytics, per-host drill-downs, and CSV exports identify the Caddy instance that handled each request, including shared hostnames behind a load balancer.
+- **Ephemeral Server Logs** — administrators can stream structured runtime logs from one managed node at a chosen level. Full capture is memory-only, preserves normal Caddy output, and stops automatically after 15 minutes.
+- **Certificate lifecycle states** — managed ACME certificates show obtaining, renewing, retrying, issued, revoked, and failure states with the latest Caddy message instead of an unconditional healthy badge.
+
 ### What's new in v2.21
 
 - **Fleet file access logs** — independently write native JSON or console access logs to selected Caddy servers with HTTP/HTTPS scope and rotation controls while preserving CaddyUI Visitor Analytics.
@@ -156,11 +162,18 @@ Your Caddy build must include the matching `caddy-dns` provider module. The repo
 
 ### Observability
 
+- **Fleet observability** *(v2.25.0)* — attribute requests to the node that actually handled them, stream temporary in-memory runtime logs from **Observe → Server Logs**, and surface per-node ACME progress/errors from structured Caddy TLS events
 - **Prometheus metrics** *(v2.24.0)* — enable base HTTP metrics, per-host labels, and Caddy 2.11+ catch-all host observation on selected fleet servers. CaddyUI validates each target, preserves metrics it does not own, and shows the protected Admin URL's `/metrics` scrape target
 - **Visitor analytics** *(v2.7.0)* — opt-in per-host traffic counters; top hosts, 24 h sparkline, status-code mix, unique visitors. Per-server filter for multi-Caddy fleets. The Caddy log writer uses soft-start failover so Caddy can boot while CaddyUI is offline
 - **Upstream health** — live health check per proxy; polls Caddy's own admin API so Docker-internal hostnames work correctly
 - **App health** — detects whether the upstream actually responds, not just whether its TCP port is open
 - **Activity log** — every create / edit / delete / sync action is logged with actor, timestamp, and resource
+
+Certificate lifecycle monitoring and Server Logs share the structured ingest
+target configured under **Settings → Analytics**, even when visitor analytics
+is disabled. Every managed Caddy node must be able to reach that private
+host and port (default `caddyui:9019` on the repository Docker network). Do
+not publish the ingest listener to the internet.
 
 ### Operational
 
@@ -459,6 +472,7 @@ edge.
 | `CADDYUI_DB` | `/data/caddyui.db` | Path to the SQLite database |
 | `CADDYUI_DB_DSN` | *(unset)* | MariaDB DSN; required when `CADDYUI_DB_DRIVER=mariadb` |
 | `CADDYUI_LISTEN` | `:8080` | Listen address |
+| `CADDYUI_INGEST_LISTEN` | `:9019` | Structured Caddy log ingest for analytics, certificate lifecycle, and temporary runtime streams; set empty to disable all three |
 | `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy admin API base URL |
 | `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Path to Caddyfile (optional) |
 | `CADDYUI_SYNC_ON_START` | *(unset)* | Set to `1` to push DB state to Caddy on startup |

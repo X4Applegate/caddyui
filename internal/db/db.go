@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS fleet_deployments (
 CREATE TABLE IF NOT EXISTS access_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts INTEGER NOT NULL,
+    server_id INTEGER NOT NULL DEFAULT 0,
+    server_name TEXT NOT NULL DEFAULT '',
     host TEXT NOT NULL DEFAULT '',
     path TEXT NOT NULL DEFAULT '',
     method TEXT NOT NULL DEFAULT '',
@@ -153,6 +155,7 @@ CREATE TABLE IF NOT EXISTS access_events (
 );
 CREATE INDEX IF NOT EXISTS idx_access_events_ts      ON access_events(ts);
 CREATE INDEX IF NOT EXISTS idx_access_events_host_ts ON access_events(host, ts);
+CREATE INDEX IF NOT EXISTS idx_access_events_server_ts ON access_events(server_id, ts);
 -- v2.9.206: indexes for status-code breakdown card and unique-visitor count.
 -- (path, ts) intentionally omitted — path values are high-cardinality and the
 -- index would be larger than the table itself; top-paths queries already use
@@ -183,6 +186,21 @@ CREATE TABLE IF NOT EXISTS access_daily (
     s5xx INTEGER NOT NULL DEFAULT 0,
     s_other INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, host)
+);
+
+-- Latest observed ACME lifecycle state for each certificate identifier on
+-- each Caddy server. Runtime logs remain ephemeral; only this compact status
+-- projection is persisted so issuance failures survive a UI refresh/restart.
+CREATE TABLE IF NOT EXISTS certificate_lifecycle (
+    server_id INTEGER NOT NULL,
+    server_name TEXT NOT NULL DEFAULT '',
+    identifier VARCHAR(255) NOT NULL,
+    phase VARCHAR(32) NOT NULL DEFAULT '',
+    level VARCHAR(16) NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (server_id, identifier)
 );
 
 -- v2.7.4: groups let admin bundle user-role accounts into a team. Every user
@@ -2143,6 +2161,21 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "certificates", "dns_profile_id") {
 		_, _ = db.Exec(`ALTER TABLE certificates ADD COLUMN dns_profile_id TEXT NOT NULL DEFAULT ''`)
 	}
+
+	// Fleet observability: retain the actual Caddy node stamped into each
+	// forwarded access event. Existing rows remain server_id=0 and render as
+	// legacy/unattributed rather than being guessed from hostname ownership.
+	if !columnExists2(db, "access_events", "server_id") {
+		if _, err := db.Exec(`ALTER TABLE access_events ADD COLUMN server_id BIGINT NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add server_id to access_events: %w", err)
+		}
+	}
+	if !columnExists2(db, "access_events", "server_name") {
+		if _, err := db.Exec(`ALTER TABLE access_events ADD COLUMN server_name VARCHAR(255) NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add server_name to access_events: %w", err)
+		}
+	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_access_events_server_ts ON access_events(server_id, ts)`)
 
 	return nil
 }

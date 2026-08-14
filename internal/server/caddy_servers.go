@@ -147,6 +147,14 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "server_create", fmt.Sprintf("server:%d", id), c.Name, true)
+	go func() {
+		if err := s.ReconcileAnalyticsAccessLogs(); err != nil {
+			log.Printf("server create: analytics log monitoring: %v", err)
+		}
+		if err := s.ReconcileCertificateLogs(); err != nil {
+			log.Printf("server create: certificate log monitoring: %v", err)
+		}
+	}()
 	http.Redirect(w, r, "/servers", http.StatusSeeOther)
 }
 
@@ -171,6 +179,7 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	previous := *existing
 	_ = r.ParseForm()
 	existing.Name = strings.TrimSpace(r.FormValue("name"))
 	existing.AdminURL = strings.TrimSpace(r.FormValue("admin_url"))
@@ -202,11 +211,27 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 		renderErr("Admin URL must start with http://, https://, or unix:///")
 		return
 	}
+	if s.caddyLogHub != nil {
+		if _, active := s.caddyLogHub.Capture(id); active {
+			if err := s.disableRuntimeLogCapture(previous); err != nil {
+				renderErr("Stop full server-log capture before changing this server: " + err.Error())
+				return
+			}
+		}
+	}
 	if err := models.UpdateCaddyServer(s.DB, existing); err != nil {
 		renderErr(err.Error())
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "server_update", fmt.Sprintf("server:%d", id), existing.Name, true)
+	go func() {
+		if err := s.ReconcileAnalyticsAccessLogs(); err != nil {
+			log.Printf("server update: analytics log monitoring: %v", err)
+		}
+		if err := s.ReconcileCertificateLogs(); err != nil {
+			log.Printf("server update: certificate log monitoring: %v", err)
+		}
+	}()
 	http.Redirect(w, r, "/servers", http.StatusSeeOther)
 }
 
@@ -221,6 +246,14 @@ func (s *Server) deleteServer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
+	}
+	if s.caddyLogHub != nil {
+		if _, active := s.caddyLogHub.Capture(id); active {
+			if err := s.disableRuntimeLogCapture(*c); err != nil {
+				http.Error(w, "stop full server-log capture before deleting this server: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+		}
 	}
 	if err := models.DeleteCaddyServer(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

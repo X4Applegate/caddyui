@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS fleet_deployments (
 CREATE TABLE IF NOT EXISTS access_events (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     ts BIGINT NOT NULL,
+    server_id BIGINT NOT NULL DEFAULT 0,
+    server_name VARCHAR(255) NOT NULL DEFAULT '',
     host VARCHAR(255) NOT NULL DEFAULT '',
     path TEXT NOT NULL DEFAULT '',
     method VARCHAR(16) NOT NULL DEFAULT '',
@@ -138,8 +140,21 @@ CREATE TABLE IF NOT EXISTS access_events (
     bytes_out BIGINT NOT NULL DEFAULT 0,
     INDEX idx_access_events_ts (ts),
     INDEX idx_access_events_host_ts (host, ts),
+    INDEX idx_access_events_server_ts (server_id, ts),
     INDEX idx_access_events_status_ts (status, ts),
     INDEX idx_access_events_client_ip_ts (client_ip, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS certificate_lifecycle (
+    server_id BIGINT NOT NULL,
+    server_name VARCHAR(255) NOT NULL DEFAULT '',
+    identifier VARCHAR(255) NOT NULL,
+    phase VARCHAR(32) NOT NULL DEFAULT '',
+    level VARCHAR(16) NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (server_id, identifier)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS access_daily (

@@ -36,6 +36,7 @@ var migrationTableOrder = []string{
 	"api_tokens",
 	"config_snapshots",
 	"activity_log",
+	"certificate_lifecycle",
 	"access_daily",
 	"proxy_health",
 	"access_events",

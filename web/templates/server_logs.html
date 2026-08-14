@@ -1,0 +1,220 @@
+{{define "title"}}Server Logs · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4 mb-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Caddy server logs</h1>
+    <p class="text-sm text-ink-500 mt-1 max-w-3xl">
+      Stream structured runtime logs from a managed Caddy node. Full capture is temporary, stays in memory, and stops automatically after {{.CaptureTTLMinutes}} minutes. Caddy's normal container or journal output continues unchanged.
+    </p>
+  </div>
+  <div class="flex items-center gap-2 flex-wrap">
+    <span id="capture-status" class="ui-status ui-status--neutral">Checking…</span>
+    <button id="clear-logs" type="button" class="ui-button ui-button--quiet">Clear screen</button>
+  </div>
+</div>
+
+{{if not .HubAvailable}}
+<div class="rounded-xl border border-red-200 bg-red-50 px-5 py-4 mb-6 text-sm text-red-900">
+  Caddy's log ingest listener is unavailable. Check <code class="font-mono">CADDYUI_INGEST_LISTEN</code> and restart CaddyUI before enabling capture.
+</div>
+{{end}}
+{{if not .Servers}}
+<div class="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 mb-6 text-sm text-amber-900">
+  Add a managed Caddy server before starting runtime log capture.
+</div>
+{{end}}
+
+<div class="ui-panel p-4 mb-4">
+  <div class="flex flex-wrap items-end gap-3">
+    <label class="block min-w-56 flex-1 max-w-md">
+      <span class="block text-xs font-medium text-ink-600 mb-1">Caddy server</span>
+      <select id="log-server" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">
+        {{range .Servers}}
+        <option value="{{.ID}}" {{if eq $.SelectedServerID .ID}}selected{{end}}>{{.Name}} · {{.AdminURL}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="block">
+      <span class="block text-xs font-medium text-ink-600 mb-1">Minimum level</span>
+      <select id="log-level" class="rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">
+        <option value="INFO">Info</option>
+        <option value="DEBUG">Debug</option>
+        <option value="WARN">Warning</option>
+        <option value="ERROR">Error</option>
+      </select>
+    </label>
+    <button id="enable-capture" type="button" class="ui-button ui-button--primary" {{if or (not .HubAvailable) (not .Servers)}}disabled{{end}}>Start full capture</button>
+    <button id="disable-capture" type="button" class="ui-button ui-button--secondary" {{if or (not .HubAvailable) (not .Servers)}}disabled{{end}}>Stop full capture</button>
+  </div>
+  <p id="capture-detail" class="text-xs text-ink-500 mt-3">Certificate issuance and renewal events remain monitored even when full capture is off.</p>
+</div>
+
+<div class="flex flex-wrap items-center gap-3 mb-3">
+  <input id="log-filter" type="search" placeholder="Filter logger, message, or fields…" autocomplete="off"
+    class="min-w-64 flex-1 max-w-xl rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">
+  <select id="visible-level" class="rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white">
+    <option value="">All levels</option>
+    <option value="DEBUG">Debug</option>
+    <option value="INFO">Info</option>
+    <option value="WARN">Warning</option>
+    <option value="ERROR">Error</option>
+  </select>
+  <span id="log-count" class="text-xs text-ink-500 ml-auto">0 entries</span>
+</div>
+
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-x-auto">
+  <table class="w-full text-sm min-w-[980px]">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-4 py-3 font-medium">Time</th>
+        <th class="px-4 py-3 font-medium">Server</th>
+        <th class="px-4 py-3 font-medium">Level</th>
+        <th class="px-4 py-3 font-medium">Logger</th>
+        <th class="px-4 py-3 font-medium">Message</th>
+        <th class="px-4 py-3 font-medium">Fields</th>
+      </tr>
+    </thead>
+    <tbody id="server-log-body" class="divide-y divide-ink-100 font-mono text-xs"></tbody>
+  </table>
+  <div id="server-log-empty" class="py-16 text-center text-sm text-ink-400">Waiting for structured log entries…</div>
+</div>
+
+<script>
+(function() {
+  var server = document.getElementById('log-server');
+  var captureLevel = document.getElementById('log-level');
+  var visibleLevel = document.getElementById('visible-level');
+  var filter = document.getElementById('log-filter');
+  var body = document.getElementById('server-log-body');
+  var empty = document.getElementById('server-log-empty');
+  var count = document.getElementById('log-count');
+  var badge = document.getElementById('capture-status');
+  var detail = document.getElementById('capture-detail');
+  var enable = document.getElementById('enable-capture');
+  var disable = document.getElementById('disable-capture');
+  var source = null;
+  var cursor = 0;
+  var captures = [];
+  var maxRows = 500;
+
+  function selectedID() { return parseInt(server && server.value || '0', 10); }
+
+  function setStatus(message, kind) {
+    badge.textContent = message;
+    badge.className = 'ui-status ' + (kind === 'active' ? 'ui-status--success' : kind === 'error' ? 'ui-status--danger' : 'ui-status--neutral');
+  }
+
+  function refreshStatus() {
+    fetch('/api/server-logs/status', {headers: {'Accept': 'application/json'}})
+      .then(function(response) { return response.json().then(function(data) { return {ok: response.ok, data: data}; }); })
+      .then(function(result) {
+        if (!result.ok || !result.data.available) throw new Error(result.data.error || 'Log ingest unavailable');
+        captures = result.data.captures || [];
+        var active = captures.find(function(item) { return item.server_id === selectedID(); });
+        if (active) {
+          setStatus('Full capture active', 'active');
+          detail.textContent = active.level + ' and above · automatically stops ' + new Date(active.expires_at).toLocaleString();
+        } else {
+          setStatus('Certificate events only', 'neutral');
+          detail.textContent = 'Certificate issuance and renewal events remain monitored even when full capture is off.';
+        }
+      })
+      .catch(function(error) { setStatus(error.message, 'error'); });
+  }
+
+  function post(url) {
+    var form = new URLSearchParams();
+    form.set('server_id', String(selectedID()));
+    form.set('level', captureLevel.value);
+    enable.disabled = true;
+    disable.disabled = true;
+    return fetch(url, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'}, body: form.toString()})
+      .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.error || 'Request failed'); return data; }); })
+      .then(function(data) { refreshStatus(); return data; })
+      .catch(function(error) { setStatus(error.message, 'error'); throw error; })
+      .finally(function() { enable.disabled = false; disable.disabled = false; });
+  }
+
+  function levelClass(level) {
+    if (level === 'ERROR') return 'bg-red-50 text-red-700';
+    if (level === 'WARN') return 'bg-amber-50 text-amber-700';
+    if (level === 'DEBUG') return 'bg-sky-50 text-sky-700';
+    return 'bg-emerald-50 text-emerald-700';
+  }
+
+  function addCell(row, text, className) {
+    var cell = document.createElement('td');
+    cell.className = className || 'px-4 py-2.5 align-top text-ink-600';
+    cell.textContent = text || '—';
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function applyFilter(row) {
+    var query = filter.value.trim().toLowerCase();
+    var level = visibleLevel.value;
+    var show = (!query || (row.dataset.search || '').includes(query)) && (!level || row.dataset.level === level);
+    row.style.display = show ? '' : 'none';
+  }
+
+  function addEntry(entry) {
+    if (body.querySelector('[data-entry-id="' + entry.id + '"]')) return;
+    var row = document.createElement('tr');
+    row.dataset.entryId = String(entry.id);
+    row.dataset.level = entry.level || 'INFO';
+    var fieldText = entry.fields && Object.keys(entry.fields).length ? JSON.stringify(entry.fields) : '';
+    row.dataset.search = ((entry.logger || '') + ' ' + (entry.message || '') + ' ' + fieldText).toLowerCase();
+    row.className = 'hover:bg-ink-50/60 transition';
+    addCell(row, new Date(entry.ts).toLocaleTimeString(), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-500');
+    addCell(row, entry.server_name || ('Server ' + entry.server_id), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-700');
+    var levelCell = addCell(row, '', 'px-4 py-2.5 align-top');
+    var levelBadge = document.createElement('span');
+    levelBadge.className = 'inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ' + levelClass(entry.level);
+    levelBadge.textContent = entry.level || 'INFO';
+    levelCell.appendChild(levelBadge);
+    addCell(row, entry.logger, 'px-4 py-2.5 align-top text-ink-500 whitespace-nowrap');
+    addCell(row, entry.message, 'px-4 py-2.5 align-top text-ink-800 min-w-72');
+    addCell(row, fieldText, 'px-4 py-2.5 align-top text-ink-500 break-all max-w-md');
+    applyFilter(row);
+    body.appendChild(row);
+    while (body.children.length > maxRows) body.removeChild(body.firstChild);
+  }
+
+  function updateCount() {
+    var total = body.children.length;
+    count.textContent = total + (total === 1 ? ' entry' : ' entries');
+    empty.style.display = total ? 'none' : '';
+  }
+
+  function connect() {
+    if (!server || !server.value) return;
+    if (source) source.close();
+    source = new EventSource('/api/server-logs/stream?server=' + encodeURIComponent(server.value) + '&since=' + cursor);
+    source.onmessage = function(event) {
+      var entries;
+      try { entries = JSON.parse(event.data); } catch (_) { return; }
+      if (!Array.isArray(entries)) return;
+      entries.forEach(function(entry) { if (entry.id > cursor) cursor = entry.id; addEntry(entry); });
+      updateCount();
+    };
+    source.onerror = function() { if (!captures.length) setStatus('Stream reconnecting…', 'error'); };
+  }
+
+  if (server) server.addEventListener('change', function() {
+    body.replaceChildren();
+    cursor = 0;
+    updateCount();
+    refreshStatus();
+    connect();
+  });
+  filter.addEventListener('input', function() { body.querySelectorAll('tr').forEach(applyFilter); });
+  visibleLevel.addEventListener('change', function() { body.querySelectorAll('tr').forEach(applyFilter); });
+  document.getElementById('clear-logs').addEventListener('click', function() { body.replaceChildren(); updateCount(); });
+  enable.addEventListener('click', function() { post('/api/server-logs/enable'); });
+  disable.addEventListener('click', function() { post('/api/server-logs/disable'); });
+  refreshStatus();
+  connect();
+  window.setInterval(refreshStatus, 10000);
+})();
+</script>
+{{end}}

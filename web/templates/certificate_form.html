@@ -161,6 +161,11 @@ function setCertSource(source) {
   var loading = document.getElementById('managed-status-loading');
   var refresh = document.getElementById('managed-status-refresh');
   function labelFor(row) {
+    if (row.status === 'obtaining') return 'Obtaining…';
+    if (row.status === 'renewing') return 'Renewing…';
+    if (row.status === 'retrying') return 'Retry scheduled';
+    if (row.status === 'error') return 'Issuance error';
+    if (row.status === 'revoked') return 'Revoked';
     if (row.status === 'healthy') return row.days_left + ' days left';
     if (row.status === 'expiring') return 'Expires in ' + row.days_left + ' days';
     if (row.status === 'expired') return 'Expired';
@@ -172,7 +177,9 @@ function setCertSource(source) {
   function colorFor(status) {
     if (status === 'healthy') return 'bg-green-50 text-green-700';
     if (status === 'expiring') return 'bg-amber-50 text-amber-700';
-    if (status === 'expired' || status === 'mismatch') return 'bg-red-50 text-red-700';
+    if (status === 'obtaining' || status === 'renewing') return 'bg-sky-50 text-sky-700';
+    if (status === 'retrying') return 'bg-amber-50 text-amber-700';
+    if (status === 'expired' || status === 'mismatch' || status === 'error' || status === 'revoked') return 'bg-red-50 text-red-700';
     return 'bg-ink-100 text-ink-600';
   }
   function render(rows) {
@@ -187,10 +194,12 @@ function setCertSource(source) {
       left.appendChild(name);
       var detail = document.createElement('div');
       detail.className = 'text-xs text-ink-400 mt-0.5';
-      if (row.expires_at) {
-        detail.textContent = 'Expires ' + new Date(row.expires_at).toLocaleString() + (row.issuer ? ' · ' + row.issuer : '');
-      } else if (row.error) {
+      if (row.error) {
         detail.textContent = row.error;
+      } else if (row.lifecycle_message) {
+        detail.textContent = row.lifecycle_message + (row.lifecycle_at ? ' · ' + new Date(row.lifecycle_at).toLocaleString() : '');
+      } else if (row.expires_at) {
+        detail.textContent = 'Expires ' + new Date(row.expires_at).toLocaleString() + (row.issuer ? ' · ' + row.issuer : '');
       } else if (row.probe_name) {
         detail.textContent = 'Probe SNI: ' + row.probe_name;
       }

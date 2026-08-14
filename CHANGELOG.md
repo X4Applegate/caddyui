@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.25.0] - 2026-08-14 - Fleet observability and certificate lifecycle
+
+### Added
+
+- **Certificate lifecycle visibility** projects Caddy's structured TLS logs into per-node states such as obtaining, renewing, retry scheduled, issued, revoked, and issuance error. Managed-certificate lists and live server probes now show the latest actionable message instead of an unconditional green status. Only the compact latest state is persisted; raw logs are not. ([#26](https://github.com/X4Applegate/caddyui/issues/26))
+- **Ephemeral Server Logs** gives administrators an in-app, structured runtime stream for a selected managed Caddy node with level and text filters. Full capture leaves Caddy's normal logs unchanged, stays in memory, and automatically disables after 15 minutes. ([#27](https://github.com/X4Applegate/caddyui/issues/27))
+- **Authoritative fleet attribution** stamps every analytics event with the Caddy node that handled the request. Live Traffic, Analytics, host drill-downs, and CSV exports can distinguish and filter nodes even when load-balanced servers share the same hostname. ([#28](https://github.com/X4Applegate/caddyui/issues/28))
+
+### Changed
+
+- CaddyUI installs additive named log streams for analytics, certificate events, and temporary runtime capture. Existing Caddy container, journal, and file log outputs remain unchanged.
+- Existing analytics rows migrate as legacy/unattributed data instead of guessing a source server from current route ownership.
+- SQLite and MariaDB schemas now store access-event server identity and the latest certificate lifecycle projection, with parity and migration coverage for both backends.
+
 ## [2.24.0] - 2026-08-13 - Detailed Prometheus metrics
 
 ### Added
