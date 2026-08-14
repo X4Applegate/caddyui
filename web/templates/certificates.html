@@ -76,7 +76,13 @@
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0">{{.DaysLeft}}d</span>
         {{end}}
       {{else if eq .Source "managed"}}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0">Auto-renewed</span>
+        {{if .Lifecycle}}
+          {{if eq .Lifecycle.Phase "active"}}<span class="ui-status ui-status--success shrink-0" title="{{.Lifecycle.Message}}">Issued</span>
+          {{else if eq .Lifecycle.Phase "obtaining"}}<span class="ui-status ui-status--info shrink-0" title="{{.Lifecycle.Message}}">Obtaining…</span>
+          {{else if eq .Lifecycle.Phase "renewing"}}<span class="ui-status ui-status--info shrink-0" title="{{.Lifecycle.Message}}">Renewing…</span>
+          {{else if eq .Lifecycle.Phase "retrying"}}<span class="ui-status ui-status--warning shrink-0" title="{{if .Lifecycle.Error}}{{.Lifecycle.Error}}{{else}}{{.Lifecycle.Message}}{{end}}">Retry scheduled</span>
+          {{else}}<span class="ui-status ui-status--danger shrink-0" title="{{if .Lifecycle.Error}}{{.Lifecycle.Error}}{{else}}{{.Lifecycle.Message}}{{end}}">{{if eq .Lifecycle.Phase "revoked"}}Revoked{{else}}Issuance error{{end}}</span>{{end}}
+        {{else}}<span class="ui-status ui-status--neutral shrink-0" title="No certificate lifecycle event has been received from this server yet">Awaiting event</span>{{end}}
       {{end}}
     </div>
     {{/* v2.15.0: expiry progress bar — JS sets width via data-expiry-bar */}}
@@ -224,7 +230,14 @@
               <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700" title="{{fmtIn .ExpiresAt "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
             {{end}}
           {{else if eq .Source "managed"}}
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700" title="Caddy renews this certificate automatically">Auto-renewed</span>
+            {{if .Lifecycle}}
+              {{if eq .Lifecycle.Phase "active"}}<span class="ui-status ui-status--success" title="{{.Lifecycle.Message}}">Issued</span>
+              {{else if eq .Lifecycle.Phase "obtaining"}}<span class="ui-status ui-status--info" title="{{.Lifecycle.Message}}">Obtaining…</span>
+              {{else if eq .Lifecycle.Phase "renewing"}}<span class="ui-status ui-status--info" title="{{.Lifecycle.Message}}">Renewing…</span>
+              {{else if eq .Lifecycle.Phase "retrying"}}<span class="ui-status ui-status--warning" title="{{if .Lifecycle.Error}}{{.Lifecycle.Error}}{{else}}{{.Lifecycle.Message}}{{end}}">Retry scheduled</span>
+              {{else}}<span class="ui-status ui-status--danger" title="{{if .Lifecycle.Error}}{{.Lifecycle.Error}}{{else}}{{.Lifecycle.Message}}{{end}}">{{if eq .Lifecycle.Phase "revoked"}}Revoked{{else}}Issuance error{{end}}</span>{{end}}
+              <div class="text-[10px] text-ink-400 mt-1">{{fmtRel .Lifecycle.UpdatedAt}}</div>
+            {{else}}<span class="ui-status ui-status--neutral" title="No certificate lifecycle event has been received from this server yet">Awaiting event</span>{{end}}
           {{else}}
             <span class="text-ink-400 text-xs italic">—</span>
           {{end}}
@@ -310,9 +323,14 @@
             {{end}}
           </td>
           <td class="px-5 py-3">
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">
-              <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>Caddy / ACME
-            </span>
+            {{if .Lifecycle}}
+              {{if eq .Lifecycle.Phase "active"}}<span class="ui-status ui-status--success" title="{{.Lifecycle.Message}}">Issued</span>
+              {{else if eq .Lifecycle.Phase "obtaining"}}<span class="ui-status ui-status--info" title="{{.Lifecycle.Message}}">Obtaining…</span>
+              {{else if eq .Lifecycle.Phase "renewing"}}<span class="ui-status ui-status--info" title="{{.Lifecycle.Message}}">Renewing…</span>
+              {{else if eq .Lifecycle.Phase "retrying"}}<span class="ui-status ui-status--warning" title="{{if .Lifecycle.Error}}{{.Lifecycle.Error}}{{else}}{{.Lifecycle.Message}}{{end}}">Retry scheduled</span>
+              {{else}}<span class="ui-status ui-status--danger" title="{{if .Lifecycle.Error}}{{.Lifecycle.Error}}{{else}}{{.Lifecycle.Message}}{{end}}">{{if eq .Lifecycle.Phase "revoked"}}Revoked{{else}}Issuance error{{end}}</span>{{end}}
+              <div class="text-[10px] text-ink-400 mt-1">{{fmtRel .Lifecycle.UpdatedAt}}</div>
+            {{else}}<span class="ui-status ui-status--neutral">Awaiting event</span>{{end}}
           </td>
         </tr>
         {{end}}
@@ -327,9 +345,13 @@
             {{if .UsesWildcard}}Wildcard: {{.CertificateName}}{{else}}Direct certificate{{end}}
           </div>
         </div>
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0">
-          <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>ACME
-        </span>
+        {{if .Lifecycle}}
+          {{if eq .Lifecycle.Phase "active"}}<span class="ui-status ui-status--success shrink-0">Issued</span>
+          {{else if eq .Lifecycle.Phase "obtaining"}}<span class="ui-status ui-status--info shrink-0">Obtaining…</span>
+          {{else if eq .Lifecycle.Phase "renewing"}}<span class="ui-status ui-status--info shrink-0">Renewing…</span>
+          {{else if eq .Lifecycle.Phase "retrying"}}<span class="ui-status ui-status--warning shrink-0">Retry scheduled</span>
+          {{else}}<span class="ui-status ui-status--danger shrink-0">{{if eq .Lifecycle.Phase "revoked"}}Revoked{{else}}Error{{end}}</span>{{end}}
+        {{else}}<span class="ui-status ui-status--neutral shrink-0">Awaiting event</span>{{end}}
       </div>
       {{end}}
     </div>

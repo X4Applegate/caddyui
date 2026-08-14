@@ -37,6 +37,7 @@ import (
 	"github.com/X4Applegate/caddyui/internal/analytics"
 	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
+	"github.com/X4Applegate/caddyui/internal/caddylogs"
 	appdb "github.com/X4Applegate/caddyui/internal/db"
 	"github.com/X4Applegate/caddyui/internal/dns"
 	"github.com/X4Applegate/caddyui/internal/models"
@@ -91,6 +92,13 @@ type Server struct {
 	// DB ref that has to exist before we hand it over.
 	analyticsIngest *analytics.Ingest
 
+	// Runtime Caddy logs share the analytics NDJSON socket but stay in a
+	// bounded in-memory hub. Only the latest certificate lifecycle projection
+	// is persisted. Temporary full-log captures are guarded by expiry timers.
+	caddyLogHub      *caddylogs.Hub
+	runtimeLogMu     sync.Mutex
+	runtimeLogTimers map[int64]*time.Timer
+
 	// v2.9.2: HTTP client used by the background per-proxy-host health checker.
 	healthClient *http.Client
 }
@@ -106,6 +114,10 @@ func (s *Server) SetAnalyticsIngest(ing *analytics.Ingest) {
 	s.analyticsIngest = ing
 }
 
+func (s *Server) SetCaddyLogHub(hub *caddylogs.Hub) {
+	s.caddyLogHub = hub
+}
+
 func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, caddyfilePath string, version string, dbPath string) (*Server, error) {
 	tpl, err := parseTemplates(templates)
 	if err != nil {
@@ -117,15 +129,16 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	loc := loadActiveLocation(db)
 	log.Printf("timezone: rendering timestamps in %s", loc)
 	s := &Server{
-		DB:             db,
-		Caddy:          caddyClient,
-		Templates:      tpl,
-		Static:         static,
-		CaddyfilePath:  caddyfilePath,
-		Version:        version,
-		DBPath:         dbPath,
-		healthFailures: map[int64]int{},
-		appHealth:      map[int64]appHealthEntry{},
+		DB:               db,
+		Caddy:            caddyClient,
+		Templates:        tpl,
+		Static:           static,
+		CaddyfilePath:    caddyfilePath,
+		Version:          version,
+		DBPath:           dbPath,
+		healthFailures:   map[int64]int{},
+		appHealth:        map[int64]appHealthEntry{},
+		runtimeLogTimers: map[int64]*time.Timer{},
 	}
 	// Initialize health check HTTP client (short timeouts, no redirect following).
 	s.healthClient = &http.Client{
@@ -782,6 +795,11 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/servers/{id}", s.updateServer)
 			r.Post("/servers/{id}/sync-from-current", s.syncServerFromCurrent)
 			r.Post("/servers/{id}/delete", s.deleteServer)
+			r.Get("/server-logs", s.getServerLogs)
+			r.Get("/api/server-logs/status", s.serverLogStatus)
+			r.Get("/api/server-logs/stream", s.serverLogStream)
+			r.Post("/api/server-logs/enable", s.enableServerLogs)
+			r.Post("/api/server-logs/disable", s.disableServerLogs)
 			r.Post("/dashboard/recommendations/unused-certificates/dismiss", s.dismissUnusedCertificateRecommendation)
 
 			// v2.7.2: create/edit moved up to the requireWrite group so
@@ -3867,12 +3885,39 @@ type certView struct {
 	DaysLeft  int  // positive = days until expiry; negative = already expired
 	CanEdit   bool // per-row ownership (see above)
 	IsUnused  bool // custom PEM/path certificate with no resource reference
+	Lifecycle *models.CertificateLifecycleStatus
 }
 
 type autoDomainView struct {
 	Domain          string
 	CertificateName string
 	UsesWildcard    bool
+	Lifecycle       *models.CertificateLifecycleStatus
+}
+
+func certificateLifecycleForDomains(states []models.CertificateLifecycleStatus, domains []string) *models.CertificateLifecycleStatus {
+	priority := map[string]int{"active": 1, "obtaining": 2, "renewing": 3, "retrying": 4, "error": 5, "revoked": 6}
+	var best *models.CertificateLifecycleStatus
+	for i := range states {
+		identifier := models.NormalizeHostname(states[i].Identifier)
+		matched := false
+		for _, domain := range domains {
+			domain = models.NormalizeHostname(domain)
+			if identifier == domain || managedCertificateCovers(identifier, domain) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		if best == nil || priority[states[i].Phase] > priority[best.Phase] ||
+			(priority[states[i].Phase] == priority[best.Phase] && states[i].UpdatedAt.After(best.UpdatedAt)) {
+			candidate := states[i]
+			best = &candidate
+		}
+	}
+	return best
 }
 
 // dnsProviderViewData builds the template data describing which DNS
@@ -6826,6 +6871,7 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	lifecycleStates, _ := models.ListCertificateLifecycle(s.DB, sid)
 	// Usage must be calculated against the complete environment, not only
 	// resources visible to the current user. Otherwise a global certificate
 	// used by another tenant could be incorrectly labeled as unused.
@@ -6849,6 +6895,9 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 			Certificate: c,
 			CanEdit:     canEdit,
 			IsUnused:    isUnusedCustomCertificate(c, referencedCerts),
+		}
+		if c.Source == models.CertSourceManaged {
+			view.Lifecycle = certificateLifecycleForDomains(lifecycleStates, c.DomainList())
 		}
 		if view.IsUnused {
 			unusedCount++
@@ -6886,10 +6935,13 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 			Domain:          domain,
 			CertificateName: "Direct certificate",
 		}
+		statusDomains := []string{domain}
 		if cert := managedWildcardForHost(certs, domain); cert != nil {
 			view.CertificateName = cert.Name
 			view.UsesWildcard = true
+			statusDomains = cert.DomainList()
 		}
+		view.Lifecycle = certificateLifecycleForDomains(lifecycleStates, statusDomains)
 		autoDomains = append(autoDomains, view)
 	}
 	for _, h := range allHosts {
@@ -7043,15 +7095,18 @@ func (s *Server) getCertificateInspect(w http.ResponseWriter, r *http.Request) {
 }
 
 type managedCertificateServerStatus struct {
-	ServerID   int64      `json:"server_id"`
-	ServerName string     `json:"server_name"`
-	Deployed   bool       `json:"deployed"`
-	Status     string     `json:"status"`
-	ProbeName  string     `json:"probe_name,omitempty"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	DaysLeft   int        `json:"days_left,omitempty"`
-	Issuer     string     `json:"issuer,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	ServerID         int64      `json:"server_id"`
+	ServerName       string     `json:"server_name"`
+	Deployed         bool       `json:"deployed"`
+	Status           string     `json:"status"`
+	ProbeName        string     `json:"probe_name,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	DaysLeft         int        `json:"days_left,omitempty"`
+	Issuer           string     `json:"issuer,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	LifecyclePhase   string     `json:"lifecycle_phase,omitempty"`
+	LifecycleMessage string     `json:"lifecycle_message,omitempty"`
+	LifecycleAt      *time.Time `json:"lifecycle_at,omitempty"`
 }
 
 func managedCertificateProbeName(cert models.Certificate) string {
@@ -7186,6 +7241,30 @@ func (s *Server) getManagedCertificateStatus(w http.ResponseWriter, r *http.Requ
 		}(i, server)
 	}
 	wg.Wait()
+	states, _ := models.ListCertificateLifecycle(s.DB, 0)
+	for i := range results {
+		serverStates := make([]models.CertificateLifecycleStatus, 0)
+		for _, state := range states {
+			if state.ServerID == results[i].ServerID {
+				serverStates = append(serverStates, state)
+			}
+		}
+		state := certificateLifecycleForDomains(serverStates, cert.DomainList())
+		if state == nil {
+			continue
+		}
+		results[i].LifecyclePhase = state.Phase
+		results[i].LifecycleMessage = state.Message
+		updated := state.UpdatedAt
+		results[i].LifecycleAt = &updated
+		switch state.Phase {
+		case "obtaining", "renewing", "retrying", "error", "revoked":
+			results[i].Status = state.Phase
+			if state.Error != "" {
+				results[i].Error = state.Error
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": results})
 }
 
@@ -14468,6 +14547,12 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	if err := s.applyAnalyticsToggle(loadAnalyticsConfig(s.DB)); err != nil {
 		log.Printf("settings: analytics toggle: %v", err)
 	}
+	// The certificate monitor shares the analytics ingest target even when
+	// visitor analytics itself is disabled. Refresh it after target/timeout
+	// changes so lifecycle events keep flowing to the right listener.
+	if err := s.ReconcileCertificateLogs(); err != nil {
+		log.Printf("settings: certificate log monitoring: %v", err)
+	}
 
 	// v2.4.0: per-server public IP update. The settings form submits one
 	// server_ip_<id> field per Caddy server. For each one that changed,
@@ -14719,15 +14804,24 @@ func (s *Server) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
 // getLiveTraffic renders the live traffic feed page.
 func (s *Server) getLiveTraffic(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
+	serverID := s.currentServerID(r)
+	if r.URL.Query().Has("server") {
+		raw := strings.TrimSpace(r.URL.Query().Get("server"))
+		if raw == "" || raw == "0" || raw == "all" {
+			serverID = 0
+		} else if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			serverID = parsed
+		}
+	}
 	// Seed with last 50 events for initial load.
-	events, err := models.RecentAccessEvents(s.DB, 0, 50)
+	events, err := models.RecentAccessEvents(s.DB, 0, 50, serverID)
 	if err != nil {
 		log.Printf("live-traffic: query: %v", err)
 	}
 	s.render(w, r, "live_traffic.html", map[string]any{
-		"User":    u,
-		"Events":  events,
-		"Section": "live_traffic",
+		"User": u, "Events": events,
+		"AllServers":       func() []models.CaddyServer { servers, _ := models.ListCaddyServers(s.DB); return servers }(),
+		"SelectedServerID": serverID, "Section": "live_traffic",
 	})
 }
 
@@ -14752,6 +14846,10 @@ func (s *Server) liveTrafficStream(w http.ResponseWriter, r *http.Request) {
 			cursor = n
 		}
 	}
+	var serverID int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("server")); raw != "" && raw != "0" && raw != "all" {
+		serverID, _ = strconv.ParseInt(raw, 10, 64)
+	}
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -14761,7 +14859,7 @@ func (s *Server) liveTrafficStream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			events, err := models.RecentAccessEvents(s.DB, cursor, 100)
+			events, err := models.RecentAccessEvents(s.DB, cursor, 100, serverID)
 			if err != nil {
 				log.Printf("live-traffic SSE: %v", err)
 				continue
@@ -14785,6 +14883,8 @@ func (s *Server) liveTrafficStream(w http.ResponseWriter, r *http.Request) {
 			type wireEvent struct {
 				ID         int64  `json:"id"`
 				TS         string `json:"ts"`
+				ServerID   int64  `json:"server_id"`
+				ServerName string `json:"server_name"`
 				Host       string `json:"host"`
 				Path       string `json:"path"`
 				Method     string `json:"method"`
@@ -14798,6 +14898,8 @@ func (s *Server) liveTrafficStream(w http.ResponseWriter, r *http.Request) {
 				wire[i] = wireEvent{
 					ID:         e.ID,
 					TS:         e.TS.Format(time.RFC3339),
+					ServerID:   e.ServerID,
+					ServerName: e.ServerName,
 					Host:       e.Host,
 					Path:       e.Path,
 					Method:     e.Method,

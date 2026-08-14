@@ -15,6 +15,7 @@ import (
 
 	"github.com/X4Applegate/caddyui/internal/analytics"
 	"github.com/X4Applegate/caddyui/internal/caddy"
+	"github.com/X4Applegate/caddyui/internal/caddylogs"
 	"github.com/X4Applegate/caddyui/internal/db"
 	"github.com/X4Applegate/caddyui/internal/server"
 	"github.com/X4Applegate/caddyui/web"
@@ -108,12 +109,14 @@ Fix by:
 	// a few KB of RAM and no CPU, so there's no reason to gate it.
 	var ingest *analytics.Ingest
 	if ingestListen != "" {
-		ingest = &analytics.Ingest{DB: conn, Addr: ingestListen}
+		logHub := caddylogs.New(conn)
+		ingest = &analytics.Ingest{DB: conn, Addr: ingestListen, RuntimeFn: logHub.AcceptLine}
 		if err := ingest.Start(pollerCtx); err != nil {
 			log.Printf("analytics: failed to start ingest on %s: %v (analytics disabled)", ingestListen, err)
 			ingest = nil
 		} else {
 			srv.SetAnalyticsIngest(ingest)
+			srv.SetCaddyLogHub(logHub)
 		}
 	}
 	// Refresh an enabled analytics logger on startup so upgrades can add
@@ -123,6 +126,12 @@ Fix by:
 	// server is temporarily unreachable.
 	if err := srv.ReconcileAnalyticsAccessLogs(); err != nil {
 		log.Printf("analytics: startup reconciliation: %v", err)
+	}
+	if err := srv.ResetRuntimeLogs(); err != nil {
+		log.Printf("server logs: startup cleanup: %v", err)
+	}
+	if err := srv.ReconcileCertificateLogs(); err != nil {
+		log.Printf("certificate monitoring: startup reconciliation: %v", err)
 	}
 
 	// Opt-in startup sync. Default: no initial sync — pushing an empty config
@@ -155,6 +164,9 @@ Fix by:
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
+	if err := srv.ResetRuntimeLogs(); err != nil {
+		log.Printf("server logs: shutdown cleanup: %v", err)
+	}
 	if ingest != nil {
 		ingest.Stop()
 	}

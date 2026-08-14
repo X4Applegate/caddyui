@@ -27,6 +27,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,13 +62,18 @@ type Ingest struct {
 	// SetExcludeIPs for the common case rather than setting this directly.
 	ExcludeFn func(clientIP, host, path, userAgent string) bool
 
+	// RuntimeFn receives every structured line before access-log parsing.
+	// The Caddy runtime-log hub uses this to keep an ephemeral admin stream
+	// and project TLS lifecycle messages into compact certificate state. It
+	// must return quickly; access-log ingestion shares this connection loop.
+	RuntimeFn func([]byte)
+
 	// excludeMu guards the compiled CIDR slice below. Swapped out in whole
 	// by SetExcludeIPs so the reader path (ExcludeFn) never blocks on a
 	// lock — it takes a snapshot of the slice and evaluates against it.
 	excludeMu     sync.RWMutex
 	excludeNets   []*net.IPNet
 	excludePlains []net.IP // plain IPs (no /mask)
-
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -302,6 +308,12 @@ func (i *Ingest) handleConn(ctx context.Context, conn net.Conn) {
 		if len(line) == 0 {
 			continue
 		}
+		if i.RuntimeFn != nil {
+			// Scanner reuses its backing buffer on the next Scan. The runtime
+			// callback currently consumes synchronously, but copy here keeps
+			// that contract safe if it later queues work asynchronously.
+			i.RuntimeFn(append([]byte(nil), line...))
+		}
 		ev, ok := parseLine(line)
 		if !ok {
 			i.stats.Errors.Add(1)
@@ -352,12 +364,14 @@ type caddyAccessLog struct {
 	// TS is a float seconds-since-epoch (e.g. 1702839400.1234). Caddy
 	// emits this as a number, not a string, and json.Number lets us
 	// preserve precision when converting to time.Time.
-	TS      json.Number            `json:"ts"`
-	Request caddyAccessLogRequest  `json:"request"`
-	Status  int                    `json:"status"`
-	Size    int64                  `json:"size"`
+	TS      json.Number           `json:"ts"`
+	Request caddyAccessLogRequest `json:"request"`
+	Status  int                   `json:"status"`
+	Size    int64                 `json:"size"`
 	// Duration is in seconds (float). We multiply by 1000 for ms.
-	Duration json.Number `json:"duration"`
+	Duration   json.Number     `json:"duration"`
+	ServerID   json.RawMessage `json:"caddyui_server_id"`
+	ServerName string          `json:"caddyui_server_name"`
 }
 
 type caddyAccessLogRequest struct {
@@ -448,6 +462,8 @@ func parseLine(line []byte) (models.AccessEvent, bool) {
 
 	return models.AccessEvent{
 		TS:         ts,
+		ServerID:   parseFlexibleInt64(raw.ServerID),
+		ServerName: strings.TrimSpace(raw.ServerName),
 		Host:       host,
 		Path:       path,
 		Method:     raw.Request.Method,
@@ -457,4 +473,19 @@ func parseLine(line []byte) (models.AccessEvent, bool) {
 		DurationMs: durMs,
 		BytesOut:   raw.Size,
 	}, true
+}
+
+func parseFlexibleInt64(raw json.RawMessage) int64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		n, _ = strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+	}
+	return n
 }

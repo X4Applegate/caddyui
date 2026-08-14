@@ -72,6 +72,19 @@ The container will print a clear error message at startup if the directory isn't
 
 ## ✨ Headline features
 
+### 🔭 Fleet observability
+
+CaddyUI v2.25 makes the source and state of fleet activity visible without replacing Caddy's normal logs:
+
+- Live Traffic, Analytics, host drill-downs, and CSV exports use the node that actually handled each request
+- Shared hostnames behind load-balanced Caddy instances remain distinguishable and filterable
+- **Observe → Server Logs** streams a selected managed node at DEBUG, INFO, WARN, or ERROR
+- Full runtime capture is memory-only and automatically stops after 15 minutes
+- Managed ACME certificates show issuance, renewal, retry, success, revocation, and failure states per node
+- Only the latest compact certificate state is persisted; raw runtime logs are never stored
+
+The structured log listener should stay on a private Docker, LAN, WireGuard, or Tailscale network. CaddyUI adds named streams and does not redirect or suppress the node's existing container, journal, or file output.
+
 ### 📈 Detailed Prometheus metrics
 
 CaddyUI v2.24 manages Caddy metrics without clobbering global options loaded elsewhere:
@@ -219,7 +232,7 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.23.1`. |
+| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.25.0`. |
 | `:stable` | Alias of `:latest`. |
 | `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
 
@@ -236,7 +249,7 @@ Multi-arch: `linux/amd64` + `linux/arm64`. Scratch base image, runs as non-root 
 | `CADDYUI_DB` | `/data/caddyui.db` | SQLite database path |
 | `CADDYUI_DB_DSN` | (none) | MariaDB DSN; required when `CADDYUI_DB_DRIVER=mariadb` |
 | `CADDYUI_LISTEN` | `:8080` | HTTP listen address |
-| `CADDYUI_INGEST_LISTEN` | `:9019` | Visitor-analytics TCP ingest from Caddy's `net` log writer (empty string disables) |
+| `CADDYUI_INGEST_LISTEN` | `:9019` | Structured Caddy log ingest for analytics, certificate lifecycle, and temporary runtime streams (empty string disables all three) |
 | `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Optional — only read if you mount a Caddyfile into the CaddyUI container for the paste-import auto-classifier reference |
 | `CADDY_ADMIN_USER` / `CADDY_ADMIN_PASS` | (none) | Optional HTTP basic auth for Caddy's admin endpoint when proxied |
 

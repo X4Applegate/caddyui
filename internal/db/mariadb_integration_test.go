@@ -147,7 +147,7 @@ func assertMariaDBSchemaMatchesSQLite(t *testing.T, maria *sql.DB) {
 	tables := []string{
 		"users", "sessions", "proxy_hosts", "redirection_hosts", "raw_routes",
 		"settings", "config_snapshots", "activity_log", "certificates",
-		"caddy_servers", "fleet_deployments", "access_events", "access_daily", "groups",
+		"caddy_servers", "fleet_deployments", "access_events", "access_daily", "certificate_lifecycle", "groups",
 		"user_groups", "api_tokens", "proxy_health",
 	}
 	for _, table := range tables {
@@ -216,10 +216,19 @@ func TestSQLiteToMariaDBMigration(t *testing.T) {
 	}
 	host := "migration.example.test"
 	if err := models.InsertAccessEvent(source, models.AccessEvent{
-		TS:     time.Now().UTC(),
-		Host:   host,
-		Method: "GET",
-		Status: 204,
+		TS:         time.Now().UTC(),
+		ServerID:   17,
+		ServerName: "Migration Edge",
+		Host:       host,
+		Method:     "GET",
+		Status:     204,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.UpsertCertificateLifecycle(source, models.CertificateLifecycleStatus{
+		ServerID: 17, ServerName: "Migration Edge", Identifier: host,
+		Phase: "retrying", Level: "ERROR", Message: "will retry",
+		Error: "synthetic migration failure", UpdatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +267,13 @@ func TestSQLiteToMariaDBMigration(t *testing.T) {
 	if counts[host] != 1 {
 		t.Fatalf("migrated analytics count = %d, want 1", counts[host])
 	}
+	lifecycle, err := models.ListCertificateLifecycle(target, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lifecycle) != 1 || lifecycle[0].Identifier != host || lifecycle[0].Phase != "retrying" {
+		t.Fatalf("unexpected migrated certificate lifecycle: %#v", lifecycle)
+	}
 }
 
 func cleanMariaDBTestTables(t *testing.T, conn interface {
@@ -268,7 +284,7 @@ func cleanMariaDBTestTables(t *testing.T, conn interface {
 		t.Fatal(err)
 	}
 	tables := []string{
-		"access_events", "proxy_health", "access_daily", "activity_log",
+		"access_events", "proxy_health", "access_daily", "certificate_lifecycle", "activity_log",
 		"config_snapshots", "api_tokens", "sessions", "user_groups",
 		"fleet_deployments", "raw_routes", "redirection_hosts", "proxy_hosts", "certificates",
 		"settings", "caddy_servers", "groups", "users",

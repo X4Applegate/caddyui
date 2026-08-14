@@ -469,6 +469,7 @@ if ('serviceWorker' in navigator) {
           <span class="app-nav__label">Observe</span>
           {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" "Analytics" "Icon" "chart")}}
           {{template "navItem" (dict "Section" $sec "Active" "live_traffic" "Href" "/live-traffic" "Label" "Live Traffic" "Icon" "lightning")}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "server_logs" "Href" "/server-logs" "Label" "Server Logs" "Icon" "pulse")}}{{end}}
           {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" "Activity Log" "Icon" "pulse")}}
         </div>
 
