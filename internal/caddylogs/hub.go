@@ -17,6 +17,8 @@ import (
 
 const maxEntries = 1000
 
+const certificateMonitorStream = "certificates"
+
 type Entry struct {
 	ID         uint64         `json:"id"`
 	TS         time.Time      `json:"ts"`
@@ -80,6 +82,13 @@ func (h *Hub) AcceptLine(line []byte) {
 	if entry.Level == "" {
 		entry.Level = "INFO"
 	}
+	states := certificateStates(entry, raw)
+	// The always-on certificate event logger must subscribe to logger=events
+	// at DEBUG to receive cert_obtained. Do not let unrelated structured events
+	// or verbose TLS diagnostics fill the operational in-memory ring.
+	if strings.TrimSpace(stringField(raw["caddyui_stream"])) == certificateMonitorStream && len(states) == 0 {
+		return
+	}
 
 	h.mu.Lock()
 	h.nextID++
@@ -91,7 +100,6 @@ func (h *Hub) AcceptLine(line []byte) {
 	}
 	h.mu.Unlock()
 
-	states := certificateStates(entry, raw)
 	if len(states) == 0 || h.DB == nil {
 		return
 	}
@@ -157,7 +165,7 @@ func remainingFields(raw map[string]any) map[string]any {
 	fields := make(map[string]any, len(raw))
 	for key, value := range raw {
 		switch key {
-		case "ts", "level", "logger", "msg", "caddyui_server_id", "caddyui_server_name":
+		case "ts", "level", "logger", "msg", "caddyui_server_id", "caddyui_server_name", "caddyui_stream":
 			continue
 		}
 		fields[key] = value

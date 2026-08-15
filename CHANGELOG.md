@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.25.3] - 2026-08-15 - Certificate and log-stream review follow-up
+
+### Fixed
+
+- The persistent certificate monitor now receives Caddy's DEBUG `events/cert_obtained` records through a dedicated named logger while filtering unrelated event and TLS debug traffic out of the in-memory Server Logs ring.
+- Startup certificate reconciliation probes and verifies every identifier independently. A valid certificate for one name in a multi-domain managed definition can no longer mark unverified sibling names as Issued.
+- Server Logs retention now evicts the oldest entry ID when the 500-row display limit is reached, regardless of the active visual sort order.
+
+### Changed
+
+- Added regression coverage for all three late automated review findings on PR #31.
+
 ## [2.25.2] - 2026-08-14 - Observability reliability follow-up
 
 ### Fixed

@@ -204,7 +204,14 @@
     addCell(row, fieldText, 'px-4 py-2.5 align-top text-ink-500 break-all max-w-md');
     applyFilter(row);
     body.appendChild(row);
-    while (body.children.length > maxRows) body.removeChild(body.firstChild);
+    while (body.children.length > maxRows) {
+      var oldest = Array.from(body.querySelectorAll('[data-entry-id]')).reduce(function(candidate, item) {
+        if (!candidate) return item;
+        return Number(item.dataset.entryId) < Number(candidate.dataset.entryId) ? item : candidate;
+      }, null);
+      if (!oldest) break;
+      oldest.remove();
+    }
     sortRows();
   }
 
