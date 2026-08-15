@@ -104,9 +104,14 @@ func TestOperationalTablesExposeRefreshAndSortingControls(t *testing.T) {
 		`data-log-sort="0"`,
 		`data-log-sort="5"`,
 		`source.onopen`,
+		`body.querySelectorAll('[data-entry-id]')`,
+		`Number(item.dataset.entryId)`,
 	} {
 		if !strings.Contains(serverLogs, marker) {
 			t.Fatalf("server logs template missing %s", marker)
 		}
+	}
+	if strings.Contains(serverLogs, "removeChild(body.firstChild)") {
+		t.Fatal("server log retention must evict by entry ID, not visual sort order")
 	}
 }

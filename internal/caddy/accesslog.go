@@ -14,12 +14,14 @@ import (
 // toggles don't leak duplicate loggers into the Caddy config.
 const AccessLogLoggerName = "caddyui_access"
 
-// CertificateLogLoggerName is the low-volume, always-on stream CaddyUI uses
-// to observe certificate issuance and renewal. RuntimeLogLoggerName is the
-// temporary, admin-controlled stream used by the Server Logs page.
+// CertificateLogLoggerName and CertificateEventLogLoggerName are the
+// always-on streams CaddyUI uses to observe INFO TLS lifecycle messages and
+// DEBUG structured certificate events respectively. RuntimeLogLoggerName is
+// the temporary, admin-controlled stream used by the Server Logs page.
 const (
-	CertificateLogLoggerName = "caddyui_certificates"
-	RuntimeLogLoggerName     = "caddyui_runtime"
+	CertificateLogLoggerName      = "caddyui_certificates"
+	CertificateEventLogLoggerName = "caddyui_certificate_events"
+	RuntimeLogLoggerName          = "caddyui_runtime"
 )
 
 // AccessLogDeleteMethod is exposed so callers can tell what HTTP verb the
@@ -57,10 +59,13 @@ func networkLogWriter(target string, opts AccessLogOptions) map[string]any {
 // server that produced it. The append encoder is part of Caddy core and uses
 // a JSON encoder underneath, so the ingest path receives normal structured
 // logs plus stable source metadata without changing route handlers.
-func annotatedJSONEncoder(opts AccessLogOptions) map[string]any {
+func annotatedJSONEncoder(opts AccessLogOptions, stream string) map[string]any {
 	fields := map[string]any{
 		"caddyui_server_id":   opts.ServerID,
 		"caddyui_server_name": strings.TrimSpace(opts.ServerName),
+	}
+	if stream = strings.TrimSpace(stream); stream != "" {
+		fields["caddyui_stream"] = stream
 	}
 	return map[string]any{
 		"format": "append",
@@ -133,7 +138,7 @@ func (c *Client) EnableAccessLogs(target string, opts AccessLogOptions) error {
 	// the call is create-or-replace — PATCH would 404 on first run.
 	logger := map[string]any{
 		"writer":  networkLogWriter(target, opts),
-		"encoder": annotatedJSONEncoder(opts),
+		"encoder": annotatedJSONEncoder(opts, ""),
 		"include": []string{"http.log.access"},
 	}
 	if err := c.installNamedLog(AccessLogLoggerName, logger); err != nil {
@@ -168,11 +173,11 @@ func (c *Client) EnableAccessLogs(target string, opts AccessLogOptions) error {
 	return nil
 }
 
-// EnableCertificateLogs duplicates Caddy's TLS runtime log namespace to the
-// CaddyUI ingest socket. Caddy's default logger remains unchanged, so normal
-// container/journal logs continue to receive the same messages. The stream is
-// intentionally INFO-level and low-volume; CaddyUI persists only the latest
-// lifecycle state per server and certificate identifier.
+// EnableCertificateLogs duplicates Caddy's INFO TLS namespace plus its DEBUG
+// structured events namespace to the CaddyUI ingest socket. The separate
+// event logger is required because cert_obtained is emitted by logger=events
+// at DEBUG rather than beneath the tls namespace. Caddy's default logger
+// remains unchanged, and the ingest hub discards unrelated event/debug lines.
 func (c *Client) EnableCertificateLogs(target string, opts AccessLogOptions) error {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -180,12 +185,21 @@ func (c *Client) EnableCertificateLogs(target string, opts AccessLogOptions) err
 	}
 	logger := map[string]any{
 		"writer":  networkLogWriter(target, opts),
-		"encoder": annotatedJSONEncoder(opts),
+		"encoder": annotatedJSONEncoder(opts, "certificates"),
 		"include": []string{"tls"},
 		"level":   "INFO",
 	}
 	if err := c.installNamedLog(CertificateLogLoggerName, logger); err != nil {
 		return fmt.Errorf("install certificate logger: %w", err)
+	}
+	eventLogger := map[string]any{
+		"writer":  networkLogWriter(target, opts),
+		"encoder": annotatedJSONEncoder(opts, "certificates"),
+		"include": []string{"events"},
+		"level":   "DEBUG",
+	}
+	if err := c.installNamedLog(CertificateEventLogLoggerName, eventLogger); err != nil {
+		return fmt.Errorf("install certificate event logger: %w", err)
 	}
 	return nil
 }
@@ -207,7 +221,7 @@ func (c *Client) EnableRuntimeLogs(target, level string, opts AccessLogOptions) 
 	}
 	logger := map[string]any{
 		"writer":  networkLogWriter(target, opts),
-		"encoder": annotatedJSONEncoder(opts),
+		"encoder": annotatedJSONEncoder(opts, ""),
 		"exclude": []string{"http.log.access", "tls"},
 		"level":   level,
 	}

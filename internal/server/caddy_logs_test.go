@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,6 +79,49 @@ func TestReconcileCertificateLifecycleHealsStaleObtainingButPreservesRetry(t *te
 	}
 	if len(states) != 1 || states[0].Phase != "retrying" {
 		t.Fatalf("retry state changed: %#v", states)
+	}
+}
+
+func TestReconcileCertificateLifecycleProbesEveryIdentifierIndependently(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	serverID, err := models.CreateCaddyServer(conn, &models.CaddyServer{
+		Name: "edge", AdminURL: "http://edge:2019", Type: models.CaddyServerTypeManaged,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.CreateCertificate(conn, serverID, 0, &models.Certificate{
+		Name: "multi-domain", Domains: "active.example, pending.example", Source: models.CertSourceManaged,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var probeCalls atomic.Int32
+	s := &Server{DB: conn, certificateProbeFn: func(server models.CaddyServer, cert models.Certificate) managedCertificateServerStatus {
+		probeCalls.Add(1)
+		status := "unavailable"
+		if cert.Domains == "active.example" {
+			status = "healthy"
+		}
+		return managedCertificateServerStatus{ServerID: server.ID, ServerName: server.Name, Status: status}
+	}}
+	updated, err := s.reconcileCertificateLifecycle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 1 || probeCalls.Load() != 2 {
+		t.Fatalf("updated=%d probeCalls=%d, want 1/2", updated, probeCalls.Load())
+	}
+	states, err := models.ListCertificateLifecycle(conn, serverID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].Identifier != "active.example" || states[0].Phase != "active" {
+		t.Fatalf("independent probe states = %#v", states)
 	}
 }
 

@@ -86,13 +86,24 @@ func TestHubPersistsStructuredCertObtainedEvent(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	hub := New(conn)
-	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000004,"logger":"events","msg":"event","name":"cert_obtained","data":{"identifier":"event.example","issuer":"acme.example","renewal":false},"caddyui_server_id":7,"caddyui_server_name":"west"}`))
+	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000004,"logger":"events","msg":"event","name":"config_loaded","caddyui_stream":"certificates","caddyui_server_id":7,"caddyui_server_name":"west"}`))
+	if entries := hub.Since(0, 7, 20); len(entries) != 0 {
+		t.Fatalf("unrelated persistent event leaked into runtime ring: %#v", entries)
+	}
+	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000005,"logger":"events","msg":"event","name":"cert_obtained","data":{"identifier":"event.example","issuer":"acme.example","renewal":false},"caddyui_stream":"certificates","caddyui_server_id":7,"caddyui_server_name":"west"}`))
 	states, err := models.ListCertificateLifecycle(conn, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(states) != 1 || states[0].Identifier != "event.example" || states[0].Phase != "active" {
 		t.Fatalf("cert_obtained state = %#v, want active event.example", states)
+	}
+	entries := hub.Since(0, 7, 20)
+	if len(entries) != 1 || entries[0].Logger != "events" {
+		t.Fatalf("certificate event entries = %#v", entries)
+	}
+	if _, leaked := entries[0].Fields["caddyui_stream"]; leaked {
+		t.Fatalf("internal stream marker leaked into displayed fields: %#v", entries[0].Fields)
 	}
 }
 

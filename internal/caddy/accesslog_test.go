@@ -85,6 +85,8 @@ func TestInstallNamedLogFallbackPreservesWholeLoggingConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/config/logging/logs/"+CertificateEventLogLoggerName:
+			w.WriteHeader(http.StatusOK)
 		default:
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
@@ -208,6 +210,8 @@ func TestRuntimeAndCertificateLoggersAreAdditiveAndScoped(t *testing.T) {
 			name = RuntimeLogLoggerName
 		case "/config/logging/logs/" + CertificateLogLoggerName:
 			name = CertificateLogLoggerName
+		case "/config/logging/logs/" + CertificateEventLogLoggerName:
+			name = CertificateEventLogLoggerName
 		}
 		if r.Method != http.MethodPost || name == "" {
 			http.Error(w, "unexpected request", http.StatusNotFound)
@@ -234,6 +238,19 @@ func TestRuntimeAndCertificateLoggersAreAdditiveAndScoped(t *testing.T) {
 	include, _ := certificate["include"].([]any)
 	if len(include) != 1 || include[0] != "tls" {
 		t.Fatalf("certificate include = %#v", certificate["include"])
+	}
+	if certificate["level"] != "INFO" {
+		t.Fatalf("certificate level = %#v, want INFO", certificate["level"])
+	}
+	events := loggers[CertificateEventLogLoggerName]
+	eventInclude, _ := events["include"].([]any)
+	if len(eventInclude) != 1 || eventInclude[0] != "events" || events["level"] != "DEBUG" {
+		t.Fatalf("certificate event logger = %#v", events)
+	}
+	eventEncoder, _ := events["encoder"].(map[string]any)
+	eventFields, _ := eventEncoder["fields"].(map[string]any)
+	if eventFields["caddyui_stream"] != "certificates" {
+		t.Fatalf("certificate event stream field = %#v", eventFields)
 	}
 	runtime := loggers[RuntimeLogLoggerName]
 	if runtime["level"] != "DEBUG" {
