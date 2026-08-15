@@ -74,3 +74,39 @@ func TestSettingsPrometheusMetricsControls(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationalTablesExposeRefreshAndSortingControls(t *testing.T) {
+	certificatesHTML, err := FS.ReadFile("templates/certificates.html")
+	if err != nil {
+		t.Fatalf("read certificates.html: %v", err)
+	}
+	certificates := string(certificatesHTML)
+	for _, marker := range []string{
+		`id="refresh-certificate-status"`,
+		`id="certificates-table"`,
+		`id="auto-certificates-table"`,
+		`data-sort-table`,
+		`data-sort-index=`,
+	} {
+		if !strings.Contains(certificates, marker) {
+			t.Fatalf("certificates template missing %s", marker)
+		}
+	}
+
+	serverLogsHTML, err := FS.ReadFile("templates/server_logs.html")
+	if err != nil {
+		t.Fatalf("read server_logs.html: %v", err)
+	}
+	serverLogs := string(serverLogsHTML)
+	for _, marker := range []string{
+		`id="stream-status"`,
+		`id="refresh-logs"`,
+		`data-log-sort="0"`,
+		`data-log-sort="5"`,
+		`source.onopen`,
+	} {
+		if !strings.Contains(serverLogs, marker) {
+			t.Fatalf("server logs template missing %s", marker)
+		}
+	}
+}

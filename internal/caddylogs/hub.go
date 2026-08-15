@@ -226,31 +226,39 @@ func stringField(value any) string {
 }
 
 func certificateStates(entry Entry, raw map[string]any) []models.CertificateLifecycleStatus {
-	if entry.ServerID <= 0 || !strings.HasPrefix(entry.Logger, "tls") {
+	eventName := strings.ToLower(strings.TrimSpace(stringField(raw["name"])))
+	isTLSEvent := strings.HasPrefix(entry.Logger, "tls")
+	isCertificateEvent := entry.Logger == "events" && strings.HasPrefix(eventName, "cert_")
+	if entry.ServerID <= 0 || (!isTLSEvent && !isCertificateEvent) {
 		return nil
 	}
 	message := strings.ToLower(entry.Message)
 	phase := ""
 	switch {
-	case strings.Contains(message, "revoked"):
+	case eventName == "cert_revoked" || strings.Contains(message, "revoked"):
 		phase = "revoked"
-	case strings.Contains(message, "certificate obtained") ||
+	case eventName == "cert_obtained" || eventName == "cert_cached" ||
+		strings.Contains(message, "certificate obtained") ||
 		strings.Contains(message, "certificate renewed") ||
 		strings.Contains(message, "renewed certificate") ||
 		strings.Contains(message, "cached managed certificate") ||
-		strings.Contains(message, "loaded certificate"):
+		strings.Contains(message, "loaded certificate") ||
+		strings.Contains(message, "certificate loaded"):
 		phase = "active"
 	case strings.Contains(message, "will retry"):
 		phase = "retrying"
-	case entry.Level == "ERROR" || strings.Contains(message, "could not get certificate") ||
+	case eventName == "cert_failed" || entry.Level == "ERROR" || strings.Contains(message, "could not get certificate") ||
 		strings.Contains(message, "failed") || strings.Contains(message, "giving up"):
 		phase = "error"
-	case strings.Contains(entry.Logger, "renew") || strings.Contains(message, "renewing certificate"):
+	case strings.Contains(message, "renewing certificate") || strings.Contains(message, "started certificate renewal"):
 		phase = "renewing"
-	case strings.Contains(entry.Logger, "issuance") || strings.Contains(entry.Logger, "obtain") ||
-		strings.Contains(message, "obtaining certificate") || strings.Contains(message, "trying to solve challenge"):
+	case strings.Contains(message, "obtaining certificate") || strings.Contains(message, "trying to solve challenge") ||
+		strings.Contains(message, "starting certificate issuance"):
 		phase = "obtaining"
 	default:
+		// Namespace-only classification is deliberately avoided. Follow-up
+		// lines such as tls.obtain/releasing lock arrive after success and used
+		// to regress an Issued certificate back to Obtaining.
 		return nil
 	}
 
@@ -289,13 +297,19 @@ func certificateIdentifiers(raw map[string]any) []string {
 			out = append(out, value)
 		}
 	}
-	add(stringField(raw["identifier"]))
-	for _, key := range []string{"identifiers", "subjects", "sans"} {
-		if values, ok := raw[key].([]any); ok {
-			for _, value := range values {
-				add(stringField(value))
+	collect := func(fields map[string]any) {
+		add(stringField(fields["identifier"]))
+		for _, key := range []string{"identifiers", "subjects", "sans", "names"} {
+			if values, ok := fields[key].([]any); ok {
+				for _, value := range values {
+					add(stringField(value))
+				}
 			}
 		}
+	}
+	collect(raw)
+	if data, _ := raw["data"].(map[string]any); data != nil {
+		collect(data)
 	}
 	return out
 }

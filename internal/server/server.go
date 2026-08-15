@@ -95,9 +95,10 @@ type Server struct {
 	// Runtime Caddy logs share the analytics NDJSON socket but stay in a
 	// bounded in-memory hub. Only the latest certificate lifecycle projection
 	// is persisted. Temporary full-log captures are guarded by expiry timers.
-	caddyLogHub      *caddylogs.Hub
-	runtimeLogMu     sync.Mutex
-	runtimeLogTimers map[int64]*time.Timer
+	caddyLogHub        *caddylogs.Hub
+	runtimeLogMu       sync.Mutex
+	runtimeLogTimers   map[int64]*time.Timer
+	certificateProbeFn func(models.CaddyServer, models.Certificate) managedCertificateServerStatus
 
 	// v2.9.2: HTTP client used by the background per-proxy-host health checker.
 	healthClient *http.Client
