@@ -9,6 +9,8 @@
   </div>
   <div class="flex items-center gap-2 flex-wrap">
     <span id="capture-status" class="ui-status ui-status--neutral">Checking…</span>
+    <span id="stream-status" class="ui-status ui-status--neutral">Stream connecting…</span>
+    <button id="refresh-logs" type="button" class="ui-button ui-button--quiet">Refresh / reconnect</button>
     <button id="clear-logs" type="button" class="ui-button ui-button--quiet">Clear screen</button>
   </div>
 </div>
@@ -66,12 +68,12 @@
   <table class="w-full text-sm min-w-[980px]">
     <thead class="bg-ink-50/50 text-left">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
-        <th class="px-4 py-3 font-medium">Time</th>
-        <th class="px-4 py-3 font-medium">Server</th>
-        <th class="px-4 py-3 font-medium">Level</th>
-        <th class="px-4 py-3 font-medium">Logger</th>
-        <th class="px-4 py-3 font-medium">Message</th>
-        <th class="px-4 py-3 font-medium">Fields</th>
+        <th class="px-4 py-3 font-medium"><button type="button" data-log-sort="0" class="inline-flex items-center gap-1 hover:text-ink-800">Time <span aria-hidden="true">↕</span></button></th>
+        <th class="px-4 py-3 font-medium"><button type="button" data-log-sort="1" class="inline-flex items-center gap-1 hover:text-ink-800">Server <span aria-hidden="true">↕</span></button></th>
+        <th class="px-4 py-3 font-medium"><button type="button" data-log-sort="2" class="inline-flex items-center gap-1 hover:text-ink-800">Level <span aria-hidden="true">↕</span></button></th>
+        <th class="px-4 py-3 font-medium"><button type="button" data-log-sort="3" class="inline-flex items-center gap-1 hover:text-ink-800">Logger <span aria-hidden="true">↕</span></button></th>
+        <th class="px-4 py-3 font-medium"><button type="button" data-log-sort="4" class="inline-flex items-center gap-1 hover:text-ink-800">Message <span aria-hidden="true">↕</span></button></th>
+        <th class="px-4 py-3 font-medium"><button type="button" data-log-sort="5" class="inline-flex items-center gap-1 hover:text-ink-800">Fields <span aria-hidden="true">↕</span></button></th>
       </tr>
     </thead>
     <tbody id="server-log-body" class="divide-y divide-ink-100 font-mono text-xs"></tbody>
@@ -89,6 +91,7 @@
   var empty = document.getElementById('server-log-empty');
   var count = document.getElementById('log-count');
   var badge = document.getElementById('capture-status');
+  var streamBadge = document.getElementById('stream-status');
   var detail = document.getElementById('capture-detail');
   var enable = document.getElementById('enable-capture');
   var disable = document.getElementById('disable-capture');
@@ -96,12 +99,19 @@
   var cursor = 0;
   var captures = [];
   var maxRows = 500;
+  var sortColumn = -1;
+  var sortDirection = 1;
 
   function selectedID() { return parseInt(server && server.value || '0', 10); }
 
   function setStatus(message, kind) {
     badge.textContent = message;
     badge.className = 'ui-status ' + (kind === 'active' ? 'ui-status--success' : kind === 'error' ? 'ui-status--danger' : 'ui-status--neutral');
+  }
+
+  function setStreamStatus(message, kind) {
+    streamBadge.textContent = message;
+    streamBadge.className = 'ui-status ' + (kind === 'active' ? 'ui-status--success' : kind === 'error' ? 'ui-status--warning' : 'ui-status--neutral');
   }
 
   function refreshStatus() {
@@ -142,12 +152,29 @@
     return 'bg-emerald-50 text-emerald-700';
   }
 
-  function addCell(row, text, className) {
+  function addCell(row, text, className, sortValue) {
     var cell = document.createElement('td');
     cell.className = className || 'px-4 py-2.5 align-top text-ink-600';
     cell.textContent = text || '—';
+    if (sortValue !== undefined) cell.dataset.sortValue = String(sortValue);
     row.appendChild(cell);
     return cell;
+  }
+
+  function sortRows() {
+    if (sortColumn < 0) return;
+    var rows = Array.from(body.querySelectorAll('tr'));
+    rows.sort(function(a, b) {
+      var aCell = a.children[sortColumn];
+      var bCell = b.children[sortColumn];
+      var aValue = (aCell.dataset.sortValue || aCell.textContent || '').trim();
+      var bValue = (bCell.dataset.sortValue || bCell.textContent || '').trim();
+      var aNumber = Number(aValue);
+      var bNumber = Number(bValue);
+      if (aValue !== '' && bValue !== '' && !isNaN(aNumber) && !isNaN(bNumber)) return (aNumber - bNumber) * sortDirection;
+      return aValue.localeCompare(bValue, undefined, {numeric: true, sensitivity: 'base'}) * sortDirection;
+    });
+    rows.forEach(function(row) { body.appendChild(row); });
   }
 
   function applyFilter(row) {
@@ -165,7 +192,7 @@
     var fieldText = entry.fields && Object.keys(entry.fields).length ? JSON.stringify(entry.fields) : '';
     row.dataset.search = ((entry.logger || '') + ' ' + (entry.message || '') + ' ' + fieldText).toLowerCase();
     row.className = 'hover:bg-ink-50/60 transition';
-    addCell(row, new Date(entry.ts).toLocaleTimeString(), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-500');
+    addCell(row, new Date(entry.ts).toLocaleTimeString(), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-500', Date.parse(entry.ts));
     addCell(row, entry.server_name || ('Server ' + entry.server_id), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-700');
     var levelCell = addCell(row, '', 'px-4 py-2.5 align-top');
     var levelBadge = document.createElement('span');
@@ -178,6 +205,7 @@
     applyFilter(row);
     body.appendChild(row);
     while (body.children.length > maxRows) body.removeChild(body.firstChild);
+    sortRows();
   }
 
   function updateCount() {
@@ -189,7 +217,9 @@
   function connect() {
     if (!server || !server.value) return;
     if (source) source.close();
+    setStreamStatus('Stream connecting…', 'neutral');
     source = new EventSource('/api/server-logs/stream?server=' + encodeURIComponent(server.value) + '&since=' + cursor);
+    source.onopen = function() { setStreamStatus('Stream live', 'active'); };
     source.onmessage = function(event) {
       var entries;
       try { entries = JSON.parse(event.data); } catch (_) { return; }
@@ -197,7 +227,7 @@
       entries.forEach(function(entry) { if (entry.id > cursor) cursor = entry.id; addEntry(entry); });
       updateCount();
     };
-    source.onerror = function() { if (!captures.length) setStatus('Stream reconnecting…', 'error'); };
+    source.onerror = function() { setStreamStatus('Stream reconnecting…', 'error'); };
   }
 
   if (server) server.addEventListener('change', function() {
@@ -210,6 +240,17 @@
   filter.addEventListener('input', function() { body.querySelectorAll('tr').forEach(applyFilter); });
   visibleLevel.addEventListener('change', function() { body.querySelectorAll('tr').forEach(applyFilter); });
   document.getElementById('clear-logs').addEventListener('click', function() { body.replaceChildren(); updateCount(); });
+  document.getElementById('refresh-logs').addEventListener('click', function() { refreshStatus(); connect(); });
+  document.querySelectorAll('[data-log-sort]').forEach(function(button) {
+    button.addEventListener('click', function() {
+      var nextColumn = parseInt(button.dataset.logSort, 10);
+      if (sortColumn === nextColumn) sortDirection *= -1;
+      else { sortColumn = nextColumn; sortDirection = 1; }
+      document.querySelectorAll('[data-log-sort]').forEach(function(other) { other.removeAttribute('aria-sort'); });
+      button.setAttribute('aria-sort', sortDirection === 1 ? 'ascending' : 'descending');
+      sortRows();
+    });
+  });
   enable.addEventListener('click', function() { post('/api/server-logs/enable'); });
   disable.addEventListener('click', function() { post('/api/server-logs/disable'); });
   refreshStatus();
