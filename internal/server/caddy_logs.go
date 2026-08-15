@@ -26,7 +26,7 @@ const (
 
 type certificateProbeTarget struct {
 	Certificate models.Certificate
-	Identifiers []string
+	Identifier  string
 }
 
 func caddyLogOptions(server models.CaddyServer, cfg analyticsConfig) caddy.AccessLogOptions {
@@ -109,9 +109,8 @@ func (s *Server) reconcileCertificateLifecycle() (int, error) {
 	}
 
 	type probeJob struct {
-		server      models.CaddyServer
-		target      certificateProbeTarget
-		identifiers []string
+		server models.CaddyServer
+		target certificateProbeTarget
 	}
 	var jobs []probeJob
 	now := time.Now().UTC()
@@ -124,16 +123,10 @@ func (s *Server) reconcileCertificateLifecycle() (int, error) {
 			return 0, fmt.Errorf("%s: collect certificate probes: %w", server.Name, targetErr)
 		}
 		for _, target := range targets {
-			pending := make([]string, 0, len(target.Identifiers))
-			for _, identifier := range target.Identifiers {
-				key := fmt.Sprintf("%d:%s", server.ID, models.NormalizeHostname(identifier))
-				state, found := stateByServerIdentifier[key]
-				if !found || ((state.Phase == "obtaining" || state.Phase == "renewing") && now.Sub(state.UpdatedAt) >= staleCertificatePhase) {
-					pending = append(pending, identifier)
-				}
-			}
-			if len(pending) > 0 {
-				jobs = append(jobs, probeJob{server: server, target: target, identifiers: pending})
+			key := fmt.Sprintf("%d:%s", server.ID, models.NormalizeHostname(target.Identifier))
+			state, found := stateByServerIdentifier[key]
+			if !found || ((state.Phase == "obtaining" || state.Phase == "renewing") && now.Sub(state.UpdatedAt) >= staleCertificatePhase) {
+				jobs = append(jobs, probeJob{server: server, target: target})
 			}
 		}
 	}
@@ -162,22 +155,21 @@ func (s *Server) reconcileCertificateLifecycle() (int, error) {
 			if strings.TrimSpace(result.Issuer) != "" {
 				message += " (issuer: " + strings.TrimSpace(result.Issuer) + ")"
 			}
-			for _, identifier := range job.identifiers {
-				state := models.CertificateLifecycleStatus{
-					ServerID: job.server.ID, ServerName: job.server.Name,
-					Identifier: identifier, Phase: "active", Level: "INFO",
-					Message: message, UpdatedAt: now,
-				}
-				if err := models.UpsertCertificateLifecycle(s.DB, state); err != nil {
-					mu.Lock()
-					failures = append(failures, fmt.Sprintf("%s/%s: %v", job.server.Name, identifier, err))
-					mu.Unlock()
-					continue
-				}
-				mu.Lock()
-				updated++
-				mu.Unlock()
+			identifier := job.target.Identifier
+			state := models.CertificateLifecycleStatus{
+				ServerID: job.server.ID, ServerName: job.server.Name,
+				Identifier: identifier, Phase: "active", Level: "INFO",
+				Message: message, UpdatedAt: now,
 			}
+			if err := models.UpsertCertificateLifecycle(s.DB, state); err != nil {
+				mu.Lock()
+				failures = append(failures, fmt.Sprintf("%s/%s: %v", job.server.Name, identifier, err))
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			updated++
+			mu.Unlock()
 		}()
 	}
 	wg.Wait()
@@ -188,36 +180,23 @@ func (s *Server) reconcileCertificateLifecycle() (int, error) {
 }
 
 func (s *Server) certificateProbeTargets(serverID int64) ([]certificateProbeTarget, error) {
-	byProbeName := map[string]certificateProbeTarget{}
+	byIdentifier := map[string]certificateProbeTarget{}
 	add := func(cert models.Certificate, identifiers []string) {
-		normalized := make([]string, 0, len(identifiers))
 		for _, identifier := range identifiers {
-			if identifier = models.NormalizeHostname(identifier); identifier != "" {
-				normalized = append(normalized, identifier)
+			identifier = models.NormalizeHostname(identifier)
+			if identifier == "" {
+				continue
 			}
-		}
-		if len(normalized) == 0 {
-			return
-		}
-		cert.Domains = strings.Join(normalized, ",")
-		probeName := managedCertificateProbeName(cert)
-		if probeName == "" {
-			return
-		}
-		if existing, found := byProbeName[probeName]; found {
-			seen := map[string]bool{}
-			for _, identifier := range existing.Identifiers {
-				seen[identifier] = true
+			if _, found := byIdentifier[identifier]; found {
+				continue
 			}
-			for _, identifier := range normalized {
-				if !seen[identifier] {
-					existing.Identifiers = append(existing.Identifiers, identifier)
-				}
+			probeCert := cert
+			probeCert.Domains = identifier
+			if managedCertificateProbeName(probeCert) == "" {
+				continue
 			}
-			byProbeName[probeName] = existing
-			return
+			byIdentifier[identifier] = certificateProbeTarget{Certificate: probeCert, Identifier: identifier}
 		}
-		byProbeName[probeName] = certificateProbeTarget{Certificate: cert, Identifiers: normalized}
 	}
 
 	certificates, err := models.ListCertificates(s.DB, serverID)
@@ -263,16 +242,14 @@ func (s *Server) certificateProbeTargets(serverID int64) ([]certificateProbeTarg
 		}
 	}
 
-	probeNames := make([]string, 0, len(byProbeName))
-	for probeName := range byProbeName {
-		probeNames = append(probeNames, probeName)
+	identifiers := make([]string, 0, len(byIdentifier))
+	for identifier := range byIdentifier {
+		identifiers = append(identifiers, identifier)
 	}
-	sort.Strings(probeNames)
-	out := make([]certificateProbeTarget, 0, len(probeNames))
-	for _, probeName := range probeNames {
-		target := byProbeName[probeName]
-		sort.Strings(target.Identifiers)
-		out = append(out, target)
+	sort.Strings(identifiers)
+	out := make([]certificateProbeTarget, 0, len(identifiers))
+	for _, identifier := range identifiers {
+		out = append(out, byIdentifier[identifier])
 	}
 	return out, nil
 }
