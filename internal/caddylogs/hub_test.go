@@ -54,10 +54,20 @@ func TestHubPersistsCertificateLifecycleAndKeepsRuntimeLogsInMemory(t *testing.T
 	if len(states) != 1 || states[0].Phase != "active" || states[0].Error != "" {
 		t.Fatalf("success state = %#v, want active without an error", states)
 	}
+	// tls.obtain emits cleanup lines after success. Logger namespace alone
+	// must not regress the certificate back to Obtaining.
+	hub.AcceptLine([]byte(`{"level":"info","ts":1700000003,"logger":"tls.obtain","msg":"releasing lock","identifier":"example.test","caddyui_server_id":2,"caddyui_server_name":"edge"}`))
+	states, err = models.ListCertificateLifecycle(conn, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].Phase != "active" {
+		t.Fatalf("post-success cleanup regressed lifecycle state: %#v", states)
+	}
 
 	entries := hub.Since(0, 2, 20)
-	if len(entries) != 4 {
-		t.Fatalf("runtime entries = %d, want 4", len(entries))
+	if len(entries) != 5 {
+		t.Fatalf("runtime entries = %d, want 5", len(entries))
 	}
 	var count int
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM certificate_lifecycle`).Scan(&count); err != nil {
@@ -65,6 +75,24 @@ func TestHubPersistsCertificateLifecycleAndKeepsRuntimeLogsInMemory(t *testing.T
 	}
 	if count != 1 {
 		t.Fatalf("persisted lifecycle rows = %d, want compact single row", count)
+	}
+}
+
+func TestHubPersistsStructuredCertObtainedEvent(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	hub := New(conn)
+	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000004,"logger":"events","msg":"event","name":"cert_obtained","data":{"identifier":"event.example","issuer":"acme.example","renewal":false},"caddyui_server_id":7,"caddyui_server_name":"west"}`))
+	states, err := models.ListCertificateLifecycle(conn, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].Identifier != "event.example" || states[0].Phase != "active" {
+		t.Fatalf("cert_obtained state = %#v, want active event.example", states)
 	}
 }
 

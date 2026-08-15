@@ -5,10 +5,11 @@
     <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Certificates</h1>
     <p class="text-sm text-ink-500 mt-1">Upload a certificate or have Caddy obtain and renew one with ACME DNS-01.</p>
   </div>
-  {{/* v2.7.2: + New visible to admin and user roles. View-only accounts
-       can still see the table for reference but can't create a cert. */}}
-  {{if ne .User.Role "view"}}
   <div class="flex items-center gap-2 self-start shrink-0">
+    <button id="refresh-certificate-status" type="button" class="ui-button ui-button--quiet">Refresh status</button>
+    {{/* v2.7.2: + New visible to admin and user roles. View-only accounts
+         can still see the table for reference but can't create a cert. */}}
+    {{if ne .User.Role "view"}}
     {{if .PorkbunConfigured}}
     <a href="/certificates/import/porkbun" class="inline-flex items-center gap-1.5 bg-white hover:bg-ink-50 text-ink-700 text-sm font-medium px-3 py-2 rounded-lg border border-ink-300 shadow-sm transition">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -19,8 +20,8 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       New
     </a>
+    {{end}}
   </div>
-  {{end}}
 </div>
 
 {{if eq .UsageFilter "unused"}}
@@ -162,24 +163,24 @@
      windows scroll the other columns under the pinned Actions cell.
      v2.7.2: added Owner column, admin-only, between Source and Expires. */}}
 <div class="hidden lg:block bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-x-auto">
-  <table class="w-full text-sm min-w-[820px]">
+  <table id="certificates-table" class="w-full text-sm min-w-[820px]" data-sort-table>
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         {{/* v2.11.10: select-all for bulk-delete. */}}
         <th class="pl-5 py-3 w-8"><input type="checkbox" id="select-all" class="w-4 h-4 rounded border-gray-300"></th>
-        <th class="px-5 py-3 font-medium">Name</th>
-        <th class="px-5 py-3 font-medium">Domains</th>
-        <th class="px-5 py-3 font-medium">Source</th>
-        {{if eq .User.Role "admin"}}<th class="px-5 py-3 font-medium">Owner</th>{{end}}
-        <th class="px-5 py-3 font-medium">Expires</th>
+        <th class="px-5 py-3 font-medium"><button type="button" data-sort-index="1" class="inline-flex items-center gap-1 hover:text-ink-800">Name <span aria-hidden="true">↕</span></button></th>
+        <th class="px-5 py-3 font-medium"><button type="button" data-sort-index="2" class="inline-flex items-center gap-1 hover:text-ink-800">Domains <span aria-hidden="true">↕</span></button></th>
+        <th class="px-5 py-3 font-medium"><button type="button" data-sort-index="3" class="inline-flex items-center gap-1 hover:text-ink-800">Source <span aria-hidden="true">↕</span></button></th>
+        {{if eq .User.Role "admin"}}<th class="px-5 py-3 font-medium"><button type="button" data-sort-index="4" class="inline-flex items-center gap-1 hover:text-ink-800">Owner <span aria-hidden="true">↕</span></button></th>{{end}}
+        <th class="px-5 py-3 font-medium"><button type="button" data-sort-index="{{if eq .User.Role "admin"}}5{{else}}4{{end}}" class="inline-flex items-center gap-1 hover:text-ink-800">Expires / status <span aria-hidden="true">↕</span></button></th>
         <th class="px-5 py-3 font-medium text-center sticky right-0 bg-ink-100 shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.06)] z-10">Actions</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-ink-200">
+    <tbody class="divide-y divide-ink-200" data-sort-body>
       {{range .Certs}}
-      <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Name}} {{.Domains}} {{.OwnerEmail}}">
+      <tr class="bg-white hover:bg-brand-50/30 transition" data-search="{{.Name}} {{.Domains}} {{.OwnerEmail}}" data-sort-row>
         <td class="pl-5 py-3 w-8">{{if .CanEdit}}<input type="checkbox" class="bulk-check w-4 h-4 rounded border-gray-300" value="{{.ID}}">{{end}}</td>
-        <td class="px-5 py-3">
+        <td class="px-5 py-3" data-sort-value="{{.Name}}">
           <span class="inline-flex items-center gap-1">
             <span class="font-mono text-xs text-ink-800">{{.Name}}</span>
             {{if .IsUnused}}<span class="ui-status ui-status--neutral">Unused</span>{{end}}
@@ -193,8 +194,8 @@
             {{end}}
           </span>
         </td>
-        <td class="px-5 py-3 font-mono text-xs text-ink-600">{{.Domains}}</td>
-        <td class="px-5 py-3">
+        <td class="px-5 py-3 font-mono text-xs text-ink-600" data-sort-value="{{.Domains}}">{{.Domains}}</td>
+        <td class="px-5 py-3" data-sort-value="{{.Source}}">
           {{if eq .Source "managed"}}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">Managed ACME / DNS-01</span>
           {{else if eq .Source "pem"}}
@@ -204,7 +205,7 @@
           {{end}}
         </td>
         {{if eq $.User.Role "admin"}}
-        <td class="px-5 py-3">
+        <td class="px-5 py-3" data-sort-value="{{if .OwnerEmail}}{{.OwnerEmail}}{{else}}Global{{end}}">
           {{if .OwnerEmail}}
             <span class="inline-flex items-center gap-1 text-xs text-ink-600" title="Owned by {{.OwnerEmail}}">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3 text-ink-400"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -218,7 +219,7 @@
           {{end}}
         </td>
         {{end}}
-        <td class="px-5 py-3">
+        <td class="px-5 py-3" data-sort-value="{{if .ExpiresAt}}{{.DaysLeft}}{{else if .Lifecycle}}{{.Lifecycle.Phase}}{{else}}unknown{{end}}">
           {{if .ExpiresAt}}
             {{if lt .DaysLeft 0}}
               <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Expired</span>
@@ -300,19 +301,19 @@
     <span class="text-xs text-ink-400">Auto-issued by Let's Encrypt / ZeroSSL</span>
   </div>
   <div class="bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden">
-    <table class="w-full text-sm hidden lg:table">
+    <table id="auto-certificates-table" class="w-full text-sm hidden lg:table" data-sort-table>
       <thead class="bg-ink-100 text-left border-b border-ink-200">
         <tr class="text-xs uppercase tracking-wider text-ink-500">
-          <th class="px-5 py-3 font-medium">Domain</th>
-          <th class="px-5 py-3 font-medium">Certificate</th>
-          <th class="px-5 py-3 font-medium">Managed by</th>
+          <th class="px-5 py-3 font-medium"><button type="button" data-sort-index="0" class="inline-flex items-center gap-1 hover:text-ink-800">Domain <span aria-hidden="true">↕</span></button></th>
+          <th class="px-5 py-3 font-medium"><button type="button" data-sort-index="1" class="inline-flex items-center gap-1 hover:text-ink-800">Certificate <span aria-hidden="true">↕</span></button></th>
+          <th class="px-5 py-3 font-medium"><button type="button" data-sort-index="2" class="inline-flex items-center gap-1 hover:text-ink-800">Managed by <span aria-hidden="true">↕</span></button></th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-ink-200">
+      <tbody class="divide-y divide-ink-200" data-sort-body>
         {{range .AutoDomains}}
-        <tr class="bg-white hover:bg-brand-50/30 transition">
-          <td class="px-5 py-3 font-mono text-xs text-ink-800">{{.Domain}}</td>
-          <td class="px-5 py-3">
+        <tr class="bg-white hover:bg-brand-50/30 transition" data-sort-row>
+          <td class="px-5 py-3 font-mono text-xs text-ink-800" data-sort-value="{{.Domain}}">{{.Domain}}</td>
+          <td class="px-5 py-3" data-sort-value="{{if .UsesWildcard}}{{.CertificateName}}{{else}}{{.Domain}}{{end}}">
             {{if .UsesWildcard}}
               <span class="inline-flex items-center gap-1.5 text-xs text-ink-700" title="Auto TLS is reusing this managed wildcard certificate">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-brand-500"><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1"/></svg>
@@ -322,7 +323,7 @@
               <span class="text-xs text-ink-500" title="Caddy obtains a certificate specifically for this domain">Direct certificate</span>
             {{end}}
           </td>
-          <td class="px-5 py-3">
+          <td class="px-5 py-3" data-sort-value="{{if .Lifecycle}}{{.Lifecycle.Phase}}{{else}}unknown{{end}}">
             {{if .Lifecycle}}
               {{if eq .Lifecycle.Phase "active"}}<span class="ui-status ui-status--success" title="{{.Lifecycle.Message}}">Issued</span>
               {{else if eq .Lifecycle.Phase "obtaining"}}<span class="ui-status ui-status--info" title="{{.Lifecycle.Message}}">Obtaining…</span>
@@ -413,6 +414,48 @@
       syncBar();
     });
   }
+})();
+
+// v2.25.2: client-side status refresh and sortable certificate tables.
+(function() {
+  var refresh = document.getElementById('refresh-certificate-status');
+  if (refresh) refresh.addEventListener('click', function() { window.location.reload(); });
+
+  document.querySelectorAll('[data-sort-table]').forEach(function(table) {
+    var body = table.querySelector('[data-sort-body]');
+    if (!body) return;
+    var activeColumn = -1;
+    var direction = 1;
+
+    function sortRows(column) {
+      var rows = Array.from(body.querySelectorAll('[data-sort-row]'));
+      rows.sort(function(a, b) {
+        var aCell = a.children[column];
+        var bCell = b.children[column];
+        if (!aCell || !bCell) return 0;
+        var aValue = (aCell.dataset.sortValue || aCell.textContent || '').trim();
+        var bValue = (bCell.dataset.sortValue || bCell.textContent || '').trim();
+        var aNumber = Number(aValue);
+        var bNumber = Number(bValue);
+        if (aValue !== '' && bValue !== '' && !isNaN(aNumber) && !isNaN(bNumber)) {
+          return (aNumber - bNumber) * direction;
+        }
+        return aValue.localeCompare(bValue, undefined, {numeric: true, sensitivity: 'base'}) * direction;
+      });
+      rows.forEach(function(row) { body.appendChild(row); });
+    }
+
+    table.querySelectorAll('[data-sort-index]').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var column = parseInt(button.dataset.sortIndex, 10);
+        if (activeColumn === column) direction *= -1;
+        else { activeColumn = column; direction = 1; }
+        table.querySelectorAll('[data-sort-index]').forEach(function(other) { other.removeAttribute('aria-sort'); });
+        button.setAttribute('aria-sort', direction === 1 ? 'ascending' : 'descending');
+        sortRows(column);
+      });
+    });
+  });
 })();
 </script>
 <script>

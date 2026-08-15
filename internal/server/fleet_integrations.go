@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/models"
 )
 
@@ -624,23 +625,27 @@ func applyFleetAccessLog(cfg map[string]any, access fleetAccessLogConfig, analyt
 		if !ok {
 			continue
 		}
-		applies := enabled && (access.Scope == "all" || (access.Scope == "https" && name == "srv0") || (access.Scope == "http" && name == "caddyui_http"))
+		fleetApplies := enabled && (access.Scope == "all" || (access.Scope == "https" && name == "srv0") || (access.Scope == "http" && name == "caddyui_http"))
+		applies := analyticsEnabled || fleetApplies
 		logsCfg, _ := srv["logs"].(map[string]any)
 		if applies {
 			if logsCfg == nil {
 				logsCfg = map[string]any{}
 				srv["logs"] = logsCfg
 			}
-			currentLogger, _ := logsCfg["default_logger_name"].(string)
-			if !analyticsEnabled && strings.TrimSpace(currentLogger) == "" {
-				logsCfg["default_logger_name"] = fleetAccessLoggerName
+			// v2.25.0/v2.25.1 selected a CaddyUI-owned logger as the HTTP
+			// server default, which redirected access output away from the
+			// user's console/file logger. Named include rules already tee the
+			// event, so remove only our legacy override and preserve all others.
+			if logsCfg["default_logger_name"] == fleetAccessLoggerName || logsCfg["default_logger_name"] == caddy.AccessLogLoggerName {
+				delete(logsCfg, "default_logger_name")
 			}
 			continue
 		}
 		if logsCfg == nil {
 			continue
 		}
-		if logsCfg["default_logger_name"] == fleetAccessLoggerName {
+		if logsCfg["default_logger_name"] == fleetAccessLoggerName || logsCfg["default_logger_name"] == caddy.AccessLogLoggerName {
 			delete(logsCfg, "default_logger_name")
 		}
 		if len(logsCfg) == 0 {

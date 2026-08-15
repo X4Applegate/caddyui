@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
@@ -18,7 +20,14 @@ import (
 const (
 	runtimeLogCaptureTTL   = 15 * time.Minute
 	runtimeLogCleanupRetry = 30 * time.Second
+	certificateProbeEvery  = time.Hour
+	staleCertificatePhase  = 15 * time.Minute
 )
+
+type certificateProbeTarget struct {
+	Certificate models.Certificate
+	Identifiers []string
+}
 
 func caddyLogOptions(server models.CaddyServer, cfg analyticsConfig) caddy.AccessLogOptions {
 	return caddy.AccessLogOptions{
@@ -53,6 +62,219 @@ func (s *Server) ReconcileCertificateLogs() error {
 		return fmt.Errorf("certificate log monitoring: %s", strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// StartCertificateLifecycleReconciler bootstraps lifecycle state for
+// certificates issued before log monitoring existed, then periodically heals
+// missed/stale obtaining states. A successful live TLS probe is stronger
+// evidence than the "automatic management enabled" log line: it proves the
+// selected Caddy node is actually serving a valid matching certificate.
+func (s *Server) StartCertificateLifecycleReconciler(ctx context.Context) {
+	go func() {
+		run := func() {
+			updated, err := s.reconcileCertificateLifecycle()
+			if err != nil {
+				log.Printf("certificate lifecycle: live reconciliation: %v", err)
+			} else if updated > 0 {
+				log.Printf("certificate lifecycle: confirmed %d previously unknown/stale subject(s)", updated)
+			}
+		}
+		run()
+		ticker := time.NewTicker(certificateProbeEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+}
+
+func (s *Server) reconcileCertificateLifecycle() (int, error) {
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		return 0, err
+	}
+	states, err := models.ListCertificateLifecycle(s.DB, 0)
+	if err != nil {
+		return 0, err
+	}
+	stateByServerIdentifier := make(map[string]models.CertificateLifecycleStatus, len(states))
+	for _, state := range states {
+		key := fmt.Sprintf("%d:%s", state.ServerID, models.NormalizeHostname(state.Identifier))
+		stateByServerIdentifier[key] = state
+	}
+
+	type probeJob struct {
+		server      models.CaddyServer
+		target      certificateProbeTarget
+		identifiers []string
+	}
+	var jobs []probeJob
+	now := time.Now().UTC()
+	for _, server := range servers {
+		if server.Type != models.CaddyServerTypeManaged {
+			continue
+		}
+		targets, targetErr := s.certificateProbeTargets(server.ID)
+		if targetErr != nil {
+			return 0, fmt.Errorf("%s: collect certificate probes: %w", server.Name, targetErr)
+		}
+		for _, target := range targets {
+			pending := make([]string, 0, len(target.Identifiers))
+			for _, identifier := range target.Identifiers {
+				key := fmt.Sprintf("%d:%s", server.ID, models.NormalizeHostname(identifier))
+				state, found := stateByServerIdentifier[key]
+				if !found || ((state.Phase == "obtaining" || state.Phase == "renewing") && now.Sub(state.UpdatedAt) >= staleCertificatePhase) {
+					pending = append(pending, identifier)
+				}
+			}
+			if len(pending) > 0 {
+				jobs = append(jobs, probeJob{server: server, target: target, identifiers: pending})
+			}
+		}
+	}
+
+	probe := s.certificateProbeFn
+	if probe == nil {
+		probe = s.probeManagedCertificate
+	}
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	updated := 0
+	var failures []string
+	for _, job := range jobs {
+		job := job
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			result := probe(job.server, job.target.Certificate)
+			<-sem
+			if result.Status != "healthy" && result.Status != "expiring" {
+				return
+			}
+			message := "certificate confirmed by live TLS probe"
+			if strings.TrimSpace(result.Issuer) != "" {
+				message += " (issuer: " + strings.TrimSpace(result.Issuer) + ")"
+			}
+			for _, identifier := range job.identifiers {
+				state := models.CertificateLifecycleStatus{
+					ServerID: job.server.ID, ServerName: job.server.Name,
+					Identifier: identifier, Phase: "active", Level: "INFO",
+					Message: message, UpdatedAt: now,
+				}
+				if err := models.UpsertCertificateLifecycle(s.DB, state); err != nil {
+					mu.Lock()
+					failures = append(failures, fmt.Sprintf("%s/%s: %v", job.server.Name, identifier, err))
+					mu.Unlock()
+					continue
+				}
+				mu.Lock()
+				updated++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(failures) > 0 {
+		return updated, fmt.Errorf("store probe results: %s", strings.Join(failures, "; "))
+	}
+	return updated, nil
+}
+
+func (s *Server) certificateProbeTargets(serverID int64) ([]certificateProbeTarget, error) {
+	byProbeName := map[string]certificateProbeTarget{}
+	add := func(cert models.Certificate, identifiers []string) {
+		normalized := make([]string, 0, len(identifiers))
+		for _, identifier := range identifiers {
+			if identifier = models.NormalizeHostname(identifier); identifier != "" {
+				normalized = append(normalized, identifier)
+			}
+		}
+		if len(normalized) == 0 {
+			return
+		}
+		cert.Domains = strings.Join(normalized, ",")
+		probeName := managedCertificateProbeName(cert)
+		if probeName == "" {
+			return
+		}
+		if existing, found := byProbeName[probeName]; found {
+			seen := map[string]bool{}
+			for _, identifier := range existing.Identifiers {
+				seen[identifier] = true
+			}
+			for _, identifier := range normalized {
+				if !seen[identifier] {
+					existing.Identifiers = append(existing.Identifiers, identifier)
+				}
+			}
+			byProbeName[probeName] = existing
+			return
+		}
+		byProbeName[probeName] = certificateProbeTarget{Certificate: cert, Identifiers: normalized}
+	}
+
+	certificates, err := models.ListCertificates(s.DB, serverID)
+	if err != nil {
+		return nil, err
+	}
+	for _, cert := range certificates {
+		if cert.Source == models.CertSourceManaged {
+			add(cert, cert.DomainList())
+		}
+	}
+	proxyHosts, err := models.ListProxyHosts(s.DB, serverID, 0, true, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, host := range proxyHosts {
+		if host.Enabled && host.SSLEnabled && host.CertificateID == 0 {
+			for _, domain := range host.DomainList() {
+				add(models.Certificate{Name: "Auto TLS", Source: models.CertSourceManaged}, []string{domain})
+			}
+		}
+	}
+	redirects, err := models.ListRedirectionHosts(s.DB, serverID, 0, true, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, redirect := range redirects {
+		if redirect.Enabled && redirect.SSLEnabled && redirect.CertificateID == 0 {
+			for _, domain := range redirect.DomainList() {
+				add(models.Certificate{Name: "Auto TLS", Source: models.CertSourceManaged}, []string{domain})
+			}
+		}
+	}
+	rawRoutes, err := models.ListRawRoutes(s.DB, serverID, 0, true, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, route := range rawRoutes {
+		if route.Enabled && route.CertificateID == 0 {
+			for _, domain := range rawRouteHosts(route) {
+				add(models.Certificate{Name: "Auto TLS", Source: models.CertSourceManaged}, []string{domain})
+			}
+		}
+	}
+
+	probeNames := make([]string, 0, len(byProbeName))
+	for probeName := range byProbeName {
+		probeNames = append(probeNames, probeName)
+	}
+	sort.Strings(probeNames)
+	out := make([]certificateProbeTarget, 0, len(probeNames))
+	for _, probeName := range probeNames {
+		target := byProbeName[probeName]
+		sort.Strings(target.Identifiers)
+		out = append(out, target)
+	}
+	return out, nil
 }
 
 // ResetRuntimeLogs removes streams left in Caddy's persisted config by a

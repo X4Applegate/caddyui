@@ -200,21 +200,52 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 	return nil
 }
 
-// ReconcileAnalyticsAccessLogs refreshes an enabled analytics logger during
-// CaddyUI startup. This is important for upgrades: it writes newly introduced
-// writer safeguards such as soft_start into Caddy's persisted config without
-// requiring an admin to revisit Settings and click Save. Disabled analytics is
-// left untouched here; the explicit Settings toggle remains responsible for
-// removing a previously enabled logger.
+// ReconcileAnalyticsAccessLogs repairs legacy CaddyUI default-logger overrides
+// on every managed node, then refreshes an enabled analytics stream. The repair
+// is unconditional because fleet file logging can be enabled independently of
+// analytics, and both v2.25.0/v2.25.1 logger names could redirect normal Caddy
+// console or file output.
 func (s *Server) ReconcileAnalyticsAccessLogs() error {
 	cfg := loadAnalyticsConfig(s.DB)
+	repairErr := s.repairCaddyUIDefaultLoggers()
 	if !cfg.Enabled {
 		if s.analyticsIngest != nil {
 			s.analyticsIngest.SetExcludeIPs(cfg.ExcludeIPs)
 		}
-		return nil
+		return repairErr
 	}
-	return s.applyAnalyticsToggle(cfg)
+	toggleErr := s.applyAnalyticsToggle(cfg)
+	if repairErr != nil && toggleErr != nil {
+		return fmt.Errorf("repair logger defaults: %v; refresh analytics logger: %w", repairErr, toggleErr)
+	}
+	if repairErr != nil {
+		return repairErr
+	}
+	return toggleErr
+}
+
+func (s *Server) repairCaddyUIDefaultLoggers() error {
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		return fmt.Errorf("list caddy servers for logger repair: %w", err)
+	}
+	if len(servers) == 0 {
+		return s.Caddy.RepairDefaultLoggerOverrides(caddy.AccessLogLoggerName, fleetAccessLoggerName)
+	}
+	var errMsgs []string
+	for _, server := range servers {
+		if server.Type != models.CaddyServerTypeManaged {
+			continue
+		}
+		client := newCaddyClient(server.AdminURL, server.AdminUsername, server.AdminPassword)
+		if err := client.RepairDefaultLoggerOverrides(caddy.AccessLogLoggerName, fleetAccessLoggerName); err != nil {
+			errMsgs = append(errMsgs, fmt.Sprintf("server %q (%s): %v", server.Name, server.AdminURL, err))
+		}
+	}
+	if len(errMsgs) > 0 {
+		return fmt.Errorf("default-logger repair: %s", strings.Join(errMsgs, "; "))
+	}
+	return nil
 }
 
 // userAllowedHosts returns the list of host strings (as Caddy would see them

@@ -133,6 +133,7 @@ Fix by:
 	if err := srv.ReconcileCertificateLogs(); err != nil {
 		log.Printf("certificate monitoring: startup reconciliation: %v", err)
 	}
+	srv.StartCertificateLifecycleReconciler(pollerCtx)
 
 	// Opt-in startup sync. Default: no initial sync — pushing an empty config
 	// would wipe Caddy's existing routes. Set CADDYUI_SYNC_ON_START=1 once all

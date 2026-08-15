@@ -80,19 +80,25 @@ func (c *Client) installNamedLog(name string, logger map[string]any) error {
 		return err
 	}
 
-	logs := map[string]any{name: logger}
-	if cfg, _, cfgErr := c.FetchConfig(); cfgErr == nil {
-		if logging, _ := cfg["logging"].(map[string]any); logging != nil {
-			if existing, _ := logging["logs"].(map[string]any); existing != nil {
-				for key, value := range existing {
-					if key != name {
-						logs[key] = value
-					}
-				}
-			}
+	logging := map[string]any{}
+	cfg, _, cfgErr := c.FetchConfig()
+	if cfgErr != nil {
+		return fmt.Errorf("fetch config before logging bootstrap: %w", cfgErr)
+	}
+	if existing, _ := cfg["logging"].(map[string]any); existing != nil {
+		for key, value := range existing {
+			logging[key] = value
 		}
 	}
-	return c.PutPath("/config/logging", map[string]any{"logs": logs})
+	logs := map[string]any{}
+	if existing, _ := logging["logs"].(map[string]any); existing != nil {
+		for key, value := range existing {
+			logs[key] = value
+		}
+	}
+	logs[name] = logger
+	logging["logs"] = logs
+	return c.PutPath("/config/logging", logging)
 }
 
 // EnableAccessLogs configures the live Caddy instance to stream its access
@@ -106,13 +112,13 @@ func (c *Client) installNamedLog(name string, logger map[string]any) error {
 //  1. logging.logs.caddyui_access is created (or replaced) with a net-writer
 //     that points at target. Only logs tagged http.log.access are routed
 //     there, so Caddy's own admin / app logs aren't shipped.
-//  2. Every entry under apps.http.servers is patched to have a non-empty
-//     logs block — Caddy only emits http.log.access events for servers
-//     with logs enabled, so without this step our logger sits unused.
-//  3. apps.http.servers.<name>.logs.default_logger_name is set to
-//     caddyui_access so requests without an explicit per-host logger go
-//     to us. Per-host `log` directives in the Caddyfile will continue to
-//     win when present — this just sets the default.
+//  2. Every entry under apps.http.servers is guaranteed to have a logs block.
+//     Caddy only emits http.log.access events for servers with logs enabled.
+//     Existing blocks and logger selections are preserved.
+//  3. Configs written by v2.25.0/v2.25.1 are repaired by removing only their
+//     caddyui_access default_logger_name override. The named logger's include
+//     rule receives a duplicate event while the existing/default logger keeps
+//     writing to stdout, a journal, or the user's configured file.
 //
 // Returns an error if Caddy's admin API rejects any step. Callers should
 // fall back to DisableAccessLogs on failure to avoid leaving the config in
@@ -134,12 +140,9 @@ func (c *Client) EnableAccessLogs(target string, opts AccessLogOptions) error {
 		return fmt.Errorf("install access-log logger: %w", err)
 	}
 
-	// Step 2+3: fetch the server names, then patch each one's logs block.
-	// We can't patch .../servers/*/logs with a wildcard — Caddy's admin API
-	// is path-oriented, not pattern-oriented — so we enumerate servers and
-	// issue one PUT per server. Typical caddyui deployments have one
-	// server, so this is a one-request loop in practice.
-	servers, err := c.listHTTPServerNames()
+	// Step 2+3: enable access-log emission without selecting CaddyUI as the
+	// server's default logger. The global include above tees matching events.
+	servers, err := c.listHTTPServerConfigs()
 	if err != nil {
 		return fmt.Errorf("list http servers for access-log enable: %w", err)
 	}
@@ -148,12 +151,18 @@ func (c *Client) EnableAccessLogs(target string, opts AccessLogOptions) error {
 		// descriptive error so the admin knows to add a site block first.
 		return fmt.Errorf("access-log logger installed but no http servers exist in Caddy config")
 	}
-	for _, srv := range servers {
-		logsCfg := map[string]any{
-			"default_logger_name": AccessLogLoggerName,
+	for name, server := range servers {
+		logsCfg, _ := server["logs"].(map[string]any)
+		if logsCfg == nil {
+			if err := c.PutPath("/config/apps/http/servers/"+name+"/logs", map[string]any{}); err != nil {
+				return fmt.Errorf("enable logs on server %q: %w", name, err)
+			}
+			continue
 		}
-		if err := c.PutPath("/config/apps/http/servers/"+srv+"/logs", logsCfg); err != nil {
-			return fmt.Errorf("enable logs on server %q: %w", srv, err)
+		if logsCfg["default_logger_name"] == AccessLogLoggerName {
+			if err := c.deletePathIgnoreMissing("/config/apps/http/servers/" + name + "/logs/default_logger_name"); err != nil {
+				return fmt.Errorf("restore default logger on server %q: %w", name, err)
+			}
 		}
 	}
 	return nil
@@ -217,66 +226,71 @@ func (c *Client) DisableRuntimeLogs() error {
 	return nil
 }
 
-// DisableAccessLogs reverses EnableAccessLogs. Removes the caddyui_access
-// logger and deletes the logs block on every http server. Missing paths
-// are not treated as errors — a DELETE on a path that Caddy doesn't know
-// about returns 404 and we swallow it, so repeated disable calls are
-// idempotent and safe after a partial-enable rollback.
+// DisableAccessLogs removes only CaddyUI's named logger. Server logs blocks
+// remain enabled so console/journal/file output is never disabled as a side
+// effect. The v2.25.0/v2.25.1 default_logger_name override is removed if it
+// is present; unrelated default or per-host logger choices are preserved.
 func (c *Client) DisableAccessLogs() error {
-	// Step 1: remove the logger. If the admin toggled off the feature
-	// while Caddy was also holding a per-server `logs` block, skipping
-	// this leaves the logger attached to servers that no longer have a
-	// writer — which Caddy treats as "log nowhere", silently.
 	if err := c.deletePathIgnoreMissing("/config/logging/logs/" + AccessLogLoggerName); err != nil {
 		return fmt.Errorf("remove access-log logger: %w", err)
 	}
+	return c.RepairDefaultLoggerOverrides(AccessLogLoggerName)
+}
 
-	// Step 2: clear the logs block on each http server. Caddyfile sites
-	// with their own explicit `log` directive will re-install a logs
-	// block on next adapt — that's fine, we only want to undo our own
-	// automatic wiring here.
-	servers, err := c.listHTTPServerNames()
-	if err != nil {
-		// If we can't enumerate servers, we can't be sure nothing is
-		// still pointing at the logger — but the logger is already
-		// gone, so access logs are effectively off. Surface the error
-		// but don't fail hard.
-		return fmt.Errorf("list http servers for access-log disable: %w", err)
+// RepairDefaultLoggerOverrides removes only HTTP-server default selections
+// that point at one of the supplied CaddyUI-owned named loggers. It is used on
+// startup to repair persisted v2.25.0/v2.25.1 configs without changing the
+// named stream itself or any unrelated console, journal, file, and per-host
+// logger choices.
+func (c *Client) RepairDefaultLoggerOverrides(ownedNames ...string) error {
+	owned := make(map[string]bool, len(ownedNames))
+	for _, name := range ownedNames {
+		if name = strings.TrimSpace(name); name != "" {
+			owned[name] = true
+		}
 	}
-	for _, srv := range servers {
-		if err := c.deletePathIgnoreMissing("/config/apps/http/servers/" + srv + "/logs"); err != nil {
-			return fmt.Errorf("clear logs on server %q: %w", srv, err)
+	if len(owned) == 0 {
+		return nil
+	}
+	servers, err := c.listHTTPServerConfigs()
+	if err != nil {
+		return fmt.Errorf("list http servers for default-logger repair: %w", err)
+	}
+	for name, server := range servers {
+		logsCfg, _ := server["logs"].(map[string]any)
+		defaultName, _ := logsCfg["default_logger_name"].(string)
+		if logsCfg != nil && owned[defaultName] {
+			if err := c.deletePathIgnoreMissing("/config/apps/http/servers/" + name + "/logs/default_logger_name"); err != nil {
+				return fmt.Errorf("restore default logger on server %q: %w", name, err)
+			}
 		}
 	}
 	return nil
 }
 
-// listHTTPServerNames returns the keys under apps.http.servers. Empty slice
-// means Caddy has no HTTP app configured (possible on a fresh boot before
-// the first sync). The admin API returns null for missing paths, which we
-// normalise to an empty slice so callers don't have to special-case it.
-func (c *Client) listHTTPServerNames() ([]string, error) {
+// listHTTPServerConfigs returns the live server objects keyed by name. An
+// empty map means Caddy has no HTTP app configured yet.
+func (c *Client) listHTTPServerConfigs() (map[string]map[string]any, error) {
 	cfg, _, err := c.FetchConfig()
 	if err != nil {
 		return nil, err
 	}
 	apps, _ := cfg["apps"].(map[string]any)
 	if apps == nil {
-		return nil, nil
+		return map[string]map[string]any{}, nil
 	}
 	httpApp, _ := apps["http"].(map[string]any)
 	if httpApp == nil {
-		return nil, nil
+		return map[string]map[string]any{}, nil
 	}
-	servers, _ := httpApp["servers"].(map[string]any)
-	if servers == nil {
-		return nil, nil
+	rawServers, _ := httpApp["servers"].(map[string]any)
+	out := make(map[string]map[string]any, len(rawServers))
+	for name, raw := range rawServers {
+		if server, _ := raw.(map[string]any); server != nil {
+			out[name] = server
+		}
 	}
-	names := make([]string, 0, len(servers))
-	for k := range servers {
-		names = append(names, k)
-	}
-	return names, nil
+	return out, nil
 }
 
 // deletePathIgnoreMissing issues a DELETE on a config path and treats 404

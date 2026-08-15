@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.25.2] - 2026-08-14 - Observability reliability follow-up
+
+### Fixed
+
+- Analytics and fleet access-log forwarding no longer select a CaddyUI-owned logger as an HTTP server's default. Existing console, journal, file, and per-host logger configuration is preserved, while legacy v2.25.0/v2.25.1 overrides are repaired automatically.
+- Certificate lifecycle success can no longer regress to **Obtaining** when Caddy emits its post-issuance `releasing lock` cleanup line. Structured certificate events are also recognized as authoritative lifecycle signals.
+- Managed certificates with missing or stale obtaining/renewing history are reconciled at startup and periodically from the certificate actually served by each managed Caddy node. Retry, error, and revoked states remain visible until Caddy reports a real recovery.
+- Server Logs now shows whether its live stream is connected or reconnecting and provides a one-click **Refresh / reconnect** action.
+
+### Added
+
+- Sortable columns on the Server Logs, custom certificate, and Caddy-managed certificate tables.
+- A **Refresh status** action on the Certificates page.
+- Regression coverage for existing Caddy logging preservation, lifecycle cleanup ordering, startup certificate reconciliation, and the new operational UI controls. ([#26](https://github.com/X4Applegate/caddyui/issues/26))
+
 ## [2.25.1] - 2026-08-14 - SQLite upgrade hotfix
 
 ### Fixed

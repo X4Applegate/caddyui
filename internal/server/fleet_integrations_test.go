@@ -8,7 +8,10 @@ func TestApplyFleetAccessLogPreservesAnalytics(t *testing.T) {
 			"caddyui_access": map[string]any{"include": []any{"http.log.access"}},
 		}},
 		"apps": map[string]any{"http": map[string]any{"servers": map[string]any{
-			"srv0":         map[string]any{"logs": map[string]any{"default_logger_name": "caddyui_access"}},
+			"srv0": map[string]any{"logs": map[string]any{
+				"default_logger_name": "caddyui_access",
+				"logger_names":        map[string]any{"host.example": "custom"},
+			}},
 			"caddyui_http": map[string]any{"listen": []any{":80"}},
 		}}},
 	}
@@ -28,8 +31,11 @@ func TestApplyFleetAccessLogPreservesAnalytics(t *testing.T) {
 	}
 	servers := cfg["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
 	srv0Logs := servers["srv0"].(map[string]any)["logs"].(map[string]any)
-	if got := srv0Logs["default_logger_name"]; got != "caddyui_access" {
-		t.Fatalf("analytics default logger changed: %v", got)
+	if got := srv0Logs["default_logger_name"]; got != nil {
+		t.Fatalf("legacy analytics default logger remains: %v", got)
+	}
+	if srv0Logs["logger_names"] == nil {
+		t.Fatal("custom per-host logger mapping was removed")
 	}
 	if _, ok := servers["caddyui_http"].(map[string]any)["logs"].(map[string]any); !ok {
 		t.Fatal("HTTP server access logs were not enabled")
