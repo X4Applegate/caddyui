@@ -2417,14 +2417,15 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	seenTrafficHosts := map[string]struct{}{}
 	for _, host := range hostsForActive {
-		host = strings.ToLower(strings.TrimSpace(host))
+		host = strings.TrimSpace(host)
 		if host == "" {
 			continue
 		}
-		if _, seen := seenTrafficHosts[host]; seen {
+		hostKey := strings.ToLower(host)
+		if _, seen := seenTrafficHosts[hostKey]; seen {
 			continue
 		}
-		seenTrafficHosts[host] = struct{}{}
+		seenTrafficHosts[hostKey] = struct{}{}
 		if t, err := models.AccessTotalsSince(s.DB, todayStart, host, sid); err == nil {
 			todayViews += t.Views
 			todayVisitors += t.Visitors
@@ -12743,14 +12744,15 @@ func (s *Server) apiDashboardSparklines(w http.ResponseWriter, r *http.Request) 
 	seenTrafficHosts := map[string]struct{}{}
 	uniqueTrafficHosts := make([]string, 0, len(hostsForActive))
 	for _, host := range hostsForActive {
-		host = strings.ToLower(strings.TrimSpace(host))
+		host = strings.TrimSpace(host)
 		if host == "" {
 			continue
 		}
-		if _, seen := seenTrafficHosts[host]; seen {
+		hostKey := strings.ToLower(host)
+		if _, seen := seenTrafficHosts[hostKey]; seen {
 			continue
 		}
-		seenTrafficHosts[host] = struct{}{}
+		seenTrafficHosts[hostKey] = struct{}{}
 		uniqueTrafficHosts = append(uniqueTrafficHosts, host)
 	}
 

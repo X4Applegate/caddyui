@@ -40,7 +40,7 @@ func TestOperationsTrafficAndCertificatesUseSelectedFleetServer(t *testing.T) {
 
 	for _, serverID := range []int64{primaryID, selectedID} {
 		if _, err := models.CreateProxyHost(conn, serverID, 0, &models.ProxyHost{
-			Domains: "shared.test", ForwardScheme: "http", ForwardHost: "backend", ForwardPort: 8080, Enabled: true,
+			Domains: "Shared.TEST", ForwardScheme: "http", ForwardHost: "backend", ForwardPort: 8080, Enabled: true,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -58,9 +58,9 @@ func TestOperationsTrafficAndCertificatesUseSelectedFleetServer(t *testing.T) {
 	// the first minute after midnight.
 	now := time.Now().UTC().Truncate(24 * time.Hour).Add(time.Hour)
 	events := []models.AccessEvent{
-		{TS: now, ServerID: primaryID, ServerName: "primary", Host: "shared.test", ClientIP: "192.0.2.1", BytesOut: 100},
-		{TS: now, ServerID: selectedID, ServerName: "selected", Host: "shared.test", ClientIP: "192.0.2.2", BytesOut: 20},
-		{TS: now.Add(time.Second), ServerID: selectedID, ServerName: "selected", Host: "shared.test", ClientIP: "192.0.2.3", BytesOut: 30},
+		{TS: now, ServerID: primaryID, ServerName: "primary", Host: "Shared.TEST", ClientIP: "192.0.2.1", BytesOut: 100},
+		{TS: now, ServerID: selectedID, ServerName: "selected", Host: "Shared.TEST", ClientIP: "192.0.2.2", BytesOut: 20},
+		{TS: now.Add(time.Second), ServerID: selectedID, ServerName: "selected", Host: "Shared.TEST", ClientIP: "192.0.2.3", BytesOut: 30},
 	}
 	for _, event := range events {
 		if err := models.InsertAccessEvent(conn, event); err != nil {
