@@ -115,3 +115,25 @@ func TestOperationalTablesExposeRefreshAndSortingControls(t *testing.T) {
 		t.Fatal("server log retention must evict by entry ID, not visual sort order")
 	}
 }
+
+func TestDashboardClarifiesFleetTelemetryScopes(t *testing.T) {
+	dashboardHTML, err := FS.ReadFile("templates/dashboard.html")
+	if err != nil {
+		t.Fatalf("read dashboard.html: %v", err)
+	}
+	dashboard := string(dashboardHTML)
+	for _, marker := range []string{
+		"Certificate definitions",
+		"CaddyUI host resources · Caddy telemetry from",
+		"CaddyUI host uptime",
+		"Node active requests",
+		"fetch('/api/system-stats')",
+	} {
+		if !strings.Contains(dashboard, marker) {
+			t.Fatalf("dashboard template missing scope marker %q", marker)
+		}
+	}
+	if strings.Contains(dashboard, "/api/system-stats?sid=") {
+		t.Fatal("dashboard system stats must follow the active-server cookie, not a separate query parameter")
+	}
+}

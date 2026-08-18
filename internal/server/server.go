@@ -2398,12 +2398,10 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Today's analytics stats — v2.12.8: scoped to the active server's
-	// hostnames so the dashboard cards match what the picker has
-	// selected. Previously called AccessTotalsSince("") which sums the
-	// whole fleet, leaking other-server traffic into the active-server
-	// view (confusing on multi-server installs). Sums per-host the way
-	// /analytics already does when ?server=<id> is set.
+	// Today's analytics stats are scoped by both visible hostname and the
+	// selected fleet server. Hostname-only filtering is insufficient when two
+	// nodes serve the same domain: it would merge both nodes back together even
+	// after the operator switched environments.
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
 	todayViews, todayVisitors := 0, 0
 	var todayBandwidth int64
@@ -2417,12 +2415,22 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	for _, rr := range raws {
 		hostsForActive = append(hostsForActive, rawRouteHosts(rr)...)
 	}
+	seenTrafficHosts := map[string]struct{}{}
 	for _, host := range hostsForActive {
-		if t, err := models.AccessTotalsSince(s.DB, todayStart, host); err == nil {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		hostKey := strings.ToLower(host)
+		if _, seen := seenTrafficHosts[hostKey]; seen {
+			continue
+		}
+		seenTrafficHosts[hostKey] = struct{}{}
+		if t, err := models.AccessTotalsSince(s.DB, todayStart, host, sid); err == nil {
 			todayViews += t.Views
 			todayVisitors += t.Visitors
 		}
-		if bw, err := models.BandwidthSince(s.DB, todayStart, host); err == nil {
+		if bw, err := models.BandwidthSince(s.DB, todayStart, host, sid); err == nil {
 			todayBandwidth += bw
 		}
 	}
@@ -12607,6 +12615,12 @@ func (s *Server) apiSystemStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := map[string]any{}
 
+	// The first four values intentionally describe the machine/container that
+	// runs CaddyUI. A remote Caddy admin API does not expose host load, total
+	// memory, or host uptime. The response names both scopes so the Operations
+	// page can distinguish these values from the selected-node Caddy telemetry.
+	stats["host_scope"] = "caddyui"
+
 	// Uptime from /proc/uptime (always the CaddyUI host machine).
 	if data, err := os.ReadFile("/proc/uptime"); err == nil {
 		fields := strings.Fields(string(data))
@@ -12654,25 +12668,32 @@ func (s *Server) apiSystemStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Per-server Caddy stats: active upstream requests + healthy upstream count.
-	// Uses the server ID from the ?sid query param, falling back to the cookie.
-	sidStr := r.URL.Query().Get("sid")
-	sid, err := strconv.ParseInt(sidStr, 10, 64)
-	if err != nil || sid <= 0 {
-		sid = s.currentServerID(r)
-	}
+	// The active-server cookie is authoritative, matching every other dashboard
+	// value and preventing a stale or hand-edited query parameter from mixing
+	// scopes inside one Operations page.
+	sid := s.currentServerID(r)
 	if srv, err := models.GetCaddyServer(s.DB, sid); err == nil {
-		upstreams := fetchCaddyUpstreams(srv.AdminURL)
+		stats["selected_server_id"] = srv.ID
+		stats["selected_server_name"] = srv.Name
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		upstreams, upstreamErr := caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword).GetUpstreamHealth(ctx)
+		cancel()
+		if upstreamErr != nil {
+			stats["caddy_error"] = upstreamErr.Error()
+		}
 		activeReqs := 0
 		healthy := 0
 		for _, u := range upstreams {
 			activeReqs += u.NumRequests
-			if u.Fails == 0 {
+			if u.Healthy {
 				healthy++
 			}
 		}
-		stats["active_requests"] = activeReqs
-		stats["healthy_upstreams"] = healthy
-		stats["total_upstreams"] = len(upstreams)
+		if upstreamErr == nil {
+			stats["active_requests"] = activeReqs
+			stats["healthy_upstreams"] = healthy
+			stats["total_upstreams"] = len(upstreams)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -12720,18 +12741,34 @@ func (s *Server) apiDashboardSparklines(w http.ResponseWriter, r *http.Request) 
 
 	now := time.Now().UTC()
 	days := make([]DayPoint, 7)
+	seenTrafficHosts := map[string]struct{}{}
+	uniqueTrafficHosts := make([]string, 0, len(hostsForActive))
+	for _, host := range hostsForActive {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		hostKey := strings.ToLower(host)
+		if _, seen := seenTrafficHosts[hostKey]; seen {
+			continue
+		}
+		seenTrafficHosts[hostKey] = struct{}{}
+		uniqueTrafficHosts = append(uniqueTrafficHosts, host)
+	}
+
 	for i := 6; i >= 0; i-- {
 		day := now.AddDate(0, 0, -i).Truncate(24 * time.Hour)
 		dayEnd := day.Add(24 * time.Hour)
 		pt := DayPoint{Date: day.Format("2006-01-02")}
-		for _, host := range hostsForActive {
-			if t, err := models.AccessTotalsBetween(s.DB, day, dayEnd, host); err == nil {
+		for _, host := range uniqueTrafficHosts {
+			if t, err := models.AccessTotalsBetween(s.DB, day, dayEnd, host, sid); err == nil {
 				pt.Views += t.Views
 				pt.Visitors += t.Visitors
 			}
-			if bw, err := models.BandwidthSince(s.DB, day, host); err == nil {
-				// BandwidthSince sums from `day` to now — approximate for dashboard
-				pt.Bandwidth += bw
+			if buckets, err := models.BandwidthBuckets(s.DB, day, dayEnd, 24*60*60, host, sid); err == nil {
+				for _, bucket := range buckets {
+					pt.Bandwidth += bucket.BytesOut
+				}
 			}
 		}
 		days[6-i] = pt
@@ -12741,17 +12778,36 @@ func (s *Server) apiDashboardSparklines(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]any{"days": days})
 }
 
-// apiCaddyVersion returns the running Caddy version from the admin API.
+// apiCaddyVersion returns the running Caddy version from the selected fleet
+// node's admin API. The former bootstrap-client lookup made every environment
+// show the primary node's version.
 func (s *Server) apiCaddyVersion(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	version, err := s.Caddy.GetVersion(ctx)
+	sid := s.currentServerID(r)
+	srv, serverErr := models.GetCaddyServer(s.DB, sid)
 	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		json.NewEncoder(w).Encode(map[string]any{"version": "unknown", "error": err.Error()})
+	if serverErr != nil {
+		json.NewEncoder(w).Encode(map[string]any{"version": "unknown", "error": serverErr.Error()})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"version": version})
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	version, err := caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword).GetVersionFromAdmin(ctx)
+	if err != nil {
+		if strings.TrimSpace(srv.Version) != "" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"version": srv.Version, "server_id": srv.ID, "server_name": srv.Name, "source": "saved",
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"version": "unknown", "server_id": srv.ID, "server_name": srv.Name, "error": err.Error(),
+		})
+		return
+	}
+	_ = models.SetCaddyServerVersion(s.DB, sid, version)
+	json.NewEncoder(w).Encode(map[string]any{
+		"version": version, "server_id": srv.ID, "server_name": srv.Name,
+	})
 }
 
 // apiVersionCheck returns the running version and the latest Docker Hub tag,
