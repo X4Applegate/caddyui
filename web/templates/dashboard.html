@@ -133,7 +133,7 @@
       </a>
       <a href="/certificates" class="ops-route-metric">
         <div class="ops-route-metric__value tabular-nums">{{.CertCount}}</div>
-        <div class="ops-route-metric__label">Certificates</div>
+        <div class="ops-route-metric__label">Certificate definitions</div>
       </a>
     </div>
 
@@ -154,7 +154,7 @@
     <section class="ui-panel" aria-labelledby="traffic-overview-title">
       <div class="px-4 py-3 border-b border-ink-100">
         <h2 class="ui-section-header__title" id="traffic-overview-title">Traffic today</h2>
-        <p class="ui-section-header__description">Active-server analytics since midnight UTC</p>
+        <p class="ui-section-header__description">{{if .CurrentServer}}{{.CurrentServer.Name}}{{else}}Active node{{end}} analytics since midnight UTC</p>
       </div>
       <div class="ops-metrics-grid">
         <div class="ui-metric">
@@ -192,37 +192,37 @@
     {{end}}
 
     {{if eq .User.Role "admin"}}
-    <section class="ui-panel" id="sys-stats" data-sid="{{if .CurrentServer}}{{.CurrentServer.ID}}{{else}}1{{end}}" aria-labelledby="system-health-title">
+    <section class="ui-panel" id="sys-stats" aria-labelledby="system-health-title">
       <div class="px-4 py-3 border-b border-ink-100">
         <h2 class="ui-section-header__title" id="system-health-title">System health</h2>
-        <p class="ui-section-header__description">Live host and upstream telemetry</p>
+        <p class="ui-section-header__description">CaddyUI host resources · Caddy telemetry from {{if .CurrentServer}}{{.CurrentServer.Name}}{{else}}the selected node{{end}}</p>
       </div>
       <div class="ops-system-grid">
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Uptime</div>
+          <div class="ops-system-metric__label">CaddyUI host uptime</div>
           <div class="ops-system-metric__value tabular-nums truncate" id="stat-uptime">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Load 1m / 5m</div>
+          <div class="ops-system-metric__label">CaddyUI load 1m / 5m</div>
           <div class="ops-system-metric__value tabular-nums" id="stat-load">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Memory</div>
+          <div class="ops-system-metric__label">CaddyUI memory</div>
           <div class="ops-system-metric__value tabular-nums truncate" id="stat-mem">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Memory use</div>
+          <div class="ops-system-metric__label">CaddyUI memory use</div>
           <div class="flex items-center gap-2 mt-2">
             <div class="flex-1 bg-ink-100 rounded-full h-1.5 overflow-hidden"><div class="mem-gradient-bar h-1.5 rounded-full" id="stat-mem-bar" style="width:0%"></div></div>
             <span class="ops-system-metric__value mt-0 tabular-nums" id="stat-mem-pct">0%</span>
           </div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Active requests</div>
+          <div class="ops-system-metric__label">Node active requests</div>
           <div class="ops-system-metric__value tabular-nums" id="stat-reqs">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Upstreams</div>
+          <div class="ops-system-metric__label">Node upstreams</div>
           <div class="ops-system-metric__value tabular-nums" id="stat-ups">—</div>
         </div>
       </div>
@@ -460,8 +460,7 @@
 (function() {
   var stats = document.getElementById('sys-stats');
   if (!stats) return;
-  var sid = stats.dataset.sid || '1';
-  fetch('/api/system-stats?sid=' + sid)
+  fetch('/api/system-stats')
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (d.uptime)       document.getElementById('stat-uptime').textContent = d.uptime;
@@ -472,13 +471,15 @@
         document.getElementById('stat-mem-pct').textContent  = d.mem_pct + '%';
       }
       var reqs = d.active_requests;
-      document.getElementById('stat-reqs').textContent = (reqs !== undefined) ? reqs : '—';
+      document.getElementById('stat-reqs').textContent = (reqs !== undefined) ? reqs : (d.caddy_error ? 'Unavailable' : '—');
       var h = d.healthy_upstreams, t = d.total_upstreams;
       if (t !== undefined) {
         var el = document.getElementById('stat-ups');
         el.textContent = h + ' / ' + t + ' healthy';
         el.classList.toggle('text-red-600', h < t);
         el.classList.toggle('text-brand-700', h === t && t > 0);
+      } else if (d.caddy_error) {
+        document.getElementById('stat-ups').textContent = 'Unavailable';
       }
     })
     .catch(function(){});

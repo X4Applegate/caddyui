@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.25.4] - 2026-08-18 - Operations fleet-node scoping
+
+### Fixed
+
+- Operations traffic totals and sparklines now filter by the selected fleet node as well as hostname, so shared domains no longer merge traffic from multiple Caddy servers.
+- The Operations Caddy-version lookup and upstream telemetry now use the selected node's Admin API and saved Basic Auth credentials instead of the bootstrap Caddy client or an unauthenticated request.
+- The System health panel now clearly separates CaddyUI-host uptime/load/memory from selected-node Caddy request/upstream telemetry, and the certificate tile is labeled as selected-node certificate definitions.
+
 ## [2.25.3] - 2026-08-15 - Certificate and log-stream review follow-up
 
 ### Fixed

@@ -120,10 +120,11 @@ type CaddyVersion struct {
 	Version string `json:"version"`
 }
 
-// GetVersion fetches Caddy's version from the admin API root endpoint.
-// Falls back to the CADDY_VERSION environment variable when the admin API
-// does not expose a version endpoint (custom builds, older instances).
-func (c *Client) GetVersion(ctx context.Context) (string, error) {
+// GetVersionFromAdmin fetches Caddy's version from this client's admin API
+// root endpoint without consulting process-local environment variables. Fleet
+// callers need this strict form so a failed remote lookup cannot accidentally
+// report the CaddyUI host's CADDY_VERSION for a different node.
+func (c *Client) GetVersionFromAdmin(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.AdminURL+"/", nil)
 	if err == nil {
 		c.applyAuth(req)
@@ -137,6 +138,16 @@ func (c *Client) GetVersion(ctx context.Context) (string, error) {
 				}
 			}
 		}
+	}
+	return "", fmt.Errorf("caddy version unavailable")
+}
+
+// GetVersion fetches Caddy's version from the admin API root endpoint.
+// Falls back to the CADDY_VERSION environment variable when the admin API
+// does not expose a version endpoint (custom builds, older instances).
+func (c *Client) GetVersion(ctx context.Context) (string, error) {
+	if version, err := c.GetVersionFromAdmin(ctx); err == nil {
+		return version, nil
 	}
 	// Admin API root unavailable — fall back to CADDY_VERSION env var.
 	if ev := os.Getenv("CADDY_VERSION"); ev != "" {
@@ -2921,8 +2932,8 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		switch rule.Type {
 		case "strip_prefix":
 			// Rewrite /prefix/rest → /rest
-				handlers = append(handlers, map[string]any{
-					"handler":            "rewrite",
+			handlers = append(handlers, map[string]any{
+				"handler":           "rewrite",
 				"strip_path_prefix": from,
 			})
 		case "add_prefix":
@@ -3074,7 +3085,12 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		maintenanceBody := `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Maintenance</title><style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;border-radius:16px;padding:40px 48px;text-align:center;box-shadow:0 4px 32px rgba(0,0,0,.08);max-width:480px}h1{font-size:1.5rem;color:#1e293b;margin:16px 0 8px}p{color:#64748b;font-size:.95rem;line-height:1.6;margin:0}</style></head><body><div class="card"><svg width="48" height="48" fill="none" stroke="#f59e0b" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.34 15.84c-.688-.06-1.386-.09-2.09-.09H7.5a4.5 4.5 0 010-9h.75c.704 0 1.402-.03 2.09-.09m0 9.18c.253.962.584 1.892.985 2.783.247.55.06 1.21-.463 1.511l-.657.38c-.551.318-1.26.117-1.527-.461a20.845 20.845 0 01-1.44-4.282m3.102.069a18.03 18.03 0 01-.59-4.59c0-1.586.205-3.124.59-4.59m0 9.18a23.848 23.848 0 018.835 2.535M10.34 6.66a23.847 23.847 0 008.835-2.535m0 0A23.74 23.74 0 0018.795 3m.38 1.125a23.91 23.91 0 011.014 5.395m-1.014 8.855c-.118.38-.245.754-.38 1.125m.38-1.125a23.91 23.91 0 001.014-5.395m0-3.46c.495.413.811 1.035.811 1.73 0 .695-.316 1.317-.811 1.73m0-3.46a24.347 24.347 0 010 3.46"/></svg><h1>Down for Maintenance</h1><p>` + htmlEscape(msgOrDefault(p.MaintenanceMsg, "We're making improvements and will be back shortly. Thank you for your patience.")) + `</p></div></body></html>`
 		maintHeaders := map[string]any{
 			"Content-Type": []any{"text/html; charset=utf-8"},
-			"Retry-After":  []any{func() string { if p.MaintenanceRetryAfterSec > 0 { return strconv.Itoa(p.MaintenanceRetryAfterSec) }; return "3600" }()},
+			"Retry-After": []any{func() string {
+				if p.MaintenanceRetryAfterSec > 0 {
+					return strconv.Itoa(p.MaintenanceRetryAfterSec)
+				}
+				return "3600"
+			}()},
 		}
 		// v2.9.100: maintenance_custom_headers — extra "Name: Value" headers on the 503 response.
 		if p.MaintenanceCustomHeaders != "" {
