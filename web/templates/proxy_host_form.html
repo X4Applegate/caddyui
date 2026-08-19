@@ -45,7 +45,7 @@
      by where the section physically lives in the form. The most common
      proxy-host customizations (DNS, TLS, Security headers, custom
      headers, path routing) come first; advanced / debug-only sections
-     (Advanced raw config, Live JSON Preview) come last so they're not
+     (Advanced raw config, Live configuration preview) come last so they're not
      visually competing with the bread-and-butter stuff.
 
      The two groups are separated by a thin vertical divider so the
@@ -53,10 +53,11 @@
 
      The IIFE at the bottom of this file expands the corresponding
      <details> on click, so the user lands on an open section. */}}
-{{/* v2.15.0: Simple / Advanced mode toggle. Simple mode hides all the
+{{/* Simple / Advanced / Configured mode toggle. Simple mode hides all the
      <details> expansion sections so new users see only Domain, Forward
      Host/Port, and SSL — the three fields needed for 90% of proxy hosts.
-     Advanced mode (default for edit) shows everything. */}}
+     Advanced mode (default for edit) shows everything. Configured mode
+     keeps only sections that contain a non-default value, plus Preview. */}}
 {{if not .Guided}}
 <div class="flex items-center gap-3 mb-4 max-w-3xl">
   <span class="text-xs font-medium text-ink-500">Form mode:</span>
@@ -65,12 +66,16 @@
       class="px-3 py-1.5 rounded-md transition font-medium">Simple</button>
     <button type="button" id="mode-advanced" onclick="setProxyFormMode('advanced')"
       class="px-3 py-1.5 rounded-md transition font-medium">Advanced</button>
+    <button type="button" id="mode-configured" onclick="setProxyFormMode('configured')"
+      class="px-3 py-1.5 rounded-md transition font-medium">Configured</button>
   </div>
   <span id="mode-hint" class="text-xs text-ink-400"></span>
 </div>
 <script>
 function setProxyFormMode(mode) {
   var isSimple = mode === 'simple';
+  var isConfigured = mode === 'configured';
+  if (window.refreshProxyConfiguredSections) window.refreshProxyConfiguredSections();
   // In simple mode, keep Domain/DNS (#ph-dns) and TLS (#ph-tls) visible —
   // those are the two most-used sections. Hide everything else.
   var SIMPLE_KEEP = ['ph-dns', 'ph-tls'];
@@ -79,34 +84,54 @@ function setProxyFormMode(mode) {
   var hint = document.getElementById('mode-hint');
   var btnSimple = document.getElementById('mode-simple');
   var btnAdv = document.getElementById('mode-advanced');
+  var btnConfigured = document.getElementById('mode-configured');
   details.forEach(function(d) {
     if (isSimple) {
       d.style.display = SIMPLE_KEEP.indexOf(d.id) !== -1 ? '' : 'none';
+    } else if (isConfigured) {
+      d.style.display = d.id === 'ph-preview' || Number(d.dataset.configuredCount || 0) > 0 ? '' : 'none';
     } else {
       d.style.display = '';
     }
   });
   if (nav) nav.style.display = isSimple ? 'none' : '';
-  if (hint) hint.textContent = isSimple ? 'Showing: Domain, DNS & TLS only' : '';
+  if (nav && isConfigured) {
+    nav.querySelectorAll('a[href^="#ph-"]').forEach(function(a) {
+      var section = document.querySelector(a.getAttribute('href'));
+      a.style.display = section && section.style.display !== 'none' ? '' : 'none';
+    });
+  } else if (nav) {
+    nav.querySelectorAll('a[href^="#ph-"]').forEach(function(a) { a.style.display = ''; });
+  }
+  if (hint) {
+    hint.textContent = isSimple ? 'Showing: Domain, DNS & TLS only' :
+      (isConfigured ? 'Showing sections with configured values' : '');
+  }
   if (btnSimple) {
     btnSimple.className = 'px-3 py-1.5 rounded-md transition font-medium ' +
       (isSimple ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
   }
   if (btnAdv) {
     btnAdv.className = 'px-3 py-1.5 rounded-md transition font-medium ' +
-      (!isSimple ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
+      (mode === 'advanced' ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
   }
+  if (btnConfigured) {
+    btnConfigured.className = 'px-3 py-1.5 rounded-md transition font-medium ' +
+      (isConfigured ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
+  }
+  window.currentProxyFormMode = mode;
   try { localStorage.setItem('caddyui-proxy-mode', mode); } catch(e) {}
 }
 // On load: default to Advanced for existing hosts (edit), Simple for new hosts
-(function() {
+document.addEventListener('DOMContentLoaded', function() {
   var isNew = !document.querySelector('#proxy-host-form input[name="id"]') &&
               window.location.pathname.indexOf('/new') !== -1;
   var saved = '';
   try { saved = localStorage.getItem('caddyui-proxy-mode') || ''; } catch(e) {}
+  if (['simple', 'advanced', 'configured'].indexOf(saved) === -1) saved = '';
   var mode = saved || (isNew ? 'simple' : 'advanced');
   setProxyFormMode(mode);
-})();
+});
 </script>
 {{end}}
 {{if .Guided}}
@@ -144,7 +169,7 @@ function setProxyFormMode(mode) {
 
   {{/* Tier 3 — advanced / debug */}}
   <a href="#ph-advanced"       class="inline-flex items-center text-xs font-medium text-ink-500 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Advanced</a>
-  <a href="#ph-preview"        class="inline-flex items-center text-xs font-medium text-ink-500 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Live JSON Preview</a>
+  <a href="#ph-preview"        class="inline-flex items-center text-xs font-medium text-ink-500 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Live config preview</a>
 </nav>
 {{end}}
 
@@ -3659,13 +3684,21 @@ function setProxyFormMode(mode) {
     </div>
   </details>
 
-  {{/* v2.9.0: Security — compression + response headers + TLS min version */}}
+  {{/* Live Caddyfile excerpt + exact route JSON for the unsaved form state. */}}
   <details class="pt-4 border-t border-ink-100" id="ph-preview">
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
-      Live route JSON preview <span class="font-normal normal-case">(what Caddy will see)</span>
+      Live configuration preview <span class="font-normal normal-case">(updates before save)</span>
     </summary>
-    <p class="text-xs text-ink-500 mt-3 mb-2">Updates as you edit. Reflects every field above. Empty required fields render as placeholders in the preview (<code class="bg-ink-100 px-1 rounded">example.com</code> / <code class="bg-ink-100 px-1 rounded">(your-upstream)</code> / port <code class="bg-ink-100 px-1 rounded">0</code>) so the JSON shape is still visible while you fill the form in.</p>
-    <pre id="ph-preview-json" class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-96">— start typing in the form to see the preview —</pre>
+    <p class="text-xs text-ink-500 mt-3 mb-2">Updates as you edit. The Caddyfile tab is a readable excerpt; Route JSON shows the generated Caddy route structure. Empty required fields use visible placeholders so either preview remains useful while you fill in the form.</p>
+    <div class="flex items-center justify-between gap-3 mb-2">
+      <div class="inline-flex items-center gap-1 bg-ink-100 rounded-lg p-0.5 text-xs" role="tablist" aria-label="Configuration preview format">
+        <button type="button" id="ph-preview-tab-caddyfile" role="tab" aria-selected="true" aria-controls="ph-preview-caddyfile" class="px-3 py-1.5 rounded-md bg-white shadow-sm text-ink-800 font-medium">Caddyfile</button>
+        <button type="button" id="ph-preview-tab-json" role="tab" aria-selected="false" aria-controls="ph-preview-json" class="px-3 py-1.5 rounded-md text-ink-500 hover:text-ink-700 font-medium">Route JSON</button>
+      </div>
+      <button type="button" id="ph-preview-copy" class="text-xs font-medium text-brand-600 hover:text-brand-700">Copy Caddyfile</button>
+    </div>
+    <pre id="ph-preview-caddyfile" role="tabpanel" aria-labelledby="ph-preview-tab-caddyfile" class="bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-96">— expand this section to load the preview —</pre>
+    <pre id="ph-preview-json" role="tabpanel" aria-labelledby="ph-preview-tab-json" class="hidden bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-96">— expand this section to load the preview —</pre>
   </details>
 
   <div id="ph-form-actions" class="flex items-center gap-3 pt-4 border-t border-ink-100">
@@ -3720,19 +3753,33 @@ function setProxyFormMode(mode) {
   refresh();
 })();
 
-// v2.11.13: live route JSON preview. Listens for form changes, debounces
-// 500ms, POSTs the form to /api/proxy-hosts/preview, renders the result
-// in <pre id="ph-preview-json">. Server returns either {route:{...}} on
-// success or {error:"..."} when the form is incomplete.
+// Live Caddyfile + route JSON preview. Listens for form changes, debounces
+// 500ms, and posts the unsaved form to the shared server-side parser.
 (function() {
   var form = document.getElementById('proxy-host-form');
-  var pre = document.getElementById('ph-preview-json');
-  var details = document.getElementById('ph-preview-details');
-  if (!form || !pre) return;
+  var caddyfilePre = document.getElementById('ph-preview-caddyfile');
+  var jsonPre = document.getElementById('ph-preview-json');
+  var details = document.getElementById('ph-preview');
+  var caddyfileTab = document.getElementById('ph-preview-tab-caddyfile');
+  var jsonTab = document.getElementById('ph-preview-tab-json');
+  var copyButton = document.getElementById('ph-preview-copy');
+  if (!form || !caddyfilePre || !jsonPre || !details) return;
   var timer = null;
   var lastSerialized = null;
+  var activeFormat = 'caddyfile';
+  function setFormat(format) {
+    activeFormat = format;
+    var showCaddyfile = format === 'caddyfile';
+    caddyfilePre.classList.toggle('hidden', !showCaddyfile);
+    jsonPre.classList.toggle('hidden', showCaddyfile);
+    caddyfileTab.setAttribute('aria-selected', showCaddyfile ? 'true' : 'false');
+    jsonTab.setAttribute('aria-selected', showCaddyfile ? 'false' : 'true');
+    caddyfileTab.className = 'px-3 py-1.5 rounded-md font-medium ' + (showCaddyfile ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
+    jsonTab.className = 'px-3 py-1.5 rounded-md font-medium ' + (!showCaddyfile ? 'bg-white shadow-sm text-ink-800' : 'text-ink-500 hover:text-ink-700');
+    copyButton.textContent = showCaddyfile ? 'Copy Caddyfile' : 'Copy JSON';
+  }
   function refresh() {
-    if (!details || !details.open) return; // skip when collapsed — avoid background fetches
+    if (!details.open) return; // skip when collapsed — avoid background fetches
     var fd = new FormData(form);
     var serialized = '';
     for (var pair of fd.entries()) { serialized += pair[0] + '=' + pair[1] + '&'; }
@@ -3742,15 +3789,16 @@ function setProxyFormMode(mode) {
       .then(function(r) { return r.json(); })
       .then(function(d) {
         if (d.error) {
-          pre.textContent = '⚠ ' + d.error;
-          pre.className = 'bg-amber-50 text-amber-800 text-xs p-3 rounded-lg overflow-x-auto max-h-96';
+          caddyfilePre.textContent = '⚠ ' + d.error;
+          jsonPre.textContent = '⚠ ' + d.error;
         } else {
-          pre.textContent = JSON.stringify(d.route, null, 2);
-          pre.className = 'bg-ink-900 text-ink-100 text-xs p-3 rounded-lg overflow-x-auto max-h-96';
+          caddyfilePre.textContent = d.caddyfile || '— no Caddyfile excerpt available —';
+          jsonPre.textContent = JSON.stringify(d.route, null, 2);
         }
       })
       .catch(function() {
-        pre.textContent = '— preview unavailable —';
+        caddyfilePre.textContent = '— preview unavailable —';
+        jsonPre.textContent = '— preview unavailable —';
       });
   }
   function schedule() {
@@ -3759,11 +3807,18 @@ function setProxyFormMode(mode) {
   }
   form.addEventListener('input', schedule);
   form.addEventListener('change', schedule);
-  if (details) {
-    details.addEventListener('toggle', function() {
-      if (details.open) refresh();
+  caddyfileTab.addEventListener('click', function() { setFormat('caddyfile'); });
+  jsonTab.addEventListener('click', function() { setFormat('json'); });
+  copyButton.addEventListener('click', function() {
+    var text = activeFormat === 'caddyfile' ? caddyfilePre.textContent : jsonPre.textContent;
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(text).then(function() {
+      copyButton.textContent = 'Copied!';
+      setTimeout(function() { copyButton.textContent = activeFormat === 'caddyfile' ? 'Copy Caddyfile' : 'Copy JSON'; }, 1500);
     });
-  }
+  });
+  details.addEventListener('toggle', function() { if (details.open) refresh(); });
+  setFormat('caddyfile');
 })();
 </script>
 
@@ -3793,17 +3848,9 @@ function setProxyFormMode(mode) {
   io.observe(actions);
 })();
 
-// v2.11.0: section badges — count the configured (non-default) fields in
-// each <details> section and append a small pill to its <summary> so users
-// can see at a glance which sections actually have something set, without
-// expanding them all. Empty/default fields don't count; checkboxes count
-// when checked; selects count when not the first <option>.
+// Section badges and Configured mode share one configured-field count so
+// the filter stays accurate as the unsaved form changes.
 (function() {
-  // Both on create and on edit, every section starts collapsed so the form
-  // stays browsable. The summary badge shows the count of configured fields
-  // so users can see at a glance what each section contains without
-  // expanding it. Managed DNS and TLS Certificate carry data-keep-open and
-  // stay open since users almost always want them visible.
   function isModified(input) {
     if (input.disabled) return false;
     var t = (input.type || '').toLowerCase();
@@ -3814,21 +3861,39 @@ function setProxyFormMode(mode) {
     }
     return (input.value || '').trim() !== '';
   }
+  window.refreshProxyConfiguredSections = function() {
+    document.querySelectorAll('form#proxy-host-form details').forEach(function(det) {
+      var summary = det.querySelector(':scope > summary');
+      if (!summary) return;
+      var oldBadge = summary.querySelector('[data-configured-badge]');
+      if (oldBadge) oldBadge.remove();
+      var n = 0;
+      det.querySelectorAll('input, select, textarea').forEach(function(input) {
+        if (isModified(input)) n++;
+      });
+      det.dataset.configuredCount = String(n);
+      if (n === 0) return;
+      var badge = document.createElement('span');
+      badge.setAttribute('data-configured-badge', '');
+      badge.textContent = n;
+      badge.title = n + ' configured field' + (n === 1 ? '' : 's') + ' in this section';
+      badge.className = 'ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-[10px] font-semibold bg-brand-100 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300';
+      summary.appendChild(badge);
+    });
+  };
   document.querySelectorAll('form#proxy-host-form details').forEach(function(det) {
-    var summary = det.querySelector(':scope > summary');
-    if (!summary) return;
-    var keepOpen = det.hasAttribute('data-keep-open');
-    if (!keepOpen) { det.open = false; }
-    var inputs = det.querySelectorAll('input, select, textarea');
-    var n = 0;
-    inputs.forEach(function(i) { if (isModified(i)) n++; });
-    if (n === 0) return;
-    var badge = document.createElement('span');
-    badge.textContent = n;
-    badge.title = n + ' configured field' + (n === 1 ? '' : 's') + ' in this section';
-    badge.className = 'ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-[10px] font-semibold bg-brand-100 text-brand-700 dark:bg-brand-600/30 dark:text-brand-300';
-    summary.appendChild(badge);
+    if (!det.hasAttribute('data-keep-open')) det.open = false;
   });
+  window.refreshProxyConfiguredSections();
+  var form = document.getElementById('proxy-host-form');
+  if (form) {
+    function updateConfiguredMode() {
+      window.refreshProxyConfiguredSections();
+      if (window.currentProxyFormMode === 'configured') setProxyFormMode('configured');
+    }
+    form.addEventListener('input', updateConfiguredMode);
+    form.addEventListener('change', updateConfiguredMode);
+  }
 })();
 </script>
 

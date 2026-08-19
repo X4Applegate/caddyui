@@ -137,3 +137,27 @@ func TestDashboardClarifiesFleetTelemetryScopes(t *testing.T) {
 		t.Fatal("dashboard system stats must follow the active-server cookie, not a separate query parameter")
 	}
 }
+
+func TestProxyHostFormHasLiveCaddyfilePreviewAndConfiguredFilter(t *testing.T) {
+	formHTML, err := FS.ReadFile("templates/proxy_host_form.html")
+	if err != nil {
+		t.Fatalf("read proxy host form: %v", err)
+	}
+	form := string(formHTML)
+	for _, marker := range []string{
+		`id="mode-configured"`,
+		`id="ph-preview-caddyfile"`,
+		`id="ph-preview-json"`,
+		`id="ph-preview-tab-caddyfile"`,
+		`document.getElementById('ph-preview')`,
+		`d.caddyfile`,
+		`dataset.configuredCount`,
+	} {
+		if !strings.Contains(form, marker) {
+			t.Fatalf("proxy host form missing preview/filter marker %q", marker)
+		}
+	}
+	if strings.Contains(form, `document.getElementById('ph-preview-details')`) {
+		t.Fatal("proxy host preview still looks up the stale ph-preview-details ID")
+	}
+}

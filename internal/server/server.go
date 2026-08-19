@@ -10833,10 +10833,10 @@ func toolBoolDefault(args map[string]any, key string, def bool) bool {
 	return def
 }
 
-// apiPreviewProxyHost — v2.11.13: live preview of the route JSON Caddy
-// would receive for the in-progress proxy-host edit form. Reuses the
-// same parseProxyHostForm + BuildProxyRoute path as createProxyHost so
-// what the user sees here is exactly what gets pushed on save.
+// apiPreviewProxyHost — live previews of both the readable Caddyfile excerpt
+// and generated route JSON for the in-progress proxy-host edit form. Reuses
+// the same form parser as createProxyHost so unsaved changes are represented
+// in both views.
 //
 // v2.11.17: pads required fields with visible placeholders so a partly-
 // filled form still renders a representative preview. The previous
@@ -10868,10 +10868,12 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	p.ExtraUpstreams = marshalExtraUpstreams(r)
 	route := caddy.BuildProxyRoute(*p, nil)
+	caddyfile := caddy.RenderProxyHostCaddyfile(*p)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(map[string]any{"route": route})
+	_ = enc.Encode(map[string]any{"route": route, "caddyfile": caddyfile})
 }
 
 // globalSearch — v2.11.5: ⌘K / Ctrl+K command palette. Returns a flat list of
