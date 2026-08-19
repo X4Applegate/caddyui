@@ -984,7 +984,7 @@ document.addEventListener('DOMContentLoaded', function() {
         </label>
         <div id="cors_origins_row" class="flex items-center gap-3 ml-7" {{if not .Host.CORSEnabled}}style="display:none"{{end}}>
           <label class="text-sm text-gray-500 dark:text-gray-400 shrink-0">Allowed origins</label>
-          <input type="text" name="cors_origins" value="{{if .Host.CORSOrigins}}{{.Host.CORSOrigins}}{{else}}*{{end}}"
+          <input type="text" name="cors_origins" value="{{if .Host.CORSOrigins}}{{.Host.CORSOrigins}}{{else}}*{{end}}" data-config-default="*"
             placeholder="* or https://example.com,https://app.example.com"
             class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500">
         </div>
@@ -1346,7 +1346,7 @@ document.addEventListener('DOMContentLoaded', function() {
           <label class="text-sm text-gray-700 dark:text-gray-300 w-48 shrink-0">Check interval</label>
           <div class="flex items-center gap-2">
             <input type="number" name="health_check_interval_sec" min="5" max="3600"
-              value="{{if .Host.HealthCheckIntervalSec}}{{.Host.HealthCheckIntervalSec}}{{else}}30{{end}}"
+              value="{{if .Host.HealthCheckIntervalSec}}{{.Host.HealthCheckIntervalSec}}{{else}}30{{end}}" data-config-default="30"
               class="w-28 text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
             <span class="text-sm text-gray-500 dark:text-gray-400">seconds</span>
           </div>
@@ -1366,13 +1366,13 @@ document.addEventListener('DOMContentLoaded', function() {
           <div class="w-32">
             <label class="block text-xs font-medium text-ink-700 mb-1">Timeout (s)</label>
             <input type="number" name="health_check_timeout_sec" min="1" max="60"
-              value="{{if .Host.HealthCheckTimeoutSec}}{{.Host.HealthCheckTimeoutSec}}{{else}}5{{end}}"
+              value="{{if .Host.HealthCheckTimeoutSec}}{{.Host.HealthCheckTimeoutSec}}{{else}}5{{end}}" data-config-default="5"
               class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
           </div>
         </div>
         <div>
           <label class="block text-xs font-medium text-ink-700 mb-1">Health Check Headers</label>
-          <textarea name="health_check_headers" rows="2"
+          <textarea name="health_check_headers" rows="2" data-config-default="{}"
             placeholder='{"Authorization":"Bearer token"}'
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-none">{{.Host.HealthCheckHeaders}}</textarea>
           <p class="text-xs text-ink-500 mt-1">JSON object of extra headers sent with each health-check probe (e.g. <code class="font-mono bg-ink-100 px-1 rounded">{"X-Health":"1"}</code>)</p>
@@ -3444,7 +3444,7 @@ document.addEventListener('DOMContentLoaded', function() {
       <p class="text-xs text-ink-400 mb-3">Users must authenticate via HTTP Basic Auth before reaching the upstream. Passwords are bcrypt-hashed and never stored in plain text.</p>
       <div id="basicauth-realm-row">
         <label class="block text-xs font-medium text-ink-700 mb-1">Auth realm <span class="text-ink-400 font-normal">(shown in browser prompt)</span></label>
-        <input type="text" name="basicauth_realm" value="{{if .Host.BasicAuthRealm}}{{.Host.BasicAuthRealm}}{{else}}Restricted{{end}}"
+        <input type="text" name="basicauth_realm" value="{{if .Host.BasicAuthRealm}}{{.Host.BasicAuthRealm}}{{else}}Restricted{{end}}" data-config-default="Restricted"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
       </div>
       <div id="ba-users" class="space-y-2">
@@ -3859,7 +3859,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (input.tagName === 'SELECT') {
       return input.selectedIndex > 0 && input.value !== '';
     }
-    return (input.value || '').trim() !== '';
+    var value = (input.value || '').trim();
+    var configuredDefault = input.getAttribute('data-config-default');
+    if (configuredDefault !== null) return value !== configuredDefault;
+    if (t === 'number' && value !== '' && Number(value) === 0) return false;
+    return value !== '';
   }
   window.refreshProxyConfiguredSections = function() {
     document.querySelectorAll('form#proxy-host-form details').forEach(function(det) {

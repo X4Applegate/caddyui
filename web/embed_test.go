@@ -152,6 +152,12 @@ func TestProxyHostFormHasLiveCaddyfilePreviewAndConfiguredFilter(t *testing.T) {
 		`document.getElementById('ph-preview')`,
 		`d.caddyfile`,
 		`dataset.configuredCount`,
+		`data-config-default="*"`,
+		`data-config-default="30"`,
+		`data-config-default="5"`,
+		`data-config-default="Restricted"`,
+		`data-config-default="{}"`,
+		`t === 'number' && value !== '' && Number(value) === 0`,
 	} {
 		if !strings.Contains(form, marker) {
 			t.Fatalf("proxy host form missing preview/filter marker %q", marker)
