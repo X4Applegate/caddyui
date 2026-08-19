@@ -121,6 +121,10 @@ function setProxyFormMode(mode) {
   }
   window.currentProxyFormMode = mode;
   try { localStorage.setItem('caddyui-proxy-mode', mode); } catch(e) {}
+  var activeSearch = document.getElementById('ph-form-search');
+  if (activeSearch && activeSearch.value.trim() && window.applyProxyFormSearch) {
+    window.applyProxyFormSearch(activeSearch.value);
+  }
 }
 // On load: default to Advanced for existing hosts (edit), Simple for new hosts
 document.addEventListener('DOMContentLoaded', function() {
@@ -350,7 +354,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 
     <label class="mt-3 flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer">
-      <input id="dns-create-record" type="checkbox" name="dns_create_record" {{if not .Host.DNSSkipRecord}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <input id="dns-create-record" type="checkbox" name="dns_create_record" data-config-default="checked" {{if not .Host.DNSSkipRecord}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
       <span>Create public A records<span class="block text-xs text-ink-500 mt-0.5 font-normal">Turn off for internal or split-DNS services. Route53 DNS-01 TXT records will still be created in the selected hosted zone.</span></span>
     </label>
 
@@ -3609,7 +3613,7 @@ document.addEventListener('DOMContentLoaded', function() {
     <label class="block text-sm font-medium text-ink-800 mb-2">Color label <span class="text-ink-400 font-normal">(optional, for visual grouping)</span></label>
     <div class="flex items-center gap-2 flex-wrap">
       <label class="cursor-pointer" title="No color">
-        <input type="radio" name="color" value="" {{if eq .Host.Color ""}}checked{{end}} class="sr-only peer" />
+        <input type="radio" name="color" value="" data-config-default="checked" {{if eq .Host.Color ""}}checked{{end}} class="sr-only peer" />
         <span class="inline-flex items-center justify-center w-7 h-7 rounded-full border-2 border-ink-300 peer-checked:border-brand-600 peer-checked:ring-2 peer-checked:ring-brand-400 bg-white text-ink-400 text-xs transition">✕</span>
       </label>
       <label class="cursor-pointer" title="Red">
@@ -3855,14 +3859,14 @@ document.addEventListener('DOMContentLoaded', function() {
     if (input.disabled) return false;
     var t = (input.type || '').toLowerCase();
     var configuredDefault = input.getAttribute('data-config-default');
-    if (t === 'checkbox' || t === 'radio') {
-      return configuredDefault === 'checked' ? !input.checked : input.checked;
-    }
+    if (t === 'radio') return configuredDefault === 'checked' ? false : input.checked;
+    if (t === 'checkbox') return configuredDefault === 'checked' ? !input.checked : input.checked;
     if (t === 'submit' || t === 'button' || t === 'reset' || t === 'hidden') return false;
     if (input.tagName === 'SELECT') {
       return input.selectedIndex > 0 && input.value !== '';
     }
     var value = (input.value || '').trim();
+    if (configuredDefault === '{}' && (value === '' || value === '{}')) return false;
     if (configuredDefault !== null) return value !== configuredDefault;
     if (t === 'number' && value !== '' && Number(value) === 0) return false;
     return value !== '';
@@ -4394,6 +4398,7 @@ document.addEventListener('DOMContentLoaded', function() {
     counter.textContent = hits + ' match' + (hits === 1 ? '' : 'es');
     counter.classList.remove('hidden');
   }
+  window.applyProxyFormSearch = applyFilter;
   input.addEventListener('input', function() { applyFilter(this.value); });
   // Esc clears the filter.
   input.addEventListener('keydown', function(e) {
