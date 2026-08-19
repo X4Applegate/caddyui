@@ -3769,7 +3769,8 @@ document.addEventListener('DOMContentLoaded', function() {
   var copyButton = document.getElementById('ph-preview-copy');
   if (!form || !caddyfilePre || !jsonPre || !details) return;
   var timer = null;
-  var lastSerialized = null;
+  var lastRenderedSerialized = null;
+  var requestGeneration = 0;
   var activeFormat = 'caddyfile';
   function setFormat(format) {
     activeFormat = format;
@@ -3787,25 +3788,29 @@ document.addEventListener('DOMContentLoaded', function() {
     var fd = new FormData(form);
     var serialized = '';
     for (var pair of fd.entries()) { serialized += pair[0] + '=' + pair[1] + '&'; }
-    if (serialized === lastSerialized) return;
-    lastSerialized = serialized;
+    if (serialized === lastRenderedSerialized) return;
+    var generation = ++requestGeneration;
     fetch('/api/proxy-hosts/preview', { method: 'POST', body: fd, credentials: 'same-origin' })
       .then(function(r) { return r.json(); })
       .then(function(d) {
+        if (generation !== requestGeneration) return;
+        lastRenderedSerialized = serialized;
         if (d.error) {
           caddyfilePre.textContent = '⚠ ' + d.error;
           jsonPre.textContent = '⚠ ' + d.error;
         } else {
           caddyfilePre.textContent = d.caddyfile || '— no Caddyfile excerpt available —';
-          jsonPre.textContent = JSON.stringify(d.route, null, 2);
+          jsonPre.textContent = (d.advanced_error ? '⚠ Advanced config was not included: ' + d.advanced_error + '\n\n' : '') + JSON.stringify(d.route, null, 2);
         }
       })
       .catch(function() {
+        if (generation !== requestGeneration) return;
         caddyfilePre.textContent = '— preview unavailable —';
         jsonPre.textContent = '— preview unavailable —';
       });
   }
   function schedule() {
+    requestGeneration++; // immediately invalidate an older in-flight response
     if (timer) clearTimeout(timer);
     timer = setTimeout(refresh, 500);
   }
@@ -3903,6 +3908,18 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     form.addEventListener('input', updateConfiguredMode);
     form.addEventListener('change', updateConfiguredMode);
+    if ('MutationObserver' in window) {
+      new MutationObserver(function(mutations) {
+        var rowsChanged = mutations.some(function(mutation) {
+          return Array.prototype.some.call(mutation.addedNodes, function(node) {
+            return node.nodeType === 1 && !node.matches('[data-configured-badge]');
+          }) || Array.prototype.some.call(mutation.removedNodes, function(node) {
+            return node.nodeType === 1 && !node.matches('[data-configured-badge]');
+          });
+        });
+        if (rowsChanged) updateConfiguredMode();
+      }).observe(form, { childList: true, subtree: true });
+    }
   }
 })();
 </script>

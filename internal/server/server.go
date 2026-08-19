@@ -10932,11 +10932,29 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 			previewHandlers = append(previewHandlers, authHandler)
 		}
 	}
+	advancedError := ""
+	if strings.TrimSpace(p.AdvancedConfig) != "" {
+		caddyClient := s.Caddy
+		if s.DB != nil {
+			caddyClient = s.caddyForRequest(r)
+		}
+		if caddyClient == nil {
+			advancedError = "Caddy adapter is unavailable"
+		} else if handlers, adaptErr := s.adaptProxyAdvancedWithClient(caddyClient, *p); adaptErr != nil {
+			advancedError = adaptErr.Error()
+		} else {
+			previewHandlers = append(previewHandlers, handlers...)
+		}
+	}
 	route := caddy.BuildProxyRoute(*p, previewHandlers)
 	caddyfile := caddy.RenderProxyHostCaddyfile(*p)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(map[string]any{"route": route, "caddyfile": caddyfile})
+	response := map[string]any{"route": route, "caddyfile": caddyfile}
+	if advancedError != "" {
+		response["advanced_error"] = advancedError
+	}
+	_ = enc.Encode(response)
 }
 
 // globalSearch — v2.11.5: ⌘K / Ctrl+K command palette. Returns a flat list of

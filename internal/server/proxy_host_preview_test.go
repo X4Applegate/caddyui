@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/X4Applegate/caddyui/internal/caddy"
 )
 
 func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
@@ -78,6 +80,63 @@ func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 	}
 	if strings.Contains(responseJSON, "saved-secret-bcrypt-hash") {
 		t.Fatal("Basic Auth preview leaked the saved bcrypt hash")
+	}
+}
+
+func TestAPIProxyHostPreviewIncludesAdaptedAdvancedHandlers(t *testing.T) {
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/adapt" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"result": map[string]any{
+				"apps": map[string]any{
+					"http": map[string]any{
+						"servers": map[string]any{
+							"srv0": map[string]any{
+								"routes": []any{map[string]any{
+									"handle": []any{map[string]any{"handler": "headers"}},
+								}},
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	t.Cleanup(adapter.Close)
+
+	form := url.Values{
+		"domains":         {"advanced.example.com"},
+		"forward_scheme":  {"http"},
+		"forward_host":    {"app.internal"},
+		"forward_port":    {"8080"},
+		"advanced_config": {"header X-Preview yes"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-hosts/preview", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+
+	(&Server{Caddy: caddy.New(adapter.URL, "", "")}).apiPreviewProxyHost(recorder, req)
+
+	var response struct {
+		Route         map[string]any `json:"route"`
+		AdvancedError string         `json:"advanced_error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode advanced preview response: %v", err)
+	}
+	if response.AdvancedError != "" {
+		t.Fatalf("advanced preview error = %q", response.AdvancedError)
+	}
+	handlers, _ := response.Route["handle"].([]any)
+	if len(handlers) < 2 {
+		t.Fatalf("advanced preview handlers = %#v, want advanced + reverse proxy", handlers)
+	}
+	advanced, _ := handlers[0].(map[string]any)
+	if advanced["handler"] != "headers" {
+		t.Fatalf("first preview handler = %#v, want adapted headers handler", advanced)
 	}
 }
 
