@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.26.0] - 2026-08-18 - Live route configuration preview
+
+### Added
+
+- Proxy-host forms now provide an in-browser Caddyfile excerpt alongside the generated Caddy route JSON, both updated from unsaved form changes and copyable without downloading a file. ([#33](https://github.com/X4Applegate/caddyui/issues/33))
+- A **Configured** form mode hides option sections with no configured values while keeping the live configuration preview available.
+
+### Fixed
+
+- The existing route JSON preview now opens and refreshes correctly; its client-side lookup previously referenced an ID that was not present in the form.
+
 ## [2.25.4] - 2026-08-18 - Operations fleet-node scoping
 
 ### Fixed
