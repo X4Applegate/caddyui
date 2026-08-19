@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,17 +14,25 @@ import (
 
 func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 	form := url.Values{
-		"domains":           {"preview.example.com"},
-		"forward_scheme":    {"https"},
-		"forward_host":      {"app.internal"},
-		"forward_port":      {"8443"},
-		"ssl_enabled":       {"on"},
-		"enabled":           {"on"},
-		"extra_upstream":    {"app-backup.internal:8443"},
-		"basicauth_enabled": {"on"},
-		"basicauth_realm":   {"Members"},
-		"basicauth_user":    {"alice"},
-		"basicauth_hash":    {"saved-secret-bcrypt-hash"},
+		"domains":                  {"preview.example.com"},
+		"forward_scheme":           {"https"},
+		"forward_host":             {"app.internal"},
+		"forward_port":             {"8443"},
+		"ssl_enabled":              {"on"},
+		"enabled":                  {"on"},
+		"extra_upstream":           {"app-backup.internal:8443"},
+		"basicauth_enabled":        {"on"},
+		"basicauth_realm":          {"Members"},
+		"basicauth_user":           {"alice"},
+		"basicauth_hash":           {"saved-secret-bcrypt-hash"},
+		"api_key_header":           {"X-Preview-Key"},
+		"api_key_value":            {"live-api-secret"},
+		"sticky_sessions":          {"on"},
+		"lb_cookie_secret":         {"live-cookie-secret"},
+		"http_basic_auth_upstream": {"upstream-user:upstream-pass"},
+		"health_check_uri":         {"/health"},
+		"health_check_basic_auth":  {"probe-user:probe-pass"},
+		"forward_proxy_url":        {"http://proxy-user:proxy-pass@proxy.internal:3128"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/proxy-hosts/preview", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -67,7 +76,17 @@ func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 	if !ok || len(handlers) == 0 {
 		t.Fatalf("route handlers missing from preview: %#v", response.Route)
 	}
-	authHandler, _ := handlers[0].(map[string]any)
+	var authHandler map[string]any
+	for _, handler := range handlers {
+		candidate, _ := handler.(map[string]any)
+		if candidate["handler"] == "authentication" {
+			authHandler = candidate
+			break
+		}
+	}
+	if authHandler == nil {
+		t.Fatalf("Basic Auth handler missing from preview: %#v", handlers)
+	}
 	providers, _ := authHandler["providers"].(map[string]any)
 	httpBasic, _ := providers["http_basic"].(map[string]any)
 	accounts, _ := httpBasic["accounts"].([]any)
@@ -80,6 +99,20 @@ func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 	}
 	if strings.Contains(responseJSON, "saved-secret-bcrypt-hash") {
 		t.Fatal("Basic Auth preview leaked the saved bcrypt hash")
+	}
+	for _, secret := range []string{
+		"live-api-secret",
+		"live-cookie-secret",
+		"upstream-user:upstream-pass",
+		base64.StdEncoding.EncodeToString([]byte("upstream-user:upstream-pass")),
+		"probe-user:probe-pass",
+		base64.StdEncoding.EncodeToString([]byte("probe-user:probe-pass")),
+		"proxy-user",
+		"proxy-pass",
+	} {
+		if strings.Contains(responseJSON, secret) {
+			t.Fatalf("route preview leaked credential %q", secret)
+		}
 	}
 }
 

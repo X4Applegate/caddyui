@@ -165,6 +165,7 @@ func TestProxyHostFormHasLiveCaddyfilePreviewAndConfiguredFilter(t *testing.T) {
 		`var requestGeneration = 0`,
 		`generation !== requestGeneration`,
 		`new MutationObserver`,
+		`This configuration cannot be saved:`,
 	} {
 		if !strings.Contains(form, marker) {
 			t.Fatalf("proxy host form missing preview/filter marker %q", marker)

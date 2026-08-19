@@ -3799,7 +3799,7 @@ document.addEventListener('DOMContentLoaded', function() {
           caddyfilePre.textContent = '⚠ ' + d.error;
           jsonPre.textContent = '⚠ ' + d.error;
         } else {
-          caddyfilePre.textContent = d.caddyfile || '— no Caddyfile excerpt available —';
+          caddyfilePre.textContent = (d.advanced_error ? '⚠ This configuration cannot be saved: ' + d.advanced_error + '\n\n' : '') + (d.caddyfile || '— no Caddyfile excerpt available —');
           jsonPre.textContent = (d.advanced_error ? '⚠ Advanced config was not included: ' + d.advanced_error + '\n\n' : '') + JSON.stringify(d.route, null, 2);
         }
       })

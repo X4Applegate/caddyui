@@ -3639,6 +3639,97 @@ func buildBasicAuthPreviewHandler(users []models.BasicAuthUser, realm string) ma
 	}
 }
 
+const previewRedacted = "<redacted>"
+
+func redactPreviewURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User == nil {
+		return raw
+	}
+	if _, hasPassword := parsed.User.Password(); hasPassword {
+		parsed.User = url.UserPassword("redacted", "redacted")
+	} else {
+		parsed.User = url.User("redacted")
+	}
+	return parsed.String()
+}
+
+func previewSensitiveKey(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(key, "_", "-"))
+	if normalized == "authorization" || normalized == "proxy-authorization" || normalized == "cookie" || normalized == "set-cookie" {
+		return true
+	}
+	return strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "credential") ||
+		strings.Contains(normalized, "api-key") ||
+		strings.Contains(normalized, "apikey")
+}
+
+func redactPreviewShape(value any) any {
+	switch typed := value.(type) {
+	case []any:
+		redacted := make([]any, len(typed))
+		for i := range redacted {
+			redacted[i] = previewRedacted
+		}
+		return redacted
+	case []string:
+		redacted := make([]string, len(typed))
+		for i := range redacted {
+			redacted[i] = previewRedacted
+		}
+		return redacted
+	default:
+		return previewRedacted
+	}
+}
+
+// redactProxyRoutePreview scrubs known credential-bearing keys and headers
+// while preserving the route's structure. It also removes URL userinfo from
+// arbitrary string values, including adapted advanced handlers.
+func redactProxyRoutePreview(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if previewSensitiveKey(key) {
+				typed[key] = redactPreviewShape(child)
+			} else {
+				typed[key] = redactProxyRoutePreview(child)
+			}
+		}
+		return typed
+	case map[string][]string:
+		for key, child := range typed {
+			if previewSensitiveKey(key) {
+				typed[key] = redactPreviewShape(child).([]string)
+			}
+		}
+		return typed
+	case map[string][]any:
+		for key, child := range typed {
+			if previewSensitiveKey(key) {
+				typed[key] = redactPreviewShape(child).([]any)
+			} else {
+				for i := range child {
+					child[i] = redactProxyRoutePreview(child[i])
+				}
+			}
+		}
+		return typed
+	case []any:
+		for i := range typed {
+			typed[i] = redactProxyRoutePreview(typed[i])
+		}
+		return typed
+	case string:
+		return redactPreviewURL(typed)
+	default:
+		return typed
+	}
+}
+
 // buildBasicAuthHandler adapts a Caddyfile basicauth block for the given users
 // via Caddy's /adapt endpoint and returns the authentication JSON handler.
 // Returns nil if the user list is empty or if adaptation fails (error is logged).
@@ -10957,7 +11048,23 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	route := caddy.BuildProxyRoute(*p, previewHandlers)
+	previewProxy := *p
+	if previewProxy.APIKeyValue != "" {
+		previewProxy.APIKeyValue = previewRedacted
+	}
+	if previewProxy.LBCookieSecret != "" {
+		previewProxy.LBCookieSecret = previewRedacted
+	}
+	if previewProxy.HTTPBasicAuthUpstream != "" {
+		previewProxy.HTTPBasicAuthUpstream = "redacted:redacted"
+	}
+	if previewProxy.HealthCheckBasicAuth != "" {
+		previewProxy.HealthCheckBasicAuth = "redacted:redacted"
+	}
+	previewProxy.ForwardProxyURL = redactPreviewURL(previewProxy.ForwardProxyURL)
+	previewProxy.ForwardAuthURL = redactPreviewURL(previewProxy.ForwardAuthURL)
+	route := caddy.BuildProxyRoute(previewProxy, previewHandlers)
+	route = redactProxyRoutePreview(route).(map[string]any)
 	caddyfile := caddy.RenderProxyHostCaddyfile(*p)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
