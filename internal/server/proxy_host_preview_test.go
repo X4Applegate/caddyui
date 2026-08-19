@@ -14,25 +14,27 @@ import (
 
 func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 	form := url.Values{
-		"domains":                  {"preview.example.com"},
-		"forward_scheme":           {"https"},
-		"forward_host":             {"app.internal"},
-		"forward_port":             {"8443"},
-		"ssl_enabled":              {"on"},
-		"enabled":                  {"on"},
-		"extra_upstream":           {"app-backup.internal:8443"},
-		"basicauth_enabled":        {"on"},
-		"basicauth_realm":          {"Members"},
-		"basicauth_user":           {"alice"},
-		"basicauth_hash":           {"saved-secret-bcrypt-hash"},
-		"api_key_header":           {"X-Preview-Key"},
-		"api_key_value":            {"live-api-secret"},
-		"sticky_sessions":          {"on"},
-		"lb_cookie_secret":         {"live-cookie-secret"},
-		"http_basic_auth_upstream": {"upstream-user:upstream-pass"},
-		"health_check_uri":         {"/health"},
-		"health_check_basic_auth":  {"probe-user:probe-pass"},
-		"forward_proxy_url":        {"http://proxy-user:proxy-pass@proxy.internal:3128"},
+		"domains":                   {"preview.example.com"},
+		"forward_scheme":            {"https"},
+		"forward_host":              {"app.internal"},
+		"forward_port":              {"8443"},
+		"ssl_enabled":               {"on"},
+		"enabled":                   {"on"},
+		"extra_upstream":            {"app-backup.internal:8443"},
+		"basicauth_enabled":         {"on"},
+		"basicauth_realm":           {"Members"},
+		"basicauth_user":            {"alice"},
+		"basicauth_hash":            {"saved-secret-bcrypt-hash"},
+		"api_key_header":            {"X-Preview-Key"},
+		"api_key_value":             {"live-api-secret"},
+		"sticky_sessions":           {"on"},
+		"lb_cookie_secret":          {"live-cookie-secret"},
+		"http_basic_auth_upstream":  {"upstream-user:upstream-pass"},
+		"health_check_uri":          {"/health"},
+		"health_check_query_params": {"token=health-query-secret&mode=full"},
+		"health_check_basic_auth":   {"probe-user:probe-pass"},
+		"forward_proxy_url":         {"http://proxy-user:proxy-pass@proxy.internal:3128?api_key=proxy-query-secret"},
+		"forward_auth_url":          {"https://auth.internal/check?credential=auth-query-secret&mode=strict"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/proxy-hosts/preview", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -109,10 +111,16 @@ func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 		base64.StdEncoding.EncodeToString([]byte("probe-user:probe-pass")),
 		"proxy-user",
 		"proxy-pass",
+		"health-query-secret",
+		"proxy-query-secret",
+		"auth-query-secret",
 	} {
 		if strings.Contains(responseJSON, secret) {
 			t.Fatalf("route preview leaked credential %q", secret)
 		}
+	}
+	if !strings.Contains(responseJSON, "mode=full") || !strings.Contains(responseJSON, "mode=strict") {
+		t.Fatalf("route preview removed non-sensitive URL query parameters: %s", responseJSON)
 	}
 }
 

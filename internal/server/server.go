@@ -3643,14 +3643,33 @@ const previewRedacted = "<redacted>"
 
 func redactPreviewURL(raw string) string {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.User == nil {
+	if err != nil {
 		return raw
 	}
-	if _, hasPassword := parsed.User.Password(); hasPassword {
-		parsed.User = url.UserPassword("redacted", "redacted")
-	} else {
-		parsed.User = url.User("redacted")
+	changed := false
+	if parsed.User != nil {
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			parsed.User = url.UserPassword("redacted", "redacted")
+		} else {
+			parsed.User = url.User("redacted")
+		}
+		changed = true
 	}
+	query := parsed.Query()
+	for key, values := range query {
+		if !previewSensitiveKey(key) {
+			continue
+		}
+		for i := range values {
+			values[i] = previewRedacted
+		}
+		query[key] = values
+		changed = true
+	}
+	if !changed {
+		return raw
+	}
+	parsed.RawQuery = query.Encode()
 	return parsed.String()
 }
 
@@ -3687,8 +3706,9 @@ func redactPreviewShape(value any) any {
 }
 
 // redactProxyRoutePreview scrubs known credential-bearing keys and headers
-// while preserving the route's structure. It also removes URL userinfo from
-// arbitrary string values, including adapted advanced handlers.
+// while preserving the route's structure. It also removes URL userinfo and
+// sensitive query parameters from arbitrary strings, including adapted
+// advanced handlers.
 func redactProxyRoutePreview(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
