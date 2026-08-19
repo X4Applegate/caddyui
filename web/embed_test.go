@@ -157,6 +157,7 @@ func TestProxyHostFormHasLiveCaddyfilePreviewAndConfiguredFilter(t *testing.T) {
 		`data-config-default="5"`,
 		`data-config-default="Restricted"`,
 		`data-config-default="{}"`,
+		`data-config-default="checked"`,
 		`t === 'number' && value !== '' && Number(value) === 0`,
 	} {
 		if !strings.Contains(form, marker) {

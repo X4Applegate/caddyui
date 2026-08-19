@@ -2479,7 +2479,7 @@ document.addEventListener('DOMContentLoaded', function() {
         </label>
         <p class="text-xs text-gray-500 dark:text-gray-400">Enable TLS 1.3 early data (0-RTT) for upstream connections. May reduce latency for repeated connections.</p>
       </div>
-      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="http2_support" {{if .Host.HTTP2Support}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> HTTP/2</label>
+      <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="http2_support" data-config-default="checked" {{if .Host.HTTP2Support}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> HTTP/2</label>
       <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="websocket_support" {{if .Host.WebsocketSupport}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> WebSocket support</label>
       <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2"><input type="checkbox" name="forward_client_ip" {{if .Host.ForwardClientIP}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> <span>Forward client IP (X-Real-IP)<span class="block text-xs text-ink-500 mt-0.5 font-normal">Adds an X-Real-IP header with the actual client IP address to every upstream request</span></span></label>
       <!-- v2.9.82: add_forwarded_header -->
@@ -3854,13 +3854,15 @@ document.addEventListener('DOMContentLoaded', function() {
   function isModified(input) {
     if (input.disabled) return false;
     var t = (input.type || '').toLowerCase();
-    if (t === 'checkbox' || t === 'radio') return input.checked;
+    var configuredDefault = input.getAttribute('data-config-default');
+    if (t === 'checkbox' || t === 'radio') {
+      return configuredDefault === 'checked' ? !input.checked : input.checked;
+    }
     if (t === 'submit' || t === 'button' || t === 'reset' || t === 'hidden') return false;
     if (input.tagName === 'SELECT') {
       return input.selectedIndex > 0 && input.value !== '';
     }
     var value = (input.value || '').trim();
-    var configuredDefault = input.getAttribute('data-config-default');
     if (configuredDefault !== null) return value !== configuredDefault;
     if (t === 'number' && value !== '' && Number(value) === 0) return false;
     return value !== '';
