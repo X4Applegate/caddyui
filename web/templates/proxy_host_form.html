@@ -3689,7 +3689,7 @@ document.addEventListener('DOMContentLoaded', function() {
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Live configuration preview <span class="font-normal normal-case">(updates before save)</span>
     </summary>
-    <p class="text-xs text-ink-500 mt-3 mb-2">Updates as you edit. The Caddyfile tab is a readable excerpt; Route JSON shows the generated Caddy route structure. Empty required fields use visible placeholders so either preview remains useful while you fill in the form.</p>
+    <p class="text-xs text-ink-500 mt-3 mb-2">Updates as you edit. The Caddyfile tab is a readable excerpt; Route JSON shows the generated Caddy route structure with credentials redacted. Empty required fields use visible placeholders so either preview remains useful while you fill in the form.</p>
     <div class="flex items-center justify-between gap-3 mb-2">
       <div class="inline-flex items-center gap-1 bg-ink-100 rounded-lg p-0.5 text-xs" role="tablist" aria-label="Configuration preview format">
         <button type="button" id="ph-preview-tab-caddyfile" role="tab" aria-selected="true" aria-controls="ph-preview-caddyfile" class="px-3 py-1.5 rounded-md bg-white shadow-sm text-ink-800 font-medium">Caddyfile</button>
@@ -4357,11 +4357,13 @@ document.addEventListener('DOMContentLoaded', function() {
     var allDetails = form.querySelectorAll('details');
     var q = (rawQ || '').toLowerCase().trim();
     if (q === '') {
-      // Reset: show every field + every <details>. Don't touch open state —
-      // leave whatever the user had open before searching.
+      // Reset field matches, then restore the active form mode's section
+      // visibility. Don't touch open state — leave whatever the user had
+      // open before searching.
       fields.forEach(function(f) { f.block.style.display = ''; });
       allDetails.forEach(function(d) { d.style.display = ''; });
       counter.classList.add('hidden');
+      if (window.currentProxyFormMode) setProxyFormMode(window.currentProxyFormMode);
       return;
     }
     var hits = 0;

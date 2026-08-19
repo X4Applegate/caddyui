@@ -3586,6 +3586,59 @@ func parseBasicAuthUsers(r *http.Request) ([]models.BasicAuthUser, error) {
 	return result, nil
 }
 
+// previewBasicAuthUsers returns the complete Basic Auth rows represented by
+// the unsaved form without hashing or exposing either new passwords or saved
+// bcrypt hashes in the preview response.
+func previewBasicAuthUsers(r *http.Request) []models.BasicAuthUser {
+	usernames := r.Form["basicauth_user"]
+	passwords := r.Form["basicauth_pass"]
+	hashes := r.Form["basicauth_hash"]
+	users := make([]models.BasicAuthUser, 0, len(usernames))
+	for i, rawUsername := range usernames {
+		username := strings.TrimSpace(rawUsername)
+		if username == "" {
+			continue
+		}
+		passwordPresent := i < len(passwords) && strings.TrimSpace(passwords[i]) != ""
+		hashPresent := i < len(hashes) && strings.TrimSpace(hashes[i]) != ""
+		if !passwordPresent && !hashPresent {
+			continue
+		}
+		users = append(users, models.BasicAuthUser{Username: username, BcryptHash: "<redacted>"})
+	}
+	return users
+}
+
+// buildBasicAuthPreviewHandler mirrors the authentication handler returned by
+// Caddy's adapter while keeping credential material redacted. It avoids a
+// remote /adapt call on every editor keystroke.
+func buildBasicAuthPreviewHandler(users []models.BasicAuthUser, realm string) map[string]any {
+	if len(users) == 0 {
+		return nil
+	}
+	accounts := make([]any, 0, len(users))
+	for _, user := range users {
+		accounts = append(accounts, map[string]any{
+			"username": user.Username,
+			"password": user.BcryptHash,
+		})
+	}
+	httpBasic := map[string]any{
+		"accounts":   accounts,
+		"hash":       map[string]any{"algorithm": "bcrypt"},
+		"hash_cache": map[string]any{},
+	}
+	if realm != "" && realm != "Restricted" {
+		httpBasic["realm"] = realm
+	}
+	return map[string]any{
+		"handler": "authentication",
+		"providers": map[string]any{
+			"http_basic": httpBasic,
+		},
+	}
+}
+
 // buildBasicAuthHandler adapts a Caddyfile basicauth block for the given users
 // via Caddy's /adapt endpoint and returns the authentication JSON handler.
 // Returns nil if the user list is empty or if adaptation fails (error is logged).
@@ -10869,7 +10922,17 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
-	route := caddy.BuildProxyRoute(*p, nil)
+	var previewHandlers []any
+	if r.FormValue("basicauth_enabled") == "on" {
+		p.BasicAuthEnabled = true
+		users := previewBasicAuthUsers(r)
+		usersJSON, _ := json.Marshal(users)
+		p.BasicAuthUsers = string(usersJSON)
+		if authHandler := buildBasicAuthPreviewHandler(users, p.BasicAuthRealm); authHandler != nil {
+			previewHandlers = append(previewHandlers, authHandler)
+		}
+	}
+	route := caddy.BuildProxyRoute(*p, previewHandlers)
 	caddyfile := caddy.RenderProxyHostCaddyfile(*p)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
