@@ -124,6 +124,16 @@ func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 	}
 }
 
+func TestRedactPreviewURLFailsClosedForMalformedQueryKey(t *testing.T) {
+	got := redactPreviewURL("/health?to%ZZken=malformed-query-secret;mode=full")
+	if strings.Contains(got, "malformed-query-secret") {
+		t.Fatalf("malformed URL query leaked its value: %q", got)
+	}
+	if !strings.Contains(got, "mode=full") {
+		t.Fatalf("malformed URL query removed harmless parameters: %q", got)
+	}
+}
+
 func TestAPIProxyHostPreviewIncludesAdaptedAdvancedHandlers(t *testing.T) {
 	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/adapt" {

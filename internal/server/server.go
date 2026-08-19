@@ -3680,11 +3680,25 @@ func redactPreviewRawQuery(raw string) (string, bool) {
 }
 
 func redactPreviewURL(raw string) string {
+	queryChanged := false
+	if queryStart := strings.IndexByte(raw, '?'); queryStart >= 0 {
+		queryEnd := len(raw)
+		if fragmentStart := strings.IndexByte(raw[queryStart+1:], '#'); fragmentStart >= 0 {
+			queryEnd = queryStart + 1 + fragmentStart
+		}
+		redactedQuery, changed := redactPreviewRawQuery(raw[queryStart+1 : queryEnd])
+		if changed {
+			raw = raw[:queryStart+1] + redactedQuery + raw[queryEnd:]
+			queryChanged = true
+		}
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
+		// The raw-query pass above still removes sensitive values when the URL
+		// itself is malformed and cannot be parsed safely.
 		return raw
 	}
-	changed := false
+	changed := queryChanged
 	if parsed.User != nil {
 		if _, hasPassword := parsed.User.Password(); hasPassword {
 			parsed.User = url.UserPassword("redacted", "redacted")
@@ -3693,12 +3707,9 @@ func redactPreviewURL(raw string) string {
 		}
 		changed = true
 	}
-	redactedQuery, queryChanged := redactPreviewRawQuery(parsed.RawQuery)
-	changed = changed || queryChanged
 	if !changed {
 		return raw
 	}
-	parsed.RawQuery = redactedQuery
 	return parsed.String()
 }
 
