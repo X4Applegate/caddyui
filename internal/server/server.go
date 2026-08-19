@@ -3679,7 +3679,36 @@ func redactPreviewRawQuery(raw string) (string, bool) {
 	return redacted.String(), changed
 }
 
+func redactPreviewRawUserinfo(raw string) (string, bool) {
+	authorityStart := -1
+	if schemeSeparator := strings.Index(raw, "://"); schemeSeparator >= 0 {
+		authorityStart = schemeSeparator + 3
+	} else if strings.HasPrefix(raw, "//") {
+		authorityStart = 2
+	}
+	if authorityStart < 0 {
+		return raw, false
+	}
+	authorityEnd := len(raw)
+	if separator := strings.IndexAny(raw[authorityStart:], "/?#"); separator >= 0 {
+		authorityEnd = authorityStart + separator
+	}
+	authority := raw[authorityStart:authorityEnd]
+	at := strings.LastIndexByte(authority, '@')
+	if at < 0 {
+		return raw, false
+	}
+	userinfo := "redacted"
+	if strings.Contains(authority[:at], ":") {
+		userinfo = "redacted:redacted"
+	}
+	redactedAuthority := userinfo + authority[at:]
+	return raw[:authorityStart] + redactedAuthority + raw[authorityEnd:], true
+}
+
 func redactPreviewURL(raw string) string {
+	var userinfoChanged bool
+	raw, userinfoChanged = redactPreviewRawUserinfo(raw)
 	queryChanged := false
 	if queryStart := strings.IndexByte(raw, '?'); queryStart >= 0 {
 		queryEnd := len(raw)
@@ -3698,7 +3727,7 @@ func redactPreviewURL(raw string) string {
 		// itself is malformed and cannot be parsed safely.
 		return raw
 	}
-	changed := queryChanged
+	changed := userinfoChanged || queryChanged
 	if parsed.User != nil {
 		if _, hasPassword := parsed.User.Password(); hasPassword {
 			parsed.User = url.UserPassword("redacted", "redacted")

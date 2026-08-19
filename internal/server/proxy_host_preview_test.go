@@ -134,6 +134,16 @@ func TestRedactPreviewURLFailsClosedForMalformedQueryKey(t *testing.T) {
 	}
 }
 
+func TestRedactPreviewURLScrubsUserinfoBeforeParsing(t *testing.T) {
+	got := redactPreviewURL("http://live-user:live-password@proxy.internal/%ZZ?mode=full")
+	if strings.Contains(got, "live-user") || strings.Contains(got, "live-password") {
+		t.Fatalf("malformed URL leaked userinfo: %q", got)
+	}
+	if !strings.Contains(got, "redacted:redacted@proxy.internal") || !strings.Contains(got, "mode=full") {
+		t.Fatalf("malformed URL did not preserve its safe structure: %q", got)
+	}
+}
+
 func TestAPIProxyHostPreviewIncludesAdaptedAdvancedHandlers(t *testing.T) {
 	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/adapt" {
