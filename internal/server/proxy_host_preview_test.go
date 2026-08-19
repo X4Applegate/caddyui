@@ -31,7 +31,7 @@ func TestAPIProxyHostPreviewReturnsCaddyfileAndRouteJSON(t *testing.T) {
 		"lb_cookie_secret":          {"live-cookie-secret"},
 		"http_basic_auth_upstream":  {"upstream-user:upstream-pass"},
 		"health_check_uri":          {"/health"},
-		"health_check_query_params": {"token=health-query-secret&mode=full"},
+		"health_check_query_params": {"token=health-query-secret;mode=full"},
 		"health_check_basic_auth":   {"probe-user:probe-pass"},
 		"forward_proxy_url":         {"http://proxy-user:proxy-pass@proxy.internal:3128?api_key=proxy-query-secret"},
 		"forward_auth_url":          {"https://auth.internal/check?credential=auth-query-secret&mode=strict"},

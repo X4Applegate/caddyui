@@ -3641,6 +3641,44 @@ func buildBasicAuthPreviewHandler(users []models.BasicAuthUser, realm string) ma
 
 const previewRedacted = "<redacted>"
 
+func redactPreviewRawQuery(raw string) (string, bool) {
+	if raw == "" {
+		return raw, false
+	}
+	var redacted strings.Builder
+	redacted.Grow(len(raw))
+	changed := false
+	segmentStart := 0
+	for i := 0; i <= len(raw); i++ {
+		if i < len(raw) && raw[i] != '&' && raw[i] != ';' {
+			continue
+		}
+		segment := raw[segmentStart:i]
+		key := segment
+		if equals := strings.IndexByte(segment, '='); equals >= 0 {
+			key = segment[:equals]
+		}
+		decodedKey, err := url.QueryUnescape(key)
+		if err != nil {
+			// A malformed key cannot be classified safely. Preserve its name but
+			// fail closed on its value so a credential cannot slip into Copy JSON.
+			if equals := strings.IndexByte(segment, '='); equals >= 0 {
+				segment = segment[:equals+1] + url.QueryEscape(previewRedacted)
+				changed = true
+			}
+		} else if previewSensitiveKey(decodedKey) {
+			segment = key + "=" + url.QueryEscape(previewRedacted)
+			changed = true
+		}
+		redacted.WriteString(segment)
+		if i < len(raw) {
+			redacted.WriteByte(raw[i])
+		}
+		segmentStart = i + 1
+	}
+	return redacted.String(), changed
+}
+
 func redactPreviewURL(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -3655,21 +3693,12 @@ func redactPreviewURL(raw string) string {
 		}
 		changed = true
 	}
-	query := parsed.Query()
-	for key, values := range query {
-		if !previewSensitiveKey(key) {
-			continue
-		}
-		for i := range values {
-			values[i] = previewRedacted
-		}
-		query[key] = values
-		changed = true
-	}
+	redactedQuery, queryChanged := redactPreviewRawQuery(parsed.RawQuery)
+	changed = changed || queryChanged
 	if !changed {
 		return raw
 	}
-	parsed.RawQuery = query.Encode()
+	parsed.RawQuery = redactedQuery
 	return parsed.String()
 }
 
