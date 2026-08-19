@@ -8636,6 +8636,16 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if strings.TrimSpace(p.AdvancedConfig) == "" {
 		return ""
 	}
+	if errMsg := validateProxyAdvancedDirectives(p.AdvancedConfig); errMsg != "" {
+		return errMsg
+	}
+	if _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p); err != nil {
+		return "Advanced config rejected by Caddy: " + err.Error()
+	}
+	return ""
+}
+
+func validateProxyAdvancedDirectives(src string) string {
 	// Directives that terminate a route — reverse_proxy ships the request, redir
 	// writes a 3xx, respond writes a fixed body, file_server serves from disk.
 	// The proxy host route ALWAYS ends with its own reverse_proxy, so allowing
@@ -8643,11 +8653,8 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	// handler before it, silently breaking routing. Reject at save time rather
 	// than waiting for the sync to succeed with a broken result.
 	banned := []string{"reverse_proxy", "redir", "respond", "file_server"}
-	if bad := scanTopLevelDirective(p.AdvancedConfig, banned); bad != "" {
+	if bad := scanTopLevelDirective(src, banned); bad != "" {
 		return fmt.Sprintf("Advanced config can't contain `%s` — this field runs BEFORE the proxy's own reverse_proxy handler. Put request-side directives here (header, encode, request_body, rewrite, etc.) and let the Forward host/port handle the upstream.", bad)
-	}
-	if _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p); err != nil {
-		return "Advanced config rejected by Caddy: " + err.Error()
 	}
 	return ""
 }
@@ -10934,16 +10941,20 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	advancedError := ""
 	if strings.TrimSpace(p.AdvancedConfig) != "" {
-		caddyClient := s.Caddy
-		if s.DB != nil {
-			caddyClient = s.caddyForRequest(r)
-		}
-		if caddyClient == nil {
-			advancedError = "Caddy adapter is unavailable"
-		} else if handlers, adaptErr := s.adaptProxyAdvancedWithClient(caddyClient, *p); adaptErr != nil {
-			advancedError = adaptErr.Error()
+		if validationError := validateProxyAdvancedDirectives(p.AdvancedConfig); validationError != "" {
+			advancedError = validationError
 		} else {
-			previewHandlers = append(previewHandlers, handlers...)
+			caddyClient := s.Caddy
+			if s.DB != nil {
+				caddyClient = s.caddyForRequest(r)
+			}
+			if caddyClient == nil {
+				advancedError = "Caddy adapter is unavailable"
+			} else if handlers, adaptErr := s.adaptProxyAdvancedWithClient(caddyClient, *p); adaptErr != nil {
+				advancedError = adaptErr.Error()
+			} else {
+				previewHandlers = append(previewHandlers, handlers...)
+			}
 		}
 	}
 	route := caddy.BuildProxyRoute(*p, previewHandlers)

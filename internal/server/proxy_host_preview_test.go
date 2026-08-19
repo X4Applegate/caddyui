@@ -140,6 +140,40 @@ func TestAPIProxyHostPreviewIncludesAdaptedAdvancedHandlers(t *testing.T) {
 	}
 }
 
+func TestAPIProxyHostPreviewRejectsTerminalAdvancedHandlers(t *testing.T) {
+	form := url.Values{
+		"domains":         {"terminal.example.com"},
+		"forward_scheme":  {"http"},
+		"forward_host":    {"app.internal"},
+		"forward_port":    {"8080"},
+		"advanced_config": {"respond \"not deployable here\" 200"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-hosts/preview", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+
+	(&Server{}).apiPreviewProxyHost(recorder, req)
+
+	var response struct {
+		Route         map[string]any `json:"route"`
+		AdvancedError string         `json:"advanced_error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode terminal advanced preview response: %v", err)
+	}
+	if !strings.Contains(response.AdvancedError, "can't contain `respond`") {
+		t.Fatalf("advanced preview error = %q, want terminal-directive rejection", response.AdvancedError)
+	}
+	handlers, _ := response.Route["handle"].([]any)
+	if len(handlers) != 1 {
+		t.Fatalf("terminal preview handlers = %#v, want only reverse proxy", handlers)
+	}
+	reverseProxy, _ := handlers[0].(map[string]any)
+	if reverseProxy["handler"] != "reverse_proxy" {
+		t.Fatalf("terminal preview handler = %#v, want reverse proxy", reverseProxy)
+	}
+}
+
 func TestAPIProxyHostPreviewPadsIncompleteRequiredFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/proxy-hosts/preview", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
