@@ -173,6 +173,27 @@
     </div>
   </div>
 
+  {{/* v2.27.0 (issue #38): "Also deploy to" parity with proxy hosts and
+       redirects. Before this, mirroring an advanced route onto a second node
+       meant running a full fleet sync against that node, which overwrote
+       everything else configured there. */}}
+  {{if .OtherServers}}
+  <div class="pt-4 border-t border-ink-100">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
+    <p class="text-xs text-ink-400 mb-3">Push a copy of this advanced route to additional servers at the same time. Certificates are not mirrored — each server will use its own auto-SSL.</p>
+    <div class="space-y-2">
+      {{range .OtherServers}}
+      <label class="flex items-center gap-2.5 cursor-pointer select-none">
+        <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+        {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
+        <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+      </label>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
   {{if .Users}}
   <div class="pt-4 border-t border-ink-100">
     <label class="block text-sm font-medium text-ink-800 mb-1.5">Owner <span class="text-ink-400 font-normal">(admin only)</span></label>

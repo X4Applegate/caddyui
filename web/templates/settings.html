@@ -769,8 +769,8 @@
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span></label>
-          <input name="turnstile_secret_key" value="{{.TurnstileSecretKey}}" type="password" autocomplete="new-password" placeholder="0x4AAAAAAA…"
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span>{{if .TurnstileSecretKeySet}}<span class="text-ink-400 font-normal text-xs ml-1">(leave blank to keep existing)</span>{{end}}</label>
+          <input name="turnstile_secret_key" value="" type="password" autocomplete="new-password" placeholder="{{if .TurnstileSecretKeySet}}•••••••• (key set){{else}}0x4AAAAAAA…{{end}}"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
       </div>
@@ -789,8 +789,8 @@
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span></label>
-          <input name="recaptcha_secret_key" value="{{.RecaptchaSecretKey}}" type="password" autocomplete="new-password" placeholder="6Lc…"
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span>{{if .RecaptchaSecretKeySet}}<span class="text-ink-400 font-normal text-xs ml-1">(leave blank to keep existing)</span>{{end}}</label>
+          <input name="recaptcha_secret_key" value="" type="password" autocomplete="new-password" placeholder="{{if .RecaptchaSecretKeySet}}•••••••• (key set){{else}}6Lc…{{end}}"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
       </div>

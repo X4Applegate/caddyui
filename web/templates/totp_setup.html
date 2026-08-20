@@ -71,7 +71,12 @@
     </ol>
 
     <div class="flex flex-col items-center gap-3 mb-5 p-4 bg-ink-50 rounded-lg">
-      <div id="qrcode" class="w-40 h-40 bg-white rounded p-1" data-uri="{{.OTPAuth}}"></div>
+      {{if .OTPQRCode}}
+      <img src="{{.OTPQRCode}}" alt="QR code for authenticator app enrolment" width="160" height="160"
+        class="w-40 h-40 bg-white rounded p-1" />
+      {{else}}
+      <p class="w-40 text-[11px] text-ink-500 text-center">QR code unavailable — enter the key below manually.</p>
+      {{end}}
       <p class="text-[11px] font-mono text-ink-500 break-all text-center max-w-xs">{{.Secret}}</p>
     </div>
 
@@ -90,16 +95,4 @@
   {{end}}
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-<script>
-(function() {
-  var el = document.getElementById('qrcode');
-  var uri = el ? el.dataset.uri : '';
-  if (uri && typeof QRCode !== 'undefined') {
-    QRCode.toCanvas(document.createElement('canvas'), uri, {width:160,margin:1}, function(err, canvas) {
-      if (!err) { el.innerHTML=''; el.appendChild(canvas); }
-    });
-  }
-})();
-</script>
 {{end}}

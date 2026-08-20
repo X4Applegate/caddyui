@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 )
@@ -173,5 +174,129 @@ func TestProxyHostFormHasLiveCaddyfilePreviewAndConfiguredFilter(t *testing.T) {
 	}
 	if strings.Contains(form, `document.getElementById('ph-preview-details')`) {
 		t.Fatal("proxy host preview still looks up the stale ph-preview-details ID")
+	}
+}
+
+// TestVendoredStaticAssetsAreCommitted guards the class of bug behind issue
+// #37: htmx and the Inter font were downloaded by the Dockerfile at image
+// build time rather than committed, so `go build` from a plain checkout
+// produced a binary whose embed.FS silently lacked them. A missing file
+// inside an embedded *directory* is not a compile error, so nothing caught
+// it — every GitHub release archive shipped a UI that 404'd on those paths.
+//
+// Any asset a template references must be committed under web/static.
+func TestVendoredStaticAssetsAreCommitted(t *testing.T) {
+	for _, path := range []string{
+		"static/fonts/InterVariable.woff2",
+		"static/app.css",
+		"static/app.js",
+		"static/auth.css",
+	} {
+		info, err := fs.Stat(FS, path)
+		if err != nil {
+			t.Errorf("%s must be committed and embedded, not fetched at build time: %v", path, err)
+			continue
+		}
+		if info.Size() == 0 {
+			t.Errorf("%s is embedded but empty", path)
+		}
+	}
+}
+
+// TestNoExternalScriptTags keeps third-party JavaScript out of the templates.
+// The qrcode CDN path in totp_setup.html started returning 404 (and was
+// blocked by CORB besides), which silently broke 2FA enrolment for everyone.
+// CaddyUI is self-hosted and must render its own admin UI without reaching
+// out to the public internet.
+func TestNoExternalScriptTags(t *testing.T) {
+	entries, err := fs.ReadDir(FS, "templates")
+	if err != nil {
+		t.Fatalf("read templates dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		body, err := FS.ReadFile("templates/" + entry.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		html := string(body)
+		for _, host := range []string{"cdn.jsdelivr.net", "unpkg.com", "ajax.googleapis.com"} {
+			if strings.Contains(html, host) {
+				t.Errorf("%s loads a script from %s — vendor it under web/static instead", entry.Name(), host)
+			}
+		}
+		if strings.Contains(html, "htmx.min.js") {
+			t.Errorf("%s still references htmx, which was removed in v2.27.0", entry.Name())
+		}
+	}
+}
+
+// TestTOTPSetupRendersServerSideQR asserts the 2FA page uses the server-rendered
+// PNG data URI rather than a client-side QR library. See issue #37.
+func TestTOTPSetupRendersServerSideQR(t *testing.T) {
+	body, err := FS.ReadFile("templates/totp_setup.html")
+	if err != nil {
+		t.Fatalf("read totp_setup.html: %v", err)
+	}
+	html := string(body)
+	if !strings.Contains(html, "{{.OTPQRCode}}") {
+		t.Error("totp_setup.html must render the server-generated QR data URI")
+	}
+	if strings.Contains(html, "QRCode.toCanvas") {
+		t.Error("totp_setup.html still uses the client-side qrcode library")
+	}
+}
+
+// TestAdvancedRouteFormOffersCrossDeploy covers issue #38: advanced (raw)
+// routes were the only resource type without an "Also deploy to" picker, so
+// the only way to mirror one onto another node was a full fleet sync that
+// clobbered the destination's other config.
+func TestAdvancedRouteFormOffersCrossDeploy(t *testing.T) {
+	body, err := FS.ReadFile("templates/raw_route_form.html")
+	if err != nil {
+		t.Fatalf("read raw_route_form.html: %v", err)
+	}
+	html := string(body)
+	for _, marker := range []string{
+		"{{if .OtherServers}}",
+		`name="deploy_to"`,
+		"Also deploy to",
+	} {
+		if !strings.Contains(html, marker) {
+			t.Errorf("raw route form missing cross-deploy marker %q", marker)
+		}
+	}
+}
+
+// TestCaptchaSecretsNeverRenderIntoTheDOM covers the settings-page leak where
+// turnstile_secret_key / recaptcha_secret_key were emitted as input values.
+// type="password" masks them visually, but the plaintext is readable via
+// DevTools or document.querySelector(...).value. Matches the pattern already
+// used for the SMTP password and the AI provider API keys.
+func TestCaptchaSecretsNeverRenderIntoTheDOM(t *testing.T) {
+	body, err := FS.ReadFile("templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	html := string(body)
+	for _, leak := range []string{
+		`value="{{.TurnstileSecretKey}}"`,
+		`value="{{.RecaptchaSecretKey}}"`,
+	} {
+		if strings.Contains(html, leak) {
+			t.Errorf("settings.html leaks a captcha secret into the DOM: %s", leak)
+		}
+	}
+	for _, marker := range []string{
+		`name="turnstile_secret_key"`,
+		`name="recaptcha_secret_key"`,
+		"{{if .TurnstileSecretKeySet}}",
+		"{{if .RecaptchaSecretKeySet}}",
+	} {
+		if !strings.Contains(html, marker) {
+			t.Errorf("settings.html missing captcha secret marker %s", marker)
+		}
 	}
 }

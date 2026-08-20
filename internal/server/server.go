@@ -19,6 +19,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"html/template"
+	"image/png"
 	"io"
 	"io/fs"
 	"log"
@@ -44,6 +45,7 @@ import (
 	"github.com/X4Applegate/caddyui/internal/porkbun"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	otplib "github.com/pquerna/otp"
 	totplib "github.com/pquerna/otp/totp"
 )
 
@@ -2044,6 +2046,39 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 }
 
 // getTOTPSetup shows the TOTP setup page for the current user.
+// totpQRDataURI renders an otpauth:// URI as a base64 PNG data URI so the 2FA
+// setup page can show the QR code without loading a script from a CDN.
+//
+// v2.27.0: replaces the cdn.jsdelivr.net/npm/qrcode client-side render, which
+// broke when that CDN path started returning 404 (issue #37) and was blocked
+// by CORB besides. Rendering server-side also means 2FA setup works on an
+// air-gapped install. github.com/boombuler/barcode already ships as an
+// indirect dependency of pquerna/otp, so this adds no new module.
+//
+// The return type is template.URL, not string: html/template's contextual
+// autoescaper rejects the data: scheme in a src attribute and substitutes
+// "#ZgotmplZ", which renders as a broken image. Marking it safe is correct
+// here — the value is built entirely server-side from base64-encoded PNG
+// bytes, with no user-controlled input reaching the URL.
+//
+// Returns "" on error; the template falls back to the manual-entry secret,
+// which is always displayed alongside the QR.
+func totpQRDataURI(otpauthURI string) template.URL {
+	key, err := otplib.NewKeyFromURL(otpauthURI)
+	if err != nil {
+		return ""
+	}
+	img, err := key.Image(320, 320)
+	if err != nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return ""
+	}
+	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()))
+}
+
 func (s *Server) getTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 	key, err := totplib.Generate(totplib.GenerateOpts{
@@ -2074,6 +2109,7 @@ func (s *Server) getTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		"User":            u,
 		"Secret":          key.Secret(),
 		"OTPAuth":         key.URL(),
+		"OTPQRCode":       totpQRDataURI(key.URL()),
 		"TOTPEnabled":     u.TOTPEnabled,
 		"Required":        r.URL.Query().Get("required") == "1",
 		"Enforce":         r.URL.Query().Get("enforce") == "1",
@@ -2101,10 +2137,12 @@ func (s *Server) postTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	secret := r.FormValue("secret")
 	code := strings.TrimSpace(r.FormValue("code"))
 	if !totplib.Validate(code, secret) {
+		otpAuth := "otpauth://totp/CaddyUI:" + u.Email + "?secret=" + secret + "&issuer=CaddyUI"
 		s.render(w, r, "totp_setup.html", map[string]any{
 			"User":        u,
 			"Secret":      secret,
-			"OTPAuth":     "otpauth://totp/CaddyUI:" + u.Email + "?secret=" + secret + "&issuer=CaddyUI",
+			"OTPAuth":     otpAuth,
+			"OTPQRCode":   totpQRDataURI(otpAuth),
 			"Error":       "Invalid code — try again.",
 			"TOTPEnabled": u.TOTPEnabled,
 		})
@@ -4099,6 +4137,47 @@ func (s *Server) crossDeployRedirectionHost(actor string, sourceServerID int64, 
 	}
 }
 
+// crossDeployRawRoute mirrors an advanced (raw) route onto the given fleet
+// targets, exactly as crossDeployProxyHost/crossDeployRedirectionHost do for
+// their resource types.
+//
+// v2.27.0 (issue #38): advanced routes were the only resource with no "Also
+// deploy to" option. The only way to get one onto a second node was a full
+// fleet sync of the destination, which overwrites everything else configured
+// there — a destructive workaround for a routine task. The fleet upsert
+// primitive (upsertFleetRawRoute) already existed for the whole-fleet sync
+// path; this just wires it to the per-route form like the other two types.
+func (s *Server) crossDeployRawRoute(actor string, sourceServerID int64, rr *models.RawRoute, serverIDs []int64) {
+	s.fleetDeployMu.Lock()
+	defer s.fleetDeployMu.Unlock()
+
+	for _, sid := range serverIDs {
+		if _, _, err := s.validateFleetPair(sourceServerID, sid); err != nil {
+			log.Printf("cross-deploy raw route target %d: %v", sid, err)
+			_ = models.LogActivity(s.DB, sourceServerID, actor, "raw_cross_deploy", fmt.Sprintf("server:%d", sid), err.Error(), false)
+			continue
+		}
+		result, err := s.upsertFleetRawRoute(sourceServerID, sid, *rr, 0)
+		if err != nil {
+			log.Printf("cross-deploy raw route to server %d: %v", sid, err)
+			_ = models.LogActivity(s.DB, sid, actor, "raw_cross_deploy", "raw:new", rr.Label, false)
+			continue
+		}
+		detail := "already current " + rr.Label
+		if result.Created {
+			detail = "created " + rr.Label
+		} else if result.Changed {
+			detail = "updated " + rr.Label
+		}
+		_ = models.LogActivity(s.DB, sid, actor, "raw_cross_deploy", fmt.Sprintf("raw:%d", result.ID), detail, true)
+		if result.Changed {
+			if err := s.syncCaddy(sid, false); err != nil {
+				log.Printf("cross-deploy raw route sync server %d: %v", sid, err)
+			}
+		}
+	}
+}
+
 // parsePEMExpiry decodes the first PEM certificate block in pemData and
 // returns its NotAfter expiry time, or nil if it cannot be parsed.
 func parsePEMExpiry(pemData string) *time.Time {
@@ -5691,7 +5770,9 @@ func (s *Server) reloadCaddy(w http.ResponseWriter, r *http.Request) {
 	// download named "reload" appear instead of a successful sync. Redirect
 	// back to the dashboard (or the referrer if present) so the form-submit
 	// completes cleanly without a body the browser has to interpret.
-	w.Header().Set("HX-Trigger", "caddy-reloaded")
+	//
+	// v2.27.0: the leftover HX-Trigger header is gone too — htmx is no
+	// longer loaded at all, so nothing was ever listening for it.
 	dest := r.Header.Get("Referer")
 	if dest == "" {
 		dest = "/"
@@ -7814,6 +7895,7 @@ func (s *Server) newRawRoute(w http.ResponseWriter, r *http.Request) {
 		"Row":          &models.RawRoute{Enabled: true},
 		"Certificates": certs,
 		"Users":        s.adminUserList(r),
+		"OtherServers": s.otherManagedServers(r),
 		"Section":      "raw",
 	}))
 }
@@ -8040,6 +8122,14 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_create", fmt.Sprintf("raw:%d", id), rr.Label, true)
 	s.trySyncCaddy(s.currentServerID(r), rr.CertificateID != 0)
+	// v2.27.0 (issue #38): "Also deploy to" parity with proxy/redirect hosts.
+	// rr.ID must be set so upsertFleetRawRoute can key the fleet mapping off
+	// the source row. RawRoute carries no ServerID field — the source server
+	// is passed separately, as in the proxy/redirect cross-deploy paths.
+	if deployTo := parseDeployTo(r); len(deployTo) > 0 {
+		rr.ID = id
+		s.crossDeployRawRoute(s.currentUserEmail(r), s.currentServerID(r), rr, deployTo)
+	}
 	// v2.5.5: park the user on the deploying checklist when the route has
 	// a host matcher we can probe. Path-only / port-only routes have no
 	// fqdn to verify, so we skip the page and bounce to the list like before.
@@ -8091,6 +8181,7 @@ func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request,
 		"Row":          rr,
 		"Certificates": certs,
 		"Users":        s.adminUserList(r),
+		"OtherServers": s.otherManagedServers(r),
 		"Error":        errMsg,
 		"Section":      "raw",
 	}))
@@ -8117,6 +8208,7 @@ func (s *Server) editRawRoute(w http.ResponseWriter, r *http.Request) {
 		"Row":          rr,
 		"Certificates": certs,
 		"Users":        s.adminUserList(r),
+		"OtherServers": s.otherManagedServers(r),
 		"Section":      "raw",
 	}))
 }
@@ -8220,6 +8312,10 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_update", fmt.Sprintf("raw:%d", id), rr.Label, true)
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
+	// v2.27.0 (issue #38): re-deploy the edited route to any selected targets.
+	if deployTo := parseDeployTo(r); len(deployTo) > 0 {
+		s.crossDeployRawRoute(s.currentUserEmail(r), s.currentServerID(r), rr, deployTo)
+	}
 	// v2.5.5: show the deploying checklist on edits too — changing the
 	// host matcher or the backing service is the same "did it come back
 	// up on HTTPS?" question the create flow asks. Routes without a host
@@ -14423,15 +14519,19 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"SMTPSkipVerify":      smtpSkipVerify == "1",
 		"SMTPConfigured":      smtpConfigured,
 		"TurnstileSiteKey":    turnstileSiteKey,
-		"TurnstileSecretKey":  turnstileSecretKey,
-		"TurnstileEnabled":    turnstileSiteKey != "" && turnstileSecretKey != "",
+		// v2.27.0: secret keys pass as *Set booleans, never as values. Rendering
+		// them into <input value="..."> leaked the plaintext through F12 →
+		// Elements despite type="password" — same bug fixed for the AI provider
+		// keys in v2.12.37 and flagged as outstanding for captcha back then.
+		"TurnstileSecretKeySet": strings.TrimSpace(turnstileSecretKey) != "",
+		"TurnstileEnabled":      turnstileSiteKey != "" && turnstileSecretKey != "",
 		// v2.5.0: captcha provider + reCAPTCHA keys
-		"CaptchaProvider":      captchaProvider,
-		"CaptchaDisabledByEnv": captchaDisabledByEnv(),
-		"RecaptchaSiteKey":     recaptchaSiteKey,
-		"RecaptchaSecretKey":   recaptchaSecretKey,
-		"RecaptchaMinScore":    recaptchaMinScoreRaw,
-		"RecaptchaEnabled":     recaptchaSiteKey != "" && recaptchaSecretKey != "",
+		"CaptchaProvider":       captchaProvider,
+		"CaptchaDisabledByEnv":  captchaDisabledByEnv(),
+		"RecaptchaSiteKey":      recaptchaSiteKey,
+		"RecaptchaSecretKeySet": strings.TrimSpace(recaptchaSecretKey) != "",
+		"RecaptchaMinScore":     recaptchaMinScoreRaw,
+		"RecaptchaEnabled":      recaptchaSiteKey != "" && recaptchaSecretKey != "",
 		// Timezone: Timezone is the saved DB value (may be ""). TimezoneActive
 		// is what the server is *actually* rendering in right now — useful as
 		// a "(currently: UTC)" hint when the DB value is empty.
@@ -14582,7 +14682,8 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	turnstileSiteKey := strings.TrimSpace(r.FormValue("turnstile_site_key"))
-	turnstileSecretKey := strings.TrimSpace(r.FormValue("turnstile_secret_key"))
+	// turnstile_secret_key / recaptcha_secret_key are read further down, where
+	// they are only persisted when non-empty (v2.27.0 keep-blank-to-preserve).
 
 	// v2.5.0: captcha provider + reCAPTCHA keys. The provider radio
 	// submits "off" / "turnstile" / "recaptcha"; normalizeCaptchaProvider
@@ -14590,7 +14691,6 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// unknown mode that would 500 loadCaptchaConfig.
 	captchaProvider := normalizeCaptchaProvider(r.FormValue("captcha_provider"))
 	recaptchaSiteKey := strings.TrimSpace(r.FormValue("recaptcha_site_key"))
-	recaptchaSecretKey := strings.TrimSpace(r.FormValue("recaptcha_secret_key"))
 	// reCAPTCHA v3 threshold. Accept any 0.0–1.0 float; out-of-range or
 	// unparseable values fall back to the default at load time. We still
 	// store what the admin typed (after trim) so the next render of the
@@ -14745,21 +14845,23 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			return "0"
 		}(),
-		settingSMTPPort:           smtpPort,
-		settingSMTPUsername:       smtpUsername,
-		settingSMTPFrom:           smtpFrom,
-		settingSMTPTo:             smtpTo,
-		settingSMTPSecurity:       smtpSecurity,
-		settingSMTPSkipVerify:     smtpSkipVerify,
-		settingTurnstileSiteKey:   turnstileSiteKey,
-		settingTurnstileSecretKey: turnstileSecretKey,
-		settingCaptchaProvider:    captchaProvider,
-		settingRecaptchaSiteKey:   recaptchaSiteKey,
-		settingRecaptchaSecretKey: recaptchaSecretKey,
-		settingRecaptchaMinScore:  recaptchaMinScore,
-		settingTimezone:           timezone,
-		settingServerIP:           newServerIP,
-		settingCFProxied:          cfProxied,
+		settingSMTPPort:         smtpPort,
+		settingSMTPUsername:     smtpUsername,
+		settingSMTPFrom:         smtpFrom,
+		settingSMTPTo:           smtpTo,
+		settingSMTPSecurity:     smtpSecurity,
+		settingSMTPSkipVerify:   smtpSkipVerify,
+		settingTurnstileSiteKey: turnstileSiteKey,
+		settingCaptchaProvider:  captchaProvider,
+		settingRecaptchaSiteKey: recaptchaSiteKey,
+		// v2.27.0: turnstile/recaptcha secret keys deliberately handled below
+		// (not in this map) so an empty submission preserves the stored key —
+		// same keep-blank-to-preserve pattern as settingSMTPPassword and the AI
+		// provider keys. Site keys stay here: they are public by design.
+		settingRecaptchaMinScore: recaptchaMinScore,
+		settingTimezone:          timezone,
+		settingServerIP:          newServerIP,
+		settingCFProxied:         cfProxied,
 		// v2.7.0: visitor analytics
 		settingAnalyticsEnabled:        analyticsEnabled,
 		settingAnalyticsIngestTarget:   analyticsTarget,
@@ -14851,6 +14953,16 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// SMTP password stays keep-blank-to-preserve.
 	if smtpPassword != "" {
 		kv[settingSMTPPassword] = smtpPassword
+	}
+	// v2.27.0: captcha secret keys — same keep-blank-to-preserve pattern. The
+	// Settings template no longer renders them into the form, so a blank field
+	// means "keep the stored value", not "clear it". To actually clear a key,
+	// switch the captcha provider off.
+	if k := strings.TrimSpace(r.FormValue("turnstile_secret_key")); k != "" {
+		kv[settingTurnstileSecretKey] = k
+	}
+	if k := strings.TrimSpace(r.FormValue("recaptcha_secret_key")); k != "" {
+		kv[settingRecaptchaSecretKey] = k
 	}
 	// v2.12.37: AI provider API keys — same keep-blank-to-preserve pattern.
 	// Only persist when the user typed a fresh value; an empty submission
