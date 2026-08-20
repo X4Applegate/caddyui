@@ -312,6 +312,41 @@ func TestMonitoringControlsAndOffStateAreWired(t *testing.T) {
 	}
 }
 
+// TestCSRFClientPlumbing guards the two client-side halves of CSRF protection.
+// The hidden form input is stamped into rendered HTML server-side (see
+// csrfInjectForms), but scripted callers depend on these two pieces: the meta
+// tag carrying the token, and the fetch wrapper that turns it into a header.
+// Lose either and every fetch()-based mutation starts returning 403.
+func TestCSRFClientPlumbing(t *testing.T) {
+	layout, err := FS.ReadFile("templates/layout.html")
+	if err != nil {
+		t.Fatalf("read layout.html: %v", err)
+	}
+	if !strings.Contains(string(layout), `name="csrf-token"`) {
+		t.Error("layout.html must emit the csrf-token meta tag for app.js to read")
+	}
+
+	appJS, err := FS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	js := string(appJS)
+	for _, marker := range []string{
+		`meta[name="csrf-token"]`,
+		"X-CSRF-Token",
+		"window.fetch =",
+	} {
+		if !strings.Contains(js, marker) {
+			t.Errorf("app.js missing CSRF fetch-wrapper marker %q", marker)
+		}
+	}
+	// The wrapper must not attach the token to cross-origin requests, or it
+	// leaks the token to whatever third-party host a future call talks to.
+	if !strings.Contains(js, "sameOrigin") {
+		t.Error("app.js fetch wrapper must gate the token on a same-origin check")
+	}
+}
+
 // TestCaptchaSecretsNeverRenderIntoTheDOM covers the settings-page leak where
 // turnstile_secret_key / recaptcha_secret_key were emitted as input values.
 // type="password" masks them visually, but the plaintext is readable via

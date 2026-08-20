@@ -36,6 +36,11 @@
   }catch(e){}})();</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  {{/* v2.29.0: CSRF token for fetch()-based callers. Forms carry their own
+       hidden input; the wrapper in app.js reads this tag to set the
+       X-CSRF-Token header on same-origin mutating requests. Empty on
+       anonymous pages, which have no session to protect. */}}
+  {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}" />{{end}}
   <title>{{block "title" .}}{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}{{end}}</title>
   {{/* v2.12.48: meta description for SEO. Defaults to a generic
        CaddyUI summary; individual pages override via the "description"

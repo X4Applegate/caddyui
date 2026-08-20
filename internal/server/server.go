@@ -64,6 +64,12 @@ type Server struct {
 	DBPath      string
 	pendingTOTP sync.Map // token → userID (int64), auto-deleted after 5 min
 
+	// CSRF HMAC key, loaded from (or generated into) the settings table on
+	// first use. Per-Server rather than package-level so two Servers in the
+	// same test binary don't share one another's key. v2.29.0.
+	csrfSecretOnce  sync.Once
+	csrfSecretCache []byte
+
 	// version-check cache (Docker Hub, 1h TTL)
 	versionMu        sync.Mutex
 	latestVersion    string
@@ -517,6 +523,10 @@ func (s *Server) Routes() http.Handler {
 
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
+		// v2.29.0: CSRF must sit *inside* requireAuth — it reads the API-token
+		// scope that requireAuth puts on the context to decide whether a
+		// request is bearer-authenticated (and so not CSRF-reachable).
+		r.Use(s.requireCSRF)
 		r.Get("/", s.dashboard)
 		r.Get("/onboarding", s.getOnboarding)
 
@@ -1084,6 +1094,17 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	}
 	// Always inject app version.
 	data["AppVersion"] = s.Version
+	// v2.29.0: CSRF token for every rendered page. CSRFField is the ready-made
+	// hidden input each POST form embeds; CSRFToken is the raw value, surfaced
+	// as a <meta> tag so the fetch wrapper in app.js can pick it up for JSON
+	// calls. Both are empty for anonymous pages, which have no session to
+	// protect. Injected here so no page can forget it.
+	if _, ok := data["CSRFField"]; !ok {
+		data["CSRFField"] = s.csrfField(r)
+	}
+	if _, ok := data["CSRFToken"]; !ok {
+		data["CSRFToken"] = s.csrfTokenForRequest(r)
+	}
 	// Inject site title for every page so layout.html can use it.
 	if _, ok := data["SiteTitle"]; !ok {
 		data["SiteTitle"] = mustGetSetting(s.DB, settingSiteTitle)
@@ -1111,10 +1132,24 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 		http.Error(w, "template not found: "+name, http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tpl.ExecuteTemplate(w, "layout", data); err != nil {
+	// v2.29.0: render into a buffer so the CSRF hidden input can be stamped
+	// into every POST form before anything reaches the client. Buffering also
+	// means a mid-template error produces a clean 500 instead of a truncated
+	// page followed by an error string, which is what happened when this wrote
+	// to the ResponseWriter directly.
+	var buf bytes.Buffer
+	if err := tpl.ExecuteTemplate(&buf, "layout", data); err != nil {
 		log.Printf("template %s: %v", name, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	page := buf.Bytes()
+	if field, _ := data["CSRFField"].(template.HTML); field != "" {
+		page = csrfInjectForms(page, []byte(field))
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := w.Write(page); err != nil {
+		log.Printf("template %s: write: %v", name, err)
 	}
 }
 
