@@ -232,9 +232,12 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 | Tag | What it points at |
 |---|---|
 | `:vX.Y.Z` | Specific release, immutable. Recommended for production. |
-| `:latest` | Rolling — retagged at significant feature waves. Currently `v2.25.0`. |
-| `:stable` | Alias of `:latest`. |
-| `:preview` | Rolling dev push — every commit to main. Test with this before pinning. |
+| `:stable` | The current release. Updated on every release. |
+| `:latest` | Kept in lockstep with `:stable`. |
+
+`:stable`, `:latest` and the newest `:vX.Y.Z` all resolve to the same image.
+
+> **`:preview` is retired.** It was a rolling per-commit channel; releases now go straight to `:stable`. The tag still exists and points at `v2.28.0`, but it is no longer updated — switch to `:stable` or pin a version.
 
 Multi-arch: `linux/amd64` + `linux/arm64`. Scratch base image, runs as non-root uid `10001`.
 
