@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.29.0] - 2026-08-20 - CSRF protection
+
+### Security
+
+- State-changing requests authenticated by session cookie now require a CSRF token. Session cookies were already `SameSite=Lax`, which blocks the classic cross-site form POST in current browsers, but that was a single layer resting on a browser default; this adds a synchroniser token as defence in depth across all 94 authenticated `POST`/`DELETE` routes.
+- The token is `HMAC-SHA256(secret, sessionToken)`, so it needs no storage of its own and is bound to one session. Logging out or logging in again rotates it, and a token from a closed session is rejected. The secret is generated once and persisted, so tokens survive a restart rather than 403-ing every logged-in user on deploy.
+- Requests authenticated by API bearer token are exempt and unchanged. A browser does not attach an `Authorization` header to a cross-site request on its own, so those calls are not CSRF-reachable.
+
+### Changed
+
+- Pages render into a buffer before being written. This is what lets the hidden token input be stamped into every POST form from a single place, and as a side effect a mid-template error now produces a clean `500` instead of a truncated page followed by an error string.
+- `window.fetch` is wrapped in `app.js` to attach the `X-CSRF-Token` header to same-origin requests using an unsafe method, so scripted callers are protected by default. Cross-origin requests are untouched — the token is never sent to a third-party host.
+
 ## [2.28.0] - 2026-08-20 - Configurable status monitoring
 
 ### Added

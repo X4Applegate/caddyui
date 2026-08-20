@@ -9,6 +9,54 @@
 // Cached via the v2.12.38 Cache-Control: public, max-age=86400 wrapper
 // on /static/* — repeat navigations skip the network entirely.
 
+// v2.29.0: CSRF header for fetch()-based mutations.
+//
+// HTML forms carry a hidden csrf_token input injected server-side. Scripted
+// calls can't, so this wraps window.fetch and attaches the X-CSRF-Token header
+// to every same-origin request using an unsafe method. Doing it centrally
+// means a new fetch() call site is protected by default rather than 403-ing
+// until someone remembers the header.
+//
+// Deliberately runs before any other IIFE in this file so that anything below
+// which fetches during startup is already wrapped. Cross-origin requests are
+// left untouched — we must never leak the token to a third-party host.
+(function() {
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  var token = meta ? meta.getAttribute('content') : '';
+  if (!token || typeof window.fetch !== 'function') return;
+
+  var SAFE = { GET: 1, HEAD: 1, OPTIONS: 1, TRACE: 1 };
+  var nativeFetch = window.fetch.bind(window);
+
+  function sameOrigin(url) {
+    try {
+      return new URL(url, window.location.href).origin === window.location.origin;
+    } catch (e) {
+      // Relative paths that URL() can't parse are same-origin by definition.
+      return true;
+    }
+  }
+
+  window.fetch = function(input, init) {
+    init = init || {};
+    var method = (init.method || (input && input.method) || 'GET').toUpperCase();
+    var url = (typeof input === 'string') ? input : (input && input.url) || '';
+    if (SAFE[method] || !sameOrigin(url)) {
+      return nativeFetch(input, init);
+    }
+    // Headers may arrive as a Headers instance, an array of pairs, or a plain
+    // object. Normalising to Headers handles all three without clobbering
+    // whatever the caller already set.
+    var headers = new Headers(init.headers || (input && input.headers) || {});
+    if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', token);
+    var next = {};
+    for (var k in init) { if (Object.prototype.hasOwnProperty.call(init, k)) next[k] = init[k]; }
+    next.headers = headers;
+    if (!next.method) next.method = method;
+    return nativeFetch(input, next);
+  };
+})();
+
 // v2.12.42: small helper used below to delay non-critical /api/* fetches
 // until after Lighthouse's TBT/LCP measurement window closes. The page
 // renders fine without these calls — they just populate a badge and
