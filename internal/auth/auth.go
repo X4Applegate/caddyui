@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	SessionCookie  = "caddyui_session"
-	SessionTTL     = 7 * 24 * time.Hour
+	SessionCookie         = "caddyui_session"
+	SessionTTL            = 7 * 24 * time.Hour
 	ContextUserKey ctxKey = "user"
 )
 
