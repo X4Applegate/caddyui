@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -325,6 +326,23 @@ func (c *Client) send(method, path string, val any) error {
 // is non-nil, those handlers are inserted before the reverse_proxy handler so
 // directives like `header`, `encode`, `request_body` run on the incoming request
 // before it's proxied.
+// sortedKeys returns a map's keys in a stable order.
+//
+// v2.30.0: generated config must be byte-identical for identical input.
+// Several handlers turn a map into a JSON *array* (a "delete" header list, for
+// instance), and Go randomises map iteration, so those arrays came out in a
+// different order on every call. Caddy compares configs structurally, so an
+// unchanged host looked changed on every sync — an avoidable reload each time
+// and a spurious entry in every config snapshot diff.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any {
 	domains := models.NormalizeHostnames(p.DomainList())
 
@@ -1485,8 +1503,20 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		// removed every entry — emitting an empty set/delete block is
 		// noise.
 		if len(secHdrs) > 0 {
-			delHdrs := []any{}
+			// v2.30.0: sort the delete list. Ranging a Go map yields a random
+			// order, so this emitted a different-but-equivalent JSON array on
+			// every call. Caddy's admin API compares configs structurally, so
+			// each sync of a host with Security Headers enabled looked like a
+			// real change: an avoidable config reload every time, and a
+			// spurious diff in every config snapshot. Measured before the fix:
+			// 5 distinct payloads from 300 identical inputs.
+			names := make([]string, 0, len(secHdrs))
 			for k := range secHdrs {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			delHdrs := make([]any, 0, len(names))
+			for _, k := range names {
 				delHdrs = append(delHdrs, k)
 			}
 			handlers = append(handlers, map[string]any{
@@ -1537,8 +1567,12 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	if reqHeaders := p.CustomReqHeaderMap(); len(reqHeaders) > 0 || p.StripReqHeaders != "" {
 		setReq := map[string]any{}
 		deleteReq := []any{}
-		for k, v := range reqHeaders {
-			if v == "" {
+		// v2.30.0: iterate in sorted key order. "delete" is a JSON array, so a
+		// raw map range emitted its entries in a different order on every
+		// call, making an unchanged host look changed to Caddy on every sync.
+		// (JSON *objects* like setReq are safe — encoding/json sorts keys.)
+		for _, k := range sortedKeys(reqHeaders) {
+			if v := reqHeaders[k]; v == "" {
 				deleteReq = append(deleteReq, k)
 			} else {
 				setReq[k] = []any{v}
@@ -1565,8 +1599,9 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	if respHeaders := p.CustomRespHeaderMap(); len(respHeaders) > 0 {
 		setResp := map[string]any{}
 		deleteResp := []any{}
-		for k, v := range respHeaders {
-			if v == "" {
+		// v2.30.0: sorted iteration, same reason as the request block above.
+		for _, k := range sortedKeys(respHeaders) {
+			if v := respHeaders[k]; v == "" {
 				deleteResp = append(deleteResp, k)
 			} else {
 				setResp[k] = []any{v}

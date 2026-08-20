@@ -1,0 +1,33 @@
+{
+  "handle": [
+    {
+      "handler": "authentication",
+      "providers": {
+        "http_basic": {
+          "accounts": [
+            {
+              "password": "$2a$10$fixedhashforgoldenstability000000000000000000000000000",
+              "username": "admin"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "handler": "reverse_proxy",
+      "upstreams": [
+        {
+          "dial": "backend:8080"
+        }
+      ]
+    }
+  ],
+  "match": [
+    {
+      "host": [
+        "app.example.com"
+      ]
+    }
+  ],
+  "terminal": true
+}

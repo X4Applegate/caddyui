@@ -5,6 +5,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.30.0] - 2026-08-20 - Deterministic config, visible migrations, CSP
+
+### Fixed
+
+- Generated Caddy config is now byte-identical for identical input. Three handlers built a JSON array by iterating a Go map — the security-headers `delete` list, and the request and response header `delete` lists — and Go randomises map iteration. A host with **Security Headers** enabled produced 5 distinct payloads across 300 identical calls. Because Caddy compares configuration structurally, every sync of an unchanged host looked like a real change: an avoidable config reload each time, and a spurious entry in every config snapshot diff. The emitted configuration is semantically unchanged; only its ordering is now stable.
+- Schema-upgrade steps report their failures. 324 of them were written as `_, _ = db.Exec(...)`, so a failed `ALTER TABLE` left the column missing and the application failed later at query time, far from the cause — the shape of [#30](https://github.com/X4Applegate/caddyui/issues/30). Failures are now logged individually and summarised once at the end of the upgrade.
+
+### Security
+
+- CaddyUI's own responses now carry a `Content-Security-Policy` and a `Permissions-Policy`. `X-Frame-Options`, `X-Content-Type-Options` and `Referrer-Policy` have been sent since v2.10.3; CSP was the missing piece, and it matters because authenticated pages load the Tailwind runtime from a CDN. The policy allows exactly the origins the templates use and nothing else. `form-action 'self'` and `connect-src 'self'` are the directives doing the real work.
+- `CADDYUI_CSP` overrides the policy: unset uses the default, `off` disables the header, any other value is sent verbatim. A subtly wrong CSP breaks the UI for everyone at once, so the escape hatch does not require waiting for a patch release.
+
+### Added
+
+- Golden-file coverage for `BuildProxyRoute`, which generates the route JSON pushed to Caddy. It is the highest-consequence code in the project and previously had no tests. Regenerate intentional changes with `go test ./internal/caddy -update-golden`.
+- A determinism test that fails if any handler is ever added that builds a JSON array from a map without sorting.
+- Tests for `internal/auth` — password hashing, session issue/expire/delete, and cookie flags. Coverage went from none of its own to 87.8%.
+- `.github/dependabot.yml`. Security updates already worked without it, which is why Dependabot PRs had been merged before; *version* updates need explicit configuration, so routine dependency bumps were never opened.
+- CI now fails on unformatted code. Four files had drifted out of `gofmt`; they are reformatted here (whitespace only).
+
+### Changed
+
+- `parseProxyHostForm` and its helper moved verbatim into `internal/server/proxy_host_form.go`. At ~660 lines it was the largest function in the codebase, inside a 16,600-line file. No behaviour changed.
+
 ## [2.29.0] - 2026-08-20 - CSRF protection
 
 ### Security
