@@ -270,6 +270,48 @@ func TestAdvancedRouteFormOffersCrossDeploy(t *testing.T) {
 	}
 }
 
+// TestMonitoringControlsAndOffStateAreWired covers issue #39. Two halves have
+// to stay in sync: the form must offer the mode selector, and every status-dot
+// painter must special-case "off". If a painter loses its "off" branch the
+// status falls through to the red "down" dot — the precise opposite of what
+// switching monitoring off is supposed to convey.
+func TestMonitoringControlsAndOffStateAreWired(t *testing.T) {
+	form, err := FS.ReadFile("templates/proxy_host_form.html")
+	if err != nil {
+		t.Fatalf("read proxy_host_form.html: %v", err)
+	}
+	formHTML := string(form)
+	for _, marker := range []string{
+		`name="monitor_mode"`,
+		`name="monitor_path"`,
+		`name="monitor_method"`,
+		`name="monitor_expect_status"`,
+		`name="monitor_interval_sec"`,
+		`name="monitor_timeout_sec"`,
+		`id="monitor-custom"`,
+		"CaddyUI status monitoring",
+	} {
+		if !strings.Contains(formHTML, marker) {
+			t.Errorf("proxy host form missing monitoring control %q", marker)
+		}
+	}
+
+	for _, name := range []string{"templates/proxy_hosts.html", "templates/dashboard.html"} {
+		body, err := FS.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		html := string(body)
+		// Both painters live in each file: the Port dot keys off h.status and
+		// the App dot off a local `s`, so require both spellings.
+		for _, branch := range []string{`h.status === 'off'`, `s === 'off'`} {
+			if !strings.Contains(html, branch) {
+				t.Errorf("%s missing status-dot branch %q — an off host would paint red", name, branch)
+			}
+		}
+	}
+}
+
 // TestCaptchaSecretsNeverRenderIntoTheDOM covers the settings-page leak where
 // turnstile_secret_key / recaptcha_secret_key were emitted as input values.
 // type="password" masks them visually, but the plaintext is readable via

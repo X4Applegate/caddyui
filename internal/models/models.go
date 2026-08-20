@@ -644,8 +644,71 @@ type ProxyHost struct {
 	// in the reverse_proxy block. Useful when the upstream double-compresses
 	// already-compressed responses.
 	DisableUpstreamCompression bool
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
+	// v2.28.0 (issue #39): per-host control over CaddyUI's *own* monitoring
+	// probes. These are distinct from the HealthCheck* fields above, which
+	// configure Caddy's active upstream health checking. CaddyUI additionally
+	// runs two probes of its own that were previously unconditional:
+	//
+	//   1. the app-health poller (app_health.go) — an HTTPS GET of "/" against
+	//      the host's public domain every 60s, driving the "App" dot
+	//   2. the upstream fallback probe (apiUpstreamHealth) — a direct
+	//      HEAD/GET against forward_host:forward_port for hosts Caddy's
+	//      admin API doesn't report on, driving the "Port" dot
+	//
+	// Split-DNS installs, hosts that only answer on a specific path, and
+	// backends that are deliberately unreachable from the CaddyUI container
+	// showed a misleading "down" and generated recurring firewall noise.
+	//
+	// MonitorMode: "" / "auto" (default, previous behaviour), "custom", "off".
+	MonitorMode string
+	// The remaining fields apply only when MonitorMode == "custom". Zero
+	// values mean "use the built-in default", so a custom-mode host that only
+	// overrides the path keeps the standard method, interval and timeout.
+	MonitorPath         string // default "/"
+	MonitorMethod       string // "GET" (default) or "HEAD"
+	MonitorExpectStatus int    // 0 = default classification; >0 = require exactly this code
+	MonitorIntervalSec  int    // 0 = default 60; rounded up to a multiple of the 60s poll tick
+	MonitorTimeoutSec   int    // 0 = default 5
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// MonitoringDisabled reports whether the operator has switched CaddyUI's own
+// probes off for this host. Callers should treat it as "don't emit any
+// outbound request on this host's behalf", not merely "hide the dot".
+func (p *ProxyHost) MonitoringDisabled() bool {
+	return NormalizeMonitorMode(p.MonitorMode) == "off"
+}
+
+// MonitorSettings resolves the effective probe parameters for this host,
+// applying the built-in defaults for anything left at its zero value. The
+// defaults match the hardcoded behaviour that predated issue #39, so an
+// "auto" host probes exactly as it always did.
+func (p *ProxyHost) MonitorSettings(defaultInterval, defaultTimeout time.Duration) (path, method string, expectStatus int, interval, timeout time.Duration) {
+	path, method, expectStatus = "/", "GET", 0
+	interval, timeout = defaultInterval, defaultTimeout
+	if NormalizeMonitorMode(p.MonitorMode) != "custom" {
+		return
+	}
+	if v := strings.TrimSpace(p.MonitorPath); v != "" {
+		if !strings.HasPrefix(v, "/") {
+			v = "/" + v
+		}
+		path = v
+	}
+	if strings.EqualFold(strings.TrimSpace(p.MonitorMethod), "HEAD") {
+		method = "HEAD"
+	}
+	if p.MonitorExpectStatus > 0 {
+		expectStatus = p.MonitorExpectStatus
+	}
+	if p.MonitorIntervalSec > 0 {
+		interval = time.Duration(p.MonitorIntervalSec) * time.Second
+	}
+	if p.MonitorTimeoutSec > 0 {
+		timeout = time.Duration(p.MonitorTimeoutSec) * time.Second
+	}
+	return
 }
 
 // InScheduledMaintenanceWindow returns true when the current wall-clock time
@@ -1705,7 +1768,10 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.proxy_redirect_rules,''),
     COALESCE(ph.additional_upstream_rules,''),
     COALESCE(ph.disable_upstream_compression,0),
-    COALESCE(ph.dns_skip_record,0)`
+    COALESCE(ph.dns_skip_record,0),
+    COALESCE(ph.monitor_mode,'auto'), COALESCE(ph.monitor_path,''),
+    COALESCE(ph.monitor_method,''), COALESCE(ph.monitor_expect_status,0),
+    COALESCE(ph.monitor_interval_sec,0), COALESCE(ph.monitor_timeout_sec,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
@@ -2024,6 +2090,10 @@ func scanProxyHost(s interface {
 		&p.AdditionalUpstreamRules,
 		&disableUpstreamCompression, // v2.12.52
 		&dnsSkipRecord,
+		// v2.28.0 (issue #39): CaddyUI's own monitoring controls.
+		&p.MonitorMode, &p.MonitorPath,
+		&p.MonitorMethod, &p.MonitorExpectStatus,
+		&p.MonitorIntervalSec, &p.MonitorTimeoutSec,
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -2196,12 +2266,17 @@ func ListProxyHosts(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pe
 // many containing large JSON/HTML blobs; selecting and scanning all of them
 // made /proxy-hosts increasingly expensive as the host count grew.
 func ListProxyHostSummaries(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, peerIDs []int64) ([]ProxyHost, error) {
+	// v2.28.0 (issue #39): monitor_mode is part of the summary projection
+	// because /api/upstream-health decides whether to probe a host from these
+	// rows. Leaving it out would silently resolve every host to "auto" and
+	// defeat the per-host off switch.
 	const cols = `ph.id, ph.domains, ph.forward_scheme, ph.forward_host, ph.forward_port,
 		ph.ssl_enabled, ph.ssl_forced, ph.enabled, COALESCE(ph.certificate_id, 0),
 		ph.basicauth_enabled, COALESCE(ph.owner_id, 0),
 		COALESCE(ph.dns_provider, ''), COALESCE(ph.dns_record_id, ''),
 		COALESCE(ph.maintenance_mode, 0), COALESCE(ph.tags, ''),
 		COALESCE(ph.notes, ''), COALESCE(ph.color, ''), ph.updated_at,
+		COALESCE(ph.monitor_mode, ''),
 		COALESCE(u.email, '')`
 
 	var rows *sql.Rows
@@ -2239,6 +2314,7 @@ func ListProxyHostSummaries(db *sql.DB, serverID int64, viewerID int64, isAdmin 
 			&sslEnabled, &sslForced, &enabled, &p.CertificateID,
 			&basicAuth, &ownerID, &p.DNSProvider, &p.DNSRecordID,
 			&maintenance, &p.Tags, &p.Notes, &p.Color, &p.UpdatedAt,
+			&p.MonitorMode,
 			&p.OwnerEmail,
 		); err != nil {
 			return nil, err
@@ -2305,6 +2381,29 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// NormalizeMonitorMode coerces a monitor_mode value to one of the three the
+// rest of the code branches on. Anything unrecognised — including "" on rows
+// created before v2.28.0 — becomes "auto", the behaviour that predated issue
+// #39.
+//
+// Deliberately applied at the form boundary rather than inside
+// CreateProxyHost/UpdateProxyHost. Normalising on write would rewrite ""
+// to "auto" in the database while leaving the caller's in-memory struct at
+// "", so the fleet sync's reflect.DeepEqual of source against the re-read
+// target row would report a difference on every pass and re-push an
+// unchanged host forever. Readers treat "" and "auto" identically, so
+// storing either is safe.
+func NormalizeMonitorMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "off":
+		return "off"
+	case "custom":
+		return "custom"
+	default:
+		return "auto"
+	}
 }
 
 // CreateProxyHost inserts a new proxy host. ownerID 0 means global/admin-owned (NULL in DB).
@@ -2439,8 +2538,10 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             force_canonical_host, add_x_robots_noindex_quick, block_bot_user_agents,
             block_admin_paths, add_link_dns_prefetch, add_link_preconnect,
             add_x_csp_disabled, add_x_request_method_override, proxy_redirect_rules,
-            additional_upstream_rules, disable_upstream_compression)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            additional_upstream_rules, disable_upstream_compression,
+            monitor_mode, monitor_path, monitor_method, monitor_expect_status,
+            monitor_interval_sec, monitor_timeout_sec)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -2559,6 +2660,12 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		p.ProxyRedirectRules,
 		p.AdditionalUpstreamRules,
 		boolInt(p.DisableUpstreamCompression), // v2.12.52
+		// v2.28.0 (issue #39): CaddyUI's own monitoring controls. Stored
+		// verbatim — see NormalizeMonitorMode for why normalising here would
+		// break fleet-sync idempotency.
+		p.MonitorMode, p.MonitorPath,
+		p.MonitorMethod, p.MonitorExpectStatus,
+		p.MonitorIntervalSec, p.MonitorTimeoutSec,
 	)
 	if err != nil {
 		return 0, err
@@ -2890,6 +2997,8 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             proxy_redirect_rules=?,
             additional_upstream_rules=?,
             disable_upstream_compression=?,
+            monitor_mode=?, monitor_path=?, monitor_method=?,
+            monitor_expect_status=?, monitor_interval_sec=?, monitor_timeout_sec=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -3190,6 +3299,12 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		p.ProxyRedirectRules,
 		p.AdditionalUpstreamRules,
 		boolInt(p.DisableUpstreamCompression), // v2.12.52
+		// v2.28.0 (issue #39): CaddyUI's own monitoring controls. Stored
+		// verbatim — see NormalizeMonitorMode for why normalising here would
+		// break fleet-sync idempotency.
+		p.MonitorMode, p.MonitorPath,
+		p.MonitorMethod, p.MonitorExpectStatus,
+		p.MonitorIntervalSec, p.MonitorTimeoutSec,
 		p.ID,
 	)
 	if err != nil {
