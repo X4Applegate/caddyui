@@ -94,6 +94,17 @@ func (s *Server) pollAllApps(ctx context.Context) {
 	for _, h := range allHosts {
 		wg.Add(1)
 		sem <- struct{}{}
+		// v2.28.0 (issue #39): skip hosts whose custom interval hasn't elapsed
+		// yet. The ticker still fires every appHealthInterval; a host asking
+		// for a longer gap simply sits out the intervening cycles, so the
+		// effective interval rounds up to a multiple of the tick. Checked
+		// before spawning the goroutine so a mostly-idle fleet doesn't
+		// allocate workers it will immediately discard.
+		if !s.appProbeDue(h) {
+			wg.Done()
+			<-sem
+			continue
+		}
 		go func(h models.ProxyHost) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -137,10 +148,38 @@ func (s *Server) pollAllApps(ctx context.Context) {
 // ends up as ok (200) rather than showing the 302. Cert validation is
 // skipped — an expired or self-signed cert shouldn't mask the fact that the
 // upstream *is* responding; the cert-expiry notifier handles that concern.
+// appProbeDue reports whether enough time has passed since this host's last
+// cached probe to warrant another one. Hosts on the default interval are
+// always due, because the poller tick already paces them.
+//
+// v2.28.0 (issue #39).
+func (s *Server) appProbeDue(h models.ProxyHost) bool {
+	_, _, _, interval, _ := h.MonitorSettings(appHealthInterval, appHealthProbeTO)
+	if interval <= appHealthInterval {
+		return true
+	}
+	s.appHealthMu.Lock()
+	prev, ok := s.appHealth[h.ID]
+	s.appHealthMu.Unlock()
+	if !ok || prev.CheckedAt.IsZero() {
+		return true
+	}
+	// Subtract half a tick so a host configured at exactly 2× the interval
+	// isn't pushed out to 3× by scheduling jitter.
+	return time.Since(prev.CheckedAt) >= interval-(appHealthInterval/2)
+}
+
 func (s *Server) probeApp(ctx context.Context, h models.ProxyHost) appHealthEntry {
 	now := time.Now()
 	if !h.Enabled {
 		return appHealthEntry{Status: "disabled", CheckedAt: now}
+	}
+	// v2.28.0 (issue #39): the operator has switched CaddyUI's own probes off
+	// for this host. Emit no outbound request at all — the whole point is to
+	// stop generating traffic toward a backend that is deliberately
+	// unreachable from here, not merely to hide the dot.
+	if h.MonitoringDisabled() {
+		return appHealthEntry{Status: "off", Error: "monitoring disabled for this host", CheckedAt: now}
 	}
 
 	domains := h.DomainList()
@@ -179,10 +218,14 @@ func (s *Server) probeApp(ctx context.Context, h models.ProxyHost) appHealthEntr
 	if !h.SSLEnabled && h.CertificateID == 0 {
 		scheme = "http"
 	}
-	probeURL := (&url.URL{Scheme: scheme, Host: primary, Path: "/"}).String()
+	// v2.28.0 (issue #39): resolve the per-host probe overrides. An "auto"
+	// host yields exactly the values that were hardcoded before this change,
+	// so its behaviour is unchanged.
+	probePath, probeMethod, expectStatus, _, probeTimeout := h.MonitorSettings(appHealthInterval, appHealthProbeTO)
+	probeURL := (&url.URL{Scheme: scheme, Host: primary, Path: probePath}).String()
 
 	client := &http.Client{
-		Timeout: appHealthProbeTO,
+		Timeout: probeTimeout,
 		Transport: &http.Transport{
 			// Skip TLS verification: we care whether the app responds, not
 			// about cert validity (that's tracked separately by the cert
@@ -200,9 +243,9 @@ func (s *Server) probeApp(ctx context.Context, h models.ProxyHost) appHealthEntr
 		},
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, appHealthProbeTO)
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, probeURL, nil)
+	req, err := http.NewRequestWithContext(probeCtx, probeMethod, probeURL, nil)
 	if err != nil {
 		return appHealthEntry{Status: "down", Error: err.Error(), CheckedAt: now}
 	}
@@ -238,6 +281,20 @@ func (s *Server) probeApp(ctx context.Context, h models.ProxyHost) appHealthEntr
 
 	code := resp.StatusCode
 	entry := appHealthEntry{Code: code, LatencyMS: latency, CheckedAt: now}
+	// v2.28.0 (issue #39): when the host declares an exact expected status,
+	// that verdict replaces the heuristic below entirely. This is what makes
+	// deliberately-unusual endpoints reportable — a health path that answers
+	// 204, or an app that correctly returns 418 on its probe route, is "ok"
+	// only if the operator said so, and anything else is unambiguously down.
+	if expectStatus > 0 {
+		if code == expectStatus {
+			entry.Status = "ok"
+		} else {
+			entry.Status = "down"
+			entry.Error = fmt.Sprintf("HTTP %d (expected %d)", code, expectStatus)
+		}
+		return entry
+	}
 	switch {
 	case code >= 500:
 		entry.Status = "degraded"

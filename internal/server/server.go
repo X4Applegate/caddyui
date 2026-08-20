@@ -4330,6 +4330,28 @@ func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
+// clampAtoi parses a form value as an int and constrains it to [min, max].
+// Blank, unparseable, or non-positive input yields zeroValue, which callers
+// use as their "unset — fall back to the built-in default" sentinel. A value
+// that parses but falls outside the range is pulled to the nearest bound
+// rather than rejected, so a typo in one numeric field can't fail the whole
+// form save.
+//
+// v2.28.0 (issue #39).
+func clampAtoi(raw string, zeroValue, min, max int) int {
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || v <= 0 {
+		return zeroValue
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	_ = r.ParseForm()
 	port, err := strconv.Atoi(r.FormValue("forward_port"))
@@ -4961,6 +4983,19 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.AddXRequestMethodOverride = r.FormValue("add_x_request_method_override") == "on"
 	// v2.12.52: disable upstream compression toggle.
 	ph.DisableUpstreamCompression = r.FormValue("disable_upstream_compression") == "on"
+	// v2.28.0 (issue #39): CaddyUI's own monitoring controls. The override
+	// fields are parsed regardless of mode so switching custom → auto → custom
+	// doesn't discard what the user typed; the mode alone decides whether they
+	// take effect (see models.ProxyHost.MonitorSettings).
+	ph.MonitorMode = models.NormalizeMonitorMode(r.FormValue("monitor_mode"))
+	ph.MonitorPath = strings.TrimSpace(r.FormValue("monitor_path"))
+	ph.MonitorMethod = strings.ToUpper(strings.TrimSpace(r.FormValue("monitor_method")))
+	ph.MonitorExpectStatus = clampAtoi(r.FormValue("monitor_expect_status"), 0, 100, 599)
+	// Floor the interval at the poller's own tick: a smaller value can't be
+	// honoured (the poller only wakes every appHealthInterval) and storing it
+	// would promise a cadence the UI can't deliver.
+	ph.MonitorIntervalSec = clampAtoi(r.FormValue("monitor_interval_sec"), 0, 60, 86400)
+	ph.MonitorTimeoutSec = clampAtoi(r.FormValue("monitor_timeout_sec"), 0, 1, 120)
 	// v2.9.266: proxy_redirect_rules — JSON array of path-based redirects
 	// fired before the reverse_proxy. Same shape as redirection_hosts.
 	ph.ProxyRedirectRules = func() string {
@@ -11371,6 +11406,16 @@ func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
 		results[i] = upstreamHealthResult{ID: h.ID, Domains: h.Domains}
 		if !h.Enabled {
 			results[i].Status = "disabled"
+			continue
+		}
+		// v2.28.0 (issue #39): monitoring switched off for this host. Reading
+		// Caddy's own upstream map would be harmless, but reporting a verdict
+		// from it would contradict the UI's "monitoring off" state, and the
+		// fallback branch below would emit exactly the probe traffic the
+		// operator asked us to stop. Skip the host entirely.
+		if h.MonitoringDisabled() {
+			results[i].Status = "off"
+			results[i].Error = "monitoring disabled for this host"
 			continue
 		}
 

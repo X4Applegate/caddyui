@@ -498,6 +498,11 @@
     } else if (h.status === 'disabled') {
       dot.classList.add('bg-ink-300');
       dot.title = 'Port: disabled';
+    } else if (h.status === 'off') {
+      // v2.28.0 (issue #39): monitoring switched off for this host. Neutral
+      // dot, never red — nothing was probed, so "down" would be unfounded.
+      dot.classList.add('bg-ink-300');
+      dot.title = 'Port: monitoring off for this host';
     } else if (h.status === 'unknown') {
       dot.classList.add('bg-amber-400');
       dot.title = 'Port: unknown (' + (h.error || 'not probeable from caddyui') + ')';
@@ -522,6 +527,10 @@
     } else if (s === 'disabled') {
       dot.classList.add('bg-ink-300');
       dot.title = 'App: disabled';
+    } else if (s === 'off') {
+      // v2.28.0 (issue #39): see paintPort — no probe ran, so no verdict.
+      dot.classList.add('bg-ink-300');
+      dot.title = 'App: monitoring off for this host';
     } else if (s === 'unknown') {
       dot.classList.add('bg-amber-400');
       dot.title = 'App: unknown (' + (h.app_error || 'not probeable from caddyui') + ')';

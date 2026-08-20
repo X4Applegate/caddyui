@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.28.0] - 2026-08-20 - Configurable status monitoring
+
+### Added
+
+- Proxy hosts now control how CaddyUI's own status probes behave, via a **CaddyUI status monitoring** section on the host form. Three modes: **Automatic** (unchanged behaviour), **Custom** (probe path, method, expected status, interval and timeout), and **Off**. ([#39](https://github.com/X4Applegate/caddyui/issues/39))
+- Setting a host to **Off** stops CaddyUI issuing any probe for it — both the 60-second public-domain check behind the App dot and the direct upstream check behind the Port dot. Intended for backends that are deliberately unreachable from the CaddyUI container (split-horizon DNS, firewalled networks), where the probes reported a misleading "down" and added recurring noise to firewall logs.
+- Hosts with monitoring off show a neutral grey dot labelled "monitoring off for this host" rather than a red "down" — no probe ran, so no verdict is claimed.
+
+### Changed
+
+- The host form now states which system each health setting belongs to. CaddyUI's own monitoring and Caddy's active upstream health checks are separate mechanisms that were easy to confuse; the existing `health_check_*` options configure Caddy and are unchanged.
+- Custom probe intervals are floored at 60 seconds and round up to a multiple of the poller's 60-second tick. Timeouts are clamped to 1–120 seconds and expected status to 100–599; an out-of-range entry is pulled to the nearest bound rather than failing the save.
+
+### Fixed
+
+- `ListProxyHostSummaries` now projects `monitor_mode`, which `/api/upstream-health` reads. Without it the Port dot would have resolved every host to "automatic" and ignored the off switch.
+
 ## [2.27.0] - 2026-08-20 - Self-contained assets and advanced-route cross-deploy
 
 ### Fixed
