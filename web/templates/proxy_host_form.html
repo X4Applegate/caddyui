@@ -1321,9 +1321,72 @@ document.addEventListener('DOMContentLoaded', function() {
         <p class="text-xs text-ink-500 sm:pt-7">Sets a per-SNI TLS connection policy in Caddy. TLS 1.2+ is the modern standard. TLS 1.3 offers improved security and performance but drops support for some older clients.</p>
       </div>
 
+      {{/* v2.28.0 (issue #39): CaddyUI's own monitoring probes. Deliberately
+           placed immediately above the Caddy health-check block, and labelled
+           to say who is doing the probing — the two were easy to confuse, and
+           the settings below this point do not affect these dots at all. */}}
+      <div class="border-t border-gray-100 dark:border-gray-800 pt-3 mt-3 space-y-3">
+        <p class="text-xs font-medium text-ink-700">CaddyUI status monitoring <span class="font-normal text-ink-400">(drives the App and Port dots — not Caddy's own health checking)</span></p>
+        <p class="text-xs text-ink-500">CaddyUI probes this host from its own container to show status in the dashboard: an HTTPS request to the public domain, and a direct check of the upstream. Turn it off for hosts that are deliberately unreachable from here — split-horizon DNS, firewalled backends — where the probe would report a misleading “down” and add noise to your firewall logs.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+          <div>
+            <label class="block text-sm font-medium text-ink-800 mb-1.5">Monitoring</label>
+            <select name="monitor_mode" id="monitor-mode"
+              class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+              <option value="auto" {{if or (eq .Host.MonitorMode "") (eq .Host.MonitorMode "auto")}}selected{{end}}>Automatic (default)</option>
+              <option value="custom" {{if eq .Host.MonitorMode "custom"}}selected{{end}}>Custom path, method and timing</option>
+              <option value="off" {{if eq .Host.MonitorMode "off"}}selected{{end}}>Off — never probe this host</option>
+            </select>
+          </div>
+          <p class="text-xs text-ink-500 sm:pt-7">Automatic probes <code>GET /</code> every 60&nbsp;seconds with a 5&nbsp;second timeout. Off stops all outbound probes for this host and shows a neutral dot.</p>
+        </div>
+
+        <div id="monitor-custom" class="space-y-3 {{if ne .Host.MonitorMode "custom"}}hidden{{end}}">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm font-medium text-ink-800 mb-1.5">Probe path</label>
+              <input type="text" name="monitor_path" value="{{.Host.MonitorPath}}" placeholder="/"
+                class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+              <p class="text-xs text-ink-500 mt-1">Blank uses <code>/</code>. Point this at a lightweight endpoint to keep probe traffic cheap.</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-ink-800 mb-1.5">Method</label>
+              <select name="monitor_method"
+                class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+                <option value="GET" {{if ne .Host.MonitorMethod "HEAD"}}selected{{end}}>GET (default)</option>
+                <option value="HEAD" {{if eq .Host.MonitorMethod "HEAD"}}selected{{end}}>HEAD (no response body)</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="block text-sm font-medium text-ink-800 mb-1.5">Expected status</label>
+              <input type="number" name="monitor_expect_status" value="{{if .Host.MonitorExpectStatus}}{{.Host.MonitorExpectStatus}}{{end}}"
+                min="100" max="599" placeholder="any"
+                class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+              <p class="text-xs text-ink-500 mt-1">Blank accepts 2xx/3xx/401/403.</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-ink-800 mb-1.5">Interval (seconds)</label>
+              <input type="number" name="monitor_interval_sec" value="{{if .Host.MonitorIntervalSec}}{{.Host.MonitorIntervalSec}}{{end}}"
+                min="60" max="86400" placeholder="60"
+                class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+              <p class="text-xs text-ink-500 mt-1">Minimum 60, rounded up to a multiple of 60.</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-ink-800 mb-1.5">Timeout (seconds)</label>
+              <input type="number" name="monitor_timeout_sec" value="{{if .Host.MonitorTimeoutSec}}{{.Host.MonitorTimeoutSec}}{{end}}"
+                min="1" max="120" placeholder="5"
+                class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+              <p class="text-xs text-ink-500 mt-1">Blank uses 5.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {{/* v2.9.4: Active upstream health check */}}
       <div class="border-t border-gray-100 dark:border-gray-800 pt-3 mt-3 space-y-3">
-        <p class="text-xs font-medium text-ink-700">Active upstream health check <span class="font-normal text-ink-400">(Caddy polls each upstream on this URI)</span></p>
+        <p class="text-xs font-medium text-ink-700">Active upstream health check <span class="font-normal text-ink-400">(Caddy polls each upstream on this URI — separate from CaddyUI's dots above)</span></p>
         <div class="flex items-center gap-3">
           <label class="text-sm text-gray-700 dark:text-gray-300 w-48 shrink-0">Health check URI</label>
           <input type="text" name="health_check_uri" value="{{.Host.HealthCheckURI}}"
@@ -4605,6 +4668,21 @@ document.addEventListener('DOMContentLoaded', function() {
   form.addEventListener('input', refreshReview);
   form.addEventListener('change', refreshReview);
   showStep(current, false);
+})();
+
+// v2.28.0 (issue #39): reveal the CaddyUI monitoring overrides only in custom
+// mode. The inputs stay in the DOM (and keep submitting) in every mode so a
+// user who flips to Off and back doesn't silently lose what they typed —
+// the server decides what to honour based on the mode alone.
+(function() {
+  var mode = document.getElementById('monitor-mode');
+  var custom = document.getElementById('monitor-custom');
+  if (!mode || !custom) return;
+  function sync() {
+    custom.classList.toggle('hidden', mode.value !== 'custom');
+  }
+  mode.addEventListener('change', sync);
+  sync();
 })();
 </script>
 {{end}}

@@ -2123,6 +2123,39 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "disable_upstream_compression") {
 		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN disable_upstream_compression INTEGER NOT NULL DEFAULT 0`)
 	}
+	// v2.28.0 (issue #39): per-host control over CaddyUI's *own* monitoring
+	// probes — the 60s app-health poller against the public domain and the
+	// direct upstream fallback probe. Distinct from the health_check_* columns,
+	// which configure Caddy's active upstream health checking.
+	//
+	// monitor_mode defaults to 'auto' so every existing row keeps the exact
+	// behaviour it had before this migration. 'custom' honours the four
+	// override columns; 'off' suppresses both probes entirely for hosts that
+	// are deliberately unreachable from the CaddyUI container (split DNS,
+	// firewalled backends) and were showing a misleading "down" plus
+	// generating recurring firewall noise.
+	// Stored as '' rather than 'auto' on existing rows: MariaDB is fussier
+	// about non-empty DEFAULTs on TEXT columns than SQLite, and every other
+	// TEXT migration here uses DEFAULT ''. Readers treat '' and 'auto'
+	// identically (see models.normalizeMonitorMode).
+	if !columnExists2(db, "proxy_hosts", "monitor_mode") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN monitor_mode TEXT NOT NULL DEFAULT ''`)
+	}
+	if !columnExists2(db, "proxy_hosts", "monitor_path") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN monitor_path TEXT NOT NULL DEFAULT ''`)
+	}
+	if !columnExists2(db, "proxy_hosts", "monitor_method") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN monitor_method TEXT NOT NULL DEFAULT ''`)
+	}
+	if !columnExists2(db, "proxy_hosts", "monitor_expect_status") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN monitor_expect_status INTEGER NOT NULL DEFAULT 0`)
+	}
+	if !columnExists2(db, "proxy_hosts", "monitor_interval_sec") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN monitor_interval_sec INTEGER NOT NULL DEFAULT 0`)
+	}
+	if !columnExists2(db, "proxy_hosts", "monitor_timeout_sec") {
+		_, _ = db.Exec(`ALTER TABLE proxy_hosts ADD COLUMN monitor_timeout_sec INTEGER NOT NULL DEFAULT 0`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial
