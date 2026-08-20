@@ -138,10 +138,10 @@
        gets a new class. */}}
   <link rel="stylesheet" href="/static/auth.css" />
   {{end}}
-  {{/* v2.12.39: htmx is now vendored to /static/htmx.min.js (downloaded
-       at Docker build time from unpkg). `defer` is safe — htmx attaches
-       its event listeners on DOMContentLoaded. */}}
-  <script src="/static/htmx.min.js?v={{.AppVersion}}" defer></script>
+  {{/* v2.27.0: htmx removed. It was vendored in v2.12.39 and loaded on every
+       authenticated page, but no template ever carried an hx-* attribute —
+       every form here is a plain <form method="post">. Dropping it saves a
+       ~48KB script on every page load and one build-time network fetch. */}}
   <link rel="stylesheet" href="/static/app.css?v={{.AppVersion}}" />
   <style>
     /* v2.12.25: typography polish.

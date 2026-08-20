@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.27.0] - 2026-08-20 - Self-contained assets and advanced-route cross-deploy
+
+### Fixed
+
+- Two-factor enrolment now renders its QR code server-side as an embedded PNG instead of loading a script from `cdn.jsdelivr.net`. That CDN path began returning 404 and was additionally blocked by CORB, so no QR code appeared during 2FA setup. ([#37](https://github.com/X4Applegate/caddyui/issues/37))
+- The Inter variable font is now committed to the repository rather than downloaded during the Docker image build. Because the font was fetched only at image-build time, binaries built from a source checkout — including every published GitHub release archive — embedded no font file and served 404s for it. ([#37](https://github.com/X4Applegate/caddyui/issues/37))
+- Turnstile and reCAPTCHA secret keys are no longer rendered into the settings form. `type="password"` masked them visually, but the plaintext remained readable through the DOM. They now follow the same keep-blank-to-preserve pattern already used for the SMTP password and AI provider keys.
+
+### Added
+
+- Advanced routes now offer the **Also deploy to** picker that proxy hosts and redirections already had. Mirroring an advanced route onto another fleet node previously required a full sync of the destination server, which overwrote unrelated configuration there. ([#38](https://github.com/X4Applegate/caddyui/issues/38))
+- Regression coverage asserting that every asset referenced by a template is committed and embedded, that no template loads a third-party script, and that captcha secrets never reach the DOM.
+
+### Removed
+
+- htmx is no longer vendored or loaded. It was added in v2.12.39 and shipped on every authenticated page, but no template ever carried an `hx-*` attribute — every form is a plain `<form method="post">`. This removes a ~48 KB script from every page load, one build-time network fetch, and the vestigial `HX-Trigger` response header on the Caddy reload endpoint.
+
 ## [2.26.0] - 2026-08-18 - Live route configuration preview
 
 ### Added
