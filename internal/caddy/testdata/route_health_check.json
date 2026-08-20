@@ -1,0 +1,28 @@
+{
+  "handle": [
+    {
+      "handler": "reverse_proxy",
+      "health_checks": {
+        "active": {
+          "expect_status": 200,
+          "interval": "30s",
+          "timeout": "5s",
+          "uri": "/healthz"
+        }
+      },
+      "upstreams": [
+        {
+          "dial": "backend:8080"
+        }
+      ]
+    }
+  ],
+  "match": [
+    {
+      "host": [
+        "app.example.com"
+      ]
+    }
+  ],
+  "terminal": true
+}

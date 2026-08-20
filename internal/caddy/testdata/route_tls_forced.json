@@ -1,0 +1,20 @@
+{
+  "handle": [
+    {
+      "handler": "reverse_proxy",
+      "upstreams": [
+        {
+          "dial": "backend:8080"
+        }
+      ]
+    }
+  ],
+  "match": [
+    {
+      "host": [
+        "app.example.com"
+      ]
+    }
+  ],
+  "terminal": true
+}

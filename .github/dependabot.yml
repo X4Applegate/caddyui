@@ -1,0 +1,42 @@
+# Dependabot configuration.
+#
+# Security updates work without this file, which is why the repo has merged
+# Dependabot security PRs (#1, #2, #11) despite never having one. *Version*
+# updates require explicit config, so routine dependency bumps were never
+# being opened — the Go module set only moved when a CVE forced it.
+#
+# Grouped so a week's patch bumps arrive as one reviewable PR rather than a
+# stream of near-identical ones.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "build(deps)"
+
+  # The workflows pin action versions (actions/checkout@v4 etc.); without this
+  # they silently rot until an action is deprecated and CI breaks.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci(deps)"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build(docker)"

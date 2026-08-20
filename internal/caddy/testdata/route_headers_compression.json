@@ -1,0 +1,82 @@
+{
+  "handle": [
+    {
+      "encodings": {
+        "gzip": {},
+        "zstd": {}
+      },
+      "handler": "encode",
+      "prefer": [
+        "zstd",
+        "gzip"
+      ]
+    },
+    {
+      "handler": "headers",
+      "response": {
+        "deferred": true,
+        "delete": [
+          "Referrer-Policy",
+          "Strict-Transport-Security",
+          "X-Content-Type-Options",
+          "X-Frame-Options",
+          "X-XSS-Protection"
+        ],
+        "set": {
+          "Referrer-Policy": [
+            "strict-origin-when-cross-origin"
+          ],
+          "Strict-Transport-Security": [
+            "max-age=31536000"
+          ],
+          "X-Content-Type-Options": [
+            "nosniff"
+          ],
+          "X-Frame-Options": [
+            "SAMEORIGIN"
+          ],
+          "X-XSS-Protection": [
+            "1; mode=block"
+          ]
+        }
+      }
+    },
+    {
+      "handler": "headers",
+      "request": {
+        "set": {
+          "X-Real-IP": [
+            "{http.request.remote.host}"
+          ]
+        }
+      }
+    },
+    {
+      "handler": "headers",
+      "response": {
+        "deferred": true,
+        "set": {
+          "X-Served-By": [
+            "caddyui"
+          ]
+        }
+      }
+    },
+    {
+      "handler": "reverse_proxy",
+      "upstreams": [
+        {
+          "dial": "backend:8080"
+        }
+      ]
+    }
+  ],
+  "match": [
+    {
+      "host": [
+        "app.example.com"
+      ]
+    }
+  ],
+  "terminal": true
+}

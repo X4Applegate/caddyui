@@ -125,9 +125,9 @@ func (n *namecheapProvider) do(command string, extra url.Values) ([]byte, error)
 // Namecheap always returns 200 OK even for errors — Status="ERROR" is
 // where the real signal is.
 type ncResponse struct {
-	Status string   `xml:"Status,attr"`
-	Errors []ncErr  `xml:"Errors>Error"`
-	Inner  ncBody   `xml:"CommandResponse"`
+	Status string  `xml:"Status,attr"`
+	Errors []ncErr `xml:"Errors>Error"`
+	Inner  ncBody  `xml:"CommandResponse"`
 }
 
 type ncErr struct {
@@ -138,9 +138,9 @@ type ncErr struct {
 type ncBody struct {
 	// getList (domains.getList)
 	Domains []struct {
-		Name       string `xml:"Name,attr"`
-		IsExpired  string `xml:"IsExpired,attr"`
-		IsLocked   string `xml:"IsLocked,attr"`
+		Name      string `xml:"Name,attr"`
+		IsExpired string `xml:"IsExpired,attr"`
+		IsLocked  string `xml:"IsLocked,attr"`
 	} `xml:"DomainGetListResult>Domain"`
 
 	// getHosts (domains.dns.getHosts)

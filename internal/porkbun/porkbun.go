@@ -83,7 +83,7 @@ type Domain struct {
 // DNSRecord represents a single Porkbun DNS record.
 type DNSRecord struct {
 	ID      string `json:"id"`
-	Name    string `json:"name"`    // FQDN as returned by the API
+	Name    string `json:"name"` // FQDN as returned by the API
 	Type    string `json:"type"`
 	Content string `json:"content"`
 	TTL     string `json:"ttl"`

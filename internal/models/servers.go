@@ -16,13 +16,13 @@ const (
 )
 
 type CaddyServer struct {
-	ID            int64
-	Name          string
-	AdminURL      string
-	Type          string
-	Tags          string
-	Status        string
-	Version       string
+	ID       int64
+	Name     string
+	AdminURL string
+	Type     string
+	Tags     string
+	Status   string
+	Version  string
 	// AdminUsername / AdminPassword are optional HTTP Basic Auth credentials
 	// sent on every call to the Caddy admin API. Useful when the admin
 	// endpoint is exposed through a reverse proxy that enforces basic auth.

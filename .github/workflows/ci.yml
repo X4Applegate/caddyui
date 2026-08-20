@@ -20,6 +20,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Formatting is checked before the slower steps so a whitespace-only
+      # failure reports in seconds. Four files had drifted out of gofmt before
+      # this gate existed, which is easy to do when nothing enforces it.
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal ./web)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            echo "Run: gofmt -w ./cmd ./internal ./web"
+            exit 1
+          fi
+
       - name: Run tests
         run: go test ./...
 
