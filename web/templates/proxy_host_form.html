@@ -3576,19 +3576,39 @@ document.addEventListener('DOMContentLoaded', function() {
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Custom security disclosure policy served at <code>GET /.well-known/security.txt</code>. Leave empty to pass the request through to your upstream. See <a href="https://securitytxt.org" target="_blank" class="underline">securitytxt.org</a> for the standard format.</p>
       </div>
 
+  {{/* v2.33.0: node-local. Fleet sync copies the upstream verbatim, which is
+       right when several Caddy nodes front the same backends and wrong when
+       each node fronts its own stack — a Docker service name or VPN address
+       only resolves on the node that owns it. Placed directly above the
+       deploy picker because that is where the decision gets made. */}}
   {{if .OtherServers}}
   <div data-workflow-section="deployment" class="pt-4 border-t border-ink-100">
-    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
-    <p class="text-xs text-ink-400 mb-3">Push a copy of this config to additional servers at the same time. Uploaded PEM/path certificates are not mirrored. If a managed wildcard on this server covers the hostname, CaddyUI automatically copies that definition to each target so Caddy can reuse the wildcard there too.</p>
-    <div class="space-y-2">
-      {{range .OtherServers}}
-      <label class="flex items-center gap-2.5 cursor-pointer select-none">
-        <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
-        {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
-        <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
-      </label>
-      {{end}}
+    <label class="flex items-start gap-2.5 cursor-pointer select-none mb-4">
+      <input type="checkbox" name="node_local" id="node-local" {{if .Host.NodeLocal}}checked{{end}}
+        class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span>
+        <span class="text-sm text-ink-800 font-medium">This host is node-local — never sync it to other servers</span>
+        <span class="block text-xs text-ink-500 mt-0.5">Use when the upstream only means something on this node: a Docker service name, a VPN address, or a loopback port. Full fleet syncs and “Also deploy to” will skip it and report it as skipped rather than creating a route elsewhere that points at nothing.</span>
+      </span>
+    </label>
+
+    <div id="node-local-hint" class="hidden mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <span class="font-medium">Heads up:</span> <code id="node-local-hint-host" class="font-mono"></code> looks like a Docker service name — it usually only resolves on the node running that container. Deploying this host to another server would create a route there pointing at nothing. Consider marking it node-local.
+    </div>
+
+    <div id="deploy-targets"{{if .Host.NodeLocal}} class="hidden"{{end}}>
+      <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
+      <p class="text-xs text-ink-400 mb-3">Push a copy of this config to additional servers at the same time. Uploaded PEM/path certificates are not mirrored. If a managed wildcard on this server covers the hostname, CaddyUI automatically copies that definition to each target so Caddy can reuse the wildcard there too.</p>
+      <div class="space-y-2">
+        {{range .OtherServers}}
+        <label class="flex items-center gap-2.5 cursor-pointer select-none">
+          <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+          {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
+          <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+        </label>
+        {{end}}
+      </div>
     </div>
   </div>
   {{end}}
@@ -4682,6 +4702,40 @@ document.addEventListener('DOMContentLoaded', function() {
     custom.classList.toggle('hidden', mode.value !== 'custom');
   }
   mode.addEventListener('change', sync);
+  sync();
+})();
+
+// v2.33.0: node-local hosts.
+//
+//  1. Warn when the upstream looks like it only resolves on this node. The
+//     rule mirrors the server's isInternalHostname(): a single-label hostname
+//     with no dot and no colon is a container/Compose service name, which
+//     Caddy on a different node will not resolve.
+//  2. Hide the deploy picker when node-local is ticked, since the server
+//     refuses to cross-deploy those anyway — better to not offer the choice
+//     than to accept it and silently skip.
+(function() {
+  var check = document.getElementById('node-local');
+  var hint = document.getElementById('node-local-hint');
+  var hintHost = document.getElementById('node-local-hint-host');
+  var fwd = document.querySelector('[name="forward_host"]');
+  var picker = document.getElementById('deploy-targets');
+  if (!check || !hint || !fwd) return;
+
+  function looksNodeLocal(host) {
+    host = (host || '').trim();
+    if (!host || host === 'localhost') return false;
+    return host.indexOf('.') === -1 && host.indexOf(':') === -1;
+  }
+  function sync() {
+    var local = looksNodeLocal(fwd.value);
+    // Only nag when they haven't already made the call.
+    hint.classList.toggle('hidden', !local || check.checked);
+    if (local) hintHost.textContent = fwd.value.trim();
+    if (picker) picker.classList.toggle('hidden', check.checked);
+  }
+  fwd.addEventListener('input', sync);
+  check.addEventListener('change', sync);
   sync();
 })();
 </script>

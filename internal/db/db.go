@@ -2194,6 +2194,26 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "monitor_timeout_sec") {
 		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN monitor_timeout_sec INTEGER NOT NULL DEFAULT 0`)
 	}
+	// v2.33.0: node_local — exclude a resource from fleet sync entirely.
+	//
+	// Fleet sync copies a proxy host's upstream (forward_host/port) verbatim to
+	// the target node. That is right for edge replication, where several Caddy
+	// nodes front the same backends, but wrong for federated nodes where each
+	// Caddy fronts its own local stack: a Docker service name like
+	// "immich_server" only resolves inside one node's network, and a WireGuard
+	// address like 10.8.0.1 may route somewhere else entirely.
+	//
+	// preserveProxyTargetPolicy already treats certificates, DNS records and
+	// keys as node-specific; the upstream address was the one field most likely
+	// to differ and was still being copied. Rather than invent per-node
+	// upstream overrides, this lets an operator mark a resource as belonging to
+	// one node, and both full sync and "Also deploy to" skip it.
+	if !columnExists2(db, "proxy_hosts", "node_local") {
+		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN node_local INTEGER NOT NULL DEFAULT 0`)
+	}
+	if !columnExists2(db, "raw_routes", "node_local") {
+		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN node_local INTEGER NOT NULL DEFAULT 0`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

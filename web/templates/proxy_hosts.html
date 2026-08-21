@@ -383,6 +383,15 @@
             <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
             {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
           </span>
+          {{/* v2.33.0: node-local hosts are pinned to this Caddy and skipped by
+               fleet sync. Shown next to the upstream because the upstream is
+               the reason they're pinned. */}}
+          {{if .NodeLocal}}
+          <span class="inline-flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-ink-100 text-ink-600 align-middle" title="Node-local: never synced to other Caddy servers">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-2.5 h-2.5 shrink-0"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            node-local
+          </span>
+          {{end}}
         </td>
         <td class="px-5 py-3">
           {{if .CertificateID}}

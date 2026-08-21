@@ -669,8 +669,15 @@ type ProxyHost struct {
 	MonitorExpectStatus int    // 0 = default classification; >0 = require exactly this code
 	MonitorIntervalSec  int    // 0 = default 60; rounded up to a multiple of the 60s poll tick
 	MonitorTimeoutSec   int    // 0 = default 5
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// v2.33.0 (node-local hosts): exclude this host from fleet sync and from
+	// "Also deploy to". Set it when the upstream only means something on this
+	// node — a Docker service name, a VPN address, a loopback port — so
+	// copying the host to another Caddy would produce a route pointing at
+	// nothing. Sync reports these as skipped rather than silently ignoring
+	// them.
+	NodeLocal bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // MonitoringDisabled reports whether the operator has switched CaddyUI's own
@@ -1771,14 +1778,15 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.dns_skip_record,0),
     COALESCE(ph.monitor_mode,'auto'), COALESCE(ph.monitor_path,''),
     COALESCE(ph.monitor_method,''), COALESCE(ph.monitor_expect_status,0),
-    COALESCE(ph.monitor_interval_sec,0), COALESCE(ph.monitor_timeout_sec,0)`
+    COALESCE(ph.monitor_interval_sec,0), COALESCE(ph.monitor_timeout_sec,0),
+    COALESCE(ph.node_local,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
 func scanProxyHost(s interface {
 	Scan(dest ...any) error
 }, p *ProxyHost, ownerEmail *string) error {
-	var ws, bce, ssl, sslf, h2, en, bae, dnsSkipRecord int
+	var ws, bce, ssl, sslf, h2, en, bae, dnsSkipRecord, nodeLocal int
 	var ownerID int64
 	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt, addXFwdMethod, addXReqOrigHost, addXReqDNT, addXReqSecure, addXReqQueryCount, addXReqIDHdrResp, addXRobotsNoindex, blockBotUA, blockAdminPaths, addXCSPDis, addXMethodOverride, disableUpstreamCompression int
 	dst := []any{
@@ -2094,6 +2102,7 @@ func scanProxyHost(s interface {
 		&p.MonitorMode, &p.MonitorPath,
 		&p.MonitorMethod, &p.MonitorExpectStatus,
 		&p.MonitorIntervalSec, &p.MonitorTimeoutSec,
+		&nodeLocal, // v2.33.0
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -2210,6 +2219,7 @@ func scanProxyHost(s interface {
 	p.AddXRequestMethodOverride = addXMethodOverride == 1
 	p.DisableUpstreamCompression = disableUpstreamCompression == 1 // v2.12.52
 	p.DNSSkipRecord = dnsSkipRecord == 1
+	p.NodeLocal = nodeLocal == 1 // v2.33.0
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -2276,7 +2286,7 @@ func ListProxyHostSummaries(db *sql.DB, serverID int64, viewerID int64, isAdmin 
 		COALESCE(ph.dns_provider, ''), COALESCE(ph.dns_record_id, ''),
 		COALESCE(ph.maintenance_mode, 0), COALESCE(ph.tags, ''),
 		COALESCE(ph.notes, ''), COALESCE(ph.color, ''), ph.updated_at,
-		COALESCE(ph.monitor_mode, ''),
+		COALESCE(ph.monitor_mode, ''), COALESCE(ph.node_local, 0),
 		COALESCE(u.email, '')`
 
 	var rows *sql.Rows
@@ -2307,14 +2317,14 @@ func ListProxyHostSummaries(db *sql.DB, serverID int64, viewerID int64, isAdmin 
 	var out []ProxyHost
 	for rows.Next() {
 		var p ProxyHost
-		var sslEnabled, sslForced, enabled, basicAuth, maintenance int
+		var sslEnabled, sslForced, enabled, basicAuth, maintenance, nodeLocal int
 		var ownerID int64
 		if err := rows.Scan(
 			&p.ID, &p.Domains, &p.ForwardScheme, &p.ForwardHost, &p.ForwardPort,
 			&sslEnabled, &sslForced, &enabled, &p.CertificateID,
 			&basicAuth, &ownerID, &p.DNSProvider, &p.DNSRecordID,
 			&maintenance, &p.Tags, &p.Notes, &p.Color, &p.UpdatedAt,
-			&p.MonitorMode,
+			&p.MonitorMode, &nodeLocal,
 			&p.OwnerEmail,
 		); err != nil {
 			return nil, err
@@ -2324,6 +2334,7 @@ func ListProxyHostSummaries(db *sql.DB, serverID int64, viewerID int64, isAdmin 
 		p.Enabled = enabled == 1
 		p.BasicAuthEnabled = basicAuth == 1
 		p.MaintenanceMode = maintenance == 1
+		p.NodeLocal = nodeLocal == 1 // v2.33.0
 		if ownerID != 0 {
 			p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -2540,8 +2551,8 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             add_x_csp_disabled, add_x_request_method_override, proxy_redirect_rules,
             additional_upstream_rules, disable_upstream_compression,
             monitor_mode, monitor_path, monitor_method, monitor_expect_status,
-            monitor_interval_sec, monitor_timeout_sec)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            monitor_interval_sec, monitor_timeout_sec, node_local)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -2666,6 +2677,7 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		p.MonitorMode, p.MonitorPath,
 		p.MonitorMethod, p.MonitorExpectStatus,
 		p.MonitorIntervalSec, p.MonitorTimeoutSec,
+		boolInt(p.NodeLocal), // v2.33.0
 	)
 	if err != nil {
 		return 0, err
@@ -2999,6 +3011,7 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             disable_upstream_compression=?,
             monitor_mode=?, monitor_path=?, monitor_method=?,
             monitor_expect_status=?, monitor_interval_sec=?, monitor_timeout_sec=?,
+            node_local=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -3305,6 +3318,7 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		p.MonitorMode, p.MonitorPath,
 		p.MonitorMethod, p.MonitorExpectStatus,
 		p.MonitorIntervalSec, p.MonitorTimeoutSec,
+		boolInt(p.NodeLocal), // v2.33.0
 		p.ID,
 	)
 	if err != nil {
@@ -3719,10 +3733,12 @@ type RawRoute struct {
 	DNSRecordID   string
 	DNSProfileID  string
 	DNSSkipRecord bool // use provider for DNS-01 but do not create public A records
-	OwnerID       sql.NullInt64
-	OwnerEmail    string // populated via JOIN for display
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// v2.33.0: exclude from fleet sync — see ProxyHost.NodeLocal.
+	NodeLocal  bool
+	OwnerID    sql.NullInt64
+	OwnerEmail string // populated via JOIN for display
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 const rawRouteCols = `id, label, json_data, COALESCE(caddyfile_src, ''), enabled,
@@ -3730,23 +3746,26 @@ const rawRouteCols = `id, label, json_data, COALESCE(caddyfile_src, ''), enabled
     COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
     COALESCE(dns_zone_name,''), COALESCE(dns_record_id,''),
     COALESCE(dns_profile_id,''), COALESCE(dns_skip_record,0),
+    COALESCE(node_local,0),
     created_at, updated_at, COALESCE(owner_id, 0)`
 
 func scanRawRoute(s interface {
 	Scan(dest ...any) error
 }) (RawRoute, error) {
 	var r RawRoute
-	var en, force, block, dnsSkipRecord int
+	var en, force, block, dnsSkipRecord, nodeLocal int
 	var ownerID int64
 	err := s.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 		&r.CertificateID, &force, &block,
 		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord,
+		&nodeLocal,
 		&r.CreatedAt, &r.UpdatedAt, &ownerID)
 	if err == nil {
 		r.Enabled = en == 1
 		r.ForceSSL = force == 1
 		r.BlockCommonExploits = block == 1
 		r.DNSSkipRecord = dnsSkipRecord == 1
+		r.NodeLocal = nodeLocal == 1 // v2.33.0
 		if ownerID != 0 {
 			r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -3768,6 +3787,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
                COALESCE(rr.dns_profile_id,''), COALESCE(rr.dns_skip_record,0),
+               COALESCE(rr.node_local,0),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3781,6 +3801,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
                COALESCE(rr.dns_profile_id,''), COALESCE(rr.dns_skip_record,0),
+               COALESCE(rr.node_local,0),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3795,11 +3816,12 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
 	var out []RawRoute
 	for rows.Next() {
 		var r RawRoute
-		var en, force, block, dnsSkipRecord int
+		var en, force, block, dnsSkipRecord, nodeLocal int
 		var ownerID int64
 		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 			&r.CertificateID, &force, &block,
 			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord,
+			&nodeLocal,
 			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail); err != nil {
 			return nil, err
 		}
@@ -3807,6 +3829,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
 		r.ForceSSL = force == 1
 		r.BlockCommonExploits = block == 1
 		r.DNSSkipRecord = dnsSkipRecord == 1
+		r.NodeLocal = nodeLocal == 1 // v2.33.0
 		if ownerID != 0 {
 			r.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 		}
@@ -3820,11 +3843,12 @@ func CreateRawRoute(db *sql.DB, serverID int64, ownerID int64, r *RawRoute) (int
 	res, err := db.Exec(`INSERT INTO raw_routes (server_id, label, json_data, caddyfile_src, enabled,
             certificate_id, force_ssl, block_common_exploits,
             dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id, dns_skip_record,
-            owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            node_local, owner_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID, r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
 		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
+		boolInt(r.NodeLocal), // v2.33.0
 		nilIfZero(ownerID))
 	if err != nil {
 		return 0, err
@@ -3844,10 +3868,12 @@ func UpdateRawRoute(db *sql.DB, r *RawRoute) error {
 	_, err := db.Exec(`UPDATE raw_routes SET label=?, json_data=?, caddyfile_src=?, enabled=?,
             certificate_id=?, force_ssl=?, block_common_exploits=?,
             dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?, dns_skip_record=?,
+            node_local=?,
             updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
 		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
+		boolInt(r.NodeLocal), // v2.33.0
 		r.ID)
 	return err
 }
