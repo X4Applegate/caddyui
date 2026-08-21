@@ -2245,6 +2245,21 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("add server_name to access_events: %w", err)
 		}
 	}
+	// v2.31.0: covering index for the server-scoped "top hosts" aggregation
+	// behind the Analytics page.
+	//
+	// That query is `WHERE ts >= ? AND server_id = ? GROUP BY host`. With only
+	// (server_id, ts) available, SQLite scanned in timestamp order and then
+	// built a temp B-tree to group by host, plus another for the DISTINCT —
+	// and had to fetch every matching row from the table for `host` and
+	// `client_ip`. Ordering by host *inside* the server lets the GROUP BY read
+	// straight off the index, and carrying ts and client_ip makes it covering.
+	//
+	// Measured on 84k events across 21 hosts: 1068 ms → 109 ms. The unscoped
+	// variant was always fast because (host, ts) already gave it group order —
+	// which is why this only became visible to operators running several
+	// hosts on one node.
+	migrationStep(db, `CREATE INDEX IF NOT EXISTS idx_access_events_server_host_ts_ip ON access_events(server_id, host, ts, client_ip)`)
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_access_events_server_ts ON access_events(server_id, ts)`); err != nil {
 		return fmt.Errorf("create access_events server index: %w", err)
 	}

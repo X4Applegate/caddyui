@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.31.0] - 2026-08-20 - Analytics performance at scale
+
+### Fixed
+
+- The Analytics page no longer slows down as proxy hosts are added to a node. Measured on 84,000 access events across 21 hosts, it went from **1.18 s to 0.31 s** end-to-end; the query responsible went from 1068 ms to 109 ms.
+- The cause was the server-scoped "top hosts" aggregation (`WHERE ts >= ? AND server_id = ? GROUP BY host`). No index could supply group order for it, so SQLite built temporary B-trees for the grouping, the distinct-visitor count and the sort, and fetched every matching row from the table to read `host` and `client_ip`. A covering index on `(server_id, host, ts, client_ip)` supplies the group order directly and carries every column the query reads.
+- Only the server-scoped view was affected, which is why this appeared as "it got slow once I had about twenty hosts". The fleet-wide view already had an index giving it group order and was never slow.
+- The index is created automatically on upgrade. Building it takes well under a second on a database of this size, and adds roughly two microseconds per ingested event.
+
+### Added
+
+- Regression tests asserting the query plan still uses the covering index and still avoids a temporary B-tree for `GROUP BY`, so this cannot silently regress.
+
 ## [2.30.0] - 2026-08-20 - Deterministic config, visible migrations, CSP
 
 ### Fixed
