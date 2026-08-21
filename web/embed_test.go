@@ -491,6 +491,13 @@ func TestPublicHealthDotHonorsMonitoringOff(t *testing.T) {
 	if n := strings.Count(list, `{{if eq .MonitorMode "off"}}`); n != 2 {
 		t.Errorf("proxy_hosts.html has %d MonitorMode-off guards on the Public dot, want 2 (card view + table view)", n)
 	}
+	// v2.35.1: a standalone "view health" button next to the dot, since the
+	// dot itself stops being clickable once monitoring is off or there's no
+	// data yet — the exact dead end a user hit when asking where the button
+	// to reach this page was.
+	if n := strings.Count(list, `title="View public health history"`); n != 2 {
+		t.Errorf("proxy_hosts.html has %d always-present health-history buttons, want 2 (card view + table view) — the dot alone is not enough once it stops being a link", n)
+	}
 
 	detailHTML, err := FS.ReadFile("templates/proxy_host_health.html")
 	if err != nil {
