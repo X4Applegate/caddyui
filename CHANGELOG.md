@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.33.0] - 2026-08-21 - Node-local proxy hosts and advanced routes
+
+### Added
+
+- Proxy hosts and advanced routes can be marked **node-local**, which excludes them from full fleet syncs and from **Also deploy to**. Use it when the upstream only means something on the node that owns it — a Docker service name like `immich_server`, a VPN address, a loopback port. Copying such a host to another Caddy produced a route pointing at nothing.
+- Fleet sync reports what it left behind: *"skipped as node-local: 3 proxies, 1 advanced routes"*. Skipped resources are counted rather than silently dropped, so a sync summary can be read at face value.
+- The proxy host form warns when the upstream looks node-local but the host isn't marked as such — a single-label hostname with no dot, matching the rule CaddyUI already uses to decide it can't resolve a backend itself. Marking the host node-local dismisses the warning and hides the deploy picker.
+- Node-local hosts carry a badge in the proxy host list, next to the upstream that pinned them.
+
+### Notes
+
+- Fleet sync copies a host's upstream verbatim, which is correct for **edge replication** — several Caddy nodes fronting the same backends — and wrong for **federated nodes**, where each Caddy fronts its own local stack. `preserveProxyTargetPolicy` already treated certificates, DNS records and keys as node-specific; the upstream address was the field most likely to differ and was still being copied. This closes that gap without introducing per-node upstream overrides.
+- The flag is opt-in and defaults to off, so existing hosts sync exactly as before.
+
 ## [2.32.0] - 2026-08-20 - Fix bulk-action bar covering the last row
 
 ### Fixed

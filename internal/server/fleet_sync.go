@@ -26,6 +26,12 @@ type fleetSyncSummary struct {
 	RedirectsUpdated    int
 	RawRoutesCreated    int
 	RawRoutesUpdated    int
+	// v2.33.0: resources deliberately left behind because they are marked
+	// node-local. Counted and reported rather than silently dropped — an
+	// operator seeing "12 proxies added" needs to know three others were
+	// skipped on purpose, not lost to a bug.
+	ProxiesSkipped   int
+	RawRoutesSkipped int
 }
 
 func (s fleetSyncSummary) Changed() int {
@@ -36,13 +42,18 @@ func (s fleetSyncSummary) Changed() int {
 }
 
 func (s fleetSyncSummary) String() string {
-	return fmt.Sprintf(
+	out := fmt.Sprintf(
 		"proxies: %d added, %d updated; redirects: %d added, %d updated; advanced routes: %d added, %d updated; managed certificates: %d added, %d updated",
 		s.ProxiesCreated, s.ProxiesUpdated,
 		s.RedirectsCreated, s.RedirectsUpdated,
 		s.RawRoutesCreated, s.RawRoutesUpdated,
 		s.CertificatesCreated, s.CertificatesUpdated,
 	)
+	if s.ProxiesSkipped > 0 || s.RawRoutesSkipped > 0 {
+		out += fmt.Sprintf("; skipped as node-local: %d proxies, %d advanced routes",
+			s.ProxiesSkipped, s.RawRoutesSkipped)
+	}
+	return out
 }
 
 func fleetOwnerID(owner sql.NullInt64) int64 {
@@ -479,6 +490,13 @@ func (s *Server) syncFleetConfiguration(actor string, sourceServerID, targetServ
 		}
 	}
 	for _, proxy := range proxies {
+		// v2.33.0: node-local hosts never leave their node. Their upstream
+		// (a Docker service name, a VPN address) means nothing on the target,
+		// so copying them would create a route pointing at nothing.
+		if proxy.NodeLocal {
+			summary.ProxiesSkipped++
+			continue
+		}
 		result, err := s.upsertFleetProxyHost(sourceServerID, targetServerID, proxy, fleetOwnerID(proxy.OwnerID))
 		if err != nil {
 			syncErrors = append(syncErrors, fmt.Errorf("proxy %q: %w", proxy.Domains, err))
@@ -503,6 +521,10 @@ func (s *Server) syncFleetConfiguration(actor string, sourceServerID, targetServ
 		}
 	}
 	for _, rawRoute := range rawRoutes {
+		if rawRoute.NodeLocal { // v2.33.0 — see the proxy loop above
+			summary.RawRoutesSkipped++
+			continue
+		}
 		result, err := s.upsertFleetRawRoute(sourceServerID, targetServerID, rawRoute, fleetOwnerID(rawRoute.OwnerID))
 		if err != nil {
 			syncErrors = append(syncErrors, fmt.Errorf("advanced route %q: %w", rawRoute.Label, err))
