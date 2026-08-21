@@ -511,9 +511,13 @@ if ('serviceWorker' in navigator) {
            since v2.6.2 — the sidebar footer is pure project-meta now. */}}
       <div class="app-sidebar__footer border-t border-slate-800 px-4 py-3 space-y-1.5">
         {{if .AppVersion}}
+        {{/* v2.34.0: the "↑ vX.Y.Z available" pill that sat next to the version
+             was removed. The Operations dashboard already announces the same
+             update in context and links to the release, so this was a second
+             place to notice it and a second place to dismiss it. The running
+             version stays — that's useful on every page. */}}
         <div class="text-xs flex items-center gap-1.5">
           <span class="text-[10px] font-mono text-slate-500">{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}} {{.AppVersion}}</span>
-          <span id="update-badge" class="hidden inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 cursor-pointer" title="Click to dismiss"></span>
         </div>
         {{end}}
         <div class="text-[10px] text-slate-500 flex items-center gap-1.5 flex-wrap">
