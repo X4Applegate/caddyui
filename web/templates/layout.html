@@ -529,7 +529,7 @@ if ('serviceWorker' in navigator) {
       </div>
     </aside>
 
-    <div class="flex-1 min-w-0 flex flex-col lg:overflow-y-auto">
+    <div id="app-scroll" class="flex-1 min-w-0 flex flex-col lg:overflow-y-auto">
       {{/* Top bar always renders when a user is signed in. When a
            CurrentServer exists we show the server status/name/URL on the
            left; otherwise just the profile cluster on the right, so the

@@ -807,3 +807,25 @@ function caddyuiDelayFetch(ms, fn) {
       '</svg>';
   }
 })();
+
+// The floating "N selected" bulk-action bar (#bulk-bar) is fixed to the
+// viewport bottom on proxy hosts / redirections / advanced routes /
+// certificates. Its container never reserved space for it, so on a short
+// viewport — or just a list long enough to need scrolling — the last row's
+// Edit/Delete buttons sat directly under the bar, overlapping into an
+// unreadable jumble once you scrolled to the bottom with rows selected.
+// Reserve exactly the bar's rendered height (it can wrap to two lines on a
+// narrow window) as scroll-container padding whenever it's visible, so the
+// last row always clears it.
+(function() {
+  var bar = document.getElementById('bulk-bar');
+  var scroller = document.getElementById('app-scroll');
+  if (!bar || !scroller) return;
+  function sync() {
+    scroller.style.paddingBottom = bar.classList.contains('hidden') ? '' : (bar.offsetHeight + 24) + 'px';
+  }
+  new MutationObserver(sync).observe(bar, { attributes: true, attributeFilter: ['class'] });
+  if ('ResizeObserver' in window) new ResizeObserver(sync).observe(bar);
+  window.addEventListener('resize', sync);
+  sync();
+})();

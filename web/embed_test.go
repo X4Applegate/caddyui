@@ -377,3 +377,61 @@ func TestCaptchaSecretsNeverRenderIntoTheDOM(t *testing.T) {
 		}
 	}
 }
+
+// TestBulkBarDoesNotOverlapListContent guards the fix for the floating
+// "N selected" bulk-action bar covering the last row of a long list.
+// #bulk-bar is `position: fixed` and never reserved space for itself, so on
+// a short viewport (or just a list long enough to scroll) the last row's
+// Edit/Delete buttons sat directly under it once rows were selected — an
+// unreadable overlap once you scrolled to the bottom.
+//
+// The fix has two halves that must both stay in place: layout.html's scroll
+// container needs the id the JS targets, and app.js needs the observer that
+// reserves space for the bar's actual (possibly wrapped) height. Losing
+// either silently brings the overlap back with no compile-time signal.
+func TestBulkBarDoesNotOverlapListContent(t *testing.T) {
+	layout, err := FS.ReadFile("templates/layout.html")
+	if err != nil {
+		t.Fatalf("read layout.html: %v", err)
+	}
+	if !strings.Contains(string(layout), `id="app-scroll"`) {
+		t.Error(`layout.html must give its scroll container id="app-scroll" — app.js's bulk-bar spacer targets it by that id`)
+	}
+
+	appJS, err := FS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	js := string(appJS)
+	for _, marker := range []string{
+		`getElementById('bulk-bar')`,
+		`getElementById('app-scroll')`,
+		"paddingBottom",
+		"MutationObserver",
+	} {
+		if !strings.Contains(js, marker) {
+			t.Errorf("app.js missing bulk-bar spacer marker %q", marker)
+		}
+	}
+
+	// Every page with a bulk-action bar must render inside the shared layout
+	// that defines #app-scroll — a page with its own layout would silently
+	// fall outside the fix.
+	entries, err := fs.ReadDir(FS, "templates")
+	if err != nil {
+		t.Fatalf("read templates dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		body, err := FS.ReadFile("templates/" + entry.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		html := string(body)
+		if strings.Contains(html, `id="bulk-bar"`) && !strings.Contains(html, `{{define "content"}}`) {
+			t.Errorf("%s has a bulk-bar but does not render inside the shared layout's content block — it will not get the overlap fix", entry.Name())
+		}
+	}
+}
