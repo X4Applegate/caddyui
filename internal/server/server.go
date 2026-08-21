@@ -107,9 +107,6 @@ type Server struct {
 	runtimeLogMu       sync.Mutex
 	runtimeLogTimers   map[int64]*time.Timer
 	certificateProbeFn func(models.CaddyServer, models.Certificate) managedCertificateServerStatus
-
-	// v2.9.2: HTTP client used by the background per-proxy-host health checker.
-	healthClient *http.Client
 }
 
 type apiTokenScopeContextKey struct{}
@@ -148,16 +145,6 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 		healthFailures:   map[int64]int{},
 		appHealth:        map[int64]appHealthEntry{},
 		runtimeLogTimers: map[int64]*time.Timer{},
-	}
-	// Initialize health check HTTP client (short timeouts, no redirect following).
-	s.healthClient = &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse // don't follow redirects
-		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // check reachability, not cert validity
-		},
 	}
 	go s.runHealthChecker()
 	go s.runAutoSyncLoop()
@@ -2862,12 +2849,13 @@ func (s *Server) getProxyHostHealth(w http.ResponseWriter, r *http.Request) {
 		uptime = float64(okCount) / float64(total) * 100
 	}
 	s.render(w, r, "proxy_host_health.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Host":    host,
-		"Checks":  checks,
-		"Uptime":  uptime,
-		"Total":   total,
-		"Section": "proxy",
+		"User":         s.currentUser(r),
+		"Host":         host,
+		"Checks":       checks,
+		"Uptime":       uptime,
+		"CadenceLabel": publicHealthCadenceLabel(*host),
+		"Total":        total,
+		"Section":      "proxy",
 	})
 }
 
@@ -11870,8 +11858,26 @@ var upstreamNotifyState struct {
 }
 
 // runHealthChecker polls each enabled proxy host every 5 minutes and records
-// the result in proxy_health. It checks the first domain of each host via HTTPS
-// (falling back to HTTP if ssl_enabled is false). Runs until the process exits.
+// the result in proxy_health — the persisted "Public" health history behind
+// /proxy-hosts/{id}/health and the left-most dot on the proxy hosts list. It
+// checks the first domain of each host via HTTPS (falling back to HTTP if
+// ssl_enabled is false). Runs until the process exits.
+//
+// v2.35.0 (issue #39 follow-up): this is a *third* probe CaddyUI runs on a
+// host's behalf, alongside the App and Port dots that v2.28.0 made
+// configurable. It was never wired to MonitorMode, so a host set to "Off" —
+// explicitly promised to stop "all outbound probes for this host" — kept
+// getting hit here every 5 minutes regardless, and a host in "Custom" mode
+// with a non-default path or expected status still showed this dot red
+// because the check always requested "/" and only accepted <400/401/403.
+// That's the exact failure mode the issue described. Now it honors the same
+// MonitorSettings as the other two probes.
+//
+// NodeLocal is deliberately NOT consulted here. It says the *upstream*
+// (forward_host/port) only resolves on this node — it says nothing about
+// whether the host's public domain should be checked from the internet-facing
+// side, which is what this probe does. Only an explicit MonitorMode of "off"
+// suppresses it.
 func (s *Server) runHealthChecker() {
 	// Stagger the first check by 30 seconds so startup load doesn't spike.
 	time.Sleep(30 * time.Second)
@@ -11882,6 +11888,18 @@ func (s *Server) runHealthChecker() {
 		s.checkAllProxyHosts()
 	}
 }
+
+// publicHealthCheckerInterval is this poller's native cadence, and therefore
+// the "Automatic" default fed to MonitorSettings — distinct from the App
+// dot's 60s default, since this checker has always run every 5 minutes.
+//
+// publicHealthCheckerTimeout matches the client this poller has always used
+// (short timeout, no redirect following) — the historical "Automatic"
+// default for MonitorSettings, same as the interval above.
+const (
+	publicHealthCheckerInterval = 5 * time.Minute
+	publicHealthCheckerTimeout  = 10 * time.Second
+)
 
 func (s *Server) checkAllProxyHosts() {
 	servers, err := models.ListCaddyServers(s.DB)
@@ -11899,6 +11917,11 @@ func (s *Server) checkAllProxyHosts() {
 			if !h.Enabled {
 				continue
 			}
+			// v2.35.0: "Off" means no outbound probe of any kind — see the
+			// package comment on runHealthChecker.
+			if h.MonitoringDisabled() {
+				continue
+			}
 			domains := h.DomainList()
 			if len(domains) == 0 {
 				continue
@@ -11908,15 +11931,68 @@ func (s *Server) checkAllProxyHosts() {
 			if !h.SSLEnabled {
 				scheme = "http"
 			}
-			targetURL := scheme + "://" + domain + "/"
-			s.checkProxyHost(h.ID, targetURL)
+			path, method, expectStatus, interval, timeout := h.MonitorSettings(publicHealthCheckerInterval, publicHealthCheckerTimeout)
+			if !s.publicHealthDue(h.ID, interval) {
+				continue
+			}
+			targetURL := scheme + "://" + domain + path
+			s.checkProxyHost(h.ID, targetURL, method, expectStatus, timeout)
 		}
 	}
 }
 
-func (s *Server) checkProxyHost(hostID int64, targetURL string) {
+// publicHealthCadenceLabel describes the effective cadence of the Public
+// health checker for the /proxy-hosts/{id}/health page, since it's no longer
+// unconditionally "every 5 min" once Custom mode can set a longer interval.
+func publicHealthCadenceLabel(h models.ProxyHost) string {
+	if !strings.EqualFold(strings.TrimSpace(h.MonitorMode), "custom") || h.MonitorIntervalSec <= 0 {
+		return "every 5 min"
+	}
+	interval := time.Duration(h.MonitorIntervalSec) * time.Second
+	if interval <= publicHealthCheckerInterval {
+		return "every 5 min" // custom value floors to the native tick anyway
+	}
+	minutes := int(interval / time.Minute)
+	return fmt.Sprintf("roughly every %d min (custom)", minutes)
+}
+
+// publicHealthDue reports whether hostID's persisted public health check is
+// due for a new probe, honoring a custom interval longer than the poller's
+// native 5-minute tick (a shorter one can't be honoured — the ticker itself
+// only fires every 5 minutes). Paced off the most recently persisted check
+// rather than separate in-memory state, so — unlike the App dot's pacing —
+// this survives a process restart instead of probing immediately on boot
+// regardless of how recently it last ran.
+func (s *Server) publicHealthDue(hostID int64, interval time.Duration) bool {
+	if interval <= publicHealthCheckerInterval {
+		return true
+	}
+	history, err := models.GetProxyHealthHistory(s.DB, hostID, 1)
+	if err != nil || len(history) == 0 {
+		return true
+	}
+	// Subtract half a tick so a host configured at exactly 2x the interval
+	// isn't pushed out to 3x by scheduling jitter, matching appProbeDue.
+	return time.Since(history[0].CheckedAt) >= interval-(publicHealthCheckerInterval/2)
+}
+
+func (s *Server) checkProxyHost(hostID int64, targetURL, method string, expectStatus int, timeout time.Duration) {
+	client := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // don't follow redirects
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // check reachability, not cert validity
+		},
+	}
+	req, err := http.NewRequest(method, targetURL, nil)
+	if err != nil {
+		_ = models.InsertProxyHealth(s.DB, hostID, false, 0, 0, err.Error())
+		return
+	}
 	start := time.Now()
-	resp, err := s.healthClient.Get(targetURL)
+	resp, err := client.Do(req)
 	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
 		errMsg := err.Error()
@@ -11929,7 +12005,16 @@ func (s *Server) checkProxyHost(hostID int64, targetURL string) {
 	defer resp.Body.Close()
 	// Drain body to free connection.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	ok := resp.StatusCode < 400 || resp.StatusCode == 401 || resp.StatusCode == 403
+	// v2.35.0: an explicit expected status replaces the heuristic entirely —
+	// same rule as the App dot probe, and for the same reason: a host whose
+	// health path deliberately answers something other than 2xx/401/403 is
+	// "up" only if the operator said so.
+	var ok bool
+	if expectStatus > 0 {
+		ok = resp.StatusCode == expectStatus
+	} else {
+		ok = resp.StatusCode < 400 || resp.StatusCode == 401 || resp.StatusCode == 403
+	}
 	_ = models.InsertProxyHealth(s.DB, hostID, ok, resp.StatusCode, latencyMs, "")
 }
 

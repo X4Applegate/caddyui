@@ -1326,8 +1326,8 @@ document.addEventListener('DOMContentLoaded', function() {
            to say who is doing the probing — the two were easy to confuse, and
            the settings below this point do not affect these dots at all. */}}
       <div class="border-t border-gray-100 dark:border-gray-800 pt-3 mt-3 space-y-3">
-        <p class="text-xs font-medium text-ink-700">CaddyUI status monitoring <span class="font-normal text-ink-400">(drives the App and Port dots — not Caddy's own health checking)</span></p>
-        <p class="text-xs text-ink-500">CaddyUI probes this host from its own container to show status in the dashboard: an HTTPS request to the public domain, and a direct check of the upstream. Turn it off for hosts that are deliberately unreachable from here — split-horizon DNS, firewalled backends — where the probe would report a misleading “down” and add noise to your firewall logs.</p>
+        <p class="text-xs font-medium text-ink-700">CaddyUI status monitoring <span class="font-normal text-ink-400">(drives the App, Port, and Public dots — not Caddy's own health checking)</span></p>
+        <p class="text-xs text-ink-500">CaddyUI runs three probes of its own from this section: an HTTPS request to the public domain every 60&nbsp;seconds (the <strong>App</strong> dot), a direct check of the upstream (the <strong>Port</strong> dot), and a separate public check every 5&nbsp;minutes whose history is kept for 24&nbsp;hours at <a href="/proxy-hosts/{{.Host.ID}}/health" class="text-brand-600 hover:underline">/proxy-hosts/{{.Host.ID}}/health</a> (the <strong>Public</strong> dot, left-most on the list). All three read the settings below. Turn monitoring off for hosts that are deliberately unreachable from here — split-horizon DNS, firewalled backends — where a probe would report a misleading “down” and add noise to your firewall logs.</p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
           <div>
             <label class="block text-sm font-medium text-ink-800 mb-1.5">Monitoring</label>
@@ -1338,7 +1338,7 @@ document.addEventListener('DOMContentLoaded', function() {
               <option value="off" {{if eq .Host.MonitorMode "off"}}selected{{end}}>Off — never probe this host</option>
             </select>
           </div>
-          <p class="text-xs text-ink-500 sm:pt-7">Automatic probes <code>GET /</code> every 60&nbsp;seconds with a 5&nbsp;second timeout. Off stops all outbound probes for this host and shows a neutral dot.</p>
+          <p class="text-xs text-ink-500 sm:pt-7">Automatic keeps each probe's own default cadence — the App/Port checks run every 60&nbsp;seconds, the Public check every 5&nbsp;minutes — with a 5&nbsp;second timeout. Off stops all three and shows a neutral dot everywhere.</p>
         </div>
 
         <div id="monitor-custom" class="space-y-3 {{if ne .Host.MonitorMode "custom"}}hidden{{end}}">
@@ -1371,7 +1371,7 @@ document.addEventListener('DOMContentLoaded', function() {
               <input type="number" name="monitor_interval_sec" value="{{if .Host.MonitorIntervalSec}}{{.Host.MonitorIntervalSec}}{{end}}"
                 min="60" max="86400" placeholder="60"
                 class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-              <p class="text-xs text-ink-500 mt-1">Minimum 60, rounded up to a multiple of 60.</p>
+              <p class="text-xs text-ink-500 mt-1">Floored at each probe's own tick: 60 for the App/Port checks, 300 for the Public check — a smaller value just means that probe runs every tick instead.</p>
             </div>
             <div>
               <label class="block text-sm font-medium text-ink-800 mb-1.5">Timeout (seconds)</label>
