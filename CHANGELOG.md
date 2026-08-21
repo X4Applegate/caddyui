@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.34.0] - 2026-08-21 - One place for the update notice
+
+### Removed
+
+- The **"↑ vX.Y.Z available"** pill in the sidebar footer. The Operations dashboard already announces the same update in context and links straight to the release, so the pill was a second place to notice it and a second place to dismiss it. The running version stays in the sidebar, where it is useful on every page.
+- The `badge-pulse` animation and `#update-badge` rule that existed only for the pill.
+
+The dashboard banner is unchanged.
+
 ## [2.33.0] - 2026-08-21 - Node-local proxy hosts and advanced routes
 
 ### Added

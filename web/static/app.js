@@ -69,30 +69,10 @@ function caddyuiDelayFetch(ms, fn) {
   }
 }
 
-(function() {
-  var badge = document.getElementById('update-badge');
-  if (!badge) return;
-  var DISMISS_KEY = 'caddyui-update-dismissed';
-  // v2.12.42: deferred 3s — version-check is a Docker Hub round-trip
-  // (~300 ms) that has no business blocking initial paint metrics.
-  caddyuiDelayFetch(3000, function() {
-  fetch('/api/version-check')
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(d) {
-      if (!d || !d.has_update) return;
-      var dismissed = '';
-      try { dismissed = localStorage.getItem(DISMISS_KEY) || ''; } catch(e) {}
-      if (dismissed === d.latest) return; // already dismissed this version
-      badge.textContent = '↑ ' + d.latest + ' available';
-      badge.classList.remove('hidden');
-      badge.addEventListener('click', function() {
-        try { localStorage.setItem(DISMISS_KEY, d.latest); } catch(e) {}
-        badge.classList.add('hidden');
-      });
-    })
-    .catch(function() {});
-  }); // close caddyuiDelayFetch
-})();
+// v2.34.0: the sidebar "available" update pill was removed. The Operations
+// dashboard already surfaces the same information in context, with a link to
+// the release notes, so the pill was a second place to maintain and a second
+// place for the user to dismiss. See #update-notice in dashboard.html.
 
 // v2.11.0: global keyboard shortcuts.
 //   "?" — open the shortcut overlay

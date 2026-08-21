@@ -378,6 +378,44 @@ func TestCaptchaSecretsNeverRenderIntoTheDOM(t *testing.T) {
 	}
 }
 
+// TestUpdateNoticeLivesOnlyOnTheDashboard pins where the "a new version is
+// available" message appears. v2.34.0 removed the sidebar pill because the
+// Operations dashboard already announces the same update in context and links
+// to the release — two places to notice it meant two places to dismiss it.
+//
+// The dashboard banner is the one that stays; the sidebar keeps the running
+// version but nothing else.
+func TestUpdateNoticeLivesOnlyOnTheDashboard(t *testing.T) {
+	layout, err := FS.ReadFile("templates/layout.html")
+	if err != nil {
+		t.Fatalf("read layout.html: %v", err)
+	}
+	if strings.Contains(string(layout), `id="update-badge"`) {
+		t.Error("the sidebar update pill is back in layout.html — the dashboard banner is the single place for this")
+	}
+	if !strings.Contains(string(layout), "{{.AppVersion}}") {
+		t.Error("layout.html should still show the running version in the sidebar")
+	}
+
+	appJS, err := FS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	if strings.Contains(string(appJS), "update-badge") {
+		t.Error("app.js still populates the removed sidebar pill")
+	}
+
+	dash, err := FS.ReadFile("templates/dashboard.html")
+	if err != nil {
+		t.Fatalf("read dashboard.html: %v", err)
+	}
+	for _, marker := range []string{`id="update-notice"`, "/api/version-check", "has_update"} {
+		if !strings.Contains(string(dash), marker) {
+			t.Errorf("dashboard.html lost its update banner marker %q — removing the pill must not take the banner with it", marker)
+		}
+	}
+}
+
 // TestBulkBarDoesNotOverlapListContent guards the fix for the floating
 // "N selected" bulk-action bar covering the last row of a long list.
 // #bulk-bar is `position: fixed` and never reserved space for itself, so on
