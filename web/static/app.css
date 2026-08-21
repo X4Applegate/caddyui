@@ -1393,14 +1393,9 @@ html.dark .text-heading-gradient {
   pointer-events: none;
 }
 
-/* Badge pulse for update dot */
-@keyframes badge-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.7; }
-}
-#update-badge:not(.hidden) {
-  animation: badge-pulse 2s ease-in-out infinite;
-}
+/* v2.34.0: the badge-pulse keyframes and #update-badge rule were removed with
+   the sidebar update pill they animated. The Operations dashboard banner
+   (#update-notice) carries the update notice now. */
 
 /* Dropdown glass panels */
 [data-server-menu-panel]:not(.hidden),
