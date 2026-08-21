@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.32.0] - 2026-08-20 - Fix bulk-action bar covering the last row
+
+### Fixed
+
+- The floating "N selected" bulk-action bar no longer covers the last row of a long list. It is `position: fixed` to the bottom of the viewport and never reserved space for itself, so once a list needed scrolling — a shorter window, or simply enough proxy hosts / redirections / advanced routes / certificates — the last row's Edit and Delete buttons sat directly under it, overlapping into an unreadable jumble as soon as any rows were selected and you scrolled to the bottom.
+- The scroll container now reserves exactly the bar's own rendered height (which can grow if it wraps to two lines on a narrow window) as bottom padding whenever the bar is visible, and releases it when the selection is cleared. Fixed centrally, so it applies to every page using this bar without per-page changes.
+
 ## [2.31.0] - 2026-08-20 - Analytics performance at scale
 
 ### Fixed
