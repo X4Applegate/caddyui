@@ -473,3 +473,48 @@ func TestBulkBarDoesNotOverlapListContent(t *testing.T) {
 		}
 	}
 }
+
+// TestPublicHealthDotHonorsMonitoringOff guards the fix for issue #39's
+// follow-up: a third CaddyUI-run probe (the persisted "Public" health check
+// behind /proxy-hosts/{id}/health) was never wired to MonitorMode, so a host
+// set to "Off" kept showing a stale or misleading status there indefinitely.
+// Both the list page and the detail page must check MonitorMode before
+// trusting any persisted HealthMap/Checks data — see the matching Go-side
+// tests in internal/server/public_health_monitor_test.go for the poller
+// itself.
+func TestPublicHealthDotHonorsMonitoringOff(t *testing.T) {
+	listHTML, err := FS.ReadFile("templates/proxy_hosts.html")
+	if err != nil {
+		t.Fatalf("read proxy_hosts.html: %v", err)
+	}
+	list := string(listHTML)
+	if n := strings.Count(list, `{{if eq .MonitorMode "off"}}`); n != 2 {
+		t.Errorf("proxy_hosts.html has %d MonitorMode-off guards on the Public dot, want 2 (card view + table view)", n)
+	}
+
+	detailHTML, err := FS.ReadFile("templates/proxy_host_health.html")
+	if err != nil {
+		t.Fatalf("read proxy_host_health.html: %v", err)
+	}
+	detail := string(detailHTML)
+	for _, marker := range []string{
+		`{{if eq .Host.MonitorMode "off"}}`,
+		"Monitoring off",
+		"CadenceLabel",
+	} {
+		if !strings.Contains(detail, marker) {
+			t.Errorf("proxy_host_health.html missing marker %q", marker)
+		}
+	}
+
+	formHTML, err := FS.ReadFile("templates/proxy_host_form.html")
+	if err != nil {
+		t.Fatalf("read proxy_host_form.html: %v", err)
+	}
+	// The monitoring section's copy must name all three probes it drives, not
+	// just the App and Port dots — that omission is what left the reporter
+	// unable to find where the Public check was managed.
+	if !strings.Contains(string(formHTML), "Public") {
+		t.Error("proxy_host_form.html's monitoring section no longer mentions the Public dot/check")
+	}
+}

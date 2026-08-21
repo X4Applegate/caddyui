@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.35.0] - 2026-08-21 - Monitoring "Off" now covers all three probes
+
+### Fixed
+
+- The v2.28.0 monitoring section promised that setting a host to **Off** would stop "all outbound probes for this host." It didn't. A third probe — the persisted "Public" health check behind `/proxy-hosts/{id}/health` and the left-most dot on the proxy hosts list, which runs every 5 minutes and keeps 24 hours of history — was never wired to it, and kept probing every enabled host regardless of `MonitorMode`.
+- The same gap meant **Custom** mode's path, method, and expected status only ever applied to the App and Port dots. A host with a non-default health path or an unusual expected status could still show the Public dot red, because that check always requested `/` and only accepted 2xx/3xx/401/403.
+- Both are fixed: the Public checker now reads the same `MonitorSettings` as the other two, is skipped entirely when a host is Off, and paces a custom interval against its own persisted history so pacing survives a restart.
+- The proxy hosts list and the health detail page no longer show a stale "up" or "down" status left over from before a host was switched to Off — both check the current `MonitorMode` first and show a neutral "monitoring off" state instead.
+- The monitoring section's copy on the proxy host form now names all three probes it drives and links to the Public check's history page, instead of only mentioning the App and Port dots.
+
+`NodeLocal` is deliberately not consulted by the Public checker — it describes where a host's *upstream* resolves, not whether its *public domain* should be checked from the internet-facing side, which is what this probe does.
+
 ## [2.34.0] - 2026-08-21 - One place for the update notice
 
 ### Removed

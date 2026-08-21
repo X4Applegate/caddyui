@@ -12,8 +12,16 @@
     <h1 class="text-2xl font-semibold tracking-tight text-ink-900 font-mono">{{index (.Host.DomainList) 0}}</h1>
     <p class="text-sm text-ink-500 mt-1">Public health check history — last 50 checks, up to 24 h of data.</p>
   </div>
-  {{/* Current status badge — use most recent check if available */}}
-  {{if .Checks}}
+  {{/* Current status badge — use most recent check if available.
+       v2.35.0 (issue #39 follow-up): MonitorMode "off" takes priority over
+       .Checks so an old status from before monitoring was disabled doesn't
+       keep reading as the current one. */}}
+  {{if eq .Host.MonitorMode "off"}}
+    <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium bg-ink-100 border border-ink-200 text-ink-600 shrink-0">
+      <span class="w-2 h-2 rounded-full bg-ink-400"></span>
+      Monitoring off
+    </span>
+  {{else if .Checks}}
     {{$latest := index .Checks 0}}
     {{if $latest.OK}}
       <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium bg-green-50 border border-green-200 text-green-800 shrink-0">
@@ -34,6 +42,19 @@
   {{end}}
 </div>
 
+{{/* v2.35.0 (issue #39 follow-up): this page used to keep checking a host
+     every 5 minutes and show its last real status even after "Off" was set
+     on the Monitoring section — the exact behaviour that setting promised to
+     stop. Say so plainly rather than leaving the badge above to speak for
+     itself, since the uptime/history below is now frozen history, not a
+     live signal. */}}
+{{if eq .Host.MonitorMode "off"}}
+<div class="mb-6 rounded-lg border border-ink-200 bg-ink-50 px-4 py-3 text-sm text-ink-700 flex items-start gap-2">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 mt-0.5 shrink-0 text-ink-400"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  <span>Monitoring is off for this host — no new checks are being recorded. The history below is frozen from before it was turned off. <a href="/proxy-hosts/{{.Host.ID}}/edit" class="text-brand-600 hover:underline">Change this in the host's settings.</a></span>
+</div>
+{{end}}
+
 {{/* Uptime summary card */}}
 <div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-4 mb-6 flex items-center gap-6 flex-wrap">
   <div>
@@ -49,7 +70,11 @@
   </div>
   <div class="text-ink-300 text-lg">|</div>
   <div>
-    <div class="text-sm text-ink-600">Checked every 5 min &middot; up to 288 results stored</div>
+    {{/* v2.35.0: "every 5 min" was unconditional even though Custom mode can
+         set a longer interval (floored to a multiple of this checker's own
+         5-minute tick — see the Monitoring section on the edit form).
+         CadenceLabel is computed server-side in getProxyHostHealth. */}}
+    <div class="text-sm text-ink-600">Checked {{.CadenceLabel}} &middot; up to 288 results stored</div>
     <div class="text-xs text-ink-400 mt-0.5">401 and 403 count as up (upstream is responding)</div>
   </div>
 </div>
