@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.35.1] - 2026-08-21 - An always-present button to the Public health page
+
+### Fixed
+
+- The "Public" health dot on the proxy hosts list was the only way to reach `/proxy-hosts/{id}/health`, and it stops being a clickable link precisely when there's the least data to look at — monitoring off, or no check recorded yet. That was a dead end right where it mattered most. A small, always-present history icon now sits next to the dot regardless of its state, visible to any viewer (it's read-only status, not an edit action).
+
 ## [2.35.0] - 2026-08-21 - Monitoring "Off" now covers all three probes
 
 ### Fixed
