@@ -682,6 +682,8 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	// would promise a cadence the UI can't deliver.
 	ph.MonitorIntervalSec = clampAtoi(r.FormValue("monitor_interval_sec"), 0, 60, 86400)
 	ph.MonitorTimeoutSec = clampAtoi(r.FormValue("monitor_timeout_sec"), 0, 1, 120)
+	// v2.33.0: node-local — never sync this host to another Caddy.
+	ph.NodeLocal = r.FormValue("node_local") == "on"
 	// v2.9.266: proxy_redirect_rules — JSON array of path-based redirects
 	// fired before the reverse_proxy. Same shape as redirection_hosts.
 	ph.ProxyRedirectRules = func() string {

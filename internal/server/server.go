@@ -3997,6 +3997,16 @@ func (s *Server) crossDeployProxyHost(actor string, sourceServerID int64, p *mod
 	s.fleetDeployMu.Lock()
 	defer s.fleetDeployMu.Unlock()
 
+	// v2.33.0: a node-local host is pinned to the node it was created on — its
+	// upstream only resolves there. Refuse to cross-deploy rather than create a
+	// route on the target that points at nothing. Logged so the operator can
+	// see why nothing happened; the form also hides the picker for these.
+	if p.NodeLocal {
+		_ = models.LogActivity(s.DB, sourceServerID, actor, "proxy_cross_deploy", fmt.Sprintf("proxy:%d", p.ID),
+			"skipped: host is marked node-local", false)
+		return
+	}
+
 	sourceCerts, _ := models.ListCertificates(s.DB, sourceServerID)
 	for _, sid := range serverIDs {
 		if _, _, err := s.validateFleetPair(sourceServerID, sid); err != nil {
@@ -4196,6 +4206,13 @@ func (s *Server) crossDeployRedirectionHost(actor string, sourceServerID int64, 
 func (s *Server) crossDeployRawRoute(actor string, sourceServerID int64, rr *models.RawRoute, serverIDs []int64) {
 	s.fleetDeployMu.Lock()
 	defer s.fleetDeployMu.Unlock()
+
+	// v2.33.0 — see crossDeployProxyHost.
+	if rr.NodeLocal {
+		_ = models.LogActivity(s.DB, sourceServerID, actor, "raw_cross_deploy", fmt.Sprintf("raw:%d", rr.ID),
+			"skipped: route is marked node-local", false)
+		return
+	}
 
 	for _, sid := range serverIDs {
 		if _, _, err := s.validateFleetPair(sourceServerID, sid); err != nil {
@@ -7341,6 +7358,7 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 		CertificateID:       certID,
 		ForceSSL:            r.FormValue("ssl_forced") == "on",
 		BlockCommonExploits: r.FormValue("block_common_exploits") == "on",
+		NodeLocal:           r.FormValue("node_local") == "on", // v2.33.0
 		DNSProvider:         provider,
 		DNSZoneID:           zoneID,
 		DNSZoneName:         zoneName,
