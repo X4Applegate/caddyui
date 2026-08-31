@@ -2440,10 +2440,27 @@ document.addEventListener('DOMContentLoaded', function() {
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">Options &amp; Forwarded Headers</summary>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
       {{/* v2.11.4: Enabled / Auto SSL / Force SSL hoisted to the always-visible top of the form. */}}
-      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2">
+      <label id="ssl-verify-upstream-row" class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer sm:col-span-2">
         <input type="checkbox" name="ssl_verify_upstream" {{if .Host.SSLVerifyUpstream}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-        <span>Verify Upstream TLS Certificate<span class="block text-xs text-ink-500 mt-0.5 font-normal">When enabled, validates the upstream TLS certificate against the system trust store (only applies when Forward Scheme is HTTPS)</span></span>
+        <span>Verify Upstream TLS Certificate<span class="block text-xs mt-0.5 font-normal text-ink-500">When enabled, validates the upstream TLS certificate against the system trust store.</span><span id="ssl-verify-upstream-hint" class="block text-xs mt-0.5 font-normal"></span></span>
       </label>
+      <script>
+      (function() {
+        var schemeEl = document.querySelector('[name="forward_scheme"]');
+        var hint = document.getElementById('ssl-verify-upstream-hint');
+        if (!schemeEl || !hint) return;
+        function update() {
+          if (schemeEl.value === 'https') {
+            hint.textContent = '';
+          } else {
+            hint.textContent = 'Inactive: Forward Scheme is currently "' + schemeEl.value + '" — this only applies when Forward Scheme is https.';
+            hint.className = 'block text-xs mt-0.5 font-normal text-amber-600';
+          }
+        }
+        schemeEl.addEventListener('change', update);
+        update();
+      })();
+      </script>
       <!-- v2.9.59: upstream_tls_ca_pem_file -->
 <div class="mb-4">
   <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upstream TLS CA Bundle File</label>
