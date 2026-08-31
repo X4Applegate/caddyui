@@ -157,7 +157,7 @@
       <tbody class="font-mono">
         <tr class="border-t border-ink-200"><td class="px-3 py-1.5">reverse_proxy https://...</td><td class="px-3 py-1.5">Forward Scheme = https</td><td class="px-3 py-1.5 font-sans text-ink-500">use when upstream serves TLS itself</td></tr>
         <tr class="border-t border-ink-200"><td class="px-3 py-1.5">tls_server_name name</td><td class="px-3 py-1.5">Upstream SNI</td><td class="px-3 py-1.5 font-sans text-ink-500">override SNI for self-signed / shared-cert backends</td></tr>
-        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">tls_insecure_skip_verify</td><td class="px-3 py-1.5">SSL Verify Upstream = off</td><td class="px-3 py-1.5 font-sans text-ink-500">skip cert verification for internal CA / self-signed</td></tr>
+        <tr class="border-t border-ink-200"><td class="px-3 py-1.5">tls_insecure_skip_verify</td><td class="px-3 py-1.5">Verify Upstream TLS Certificate = off</td><td class="px-3 py-1.5 font-sans text-ink-500">in Options &amp; Forwarded Headers; only applies when Forward Scheme = https</td></tr>
         <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header_up Host {host}</td><td class="px-3 py-1.5">(default — no field)</td><td class="px-3 py-1.5 font-sans text-ink-500">Caddy passes the original Host by default</td></tr>
         <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header_up X-Real-IP {remote_host}</td><td class="px-3 py-1.5">Add X-Real-IP Header (checkbox)</td><td class="px-3 py-1.5 font-sans text-ink-500"></td></tr>
         <tr class="border-t border-ink-200"><td class="px-3 py-1.5">header_up X-Forwarded-Host {host}</td><td class="px-3 py-1.5">Add X-Forwarded-Host (checkbox)</td><td class="px-3 py-1.5 font-sans text-ink-500"></td></tr>

@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.35.2] - 2026-08-31 - SSL Verify Upstream docs fixed, HTTPS-only condition surfaced
+
+### Fixed
+
+- The Caddyfile → form-field mapping table in the docs referred to the "Verify Upstream TLS Certificate" checkbox by its internal field name, "SSL Verify Upstream", instead of its actual UI label — making the field hard to find (#54).
+- The checkbox only affects the generated config when Forward Scheme is `https`; toggling it under the default `http` scheme was silently a no-op, and that precondition lived only in a small form hint, not the docs table. The docs table now states it, and the form itself shows an inline warning when the toggle is currently inert for the selected scheme.
+
 ## [2.35.1] - 2026-08-21 - An always-present button to the Public health page
 
 ### Fixed
