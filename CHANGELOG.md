@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.35.3] - 2026-09-02 - Go 1.27 build toolchain
+
+### Changed
+
+- **Go toolchain**: the Docker build stage now compiles with Go 1.27 (`golang:1.27-alpine`, up from 1.25). No application code changed — the shipped binary is the same source built on the newer toolchain. (#56)
+- **CI**: GitHub Actions workflows moved to `actions/checkout@v7`. No effect on the shipped image. (#57)
+
 ## [2.35.2] - 2026-08-31 - SSL Verify Upstream docs fixed, HTTPS-only condition surfaced
 
 ### Fixed
