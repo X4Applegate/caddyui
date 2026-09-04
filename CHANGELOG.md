@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.35.5] - 2026-09-04 - Server logs show the date, and Clear now clears
+
+### Fixed
+
+- The Server Logs page stamped every entry with the time only. CaddyUI's runtime-log buffer keeps the last 1000 entries for as long as the process runs, so on a quiet node it spans days and the times read out of order. Entries now show `YYYY-MM-DD HH:MM:SS` in CaddyUI's configured timezone — the same layout the Activity log already uses. (#60)
+- **Clear screen** only emptied the table; every entry came straight back on the next page load because the buffer behind it was untouched. The button is now **Clear logs**: it discards the buffered entries for the selected server as well (nothing on disk is involved — runtime logs are never persisted) and records the purge in the Activity log. New endpoint `POST /api/server-logs/clear`. (#60)
+
 ## [2.35.4] - 2026-09-04 - One rendering per Advanced route
 
 ### Fixed

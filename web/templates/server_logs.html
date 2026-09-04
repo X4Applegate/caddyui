@@ -11,7 +11,7 @@
     <span id="capture-status" class="ui-status ui-status--neutral">Checking…</span>
     <span id="stream-status" class="ui-status ui-status--neutral">Stream connecting…</span>
     <button id="refresh-logs" type="button" class="ui-button ui-button--quiet">Refresh / reconnect</button>
-    <button id="clear-logs" type="button" class="ui-button ui-button--quiet">Clear screen</button>
+    <button id="clear-logs" type="button" class="ui-button ui-button--quiet" title="Empties the table and discards CaddyUI's buffered runtime log entries for this server, so they don't come back on the next load. Nothing on disk is affected.">Clear logs</button>
   </div>
 </div>
 
@@ -184,6 +184,30 @@
     row.style.display = show ? '' : 'none';
   }
 
+  // v2.35.5 (issue #60): show the full date, not just the time. The buffer
+  // keeps up to 1000 entries for as long as CaddyUI runs, so on a quiet node
+  // it spans days and time-only stamps read out of order. Same
+  // "YYYY-MM-DD HH:MM:SS" layout as the Activity log, in the timezone CaddyUI
+  // renders everything else in; falls back to the browser's zone when that
+  // name isn't an IANA identifier (e.g. "Local").
+  var displayZone = {{tzName}};
+  function makeWhenFormat(zone) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone, hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+  }
+  var whenFormat;
+  try { whenFormat = makeWhenFormat(displayZone); } catch (_) { whenFormat = makeWhenFormat(undefined); }
+  function formatWhen(ts) {
+    var date = new Date(ts);
+    if (isNaN(date.getTime())) return ts || '';
+    var parts = {};
+    whenFormat.formatToParts(date).forEach(function(part) { parts[part.type] = part.value; });
+    return parts.year + '-' + parts.month + '-' + parts.day + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second;
+  }
+
   function addEntry(entry) {
     if (body.querySelector('[data-entry-id="' + entry.id + '"]')) return;
     var row = document.createElement('tr');
@@ -192,7 +216,7 @@
     var fieldText = entry.fields && Object.keys(entry.fields).length ? JSON.stringify(entry.fields) : '';
     row.dataset.search = ((entry.logger || '') + ' ' + (entry.message || '') + ' ' + fieldText).toLowerCase();
     row.className = 'hover:bg-ink-50/60 transition';
-    addCell(row, new Date(entry.ts).toLocaleTimeString(), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-500', Date.parse(entry.ts));
+    addCell(row, formatWhen(entry.ts), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-500', Date.parse(entry.ts));
     addCell(row, entry.server_name || ('Server ' + entry.server_id), 'px-4 py-2.5 align-top whitespace-nowrap text-ink-700');
     var levelCell = addCell(row, '', 'px-4 py-2.5 align-top');
     var levelBadge = document.createElement('span');
@@ -246,7 +270,28 @@
   });
   filter.addEventListener('input', function() { body.querySelectorAll('tr').forEach(applyFilter); });
   visibleLevel.addEventListener('change', function() { body.querySelectorAll('tr').forEach(applyFilter); });
-  document.getElementById('clear-logs').addEventListener('click', function() { body.replaceChildren(); updateCount(); });
+  // v2.35.5 (issue #60): "Clear" used to empty only the table, and every
+  // entry came straight back on the next page load because CaddyUI's buffer
+  // was untouched. Now it also discards the buffered entries for the selected
+  // server. The cursor is deliberately kept: IDs keep counting up server-side,
+  // so a later reconnect neither replays purged rows nor misses new ones.
+  document.getElementById('clear-logs').addEventListener('click', function() {
+    var button = this;
+    body.replaceChildren();
+    updateCount();
+    if (!selectedID()) return;
+    var form = new URLSearchParams();
+    form.set('server_id', String(selectedID()));
+    button.disabled = true;
+    fetch('/api/server-logs/clear', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'}, body: form.toString()})
+      .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.error || 'Clear failed'); return data; }); })
+      .then(function(data) {
+        var n = data.cleared || 0;
+        setStreamStatus('Cleared ' + n + (n === 1 ? ' buffered entry' : ' buffered entries'), 'active');
+      })
+      .catch(function(error) { setStreamStatus(error.message, 'error'); })
+      .finally(function() { button.disabled = false; });
+  });
   document.getElementById('refresh-logs').addEventListener('click', function() { refreshStatus(); connect(); });
   document.querySelectorAll('[data-log-sort]').forEach(function(button) {
     button.addEventListener('click', function() {

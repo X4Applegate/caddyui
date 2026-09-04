@@ -800,6 +800,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/api/server-logs/stream", s.serverLogStream)
 			r.Post("/api/server-logs/enable", s.enableServerLogs)
 			r.Post("/api/server-logs/disable", s.disableServerLogs)
+			r.Post("/api/server-logs/clear", s.clearServerLogs) // v2.35.5 (issue #60)
 			r.Post("/dashboard/recommendations/unused-certificates/dismiss", s.dismissUnusedCertificateRecommendation)
 
 			// v2.7.2: create/edit moved up to the requireWrite group so
