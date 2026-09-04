@@ -2166,6 +2166,11 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "proxy_hosts", "additional_upstream_rules") {
 		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN additional_upstream_rules TEXT NOT NULL DEFAULT ''`)
 	}
+	// v2.38.0: expectations_json — JSON array of post-apply checks run after
+	// every sync; failures roll the live config back (see server/expectations.go).
+	if !columnExists2(db, "proxy_hosts", "expectations_json") {
+		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN expectations_json TEXT NOT NULL DEFAULT ''`)
+	}
 	// v2.12.52: disable_upstream_compression — emit `transport http { compression off }`
 	// in the reverse_proxy block. Useful when the upstream double-compresses
 	// already-compressed responses (e.g., a node app behind Caddy where Caddy

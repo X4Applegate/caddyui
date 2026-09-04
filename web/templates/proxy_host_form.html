@@ -1987,6 +1987,115 @@ document.addEventListener('DOMContentLoaded', function() {
   </details>
 
   {{/* v2.9.2: URL Rewrites */}}
+  {{/* v2.38.0: post-apply expectations — checks CaddyUI runs against this host
+       right after every config sync. On failure (with auto-rollback on in
+       Settings → Post-apply checks) the previous live config is restored and
+       further automatic syncs are held until re-applied from the banner. */}}
+  <details id="ph-expectations" class="pt-4 border-t border-ink-100"{{if .Host.Expectations}} open{{end}}>
+    <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
+      Expectations <span class="font-normal normal-case">(optional — checks that run after every config change, with automatic rollback)</span>
+    </summary>
+    <div class="mt-3 space-y-3">
+      <p class="text-xs text-ink-500">After each sync CaddyUI sends each request below to this host's first domain and checks the answer. If any check fails, the previous live config is loaded straight back into Caddy and automatic syncs for that server are held until you re-apply from the banner (Settings → Post-apply checks can switch to report-only). Examples: <code class="font-mono bg-ink-100 px-1 rounded">GET https /healthz → 200</code>, <code class="font-mono bg-ink-100 px-1 rounded">GET http / → 308 to https://</code>, <code class="font-mono bg-ink-100 px-1 rounded">POST https /api → 401</code>. CaddyUI must be able to reach the domain the way your users do; a check that cannot connect counts as failed.</p>
+      <div id="exp-rules-table" class="space-y-2"></div>
+      <button type="button" id="exp-add-rule" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add expectation
+      </button>
+      <input type="hidden" name="expectations_json" id="exp-rules-json" value="{{.Host.Expectations}}" />
+    </div>
+  </details>
+  <script>
+  (function(){
+    var data = [];
+    try { var raw = document.getElementById('exp-rules-json').value; if (raw) data = JSON.parse(raw); } catch(e){}
+    if (!Array.isArray(data)) data = [];
+    var table  = document.getElementById('exp-rules-table');
+    var hidden = document.getElementById('exp-rules-json');
+    var addBtn = document.getElementById('exp-add-rule');
+    if (!table || !hidden || !addBtn) return;
+    var METHODS = ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'];
+    // Rows are built with the DOM API (never innerHTML) so stored values can't
+    // escape into markup — same rule as the other rule tables on this form.
+    function inputEl(type, field, value, placeholder, span, title) {
+      var el = document.createElement('input');
+      el.type = type; el.setAttribute('data-field', field); el.value = value; if (placeholder) el.placeholder = placeholder; if (title) el.title = title;
+      el.className = 'col-span-' + span + ' rounded-lg border border-ink-200 px-2 py-1.5 text-xs font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
+      return el;
+    }
+    function selectEl(field, value, options, span) {
+      var sel = document.createElement('select');
+      sel.setAttribute('data-field', field);
+      sel.className = 'col-span-' + span + ' rounded-lg border border-ink-200 px-2 py-1.5 text-xs bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none';
+      options.forEach(function(o){ var opt = document.createElement('option'); opt.value = o; opt.textContent = o; if (value === o) opt.selected = true; sel.appendChild(opt); });
+      return sel;
+    }
+    function rowNode(e, idx) {
+      e = e || {};
+      var wrap = document.createElement('div');
+      wrap.className = 'space-y-1.5 border border-ink-200 rounded-lg p-2.5';
+      wrap.setAttribute('data-idx', idx);
+      var grid = document.createElement('div');
+      grid.className = 'grid grid-cols-12 gap-2 items-center';
+      wrap.appendChild(grid);
+      grid.appendChild(selectEl('method', (e.method || 'GET').toUpperCase(), METHODS, 2));
+      grid.appendChild(selectEl('scheme', (e.scheme || 'https').toLowerCase() === 'http' ? 'http' : 'https', ['https','http'], 2));
+      grid.appendChild(inputEl('text', 'path', e.path || '/', '/healthz', 4, 'Request path'));
+      var st = inputEl('number', 'expect_status', e.expect_status || '', 'status', 2, 'Expected HTTP status — blank accepts any 2xx/3xx'); st.min = '100'; st.max = '599'; grid.appendChild(st);
+      var lat = inputEl('number', 'max_latency_ms', e.max_latency_ms || '', 'max ms', 1, 'Maximum latency in milliseconds — blank means no limit'); lat.min = '0'; grid.appendChild(lat);
+      var rm = document.createElement('button');
+      rm.type = 'button'; rm.setAttribute('data-action', 'remove'); rm.title = 'Remove expectation'; rm.textContent = '×';
+      rm.className = 'col-span-1 text-xs text-red-600 hover:text-red-800 px-2 py-1.5 inline-flex items-center justify-center';
+      grid.appendChild(rm);
+      var row2 = document.createElement('div');
+      row2.className = 'grid grid-cols-12 gap-2 items-center';
+      wrap.appendChild(row2);
+      row2.appendChild(inputEl('text', 'label', e.label || '', 'label (optional)', 4, 'Shown in results and the Activity log'));
+      row2.appendChild(inputEl('text', 'expect_location', e.expect_location || '', 'Location must start with… (for redirects)', 5, 'For 3xx checks: the Location header must start with this'));
+      var lbl = document.createElement('label');
+      lbl.className = 'col-span-3 text-xs text-ink-600 inline-flex items-center gap-1.5';
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.setAttribute('data-field', 'verify_tls'); cb.checked = !!e.verify_tls;
+      cb.className = 'rounded border-ink-300 text-brand-600 focus:ring-brand-500';
+      lbl.appendChild(cb); lbl.appendChild(document.createTextNode(' Valid TLS chain'));
+      row2.appendChild(lbl);
+      return wrap;
+    }
+    function render() {
+      if (!data.length) {
+        var empty = document.createElement('p');
+        empty.className = 'text-xs text-ink-400 italic';
+        empty.textContent = 'No expectations — config changes for this host are applied without post-apply checks.';
+        table.replaceChildren(empty);
+        return;
+      }
+      table.replaceChildren.apply(table, data.map(rowNode));
+    }
+    function readRows() {
+      data = Array.prototype.map.call(table.querySelectorAll('[data-idx]'), function(row) {
+        return {
+          label:           row.querySelector('[data-field="label"]').value.trim(),
+          method:          row.querySelector('[data-field="method"]').value,
+          scheme:          row.querySelector('[data-field="scheme"]').value,
+          path:            row.querySelector('[data-field="path"]').value.trim() || '/',
+          expect_status:   parseInt(row.querySelector('[data-field="expect_status"]').value, 10) || 0,
+          expect_location: row.querySelector('[data-field="expect_location"]').value.trim(),
+          max_latency_ms:  parseInt(row.querySelector('[data-field="max_latency_ms"]').value, 10) || 0,
+          verify_tls:      row.querySelector('[data-field="verify_tls"]').checked
+        };
+      });
+    }
+    function syncHidden() { hidden.value = data.length ? JSON.stringify(data) : ''; }
+    addBtn.addEventListener('click', function(){ readRows(); data.push({method:'GET', scheme:'https', path:'/', expect_status:0}); render(); syncHidden(); });
+    table.addEventListener('click', function(e){
+      if (e.target.matches('[data-action="remove"]')) { var row = e.target.closest('[data-idx]'); readRows(); data.splice(parseInt(row.dataset.idx,10), 1); render(); syncHidden(); }
+    });
+    table.addEventListener('input', function(){ readRows(); syncHidden(); });
+    table.addEventListener('change', function(){ readRows(); syncHidden(); });
+    render();
+    syncHidden();
+  })();
+  </script>
+
 <details id="ph-headers" class="pt-4 border-t border-ink-100"{{if or .Host.CustomReqHeaderMap .Host.CustomRespHeaderMap}} open{{end}}>
   <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
     Custom Headers <span class="font-normal normal-case">(request &amp; response)</span>

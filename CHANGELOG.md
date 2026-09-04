@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.38.0] - 2026-09-04 - Expectations: post-apply checks with automatic rollback
+
+### Added
+
+- **Expectations** on proxy hosts: a table of checks — method, scheme, path, expected status (or any 2xx/3xx), optional Location prefix for redirects, maximum latency, valid-TLS requirement — that CaddyUI runs against the host's domain right after **every** config sync. If any check fails and **Settings → Post-apply checks → Roll back automatically** is on (the default), the previous live config is loaded straight back into Caddy, automatic syncs for that server are paused, and a banner on every page offers **Re-apply now** or **Keep the rolled-back config**. Off means report-only. Results show on each host's health page (with a **Run now** button) and every run, failure, rollback and re-apply is recorded in the Activity log. Suggested by Matt Holt on the Caddy forum: define the behaviour your sites must keep, and let the tool refuse a change that breaks it.
+
+---
+
 ## [2.37.1] - 2026-09-04 - Live Traffic feed shows the date, and Clear sticks
 
 ### Fixed

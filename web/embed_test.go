@@ -418,6 +418,29 @@ func TestPerNodeIngestTargetIsSurfaced(t *testing.T) {
 	}
 }
 
+// TestExpectationsAreSurfaced guards v2.38.0: the host form must carry the
+// expectations table, the health page must show results and offer a manual
+// run, the layout must render the rollback hold banner on every page, and
+// Settings must offer the auto-rollback toggle.
+func TestExpectationsAreSurfaced(t *testing.T) {
+	for file, markers := range map[string][]string{
+		"templates/proxy_host_form.html":   {`id="ph-expectations"`, `name="expectations_json"`},
+		"templates/proxy_host_health.html": {"/expectations/run", ".ExpectationResults", ".Expectations"},
+		"templates/layout.html":            {".SyncHolds", "/sync-reapply", "/sync-hold/clear"},
+		"templates/settings.html":          {`name="expectations_auto_rollback"`},
+	} {
+		body, err := FS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		for _, m := range markers {
+			if !strings.Contains(string(body), m) {
+				t.Errorf("%s missing %q", file, m)
+			}
+		}
+	}
+}
+
 // TestCSRFClientPlumbing guards the two client-side halves of CSRF protection.
 // The hidden form input is stamped into rendered HTML server-side (see
 // csrfInjectForms), but scripted callers depend on these two pieces: the meta
