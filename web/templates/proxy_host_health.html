@@ -55,6 +55,39 @@
 </div>
 {{end}}
 
+{{/* v2.38.0: post-apply expectations for this host — results of the last run
+     (after a sync or "Run now"). Kept in memory per process; the Activity log
+     has the history. */}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-4 mb-6">
+  <div class="flex items-start justify-between gap-3 mb-2">
+    <div>
+      <div class="text-sm font-semibold text-ink-900">Expectations</div>
+      <div class="text-xs text-ink-500">Checks that run after every config sync{{if .ExpectationResults}} — last run {{fmtRel (index .ExpectationResults 0).CheckedAt}}{{end}}.</div>
+    </div>
+    {{if .Expectations}}
+    <form method="post" action="/proxy-hosts/{{.Host.ID}}/expectations/run">
+      <button type="submit" class="text-xs px-3 py-1.5 border border-ink-200 rounded-lg hover:bg-ink-50 transition">Run now</button>
+    </form>
+    {{end}}
+  </div>
+  {{if .ExpectationResults}}
+  <ul class="divide-y divide-ink-100">
+    {{range .ExpectationResults}}
+    <li class="py-2 flex items-start gap-2">
+      {{if .OK}}<span class="ui-status ui-status--success shrink-0">pass</span>{{else}}<span class="ui-status ui-status--danger shrink-0">fail</span>{{end}}
+      <span class="font-mono text-xs text-ink-700 break-all">{{.Summary}}</span>
+    </li>
+    {{end}}
+  </ul>
+  {{else if .Expectations}}
+  <ul class="divide-y divide-ink-100">
+    {{range .Expectations}}<li class="py-2 font-mono text-xs text-ink-500">{{.Describe}} — not run yet</li>{{end}}
+  </ul>
+  {{else}}
+  <p class="text-xs text-ink-400">None defined — add some in the host's <a href="/proxy-hosts/{{.Host.ID}}/edit#ph-expectations" class="text-brand-600 hover:underline">Expectations</a> section.</p>
+  {{end}}
+</div>
+
 {{/* Uptime summary card */}}
 <div class="bg-white border border-ink-200 rounded-xl shadow-card px-5 py-4 mb-6 flex items-center gap-6 flex-wrap">
   <div>

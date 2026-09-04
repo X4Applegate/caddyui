@@ -713,5 +713,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		}
 		return v
 	}()
+	// v2.38.0: expectations_json — post-apply checks; stored canonicalised.
+	ph.Expectations = models.NormalizeHostExpectationsJSON(r.FormValue("expectations_json"))
 	return ph, nil
 }

@@ -89,6 +89,10 @@ type Server struct {
 	// but the app is wedged (e.g. DB unreachable, slow startup).
 	appHealthMu sync.RWMutex
 	appHealth   map[int64]appHealthEntry
+	// v2.38.0: post-apply expectation results, per process (see expectations.go).
+	expectationMu      sync.RWMutex
+	expectationResults map[int64][]expectationResult
+	expectationRuns    map[int64]expectationRun
 
 	// Serializes source-to-target fleet copies inside this process. The
 	// deployment mapping table supplies durable idempotency; this mutex closes
@@ -643,6 +647,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/proxy-hosts/{id}/delete", s.deleteProxyHost)
 			r.Post("/proxy-hosts/{id}/clone", s.cloneProxyHost)
 			r.Post("/proxy-hosts/{id}/toggle", s.toggleProxyHost)
+			r.Post("/proxy-hosts/{id}/expectations/run", s.runProxyHostExpectationsHandler) // v2.38.0
 			r.Post("/proxy-hosts/{id}/maintenance", s.toggleMaintenanceMode)
 			r.Post("/proxy-hosts/bulk-toggle", s.bulkToggleProxyHosts)
 			r.Post("/proxy-hosts/bulk-maintenance", s.bulkMaintenanceProxyHosts)
@@ -795,6 +800,8 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/servers/{id}/config", s.viewServerConfig)
 			r.Post("/servers/{id}", s.updateServer)
 			r.Post("/servers/{id}/sync-from-current", s.syncServerFromCurrent)
+			r.Post("/servers/{id}/sync-reapply", s.reapplySyncHandler)      // v2.38.0
+			r.Post("/servers/{id}/sync-hold/clear", s.clearSyncHoldHandler) // v2.38.0
 			r.Post("/servers/{id}/delete", s.deleteServer)
 			r.Get("/server-logs", s.getServerLogs)
 			r.Get("/api/server-logs/status", s.serverLogStatus)
@@ -1117,6 +1124,12 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	if _, ok := data["Servers"]; !ok {
 		if servers, err := models.ListCaddyServers(s.DB); err == nil {
 			data["Servers"] = servers
+		}
+	}
+	// v2.38.0: servers held after a failed post-apply check — layout banner.
+	if _, ok := data["SyncHolds"]; !ok {
+		if servers, ok := data["Servers"].([]models.CaddyServer); ok && len(servers) > 0 {
+			data["SyncHolds"] = s.activeSyncHolds(servers)
 		}
 	}
 	if _, ok := data["CurrentServer"]; !ok {
@@ -2851,13 +2864,15 @@ func (s *Server) getProxyHostHealth(w http.ResponseWriter, r *http.Request) {
 		uptime = float64(okCount) / float64(total) * 100
 	}
 	s.render(w, r, "proxy_host_health.html", map[string]any{
-		"User":         s.currentUser(r),
-		"Host":         host,
-		"Checks":       checks,
-		"Uptime":       uptime,
-		"CadenceLabel": publicHealthCadenceLabel(*host),
-		"Total":        total,
-		"Section":      "proxy",
+		"User":               s.currentUser(r),
+		"Host":               host,
+		"Checks":             checks,
+		"Uptime":             uptime,
+		"CadenceLabel":       publicHealthCadenceLabel(*host),
+		"Expectations":       host.ExpectationList(),      // v2.38.0
+		"ExpectationResults": s.expectationResultsFor(id), // v2.38.0
+		"Total":              total,
+		"Section":            "proxy",
 	})
 }
 
@@ -8090,6 +8105,13 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		log.Printf("caddy sync skipped: server %d (%s) is external", serverID, srv.Name)
 		return nil
 	}
+	// v2.38.0: while a post-apply check hold is set, automatic syncs are
+	// skipped so the failing state isn't pushed again. "Re-apply now" on the
+	// banner clears the hold first, then syncs.
+	if h := s.syncHoldFor(serverID); h != nil {
+		log.Printf("caddy sync skipped: server %d (%s) is held after failed post-apply checks — re-apply from the banner", serverID, srv.Name)
+		return fmt.Errorf("sync held for %s: post-apply checks failed at %s; re-apply or accept the rolled-back config from the banner", srv.Name, h.At.Format(time.RFC3339))
+	}
 
 	// Build a per-server caddy client and swap it in for the duration of this call.
 	// syncCaddy is called from HTTP handlers (single goroutine per request) so this
@@ -8320,6 +8342,11 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 		len(proxies), len(redirs), len(raws), len(certs))
 	_ = models.LogActivity(s.DB, serverID, "system", "sync_applied", "", detail, true)
 	log.Printf("caddy synced server %d (%s): %s", serverID, srv.Name, detail)
+	// v2.38.0: post-apply expectations. `current` is the live config fetched
+	// before the apply; on failure it is loaded straight back.
+	if err := s.verifyAppliedConfig(serverID, srv.Name, s.Caddy, current); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -14225,6 +14252,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"ClearedName": clearedName,
 		// v2.7.0: analytics card
 		"AnalyticsEnabled":           analyticsCfg.Enabled,
+		"ExpectationsAutoRollback":   expectationsAutoRollbackEnabled(s), // v2.38.0
 		"AnalyticsTarget":            analyticsCfg.TargetRaw,
 		"AnalyticsTargetPlaceholder": defaultAnalyticsIngestTarget,
 		"AnalyticsExcludeRaw":        analyticsCfg.ExcludeRaw,
@@ -14409,6 +14437,14 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	analyticsTarget := strings.TrimSpace(r.FormValue("analytics_ingest_target"))
+	// v2.38.0: post-apply checks — same hidden+checkbox pattern as above.
+	expectationsAutoRollback := "0"
+	for _, v := range r.PostForm["expectations_auto_rollback"] {
+		if v == "1" {
+			expectationsAutoRollback = "1"
+			break
+		}
+	}
 	analyticsExclude := r.FormValue("analytics_exclude_ips") // preserve whitespace for textarea re-render
 	currentAnalyticsCfg := loadAnalyticsConfig(s.DB)
 	analyticsSoftStart := "0"
@@ -14536,11 +14572,12 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingServerIP:          newServerIP,
 		settingCFProxied:         cfProxied,
 		// v2.7.0: visitor analytics
-		settingAnalyticsEnabled:        analyticsEnabled,
-		settingAnalyticsIngestTarget:   analyticsTarget,
-		settingAnalyticsExcludeIPs:     analyticsExclude,
-		settingAnalyticsSoftStart:      analyticsSoftStart,
-		settingAnalyticsDialTimeoutSec: strconv.Itoa(analyticsDialTimeoutSec),
+		settingAnalyticsEnabled:         analyticsEnabled,
+		settingExpectationsAutoRollback: expectationsAutoRollback, // v2.38.0
+		settingAnalyticsIngestTarget:    analyticsTarget,
+		settingAnalyticsExcludeIPs:      analyticsExclude,
+		settingAnalyticsSoftStart:       analyticsSoftStart,
+		settingAnalyticsDialTimeoutSec:  strconv.Itoa(analyticsDialTimeoutSec),
 		// v2.10.0: trusted proxies + custom site title
 		settingTrustedProxies: strings.TrimSpace(r.FormValue("trusted_proxies")),
 		settingSiteTitle:      strings.TrimSpace(r.FormValue("site_title")),
