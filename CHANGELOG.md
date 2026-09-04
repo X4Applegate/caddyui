@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.35.4] - 2026-09-04 - One rendering per Advanced route
+
+### Fixed
+
+- `/raw-routes` drew every Advanced route twice at tablet-to-laptop widths (768–1024 CSS px — which is also where a zoomed desktop browser lands): the desktop table became visible at the `md` breakpoint, but the mobile card list only hid from `lg`. Both now switch at `lg`, matching `/certificates` and `/snapshots`. The second copy was the same database row rendered again, not a duplicate route — which is why deleting "one" of them removed "both".
+- A template guard test now asserts the table and card-list breakpoints on `/raw-routes` stay paired, so the mismatch can't silently come back.
+
 ## [2.35.3] - 2026-09-02 - Go 1.27 build toolchain
 
 ### Changed

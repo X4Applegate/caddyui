@@ -73,7 +73,11 @@
 </div>
 
 <div class="bg-ink-50 border border-ink-200 rounded-xl shadow-card overflow-hidden overflow-x-auto">
-  <table class="hidden md:table w-full text-sm">
+  {{/* v2.35.4: switch at lg, matching the card list below (lg:hidden) and
+       the /certificates + /snapshots pages. This used to be md:table, so at
+       768–1024 CSS px (tablet, or a zoomed desktop browser) the table AND
+       the card list both rendered, showing every route twice. */}}
+  <table class="hidden lg:table w-full text-sm">
     <thead class="bg-ink-100 text-left border-b border-ink-200">
       <tr class="text-xs uppercase tracking-wider text-ink-500">
         {{/* v2.11.9: select-all for bulk operations. */}}
