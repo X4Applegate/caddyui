@@ -172,6 +172,10 @@
           <p class="text-xs text-ink-500 mt-1 max-w-sm mx-auto">
           {{if .IsAdmin}}{{if .AnalyticsEnabled}}Waiting for Caddy to ship its first access log entry. Make sure your Caddy container can resolve the ingest target.{{else}}Enable access log forwarding in <a href="/settings#analytics" class="underline">Settings → Analytics</a>.{{end}}{{else}}No traffic has been recorded for the hosts you own yet.{{end}}
           </p>
+          {{/* v2.37.0: with one node in scope, say where it ships its logs and why that may fail */}}
+          {{with .ScopeIngest}}{{if $.IsAdmin}}
+          <p class="text-xs text-ink-500 mt-2 max-w-md mx-auto">{{.ServerName}} sends its logs to <code class="font-mono text-ink-700">{{.Target}}</code>{{if .Warning}} — <span class="text-amber-700">{{.Warning}}</span> <a href="/servers/{{.ServerID}}/edit" class="underline">Set its ingest target.</a>{{else}}.{{end}}</p>
+          {{end}}{{end}}
         </td>
       </tr>
       {{end}}

@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.37.0] - 2026-09-04 - Each Caddy node ships its logs to a target it can reach
+
+### Fixed
+
+- Every node in the fleet was configured to send its access logs, certificate events and runtime logs to the one fleet-wide ingest target, which defaults to `caddyui:9019` — a Docker service name that only a Caddy on the same Docker network can resolve. Nodes on other hosts therefore shipped nothing, silently: an empty Analytics page for that server, no certificate issuance status, and no Server Logs capture. Each node now has its own **Log ingest target** on its Caddy Fleet entry (blank = the fleet-wide setting), applied to all three log streams.
+
+### Added
+
+- The Caddy Fleet list shows where each managed node ships its logs, and warns when a node reached at another host was handed a bare Docker service name it cannot resolve; the Analytics page shows the same for the node in scope when it has no traffic, instead of an unexplained empty page. Settings → Analytics now says when the fleet-wide default is not enough.
+
+---
+
 ## [2.36.2] - 2026-09-04 - Certificates page lists Advanced routes
 
 ### Fixed
