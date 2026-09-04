@@ -675,7 +675,9 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	// take effect (see models.ProxyHost.MonitorSettings).
 	ph.MonitorMode = models.NormalizeMonitorMode(r.FormValue("monitor_mode"))
 	ph.MonitorPath = strings.TrimSpace(r.FormValue("monitor_path"))
-	ph.MonitorMethod = strings.ToUpper(strings.TrimSpace(r.FormValue("monitor_method")))
+	// v2.36.0 (issue #59): any method in models.MonitorMethods; blank or
+	// unrecognised input is stored as GET so the row is canonical on disk.
+	ph.MonitorMethod = models.NormalizeMonitorMethod(r.FormValue("monitor_method"))
 	ph.MonitorExpectStatus = clampAtoi(r.FormValue("monitor_expect_status"), 0, 100, 599)
 	// Floor the interval at the poller's own tick: a smaller value can't be
 	// honoured (the poller only wakes every appHealthInterval) and storing it

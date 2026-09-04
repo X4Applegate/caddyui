@@ -337,6 +337,41 @@ func TestMonitoringControlsAndOffStateAreWired(t *testing.T) {
 	}
 }
 
+// TestMonitorMethodSelectOffersEveryMethod guards v2.36.0 (issue #59): the
+// custom-monitoring Method select must offer every method the backend
+// whitelist (models.MonitorMethods) accepts — a POST-only route can't be
+// probed any other way — must not offer TRACE/CONNECT, and must keep GET as
+// the selected choice for blank (legacy/default) rows.
+func TestMonitorMethodSelectOffersEveryMethod(t *testing.T) {
+	form, err := FS.ReadFile("templates/proxy_host_form.html")
+	if err != nil {
+		t.Fatalf("read proxy_host_form.html: %v", err)
+	}
+	html := string(form)
+	start := strings.Index(html, `name="monitor_method"`)
+	if start < 0 {
+		t.Fatal("proxy host form has no monitor_method select")
+	}
+	end := strings.Index(html[start:], "</select>")
+	if end < 0 {
+		t.Fatal("monitor_method select is never closed")
+	}
+	sel := html[start : start+end]
+	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
+		if !strings.Contains(sel, `value="`+m+`"`) {
+			t.Errorf("monitor_method select is missing %s", m)
+		}
+	}
+	for _, m := range []string{"TRACE", "CONNECT"} {
+		if strings.Contains(sel, `value="`+m+`"`) {
+			t.Errorf("monitor_method select must not offer %s", m)
+		}
+	}
+	if !strings.Contains(sel, `(eq .Host.MonitorMethod "")`) {
+		t.Error("GET option must be selected when MonitorMethod is blank, or legacy rows would render with nothing chosen")
+	}
+}
+
 // TestCSRFClientPlumbing guards the two client-side halves of CSRF protection.
 // The hidden form input is stamped into rendered HTML server-side (see
 // csrfInjectForms), but scripted callers depend on these two pieces: the meta
