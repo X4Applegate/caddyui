@@ -2,6 +2,9 @@ package models
 
 import (
 	"database/sql"
+	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -31,7 +34,14 @@ type CaddyServer struct {
 	// PublicIP is the WAN IP this server answers on — written into the A
 	// record content by every DNS provider when a proxy host is created on
 	// this server. Empty = fall back to the legacy global setting.
-	PublicIP      string
+	PublicIP string
+	// IngestTarget (v2.37.0) is the host:port THIS node connects to to ship
+	// access logs, certificate events and runtime logs to CaddyUI. Empty =
+	// the fleet-wide target from Settings → Analytics. One global target
+	// defaulted to "caddyui:9019" — a Docker service name only containers on
+	// the same network can resolve — so every node on another host silently
+	// shipped nothing: no analytics, no certificate status, no runtime logs.
+	IngestTarget  string
 	LastContactAt sql.NullTime
 	CreatedAt     time.Time
 }
@@ -48,14 +58,62 @@ func (c CaddyServer) TagList() []string {
 	return out
 }
 
-const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), last_contact_at, created_at`
+const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), COALESCE(ingest_target,''), last_contact_at, created_at`
 
 func scanCaddyServer(s interface {
 	Scan(dest ...any) error
 }) (CaddyServer, error) {
 	var c CaddyServer
-	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.LastContactAt, &c.CreatedAt)
+	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.IngestTarget, &c.LastContactAt, &c.CreatedAt)
 	return c, err
+}
+
+// EffectiveIngestTarget is where this node ships its logs: its own
+// IngestTarget when set, otherwise the fleet-wide target from Settings →
+// Analytics. v2.37.0.
+func (c CaddyServer) EffectiveIngestTarget(global string) string {
+	if t := strings.TrimSpace(c.IngestTarget); t != "" {
+		return t
+	}
+	return strings.TrimSpace(global)
+}
+
+// LooksDockerInternalHost reports whether hostport names a bare, single-label
+// host such as "caddyui:9019" — resolvable only inside the Docker network
+// that defines it. IP addresses, "localhost", dotted names and unix sockets
+// return false.
+func LooksDockerInternalHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(strings.TrimSpace(hostport)); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || host == "localhost" || strings.Contains(host, ".") || strings.Contains(host, "/") || net.ParseIP(host) != nil {
+		return false
+	}
+	return true
+}
+
+// IngestTargetWarning explains, in one sentence, why this node very likely
+// cannot deliver its logs to effectiveTarget, or returns "" when nothing looks
+// wrong. Only the unambiguous case is flagged: a node whose admin API lives on
+// another host (an IP address or a dotted name) that was handed a bare Docker
+// service name. A node reached at a bare name itself ("http://caddy:2019")
+// shares CaddyUI's Docker network, where the default target works; unix
+// sockets are left alone because their placement is ambiguous.
+func (c CaddyServer) IngestTargetWarning(effectiveTarget string) string {
+	if !LooksDockerInternalHost(effectiveTarget) {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(c.AdminURL))
+	if err != nil || u.Scheme == "unix" {
+		return ""
+	}
+	adminHost := strings.ToLower(u.Hostname())
+	if adminHost == "" || adminHost == "localhost" || (!strings.Contains(adminHost, ".") && net.ParseIP(adminHost) == nil) {
+		return ""
+	}
+	return fmt.Sprintf("This node is reached at %s but was told to send its logs to %q — a Docker service name another host cannot resolve, so CaddyUI receives nothing from it (no analytics, certificate status or runtime logs). Give it an ingest target it can reach: the CaddyUI host as seen from that node, e.g. 192.168.1.10:9019 on a LAN or 10.8.0.1:9019 over a VPN.", adminHost, effectiveTarget)
 }
 
 func SetCaddyServerVersion(db *sql.DB, id int64, version string) error {
@@ -107,11 +165,11 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 		c.Status = CaddyServerStatusUnknown
 	}
 	res, err := db.Exec(
-		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip, ingest_target) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), c.Status,
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
-		strings.TrimSpace(c.PublicIP),
+		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget),
 	)
 	if err != nil {
 		return 0, err
@@ -122,11 +180,11 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 func UpdateCaddyServer(db *sql.DB, c *CaddyServer) error {
 	c.Type = normalizeServerType(c.Type)
 	_, err := db.Exec(
-		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=? WHERE id=?`,
+		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=?, ingest_target=? WHERE id=?`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), strings.TrimSpace(c.Version),
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
-		strings.TrimSpace(c.PublicIP), c.ID,
+		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), c.ID,
 	)
 	return err
 }

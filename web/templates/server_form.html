@@ -51,6 +51,16 @@
         </ul>
       </div>
     </div>
+
+    {{/* v2.37.0: per-node log ingest target. One fleet-wide target defaulted to
+         a Docker service name that nodes on other hosts can't resolve, so they
+         silently shipped nothing. */}}
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Log ingest target <span class="text-ink-400 font-normal text-xs">(optional — host:port this node sends its logs to)</span></label>
+      <input type="text" name="ingest_target" value="{{.Target.IngestTarget}}" placeholder="blank = fleet-wide target from Settings → Analytics"
+        class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+      <p class="text-xs text-ink-500 mt-1.5">CaddyUI configures this node to ship its access logs, certificate events and runtime logs here — that is what powers Analytics, certificate status and Server Logs for it. Blank uses the fleet-wide target from Settings → Analytics (default <code class="bg-ink-100 px-1 rounded font-mono">caddyui:9019</code>), which only works for a Caddy on the same Docker network as CaddyUI. A node on another host needs an address it can actually reach — the CaddyUI host as seen from that node, e.g. <code class="bg-ink-100 px-1 rounded font-mono">10.8.0.1:9019</code> over a VPN or <code class="bg-ink-100 px-1 rounded font-mono">192.168.1.10:9019</code> on a LAN — with port 9019 published on the CaddyUI container.</p>
+    </div>
   </div>
 
   {{/* ── Optional Basic Auth for the admin endpoint ── */}}

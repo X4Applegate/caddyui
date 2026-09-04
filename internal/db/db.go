@@ -627,6 +627,18 @@ func migrate(db *sql.DB) error {
 	// actually serves the proxy host — not a single global setting. If the
 	// column is new, backfill every row from the legacy global cf_server_ip
 	// setting so existing records keep pointing at the right place.
+	// v2.37.0: per-node log ingest target (host:port). '' = the fleet-wide
+	// Settings → Analytics target. Nodes on other hosts can't resolve the
+	// default Docker service name, so they need their own.
+	hasIngestTarget, err := columnExists(db, "caddy_servers", "ingest_target")
+	if err != nil {
+		return err
+	}
+	if !hasIngestTarget {
+		if _, err := db.Exec(`ALTER TABLE caddy_servers ADD COLUMN ingest_target TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add ingest_target to caddy_servers: %w", err)
+		}
+	}
 	hasPublicIP, err := columnExists(db, "caddy_servers", "public_ip")
 	if err != nil {
 		return err

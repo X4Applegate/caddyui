@@ -180,7 +180,8 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 		}
 		cli := newCaddyClient(sr.AdminURL, sr.AdminUsername, sr.AdminPassword)
 		if cfg.Enabled {
-			if err := cli.EnableAccessLogs(cfg.Target, caddy.AccessLogOptions{
+			// v2.37.0: each node ships to the target IT can reach.
+			if err := cli.EnableAccessLogs(sr.EffectiveIngestTarget(cfg.Target), caddy.AccessLogOptions{
 				SoftStart: cfg.SoftStart, DialTimeout: cfg.DialTimeout,
 				ServerID: sr.ID, ServerName: sr.Name,
 			}); err != nil {
@@ -588,6 +589,23 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := loadAnalyticsConfig(s.DB)
+	// v2.37.0: with one node in scope, say where that node ships its logs —
+	// and warn when it plainly can't reach that address. A remote node handed
+	// the default Docker service name showed an empty page with no clue why.
+	var scopeIngest map[string]any
+	if serverScopeID > 0 {
+		for _, sr := range allServers {
+			if sr.ID != serverScopeID {
+				continue
+			}
+			target := sr.EffectiveIngestTarget(cfg.Target)
+			scopeIngest = map[string]any{
+				"ServerID": sr.ID, "ServerName": sr.Name, "Target": target,
+				"Warning": sr.IngestTargetWarning(target),
+			}
+			break
+		}
+	}
 	s.render(w, r, "analytics.html", map[string]any{
 		"User":               u,
 		"IsAdmin":            isAdmin,
@@ -602,6 +620,7 @@ func (s *Server) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		"Status":             statusBuckets,
 		"IngestStats":        ingestStats,
 		"AnalyticsEnabled":   cfg.Enabled,
+		"ScopeIngest":        scopeIngest,
 		// Server-switcher data. AllServers feeds the <select>; the template
 		// only renders the picker when len > 1 so a one-server deployment
 		// doesn't get a useless dropdown. SelectedServerID is 0 for "all
