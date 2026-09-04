@@ -15,7 +15,7 @@
       <button id="pause-btn" class="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
         Pause
       </button>
-      <button id="clear-btn" class="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+      <button id="clear-btn" title="Hides everything seen so far on this browser (for this server filter); it stays hidden after a reload. New requests keep streaming. Nothing is deleted from Analytics." class="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
         Clear
       </button>
     </div>
@@ -59,7 +59,7 @@
         {{range .Events}}
         <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors event-row"
             data-id="{{.ID}}" data-host="{{.Host}}" data-status="{{.Status}}" data-server-id="{{.ServerID}}">
-          <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap">{{.TS.Format "15:04:05"}}</td>
+          <td class="px-4 py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap">{{fmtIn .TS "2006-01-02 15:04:05"}}</td>
           <td class="px-4 py-2.5 text-gray-600 dark:text-gray-300 whitespace-nowrap">{{if .ServerName}}{{.ServerName}}{{else if .ServerID}}Server {{.ServerID}}{{else}}Legacy / unknown{{end}}</td>
           <td class="px-4 py-2.5">
             <span class="px-1.5 py-0.5 rounded font-medium text-[11px] {{if eq .Method "GET"}}bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400{{else if eq .Method "POST"}}bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400{{else if eq .Method "DELETE"}}bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400{{else}}bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300{{end}}">
@@ -104,11 +104,28 @@
   let cursor = 0;
   let es = null;
 
-  // Seed cursor from pre-rendered rows.
+  // v2.37.1 (issue #60 follow-up): "Clear" used to empty the table only, and
+  // every row came straight back on the next load because the pre-rendered
+  // rows and the stream both restart from the newest events. Remember, per
+  // browser and per server filter, the newest event id seen when Clear was
+  // pressed; rows at or below it are hidden on load and the stream resumes
+  // after it. Nothing in the Analytics database is touched.
+  function clearedKey() { return 'caddyui.liveTraffic.clearedThrough.' + (filterServer.value || 'all'); }
+  function clearedThrough() {
+    try { return parseInt(localStorage.getItem(clearedKey()) || '0', 10) || 0; } catch (_) { return 0; }
+  }
+  function rememberCleared(id) {
+    try { localStorage.setItem(clearedKey(), String(id)); } catch (_) {}
+  }
+
+  // Seed cursor from pre-rendered rows, dropping anything already cleared.
+  const cleared = clearedThrough();
   tbody.querySelectorAll('tr.event-row').forEach(tr => {
     const id = parseInt(tr.dataset.id || '0', 10);
+    if (id <= cleared) { tr.remove(); return; }
     if (id > cursor) cursor = id;
   });
+  if (cleared > cursor) cursor = cleared;
   updateCount();
 
   function updateCount() {
@@ -132,9 +149,27 @@
     return 'text-red-600 dark:text-red-400';
   }
 
+  // v2.37.1 (issue #60 follow-up): full date, not just the time — the feed
+  // keeps rows across days on a quiet server. Same "YYYY-MM-DD HH:MM:SS"
+  // layout as the pre-rendered rows and the Activity log, in the timezone
+  // CaddyUI renders everything else in; falls back to the browser's zone
+  // when that isn't an IANA name (e.g. "Local").
+  const displayZone = {{tzName}};
+  function makeWhenFormat(zone) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone, hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+  }
+  let whenFormat;
+  try { whenFormat = makeWhenFormat(displayZone); } catch (_) { whenFormat = makeWhenFormat(undefined); }
   function fmtTime(iso) {
     const d = new Date(iso);
-    return d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    if (isNaN(d.getTime())) return iso || '';
+    const parts = {};
+    whenFormat.formatToParts(d).forEach(p => { parts[p.type] = p.value; });
+    return parts.year + '-' + parts.month + '-' + parts.day + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second;
   }
 
   function fmtBytes(n) {
@@ -231,7 +266,7 @@
 
   filterServer.addEventListener('change', () => {
     tbody.querySelectorAll('tr.event-row').forEach(tr => tr.remove());
-    cursor = 0;
+    cursor = clearedThrough(); // resume after whatever this filter had cleared
     const url = new URL(window.location.href);
     url.searchParams.set('server', filterServer.value);
     window.history.replaceState({}, '', url);
@@ -247,6 +282,7 @@
 
   clearBtn.addEventListener('click', () => {
     tbody.querySelectorAll('tr.event-row').forEach(tr => tr.remove());
+    rememberCleared(cursor);
     updateCount();
   });
 })();
