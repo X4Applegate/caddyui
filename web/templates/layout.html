@@ -721,6 +721,18 @@ if ('serviceWorker' in navigator) {
       {{end}}
       <main id="main-content" class="app-main flex-1">
         <div class="app-content">
+          {{/* v2.38.0: a config change failed its post-apply checks — shown on every page until resolved */}}
+          {{range .SyncHolds}}
+          <div class="mb-4 rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-900" role="alert" data-sync-hold="{{.ServerID}}">
+            <div class="font-semibold">Config change on {{.ServerName}} was {{if .RolledBack}}rolled back{{else}}not applied cleanly{{end}} — your saved changes are <u>not</u> live.</div>
+            <div class="text-xs mt-1 break-words">{{.Detail}}</div>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <form method="post" action="/servers/{{.ServerID}}/sync-reapply"><button type="submit" class="text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 transition">Re-apply now</button></form>
+              <form method="post" action="/servers/{{.ServerID}}/sync-hold/clear"><button type="submit" class="text-xs px-3 py-1.5 rounded-lg border border-red-300 text-red-800 hover:bg-red-100 transition">Keep the rolled-back config</button></form>
+              <span class="text-xs text-red-700">{{fmtIn .At "2006-01-02 15:04:05"}} · automatic syncs for this server are paused until you choose</span>
+            </div>
+          </div>
+          {{end}}
           {{block "content" .}}{{end}}
         </div>
       </main>

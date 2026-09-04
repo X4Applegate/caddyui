@@ -1129,6 +1129,19 @@
        listener, (b) keep the ingest's exclude-IP filter synced with the
        textarea below. No DNT opt-in UI, no 3rd-party tracker loaded —
        everything runs on localhost and persists in the CaddyUI DB. */}}
+  {{/* v2.38.0: post-apply checks (expectations) */}}
+  <div id="expectations" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-4">
+    <div>
+      <div class="text-sm font-semibold text-ink-900">Post-apply checks</div>
+      <p class="text-xs text-ink-500 mt-1">Expectations defined on a proxy host (its <em>Expectations</em> section) run right after every config sync. Choose what happens when one fails.</p>
+    </div>
+    <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer">
+      <input type="hidden" name="expectations_auto_rollback" value="0" />
+      <input name="expectations_auto_rollback" type="checkbox" value="1" {{if .ExpectationsAutoRollback}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span>Roll back automatically<span class="block text-xs text-ink-500 mt-0.5 font-normal">Load the previous live config back into Caddy, pause automatic syncs for that server, and show a banner until you re-apply or keep the rolled-back config. Off = report only: results still appear on each host's health page and in the Activity log, but the new config stays live.</span></span>
+    </label>
+  </div>
+
   <div id="analytics" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="flex items-center gap-2 mb-0.5">
