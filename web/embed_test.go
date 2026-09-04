@@ -270,6 +270,31 @@ func TestAdvancedRouteFormOffersCrossDeploy(t *testing.T) {
 	}
 }
 
+// TestRawRoutesTableAndCardListShareABreakpoint guards v2.35.4. /raw-routes
+// renders every route twice on purpose — once as a desktop table row and once
+// as a mobile card — and relies on the two containers flipping visibility at
+// the SAME Tailwind breakpoint so only one is ever on screen. Before v2.35.4
+// the table was `hidden md:table` while the card list was `lg:hidden`, so at
+// 768–1024 CSS px (tablets, or a zoomed desktop browser) both rendered and each
+// route appeared twice. The two copies are the same database row, so deleting
+// "one" removed "both". Keep the pair on `lg`, matching /certificates and
+// /snapshots.
+func TestRawRoutesTableAndCardListShareABreakpoint(t *testing.T) {
+	body, err := FS.ReadFile("templates/raw_routes.html")
+	if err != nil {
+		t.Fatalf("read raw_routes.html: %v", err)
+	}
+	html := string(body)
+	// Both assertions are needed: if either container is moved to a different
+	// breakpoint on its own, exactly one of them fails and names the culprit.
+	if !strings.Contains(html, `class="hidden lg:table`) {
+		t.Errorf("raw_routes.html: desktop table must be `hidden lg:table` so it only shows from the lg breakpoint (the card list hides at lg)")
+	}
+	if !strings.Contains(html, `class="lg:hidden`) {
+		t.Errorf("raw_routes.html: mobile card list must be `lg:hidden` so it hides from the lg breakpoint (the table shows at lg)")
+	}
+}
+
 // TestMonitoringControlsAndOffStateAreWired covers issue #39. Two halves have
 // to stay in sync: the form must offer the mode selector, and every status-dot
 // painter must special-case "off". If a painter loses its "off" branch the
