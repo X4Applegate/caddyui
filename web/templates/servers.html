@@ -76,7 +76,9 @@
               {{else if eq .Status "offline"}}<span class="ui-status ui-status--danger">Offline</span>
               {{else}}<span class="ui-status ui-status--neutral">Unknown</span>{{end}}
             </td>
-            <td><code class="fleet-endpoint" title="{{.AdminURL}}">{{.AdminURL}}</code></td>
+            <td><code class="fleet-endpoint" title="{{.AdminURL}}">{{.AdminURL}}</code>
+              {{/* v2.37.0: where this node ships its logs, with a warning when it plainly can't get there */}}
+              {{$sid := .ID}}{{with index $.IngestTargets .ID}}<div class="text-xs text-ink-400 mt-1">logs → <code class="font-mono">{{.}}</code></div>{{end}}{{with index $.IngestWarnings $sid}}<div class="text-xs text-amber-700 mt-1" title="{{.}}">⚠ this node can't reach its log target — <a href="/servers/{{$sid}}/edit" class="underline">set one it can</a></div>{{end}}</td>
             <td>
               {{if eq .Type "managed"}}<span class="ui-status ui-status--automation">Managed</span>
               {{else}}<span class="ui-status ui-status--neutral">External</span>{{end}}
@@ -129,6 +131,7 @@
               {{if and $.CurrentServer (eq $.CurrentServer.ID .ID)}}<span class="ui-status ui-status--info">Current</span>{{end}}
             </div>
             <code class="fleet-endpoint">{{.AdminURL}}</code>
+            {{$sid := .ID}}{{with index $.IngestTargets .ID}}<div class="text-xs text-ink-400 mt-1">logs → <code class="font-mono">{{.}}</code></div>{{end}}{{with index $.IngestWarnings $sid}}<div class="text-xs text-amber-700 mt-1" title="{{.}}">⚠ this node can't reach its log target — <a href="/servers/{{$sid}}/edit" class="underline">set one it can</a></div>{{end}}
           </div>
           {{if eq .Status "online"}}<span class="ui-status ui-status--success">Online</span>
           {{else if eq .Status "offline"}}<span class="ui-status ui-status--danger">Offline</span>

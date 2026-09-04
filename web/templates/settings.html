@@ -1169,6 +1169,7 @@
         Default <code class="font-mono text-ink-700">{{.AnalyticsTargetPlaceholder}}</code> assumes both containers share a Docker network and CaddyUI's service name is <code class="font-mono">caddyui</code>.
         On host-network deployments use <code class="font-mono">host.docker.internal:9019</code> (macOS/Windows) or the LAN IP (Linux).
         The listener binds on <code class="font-mono">:9019</code> inside the CaddyUI container — no host port exposed by default.
+        Nodes on <em>other hosts</em> cannot resolve Docker service names: give each remote node its own ingest target on its <a href="/servers" class="underline">Caddy Fleet</a> entry (the CaddyUI host as that node sees it, e.g. <code class="font-mono">10.8.0.1:9019</code>) and publish port 9019.
       </p>
     </div>
 

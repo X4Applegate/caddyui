@@ -54,7 +54,7 @@ func (s *Server) ReconcileCertificateLogs() error {
 			continue
 		}
 		client := newCaddyClient(server.AdminURL, server.AdminUsername, server.AdminPassword)
-		if err := client.EnableCertificateLogs(cfg.Target, caddyLogOptions(server, cfg)); err != nil {
+		if err := client.EnableCertificateLogs(server.EffectiveIngestTarget(cfg.Target), caddyLogOptions(server, cfg)); err != nil { // v2.37.0
 			failures = append(failures, fmt.Sprintf("%s: %v", server.Name, err))
 		}
 	}
@@ -422,7 +422,7 @@ func (s *Server) enableRuntimeLogCapture(server models.CaddyServer, cfg analytic
 	defer s.runtimeLogMu.Unlock()
 
 	client := newCaddyClient(server.AdminURL, server.AdminUsername, server.AdminPassword)
-	if err := client.EnableRuntimeLogs(cfg.Target, level, caddyLogOptions(server, cfg)); err != nil {
+	if err := client.EnableRuntimeLogs(server.EffectiveIngestTarget(cfg.Target), level, caddyLogOptions(server, cfg)); err != nil { // v2.37.0
 		return err
 	}
 

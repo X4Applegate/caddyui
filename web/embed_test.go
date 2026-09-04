@@ -396,6 +396,28 @@ func TestAdvancedRouteListenIsSurfaced(t *testing.T) {
 	}
 }
 
+// TestPerNodeIngestTargetIsSurfaced guards v2.37.0: the server form must offer
+// the per-node log ingest target, the Fleet list must show each node's
+// effective target and the unreachable-target warning, and the Analytics page
+// must explain the scoped node's target when it has no traffic.
+func TestPerNodeIngestTargetIsSurfaced(t *testing.T) {
+	for file, markers := range map[string][]string{
+		"templates/server_form.html": {`name="ingest_target"`, "{{.Target.IngestTarget}}"},
+		"templates/servers.html":     {"$.IngestTargets", "$.IngestWarnings"},
+		"templates/analytics.html":   {".ScopeIngest"},
+	} {
+		body, err := FS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		for _, m := range markers {
+			if !strings.Contains(string(body), m) {
+				t.Errorf("%s missing %q", file, m)
+			}
+		}
+	}
+}
+
 // TestCSRFClientPlumbing guards the two client-side halves of CSRF protection.
 // The hidden form input is stamped into rendered HTML server-side (see
 // csrfInjectForms), but scripted callers depend on these two pieces: the meta

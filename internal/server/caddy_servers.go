@@ -59,12 +59,30 @@ func (s *Server) listServersPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// v2.37.0: effective log-ingest target per managed node, plus a warning
+	// when a remote node was handed a bare Docker service name it can't
+	// resolve — the silent cause of "analytics is empty for that server".
+	analyticsCfg := loadAnalyticsConfig(s.DB)
+	ingestTargets := map[int64]string{}
+	ingestWarnings := map[int64]string{}
+	for _, sr := range servers {
+		if sr.Type != models.CaddyServerTypeManaged {
+			continue
+		}
+		target := sr.EffectiveIngestTarget(analyticsCfg.Target)
+		ingestTargets[sr.ID] = target
+		if warn := sr.IngestTargetWarning(target); warn != "" {
+			ingestWarnings[sr.ID] = warn
+		}
+	}
 	s.render(w, r, "servers.html", map[string]any{
-		"User":    s.currentUser(r),
-		"Servers": servers,
-		"Section": "servers",
-		"Flash":   strings.TrimSpace(r.URL.Query().Get("flash")),
-		"Error":   strings.TrimSpace(r.URL.Query().Get("error")),
+		"User":           s.currentUser(r),
+		"Servers":        servers,
+		"IngestTargets":  ingestTargets,
+		"IngestWarnings": ingestWarnings,
+		"Section":        "servers",
+		"Flash":          strings.TrimSpace(r.URL.Query().Get("flash")),
+		"Error":          strings.TrimSpace(r.URL.Query().Get("error")),
 	})
 }
 
@@ -120,6 +138,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		Version:       strings.TrimSpace(r.FormValue("version")),
 		AdminUsername: strings.TrimSpace(r.FormValue("admin_username")),
 		AdminPassword: r.FormValue("admin_password"),
+		IngestTarget:  strings.TrimSpace(r.FormValue("ingest_target")), // v2.37.0
 	}
 	renderErr := func(msg string) {
 		s.render(w, r, "server_form.html", map[string]any{
@@ -187,6 +206,7 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 	existing.Tags = strings.TrimSpace(r.FormValue("tags"))
 	existing.Version = strings.TrimSpace(r.FormValue("version"))
 	existing.AdminUsername = strings.TrimSpace(r.FormValue("admin_username"))
+	existing.IngestTarget = strings.TrimSpace(r.FormValue("ingest_target")) // v2.37.0
 	// Password: if the form submitted a blank value AND the user didn't explicitly
 	// check the "clear password" box, keep the existing one. Protects against
 	// masked-field UX where the password isn't re-typed on every edit.
