@@ -665,7 +665,7 @@ type ProxyHost struct {
 	// values mean "use the built-in default", so a custom-mode host that only
 	// overrides the path keeps the standard method, interval and timeout.
 	MonitorPath         string // default "/"
-	MonitorMethod       string // "GET" (default) or "HEAD"
+	MonitorMethod       string // one of MonitorMethods; blank/unknown resolve to GET (v2.36.0: any method, not just GET/HEAD)
 	MonitorExpectStatus int    // 0 = default classification; >0 = require exactly this code
 	MonitorIntervalSec  int    // 0 = default 60; rounded up to a multiple of the 60s poll tick
 	MonitorTimeoutSec   int    // 0 = default 5
@@ -687,6 +687,30 @@ func (p *ProxyHost) MonitoringDisabled() bool {
 	return NormalizeMonitorMode(p.MonitorMode) == "off"
 }
 
+// MonitorMethods lists the HTTP methods a custom-mode probe may use, in the
+// order the form offers them. GET is the default and HEAD saves bandwidth on
+// large pages; the rest exist for routes that only accept a specific method
+// (v2.36.0, issue #59). A method-restricted route answers 405 to anything
+// else from Caddy itself — the request never reaches the backend — so probing
+// such a route with GET says nothing about whether the service is up. TRACE
+// and CONNECT are deliberately absent.
+var MonitorMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+
+// NormalizeMonitorMethod coerces a monitor_method value to one of
+// MonitorMethods, defaulting to GET for blank or unrecognised input. Values
+// are normalised on the way in (the proxy host form parser) and resolved
+// through here again on the way out (MonitorSettings), so a row written by an
+// older version or by hand still probes sensibly.
+func NormalizeMonitorMethod(method string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	for _, allowed := range MonitorMethods {
+		if method == allowed {
+			return allowed
+		}
+	}
+	return "GET"
+}
+
 // MonitorSettings resolves the effective probe parameters for this host,
 // applying the built-in defaults for anything left at its zero value. The
 // defaults match the hardcoded behaviour that predated issue #39, so an
@@ -703,9 +727,8 @@ func (p *ProxyHost) MonitorSettings(defaultInterval, defaultTimeout time.Duratio
 		}
 		path = v
 	}
-	if strings.EqualFold(strings.TrimSpace(p.MonitorMethod), "HEAD") {
-		method = "HEAD"
-	}
+	// v2.36.0 (issue #59): any method in MonitorMethods, not just GET/HEAD.
+	method = NormalizeMonitorMethod(p.MonitorMethod)
 	if p.MonitorExpectStatus > 0 {
 		expectStatus = p.MonitorExpectStatus
 	}
