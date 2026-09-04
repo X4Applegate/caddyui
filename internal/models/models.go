@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -3757,11 +3758,113 @@ type RawRoute struct {
 	DNSProfileID  string
 	DNSSkipRecord bool // use provider for DNS-01 but do not create public A records
 	// v2.33.0: exclude from fleet sync — see ProxyHost.NodeLocal.
-	NodeLocal  bool
+	NodeLocal bool
+	// v2.36.1 (issue #64): JSON-encoded list of listen addresses this route's
+	// own server binds, e.g. `[":7070"]` — captured from the adapted Caddyfile
+	// (`:7070 { … }`) or typed in the form. Empty means the route lives on the
+	// normal :443/:80 servers like every other entry; non-empty routes are
+	// emitted as their own apps.http.servers entry, grouped by identical listen
+	// set (see server.buildRawListenServers). Read via ListenAddrs / ListenDisplay,
+	// write via NormalizeRawRouteListen.
+	Listen     string
 	OwnerID    sql.NullInt64
 	OwnerEmail string // populated via JOIN for display
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+// ListenAddrs decodes Listen. Nil when the route lives on the default servers.
+func (r RawRoute) ListenAddrs() []string {
+	if strings.TrimSpace(r.Listen) == "" {
+		return nil
+	}
+	var addrs []string
+	if err := json.Unmarshal([]byte(r.Listen), &addrs); err != nil {
+		return nil
+	}
+	return addrs
+}
+
+// ListenDisplay renders the listen set for humans and for the form field:
+// ":7070, :7071". Empty for default placement.
+func (r RawRoute) ListenDisplay() string {
+	return strings.Join(r.ListenAddrs(), ", ")
+}
+
+// ParseRawRouteListenInput splits the form's free-text "Listen on" field on
+// commas, semicolons and whitespace.
+func ParseRawRouteListenInput(s string) []string {
+	return strings.FieldsFunc(s, func(c rune) bool {
+		return c == ',' || c == ';' || c == ' ' || c == '\t' || c == '\n' || c == '\r'
+	})
+}
+
+// NormalizeRawRouteListen canonicalises a listen set into the stored form:
+// trimmed, deduplicated, sorted, JSON-encoded. A bare port ("7070") becomes
+// ":7070". Addresses on the standard ports (80/443, with any host part) are
+// dropped because those routes belong on CaddyUI's own servers; if nothing
+// else remains the result is "" — default placement.
+func NormalizeRawRouteListen(addrs []string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, err := strconv.Atoi(a); err == nil {
+			a = ":" + a
+		}
+		if isStandardListenPort(a) || seen[a] {
+			continue
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	sort.Strings(out)
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+func isStandardListenPort(addr string) bool {
+	i := strings.LastIndex(addr, ":")
+	if i < 0 {
+		return false
+	}
+	port := addr[i+1:]
+	return port == "80" || port == "443"
+}
+
+// RawRouteListenServerName derives the apps.http.servers key for a listen set:
+// "caddyui_listen_7070", or "caddyui_listen_127_0_0_1_7070_7071" for several.
+// Caddy accepts any server name, but [a-z0-9_] keeps the key safe inside
+// admin-API paths. Empty for an empty set.
+func RawRouteListenServerName(addrs []string) string {
+	var parts []string
+	for _, a := range addrs {
+		var b strings.Builder
+		for _, c := range strings.ToLower(strings.TrimSpace(a)) {
+			if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+				b.WriteRune(c)
+			} else {
+				b.WriteByte('_')
+			}
+		}
+		p := strings.Trim(b.String(), "_")
+		for strings.Contains(p, "__") {
+			p = strings.ReplaceAll(p, "__", "_")
+		}
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "caddyui_listen_" + strings.Join(parts, "_")
 }
 
 const rawRouteCols = `id, label, json_data, COALESCE(caddyfile_src, ''), enabled,
@@ -3769,7 +3872,7 @@ const rawRouteCols = `id, label, json_data, COALESCE(caddyfile_src, ''), enabled
     COALESCE(dns_provider,''), COALESCE(dns_zone_id,''),
     COALESCE(dns_zone_name,''), COALESCE(dns_record_id,''),
     COALESCE(dns_profile_id,''), COALESCE(dns_skip_record,0),
-    COALESCE(node_local,0),
+    COALESCE(node_local,0), COALESCE(listen,''),
     created_at, updated_at, COALESCE(owner_id, 0)`
 
 func scanRawRoute(s interface {
@@ -3781,7 +3884,7 @@ func scanRawRoute(s interface {
 	err := s.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 		&r.CertificateID, &force, &block,
 		&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord,
-		&nodeLocal,
+		&nodeLocal, &r.Listen,
 		&r.CreatedAt, &r.UpdatedAt, &ownerID)
 	if err == nil {
 		r.Enabled = en == 1
@@ -3810,7 +3913,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
                COALESCE(rr.dns_profile_id,''), COALESCE(rr.dns_skip_record,0),
-               COALESCE(rr.node_local,0),
+               COALESCE(rr.node_local,0), COALESCE(rr.listen,''),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3824,7 +3927,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
                COALESCE(rr.dns_provider,''), COALESCE(rr.dns_zone_id,''),
                COALESCE(rr.dns_zone_name,''), COALESCE(rr.dns_record_id,''),
                COALESCE(rr.dns_profile_id,''), COALESCE(rr.dns_skip_record,0),
-               COALESCE(rr.node_local,0),
+               COALESCE(rr.node_local,0), COALESCE(rr.listen,''),
                rr.created_at, rr.updated_at, COALESCE(rr.owner_id, 0), COALESCE(u.email, '')
         FROM raw_routes rr
         LEFT JOIN users u ON u.id = rr.owner_id
@@ -3844,7 +3947,7 @@ func ListRawRoutes(db *sql.DB, serverID int64, viewerID int64, isAdmin bool, pee
 		if err := rows.Scan(&r.ID, &r.Label, &r.JSONData, &r.CaddyfileSrc, &en,
 			&r.CertificateID, &force, &block,
 			&r.DNSProvider, &r.DNSZoneID, &r.DNSZoneName, &r.DNSRecordID, &r.DNSProfileID, &dnsSkipRecord,
-			&nodeLocal,
+			&nodeLocal, &r.Listen,
 			&r.CreatedAt, &r.UpdatedAt, &ownerID, &r.OwnerEmail); err != nil {
 			return nil, err
 		}
@@ -3866,12 +3969,13 @@ func CreateRawRoute(db *sql.DB, serverID int64, ownerID int64, r *RawRoute) (int
 	res, err := db.Exec(`INSERT INTO raw_routes (server_id, label, json_data, caddyfile_src, enabled,
             certificate_id, force_ssl, block_common_exploits,
             dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id, dns_skip_record,
-            node_local, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            node_local, listen, owner_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID, r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
 		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
 		boolInt(r.NodeLocal), // v2.33.0
+		r.Listen,             // v2.36.1 (issue #64)
 		nilIfZero(ownerID))
 	if err != nil {
 		return 0, err
@@ -3891,12 +3995,13 @@ func UpdateRawRoute(db *sql.DB, r *RawRoute) error {
 	_, err := db.Exec(`UPDATE raw_routes SET label=?, json_data=?, caddyfile_src=?, enabled=?,
             certificate_id=?, force_ssl=?, block_common_exploits=?,
             dns_provider=?, dns_zone_id=?, dns_zone_name=?, dns_record_id=?, dns_profile_id=?, dns_skip_record=?,
-            node_local=?,
+            node_local=?, listen=?,
             updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
 		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
 		boolInt(r.NodeLocal), // v2.33.0
+		r.Listen,             // v2.36.1 (issue #64)
 		r.ID)
 	return err
 }

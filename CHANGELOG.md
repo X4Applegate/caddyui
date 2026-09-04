@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.36.1] - 2026-09-04 - Advanced routes on custom ports get their own listener
+
+### Fixed
+
+- An Advanced route pasted as `:7070 { … }` never listened on port 7070. The Caddyfile adapter puts each site address on its own server, but CaddyUI flattened every server's routes into one list — dropping the port — and nested them all under its :443/:80 servers. Advanced routes now remember their listen address(es), and every sync emits one `apps.http.servers.caddyui_listen_<port>` entry per distinct port set: routes sharing a port share a server, stale entries are removed when a port changes or the route is deleted, and servers the operator added by hand under other names are never touched. The port is captured automatically from the Caddyfile block on paste, import and edit; JSON-only routes get a **Listen on** field. Routes on the standard ports keep exactly today's placement, and validate-before-save now includes the new servers, so a port conflict is refused at save time instead of breaking the next sync. (#64)
+- A block on a custom port that looks like a plain reverse proxy (`example.com:7070 { reverse_proxy … }`) now stays an Advanced route on paste and import instead of being auto-classified into a proxy host, which has no notion of a port and would have silently lost it.
+
 ## [2.36.0] - 2026-09-04 - Health checks can use any HTTP method
 
 ### Added

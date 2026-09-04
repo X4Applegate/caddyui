@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -5369,7 +5370,15 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routes := extractAdaptedRoutes(adapted.Result)
+	// v2.36.1 (issue #64): keep each route's server listen set so a block
+	// like `:7070 { … }` lands on its own listener instead of :443/:80.
+	adaptedRoutes := extractAdaptedServerRoutes(adapted.Result)
+	routes := make([]map[string]any, 0, len(adaptedRoutes))
+	routeListen := make([]string, 0, len(adaptedRoutes))
+	for _, ar := range adaptedRoutes {
+		routes = append(routes, ar.Route)
+		routeListen = append(routeListen, models.NormalizeRawRouteListen(ar.Listen))
+	}
 	// v2.5.8: also pull per-site TLS automation policies (DNS-01 providers,
 	// custom issuers) — these were previously dropped, so `tls { dns <p> ... }`
 	// in a pasted block never reached Caddy and ACME fell back to HTTP-01.
@@ -5479,7 +5488,10 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		// the same classifier the /import flow uses. The classifier returns
 		// at most one entry per category for a single-route input — anything
 		// it doesn't recognise falls through to RawRoute below.
-		if autoClassify {
+		// v2.36.1 (issue #64): proxy hosts and redirects have no notion of a
+		// listen port, so a block on a custom port must stay an Advanced route
+		// or its port would be silently lost.
+		if autoClassify && routeListen[idx] == "" {
 			synth := map[string]any{
 				"apps": map[string]any{
 					"http": map[string]any{
@@ -5552,6 +5564,7 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			JSONData:     string(blob),
 			CaddyfileSrc: blockText,
 			Enabled:      true,
+			Listen:       routeListen[idx], // v2.36.1 (issue #64)
 		})
 		if err != nil {
 			results = append(results, caddyfileImportResult{
@@ -5657,22 +5670,57 @@ func hostsFromRoute(route map[string]any) []string {
 	return out
 }
 
-// extractAdaptedRoutes pulls apps.http.servers.<first server>.routes[] from an
-// adapted Caddy config. Caddy's Caddyfile adapter emits one server (usually "srv0")
-// containing all site blocks as routes. Returns a possibly-empty slice.
-func extractAdaptedRoutes(cfg map[string]any) []map[string]any {
+// adaptedServerRoute is one route from an adapted Caddy config together with
+// the listen addresses of the server it came from. v2.36.1 (issue #64): the
+// Caddyfile adapter emits one server per distinct site address — `:7070 { … }`
+// becomes its own server on :7070 — and flattening every server's routes into
+// one list silently dropped that port, so the route ended up on CaddyUI's
+// :443/:80 servers and nothing ever listened on 7070.
+type adaptedServerRoute struct {
+	Route  map[string]any
+	Listen []string
+}
+
+// extractAdaptedServerRoutes pulls every apps.http.servers.*.routes[] entry
+// from an adapted Caddy config, tagged with its server's listen addresses.
+// Servers are visited in name order so the result is deterministic.
+func extractAdaptedServerRoutes(cfg map[string]any) []adaptedServerRoute {
 	apps, _ := cfg["apps"].(map[string]any)
 	httpApp, _ := apps["http"].(map[string]any)
 	servers, _ := httpApp["servers"].(map[string]any)
-	var out []map[string]any
-	for _, s := range servers {
-		srv, _ := s.(map[string]any)
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []adaptedServerRoute
+	for _, name := range names {
+		srv, _ := servers[name].(map[string]any)
+		var listen []string
+		if raw, ok := srv["listen"].([]any); ok {
+			for _, v := range raw {
+				if addr, ok := v.(string); ok && strings.TrimSpace(addr) != "" {
+					listen = append(listen, strings.TrimSpace(addr))
+				}
+			}
+		}
 		routes, _ := srv["routes"].([]any)
 		for _, r := range routes {
 			if m, ok := r.(map[string]any); ok {
-				out = append(out, m)
+				out = append(out, adaptedServerRoute{Route: m, Listen: listen})
 			}
 		}
+	}
+	return out
+}
+
+// extractAdaptedRoutes is extractAdaptedServerRoutes without the listen
+// addresses, for callers that only want handlers (proxy advanced_config) or a
+// preview. Returns a possibly-empty slice.
+func extractAdaptedRoutes(cfg map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, ar := range extractAdaptedServerRoutes(cfg) {
+		out = append(out, ar.Route)
 	}
 	return out
 }
@@ -7296,6 +7344,10 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 	label := strings.TrimSpace(r.FormValue("label"))
 	body := strings.TrimSpace(r.FormValue("json_data"))
 	cfSrc := strings.TrimSpace(r.FormValue("caddyfile_src"))
+	// v2.36.1 (issue #64): optional own listener(s) for this route, e.g. ":7070".
+	// Typed in the form for JSON-only routes; when a Caddyfile block declares a
+	// site address with a custom port, the adapted value below wins.
+	listen := models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(r.FormValue("listen")))
 	if label == "" {
 		return nil, "Label is required"
 	}
@@ -7303,11 +7355,14 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 	// through Caddy and let the resulting JSON replace json_data. This is what
 	// makes the Caddyfile block editable after import.
 	if cfSrc != "" {
-		jsonData, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
+		jsonData, adaptedListen, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
 		if err != nil {
 			return nil, "Caddyfile rejected by Caddy: " + err.Error()
 		}
 		body = jsonData
+		if adaptedListen != "" {
+			listen = adaptedListen
+		}
 	}
 	if body == "" {
 		return nil, "JSON is required"
@@ -7348,6 +7403,7 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 		ForceSSL:            r.FormValue("ssl_forced") == "on",
 		BlockCommonExploits: r.FormValue("block_common_exploits") == "on",
 		NodeLocal:           r.FormValue("node_local") == "on", // v2.33.0
+		Listen:              listen,                            // v2.36.1 (issue #64)
 		DNSProvider:         provider,
 		DNSZoneID:           zoneID,
 		DNSZoneName:         zoneName,
@@ -7360,8 +7416,13 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 // raw_route) through Caddy's /adapt, prepending auto-loaded snippets from the
 // mounted Caddyfile so `import <name>` references resolve. Returns the JSON to
 // store in raw_routes.json_data — a single route object if the block produced
-// exactly one route, or a JSON array otherwise (buildMergedRoutes handles both).
-func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (string, error) {
+// exactly one route, or a JSON array otherwise (buildMergedRoutes handles both) —
+// and, v2.36.1 (issue #64), the normalised listen set of the block's server(s)
+// ("" when it uses the standard ports). One Advanced route is one listen set:
+// if a paste holds several site blocks on different custom ports, their routes
+// all serve on the union of those ports — split them into separate Advanced
+// routes to keep them apart.
+func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (string, string, error) {
 	var loadedSnippets []string
 	if s.CaddyfilePath != "" {
 		if b, err := os.ReadFile(s.CaddyfilePath); err == nil {
@@ -7382,24 +7443,31 @@ func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (stri
 	}
 	adapted, err := caddyCl.Adapt(full)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	routes := extractAdaptedRoutes(adapted.Result)
-	if len(routes) == 0 {
-		return "", fmt.Errorf("the Caddyfile adapted successfully but produced no HTTP routes — include at least one site block")
+	adaptedRoutes := extractAdaptedServerRoutes(adapted.Result)
+	if len(adaptedRoutes) == 0 {
+		return "", "", fmt.Errorf("the Caddyfile adapted successfully but produced no HTTP routes — include at least one site block")
 	}
+	var addrs []string
+	routes := make([]map[string]any, 0, len(adaptedRoutes))
+	for _, ar := range adaptedRoutes {
+		routes = append(routes, ar.Route)
+		addrs = append(addrs, ar.Listen...)
+	}
+	listen := models.NormalizeRawRouteListen(addrs)
 	if len(routes) == 1 {
 		blob, err := json.Marshal(routes[0])
 		if err != nil {
-			return "", fmt.Errorf("serialize route: %w", err)
+			return "", "", fmt.Errorf("serialize route: %w", err)
 		}
-		return string(blob), nil
+		return string(blob), listen, nil
 	}
 	blob, err := json.Marshal(routes)
 	if err != nil {
-		return "", fmt.Errorf("serialize routes: %w", err)
+		return "", "", fmt.Errorf("serialize routes: %w", err)
 	}
-	return string(blob), nil
+	return string(blob), listen, nil
 }
 
 // previewRawRouteValidate simulates syncCaddy with rr swapped into the raw_routes
@@ -7447,6 +7515,7 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 	applyRoutes(proposed, append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...))
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	applyPlainHTTPServer(proposed, httpRoutes)
+	applyRawListenServers(proposed, s.buildRawListenServers(raws)) // v2.36.1 (issue #64)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws, certs))
@@ -7552,6 +7621,7 @@ func (s *Server) renderRawRouteFormError(w http.ResponseWriter, r *http.Request,
 			Label:               r.FormValue("label"),
 			JSONData:            r.FormValue("json_data"),
 			CaddyfileSrc:        r.FormValue("caddyfile_src"),
+			Listen:              models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(r.FormValue("listen"))), // v2.36.1
 			Enabled:             r.FormValue("enabled") == "on",
 			CertificateID:       certID,
 			ForceSSL:            r.FormValue("ssl_forced") == "on",
@@ -8119,6 +8189,15 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	routes = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
 	httpRoutes = protectRoutesWithCrowdSec(httpRoutes, crowdSecCfg, serverID)
+	// v2.36.1 (issue #64): Advanced routes bound to their own port(s) become
+	// separate servers; give them the same CrowdSec protection as the rest.
+	rawListenServers := s.buildRawListenServers(raws)
+	for name, srv := range rawListenServers {
+		if routes, ok := srv["routes"].([]any); ok {
+			srv["routes"] = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
+		}
+		rawListenServers[name] = srv
+	}
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	skipList := buildSkipCertificates(proxies, redirs, raws, certs)
 	skipAccessLogs := buildSkipAccessLogs(proxies)
@@ -8140,6 +8219,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	}
 	applyRoutes(proposed, routes)
 	applyPlainHTTPServer(proposed, httpRoutes)
+	applyRawListenServers(proposed, rawListenServers)
 	applyListen(proposed)
 	applyProtocols(proposed, s.DB)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
@@ -8226,6 +8306,10 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_autohttps_failed", "", err.Error(), false)
 			return err
 		}
+	}
+	if err := s.writeRawListenServersSubtree(rawListenServers); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_listen_servers_failed", "", err.Error(), false)
+		return err
 	}
 	if err := s.writeTLSConnectionPoliciesSubtree(tlsConnPolicies); err != nil {
 		// Non-fatal: log but don't abort — routes and certs are already applied.
@@ -8448,34 +8532,12 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		if !rr.Enabled {
 			continue
 		}
-		var decoded any
-		if err := json.Unmarshal([]byte(rr.JSONData), &decoded); err != nil {
-			log.Printf("caddy sync: skipping invalid raw_route id=%d label=%q: %v", rr.ID, rr.Label, err)
+		// v2.36.1 (issue #64): routes bound to their own port(s) are emitted
+		// as separate servers by buildRawListenServers, not on srv0.
+		if rr.Listen != "" {
 			continue
 		}
-		wrap := func(route map[string]any) map[string]any {
-			if rr.BlockCommonExploits {
-				handle, _ := route["handle"].([]any)
-				route["handle"] = append([]any{caddy.ExploitBlockerSubroute()}, handle...)
-			}
-			return route
-		}
-		// A raw_route may contain either a single route object or an array of routes;
-		// spread arrays so we never emit a nested array (which Caddy rejects).
-		switch v := decoded.(type) {
-		case []any:
-			for _, item := range v {
-				if m, ok := item.(map[string]any); ok {
-					routes = append(routes, wrap(m))
-				} else {
-					routes = append(routes, item)
-				}
-			}
-		case map[string]any:
-			routes = append(routes, wrap(v))
-		default:
-			log.Printf("caddy sync: skipping raw_route id=%d label=%q: unexpected JSON shape %T", rr.ID, rr.Label, decoded)
-		}
+		routes = append(routes, rawRouteEntries(rr)...)
 	}
 
 	// Append a catch-all 404 route when the admin has configured custom HTML.
@@ -8705,6 +8767,149 @@ func applyPlainHTTPServer(cfg map[string]any, routes []any) {
 	}
 }
 
+// rawRouteEntries decodes a raw_route's JSON into the route object(s) it
+// contributes, applying the per-route wrapping (exploit blocker). A raw_route
+// may hold a single route object or an array of routes; arrays are spread so
+// we never emit a nested array (which Caddy rejects). Shared by srv0 assembly
+// and by the per-port servers of v2.36.1 (issue #64).
+func rawRouteEntries(rr models.RawRoute) []any {
+	var decoded any
+	if err := json.Unmarshal([]byte(rr.JSONData), &decoded); err != nil {
+		log.Printf("caddy sync: skipping invalid raw_route id=%d label=%q: %v", rr.ID, rr.Label, err)
+		return nil
+	}
+	wrap := func(route map[string]any) map[string]any {
+		if rr.BlockCommonExploits {
+			handle, _ := route["handle"].([]any)
+			route["handle"] = append([]any{caddy.ExploitBlockerSubroute()}, handle...)
+		}
+		return route
+	}
+	var out []any
+	switch v := decoded.(type) {
+	case []any:
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, wrap(m))
+			} else {
+				out = append(out, item)
+			}
+		}
+	case map[string]any:
+		out = append(out, wrap(v))
+	default:
+		log.Printf("caddy sync: skipping raw_route id=%d label=%q: unexpected JSON shape %T", rr.ID, rr.Label, decoded)
+	}
+	return out
+}
+
+// rawListenServerPrefix names the apps.http.servers entries CaddyUI creates for
+// Advanced routes with their own listen addresses (v2.36.1, issue #64). Only
+// keys with this prefix are ever removed by the sync; a server the operator
+// added by hand under any other name is left alone.
+const rawListenServerPrefix = "caddyui_listen_"
+
+// buildRawListenServers groups the enabled Advanced routes that carry a listen
+// set into one server per distinct set: `:7070 { … }` pasted twice yields one
+// "caddyui_listen_7070" server with both routes. Routes on the standard ports
+// (Listen == "") are not included — they live on srv0 / caddyui_http as
+// always. Insertion order is preserved so the routes keep the order the
+// operator sees in the list.
+func (s *Server) buildRawListenServers(raws []models.RawRoute) map[string]map[string]any {
+	type group struct {
+		addrs  []string
+		routes []any
+	}
+	groups := map[string]*group{}
+	for _, rr := range raws {
+		if !rr.Enabled || rr.Listen == "" {
+			continue
+		}
+		addrs := rr.ListenAddrs()
+		name := models.RawRouteListenServerName(addrs)
+		if name == "" {
+			continue
+		}
+		g, ok := groups[name]
+		if !ok {
+			g = &group{addrs: addrs}
+			groups[name] = g
+		}
+		g.routes = append(g.routes, rawRouteEntries(rr)...)
+	}
+	out := make(map[string]map[string]any, len(groups))
+	for name, g := range groups {
+		listen := make([]any, 0, len(g.addrs))
+		for _, a := range g.addrs {
+			listen = append(listen, a)
+		}
+		routes := g.routes
+		if routes == nil {
+			routes = []any{}
+		}
+		out[name] = map[string]any{"listen": listen, "routes": routes}
+	}
+	return out
+}
+
+// applyRawListenServers replaces every caddyui_listen_* server in the proposed
+// config with the desired set, so a route whose port changed or that was
+// deleted doesn't leave a stale listener behind.
+func applyRawListenServers(cfg map[string]any, want map[string]map[string]any) {
+	apps := ensureMap(cfg, "apps")
+	httpApp := ensureMap(apps, "http")
+	servers := ensureMap(httpApp, "servers")
+	for name := range servers {
+		if strings.HasPrefix(name, rawListenServerPrefix) {
+			delete(servers, name)
+		}
+	}
+	for name, srv := range want {
+		servers[name] = srv
+	}
+}
+
+// writeRawListenServersSubtree is the live-config counterpart of
+// applyRawListenServers: stale caddyui_listen_* servers are deleted first so a
+// port that moved between two names is never bound twice, then the desired
+// servers are written in name order (PATCH when the key exists, PUT otherwise).
+func (s *Server) writeRawListenServersSubtree(want map[string]map[string]any) error {
+	raw, err := s.Caddy.FetchPath("/config/apps/http/servers")
+	if err != nil {
+		return err
+	}
+	existing, _ := raw.(map[string]any)
+	for name := range existing {
+		if !strings.HasPrefix(name, rawListenServerPrefix) {
+			continue
+		}
+		if _, keep := want[name]; keep {
+			continue
+		}
+		if err := s.Caddy.DeletePath("/config/apps/http/servers/" + name); err != nil {
+			return err
+		}
+	}
+	names := make([]string, 0, len(want))
+	for name := range want {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		path := "/config/apps/http/servers/" + name
+		if _, exists := existing[name]; exists {
+			if err := s.Caddy.PatchPath(path, want[name]); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.Caddy.PutPath(path, want[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // applyListen forces srv0 to listen on :443. Without this, a Caddyfile with no
 // site blocks produces a config where srv0.listen is null and Caddy only serves
 // on :80 — the :443 port has no listener and HTTPS is unreachable. Setting :443
@@ -8863,6 +9068,9 @@ func (s *Server) buildHTTPRoutes(proxies []models.ProxyHost, redirs []models.Red
 	httpRaws := make([]models.RawRoute, 0)
 	for _, rr := range raws {
 		if !rr.Enabled {
+			continue
+		}
+		if rr.Listen != "" { // v2.36.1 (issue #64): served by its own listener, never on :80
 			continue
 		}
 		if !rr.ForceSSL {
@@ -11050,7 +11258,7 @@ func (s *Server) apiValidateRawRoute(w http.ResponseWriter, r *http.Request) {
 		// pipeline — that catches the bulk of bugs (unknown directives,
 		// missing args, malformed blocks). It does NOT apply the config
 		// to Caddy's running state.
-		_, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
+		_, _, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
 		if err != nil {
 			respond(false, "Caddyfile rejected by Caddy: "+err.Error())
 			return
@@ -15675,6 +15883,7 @@ func rawRouteToAPIMap(r *models.RawRoute) map[string]any {
 	return map[string]any{
 		"id":                    r.ID,
 		"label":                 r.Label,
+		"listen":                r.ListenDisplay(), // v2.36.1 (issue #64)
 		"json_data":             r.JSONData,
 		"caddyfile_src":         r.CaddyfileSrc,
 		"enabled":               r.Enabled,
@@ -15736,6 +15945,7 @@ func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 		CertificateID       int64  `json:"certificate_id"`
 		ForceSSL            bool   `json:"force_ssl"`
 		BlockCommonExploits bool   `json:"block_common_exploits"`
+		Listen              string `json:"listen"` // v2.36.1 (issue #64): e.g. ":7070" or ":7070, :7071"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&inp); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -15749,6 +15959,7 @@ func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 		Label: inp.Label, JSONData: inp.JSONData, CaddyfileSrc: inp.CaddyfileSrc,
 		Enabled: inp.Enabled, CertificateID: inp.CertificateID,
 		ForceSSL: inp.ForceSSL, BlockCommonExploits: inp.BlockCommonExploits,
+		Listen: models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(inp.Listen)), // v2.36.1 (issue #64)
 	}
 	serverID := s.currentServerID(r)
 	ownerID := int64(0)

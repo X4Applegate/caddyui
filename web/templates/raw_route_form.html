@@ -57,6 +57,15 @@
     </div>
   </div>
 
+  {{/* v2.36.1 (issue #64): own listener(s). Filled from the Caddyfile block's
+       site address when it names a custom port; editable for JSON-only routes. */}}
+  <div class="mt-4">
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Listen on <span class="text-ink-400 font-normal text-xs">(optional)</span></label>
+    <input type="text" name="listen" value="{{.Row.ListenDisplay}}" placeholder=":7070"
+      class="w-full max-w-sm rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    <p class="text-xs text-ink-500 mt-1">Give this route its own port(s), comma-separated — e.g. <code class="font-mono bg-ink-100 px-1 rounded">:7070</code> for a load-balancer health check. A Caddyfile block whose site address names a port (<code class="font-mono bg-ink-100 px-1 rounded">:7070 { … }</code>) fills this in automatically and takes precedence. Leave blank to serve on the normal :443/:80 listeners; ports 80 and 443 always mean those.</p>
+  </div>
+
   {{/* v2.7.1: TLS Certificate collapsed to match proxy-host and
        redirection forms — most raw routes don't bind a custom cert, so the
        picker stays out of the way until needed. Auto-opens on edit when a

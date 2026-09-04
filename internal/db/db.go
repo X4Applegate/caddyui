@@ -2214,6 +2214,11 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "raw_routes", "node_local") {
 		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN node_local INTEGER NOT NULL DEFAULT 0`)
 	}
+	// v2.36.1 (issue #64): JSON list of listen addresses for Advanced routes
+	// that bind their own port(s), e.g. `[":7070"]`. '' = normal :443/:80.
+	if !columnExists2(db, "raw_routes", "listen") {
+		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN listen TEXT NOT NULL DEFAULT ''`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

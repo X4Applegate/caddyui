@@ -112,6 +112,10 @@
           {{else}}
           <span class="text-ink-300 text-xs italic">— no host matcher</span>
           {{end}}
+          {{/* v2.36.1 (issue #64): routes with their own listener are not on :443/:80 */}}
+          {{if .Listen}}
+          <div class="mt-1"><span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-mono bg-sky-50 text-sky-700" title="This route has its own listener — it is not served on the normal :443/:80 ports">listens on {{.ListenDisplay}}</span></div>
+          {{end}}
         </td>
         <td class="px-5 py-3">
           <span class="inline-flex items-center gap-1">
@@ -217,6 +221,10 @@
           <div class="flex flex-wrap gap-1 mb-1">
             {{range $srcHostsCard}}<span class="domain-pill break-all">{{.}}</span>{{end}}
           </div>
+          {{end}}
+          {{/* v2.36.1 (issue #64): mirror the desktop Source column's listener badge */}}
+          {{if .Listen}}
+          <div class="mb-1"><span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-mono bg-sky-50 text-sky-700" title="This route has its own listener — it is not served on the normal :443/:80 ports">listens on {{.ListenDisplay}}</span></div>
           {{end}}
           <div class="font-mono text-xs text-ink-500 break-all">{{.Label}}</div>
         </div>

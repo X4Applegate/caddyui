@@ -372,6 +372,30 @@ func TestMonitorMethodSelectOffersEveryMethod(t *testing.T) {
 	}
 }
 
+// TestAdvancedRouteListenIsSurfaced guards v2.36.1 (issue #64): the Advanced
+// route form must offer the "Listen on" field (JSON-only routes have no
+// Caddyfile block to take the port from) and both list renderings — table row
+// and mobile card — must show which routes are on their own listener, since
+// such a route is deliberately absent from the normal :443/:80 servers.
+func TestAdvancedRouteListenIsSurfaced(t *testing.T) {
+	form, err := FS.ReadFile("templates/raw_route_form.html")
+	if err != nil {
+		t.Fatalf("read raw_route_form.html: %v", err)
+	}
+	for _, marker := range []string{`name="listen"`, "{{.Row.ListenDisplay}}"} {
+		if !strings.Contains(string(form), marker) {
+			t.Errorf("raw route form missing listen control %q", marker)
+		}
+	}
+	list, err := FS.ReadFile("templates/raw_routes.html")
+	if err != nil {
+		t.Fatalf("read raw_routes.html: %v", err)
+	}
+	if n := strings.Count(string(list), "listens on {{.ListenDisplay}}"); n != 2 {
+		t.Errorf("raw_routes.html shows the listener badge %d time(s), want 2 (table row and mobile card)", n)
+	}
+}
+
 // TestCSRFClientPlumbing guards the two client-side halves of CSRF protection.
 // The hidden form input is stamped into rendered HTML server-side (see
 // csrfInjectForms), but scripted callers depend on these two pieces: the meta
