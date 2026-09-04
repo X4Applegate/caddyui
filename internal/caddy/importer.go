@@ -108,6 +108,10 @@ func parseConfig(cfg map[string]any) *ImportResult {
 		if srvName == "remaining_auto_https_redirects" {
 			continue
 		}
+		// v2.36.1 (issue #64): a server on a non-standard port keeps that port
+		// on every route it contributes. Proxy hosts and redirects have no
+		// notion of a listen port, so such routes are always imported as raw.
+		listen := models.NormalizeRawRouteListen(listenAddresses(srv["listen"]))
 		routes, _ := srv["routes"].([]any)
 		for i, rv := range routes {
 			route, _ := rv.(map[string]any)
@@ -118,6 +122,9 @@ func parseConfig(cfg map[string]any) *ImportResult {
 			}
 
 			kind, proxy, redir := classifyRoute(route, hosts)
+			if listen != "" {
+				kind = kindRaw
+			}
 			switch kind {
 			case kindProxy:
 				r.Proxies = append(r.Proxies, proxy)
@@ -133,6 +140,7 @@ func parseConfig(cfg map[string]any) *ImportResult {
 					Label:    label,
 					JSONData: string(blob),
 					Enabled:  true,
+					Listen:   listen, // v2.36.1 (issue #64)
 				})
 			}
 		}
@@ -308,6 +316,19 @@ func hasInnerPathMatcher(handle any) bool {
 		}
 	}
 	return false
+}
+
+// listenAddresses returns the string entries of a server's "listen" list,
+// trimmed, skipping blanks and non-strings. v2.36.1 (issue #64).
+func listenAddresses(v any) []string {
+	raw, _ := v.([]any)
+	var out []string
+	for _, item := range raw {
+		if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
 }
 
 func extractHosts(route map[string]any) []string {
