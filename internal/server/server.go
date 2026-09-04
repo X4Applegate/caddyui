@@ -6685,43 +6685,9 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		mustGetSetting(s.DB, unusedCertificateDismissalKey(sid)) == unusedCertificateFingerprint(certs, referencedCerts)
 
 	// Collect domains auto-managed by Caddy (ssl_enabled, no custom cert).
-	// Use admin view to see all hosts regardless of owner.
-	seen := map[string]bool{}
-	var autoDomains []autoDomainView
-	addAutoDomain := func(domain string) {
-		if seen[domain] {
-			return
-		}
-		seen[domain] = true
-		view := autoDomainView{
-			Domain:          domain,
-			CertificateName: "Direct certificate",
-		}
-		statusDomains := []string{domain}
-		if cert := managedWildcardForHost(certs, domain); cert != nil {
-			view.CertificateName = cert.Name
-			view.UsesWildcard = true
-			statusDomains = cert.DomainList()
-		}
-		view.Lifecycle = certificateLifecycleForDomains(lifecycleStates, statusDomains)
-		autoDomains = append(autoDomains, view)
-	}
-	for _, h := range allHosts {
-		if !h.Enabled || !h.SSLEnabled || h.CertificateID != 0 {
-			continue
-		}
-		for _, d := range h.DomainList() {
-			addAutoDomain(d)
-		}
-	}
-	for _, rh := range allRedirs {
-		if !rh.Enabled || !rh.SSLEnabled || rh.CertificateID != 0 {
-			continue
-		}
-		for _, d := range rh.DomainList() {
-			addAutoDomain(d)
-		}
-	}
+	// Use admin view to see all hosts regardless of owner. v2.36.2 (issue
+	// #65): Advanced routes are included — see collectAutoManagedDomains.
+	autoDomains := collectAutoManagedDomains(certs, lifecycleStates, allHosts, allRedirs, allRoutes)
 
 	pbAPIKey, _ := models.GetSetting(s.DB, settingPBAPIKey)
 	pbSecretKey, _ := models.GetSetting(s.DB, settingPBSecretKey)

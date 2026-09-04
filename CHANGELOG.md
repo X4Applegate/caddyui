@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.36.2] - 2026-09-04 - Certificates page lists Advanced routes
+
+### Fixed
+
+- The **Caddy-managed (ACME)** section of the Certificates page listed the domains of proxy hosts and redirects but never those of Advanced routes — even though Caddy issues certificates for their host matchers in exactly the same way, and CaddyUI's certificate lifecycle tracking already followed them. Enabled Advanced routes without a custom certificate now appear there too, with the same wildcard mapping and issuance status as everything else. (#65)
+
 ## [2.36.1] - 2026-09-04 - Advanced routes on custom ports get their own listener
 
 ### Fixed
