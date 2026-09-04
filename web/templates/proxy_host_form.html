@@ -1353,9 +1353,20 @@ document.addEventListener('DOMContentLoaded', function() {
               <label class="block text-sm font-medium text-ink-800 mb-1.5">Method</label>
               <select name="monitor_method"
                 class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-                <option value="GET" {{if ne .Host.MonitorMethod "HEAD"}}selected{{end}}>GET (default)</option>
+                {{/* v2.36.0 (issue #59): every method, not just GET/HEAD. A route that only
+                     accepts POST answers 405 to GET/HEAD from Caddy itself — the probe never
+                     reaches the backend — so letting the operator pick the method the route
+                     accepts is what makes such a route monitorable. Keep this list in step
+                     with models.MonitorMethods; web/embed_test.go checks it. */}}
+                <option value="GET" {{if or (eq .Host.MonitorMethod "") (eq .Host.MonitorMethod "GET")}}selected{{end}}>GET (default)</option>
                 <option value="HEAD" {{if eq .Host.MonitorMethod "HEAD"}}selected{{end}}>HEAD (no response body)</option>
+                <option value="POST" {{if eq .Host.MonitorMethod "POST"}}selected{{end}}>POST (empty body)</option>
+                <option value="PUT" {{if eq .Host.MonitorMethod "PUT"}}selected{{end}}>PUT (empty body)</option>
+                <option value="PATCH" {{if eq .Host.MonitorMethod "PATCH"}}selected{{end}}>PATCH (empty body)</option>
+                <option value="DELETE" {{if eq .Host.MonitorMethod "DELETE"}}selected{{end}}>DELETE</option>
+                <option value="OPTIONS" {{if eq .Host.MonitorMethod "OPTIONS"}}selected{{end}}>OPTIONS</option>
               </select>
+              <p class="text-xs text-ink-500 mt-1">Use the method the probe path actually accepts. A POST-only API route answers <code>405</code> to GET/HEAD from Caddy itself — the request never reaches your backend, so it proves nothing about the service. Methods other than GET/HEAD are sent with an empty body and can have side effects; point them at an endpoint that tolerates that.</p>
             </div>
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">

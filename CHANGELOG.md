@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.36.0] - 2026-09-04 - Health checks can use any HTTP method
+
+### Added
+
+- **Custom monitoring → Method** now offers POST, PUT, PATCH, DELETE and OPTIONS alongside GET and HEAD. A route that only accepts one method — a POST-only API endpoint, say — answers `405` to a GET or HEAD probe from Caddy itself, so the request never reaches the backend and "expected status 405" only ever proved that Caddy was up. Choosing the method the route accepts lets the probe get through to the service. Both HTTP probes (the App/Port check and the Public check) honour it. Methods other than GET/HEAD are sent with an empty body; the form warns that they can have side effects, so point them at an endpoint that tolerates an empty request. Blank or unrecognised values still fall back to GET; TRACE and CONNECT are deliberately not offered. (#59)
+
 ## [2.35.5] - 2026-09-04 - Server logs show the date, and Clear now clears
 
 ### Fixed

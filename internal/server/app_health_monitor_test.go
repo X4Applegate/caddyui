@@ -70,6 +70,36 @@ func TestMonitorSettingsCustomFallsBackPerField(t *testing.T) {
 	}
 }
 
+// v2.36.0 (issue #59): any HTTP method, not just GET/HEAD. A route that only
+// accepts POST answers 405 to a GET probe from Caddy itself, so the probe never
+// reaches the backend; letting the operator pick POST is what makes such a
+// route monitorable. Blank or unrecognised input must still resolve to GET,
+// and TRACE/CONNECT are deliberately not offered.
+func TestMonitorSettingsAcceptsEveryHTTPMethod(t *testing.T) {
+	for input, want := range map[string]string{
+		"": "GET", "get": "GET", "HEAD": "HEAD", "post": "POST", " Put ": "PUT",
+		"patch": "PATCH", "DELETE": "DELETE", "options": "OPTIONS",
+		"TRACE": "GET", "CONNECT": "GET", "bogus": "GET",
+	} {
+		p := models.ProxyHost{MonitorMode: "custom", MonitorMethod: input}
+		_, method, _, _, _ := p.MonitorSettings(60*time.Second, 5*time.Second)
+		if method != want {
+			t.Errorf("custom host with MonitorMethod %q probes with %q, want %q", input, method, want)
+		}
+		if got := models.NormalizeMonitorMethod(input); got != want {
+			t.Errorf("NormalizeMonitorMethod(%q) = %q, want %q", input, got, want)
+		}
+	}
+	// An auto-mode host ignores the field entirely, whatever it holds.
+	p := models.ProxyHost{MonitorMode: "auto", MonitorMethod: "POST"}
+	if _, method, _, _, _ := p.MonitorSettings(60*time.Second, 5*time.Second); method != "GET" {
+		t.Errorf("auto-mode host probes with %q, want GET regardless of MonitorMethod", method)
+	}
+	if len(models.MonitorMethods) != 7 || models.MonitorMethods[0] != "GET" {
+		t.Errorf("MonitorMethods = %v; want seven entries with GET first, matching the form's select", models.MonitorMethods)
+	}
+}
+
 func TestMonitoringDisabledOnlyForOff(t *testing.T) {
 	for mode, want := range map[string]bool{"": false, "auto": false, "custom": false, "off": true, "OFF": true, " off ": true} {
 		if got := (&models.ProxyHost{MonitorMode: mode}).MonitoringDisabled(); got != want {
@@ -140,6 +170,40 @@ func TestProbeAppUsesCustomPathAndMethod(t *testing.T) {
 	// round-tripped and the verdict is ok.
 	if entry.Status != "ok" || entry.Code != 204 {
 		t.Errorf("entry = %+v, want ok/204", entry)
+	}
+}
+
+// v2.36.0 (issue #59): the scenario from the report — a route that only
+// accepts POST. Probing it with GET gets a 405 (from Caddy's matcher in
+// production, from the upstream here), which the default classifier reports
+// as "degraded": a verdict about the matcher, not the service. Probing with
+// POST reaches the service and is "ok". Both verdicts must follow from the
+// configured method alone, with no expect-status override.
+func TestProbeAppReachesPostOnlyRouteWithPost(t *testing.T) {
+	gotMethod := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod <- r.Method
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	for method, wantStatus := range map[string]string{"POST": "ok", "GET": "degraded"} {
+		s := &Server{appHealth: map[int64]appHealthEntry{}}
+		host := models.ProxyHost{
+			ID: 1, Enabled: true, Domains: hostportOf(t, srv.URL), SSLEnabled: false,
+			MonitorMode: "custom", MonitorPath: "/api/ping", MonitorMethod: method,
+		}
+		entry := s.probeApp(context.Background(), host)
+		if m := <-gotMethod; m != method {
+			t.Errorf("configured %s but the upstream saw %s", method, m)
+		}
+		if entry.Status != wantStatus {
+			t.Errorf("method %s: status = %q (HTTP %d), want %q", method, entry.Status, entry.Code, wantStatus)
+		}
 	}
 }
 

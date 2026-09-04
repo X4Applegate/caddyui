@@ -132,6 +132,47 @@ func TestCheckAllProxyHostsUsesCustomPathMethodAndExpectStatus(t *testing.T) {
 	}
 }
 
+// v2.36.0 (issue #59): the same POST-only scenario for the persisted Public
+// check. The stored method is lowercase on purpose — rows written by hand or
+// by an older build must still resolve, since only the form parser canonicalises.
+func TestCheckAllProxyHostsReachesPostOnlyRouteWithPost(t *testing.T) {
+	s := newPublicHealthTestServer(t)
+
+	gotMethod := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod <- r.Method
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	host := &models.ProxyHost{
+		Domains: hostportOfURL(t, srv.URL), ForwardScheme: "http", ForwardHost: "backend",
+		ForwardPort: 80, Enabled: true, SSLEnabled: false,
+		MonitorMode: "custom", MonitorPath: "/api/ping", MonitorMethod: "post",
+	}
+	id, err := models.CreateProxyHost(s.DB, 1, 0, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.checkAllProxyHosts()
+
+	if m := <-gotMethod; m != "POST" {
+		t.Errorf("probed method = %q, want POST", m)
+	}
+	history, err := models.GetProxyHealthHistory(s.DB, id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || !history[0].OK || history[0].StatusCode != 200 {
+		t.Fatalf("history = %+v, want one OK row with HTTP 200 — the POST probe must reach the upstream", history)
+	}
+}
+
 // The pre-existing failure mode: a custom health path answering something
 // other than the default-accepted codes (2xx/3xx/401/403) must show as down
 // when no expectStatus is set, matching the App-dot semantics exactly.
