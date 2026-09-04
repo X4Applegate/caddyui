@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.37.1] - 2026-09-04 - Live Traffic feed shows the date, and Clear sticks
+
+### Fixed
+
+- The Live Traffic feed stamped rows with the time only, like Server Logs did before v2.35.5; rows now show `YYYY-MM-DD HH:MM:SS` in CaddyUI's configured timezone, both for the rows rendered with the page and for those that stream in. (#60 follow-up)
+- **Clear** on the Live Traffic feed only emptied the table, and every row came straight back on the next load. It now remembers, per browser and per server filter, the newest request seen when it was pressed: those rows stay hidden after a reload and the stream resumes after them. Nothing in the Analytics database is touched.
+
+---
+
 ## [2.37.0] - 2026-09-04 - Each Caddy node ships its logs to a target it can reach
 
 ### Fixed
