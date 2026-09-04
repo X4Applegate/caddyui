@@ -132,6 +132,39 @@ func (h *Hub) Since(cursor uint64, serverID int64, limit int) []Entry {
 	return out
 }
 
+// Clear (v2.35.5, issue #60) drops every buffered entry for serverID — or
+// every entry when serverID <= 0 — and reports how many were removed. The
+// ring holds up to maxEntries for as long as the process runs, so on a quiet
+// node it spans days; the Server Logs page's "Clear" used to empty only the
+// table, and everything came straight back on the next load. IDs keep
+// counting from where they were, so a page that reconnects with its last
+// cursor neither replays the purged entries nor misses the next new one.
+func (h *Hub) Clear(serverID int64) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if serverID <= 0 {
+		removed := len(h.entries)
+		h.entries = nil
+		return removed
+	}
+	kept := h.entries[:0]
+	removed := 0
+	for _, entry := range h.entries {
+		if entry.ServerID == serverID {
+			removed++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	// Zero the vacated tail so purged entries (and their field maps) don't
+	// linger in the backing array.
+	for i := len(kept); i < len(h.entries); i++ {
+		h.entries[i] = Entry{}
+	}
+	h.entries = kept
+	return removed
+}
+
 func (h *Hub) SetCapture(state CaptureState) {
 	h.mu.Lock()
 	h.active[state.ServerID] = state

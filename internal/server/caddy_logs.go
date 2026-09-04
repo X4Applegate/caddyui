@@ -363,6 +363,36 @@ func (s *Server) disableServerLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 }
 
+// clearServerLogs (v2.35.5, issue #60) discards CaddyUI's in-memory runtime
+// log buffer for one Caddy server. The buffer keeps up to 1000 entries for the
+// life of the process, so on a quiet node it spans days; the page's "Clear
+// screen" used to empty only the table and every entry returned on the next
+// load. Nothing on disk is involved — runtime logs are never persisted — so
+// this needs no confirmation, but it is recorded in the Activity log.
+//
+// Unlike enable/disable this doesn't go through runtimeLogServerFromRequest:
+// that helper rejects external servers as "cannot be reconfigured", which is
+// beside the point for emptying a buffer.
+func (s *Server) clearServerLogs(w http.ResponseWriter, r *http.Request) {
+	if s.caddyLogHub == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "Caddy log ingest is unavailable")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid form")
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("server_id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSONError(w, http.StatusBadRequest, "select a Caddy server")
+		return
+	}
+	cleared := s.caddyLogHub.Clear(id)
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "server_logs_clear",
+		"server:"+strconv.FormatInt(id, 10), strconv.Itoa(cleared)+" buffered runtime log entries discarded", true)
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": cleared})
+}
+
 func (s *Server) runtimeLogServerFromRequest(w http.ResponseWriter, r *http.Request) (*models.CaddyServer, bool) {
 	if err := r.ParseForm(); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid form")
