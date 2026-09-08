@@ -441,6 +441,20 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 	}
 }
 
+// TestAnalyticsRetentionIsSurfaced guards v2.43.0: the retention field and
+// the storage view with Prune now / Reclaim space live on the Analytics card.
+func TestAnalyticsRetentionIsSurfaced(t *testing.T) {
+	body, err := FS.ReadFile("templates/settings.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{`name="analytics_retention_days"`, "data-analytics-storage", `formaction="/settings/analytics/prune"`, `formaction="/settings/analytics/vacuum"`, ".FreePageBytes"} {
+		if !strings.Contains(string(body), m) {
+			t.Errorf("settings.html missing %q", m)
+		}
+	}
+}
+
 // TestFailedSyncBannerIsSurfaced guards v2.42.1 (issue #74): a sync Caddy
 // rejected is shown on every page with retry and dismiss actions.
 func TestFailedSyncBannerIsSurfaced(t *testing.T) {

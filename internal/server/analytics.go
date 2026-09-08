@@ -871,27 +871,6 @@ func formatWindow(d time.Duration) string {
 	}
 }
 
-// pruneAccessLoop runs forever, deleting access_events older than the
-// configured retention (default 30d) once per day. Started by main.go
-// alongside the ingest listener. Cheap — one DELETE with an indexed
-// WHERE clause; SQLite can knock out 100k rows in a fraction of a second.
-func (s *Server) pruneAccessLoop() {
-	// First prune after 60s so a crashing container that wrote bad events
-	// gets cleaned promptly on next restart, rather than waiting 24h.
-	timer := time.NewTimer(60 * time.Second)
-	defer timer.Stop()
-	for {
-		<-timer.C
-		cutoff := time.Now().Add(-30 * 24 * time.Hour)
-		if n, err := models.PruneAccessEvents(s.DB, cutoff); err != nil {
-			log.Printf("analytics: prune error: %v", err)
-		} else if n > 0 {
-			log.Printf("analytics: pruned %d events older than %s", n, cutoff.Format(time.RFC3339))
-		}
-		timer.Reset(24 * time.Hour)
-	}
-}
-
 // --- Global search ---
 
 // getSearch handles GET /search — full-text search across proxy hosts,

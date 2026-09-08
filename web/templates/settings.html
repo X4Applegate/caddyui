@@ -1211,6 +1211,39 @@
       <p class="text-xs text-ink-500 mt-1.5">Drops events from these IPs/CIDRs before the DB insert — useful for hiding your own LAN, an uptime-monitor provider, or a VPN subnet. Changes take effect immediately (no Caddy reload required).</p>
     </div>
 
+    {{/* v2.43.0: retention + storage */}}
+    <div data-analytics-retention>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Keep raw events for <span class="text-ink-400 font-normal text-xs">(days · 0 = forever)</span></label>
+      <input name="analytics_retention_days" value="{{.AnalyticsRetentionDays}}" type="number" min="0" max="3650" step="1"
+        class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Older events are deleted every hour, in small batches. Per-day totals per host are kept separately for long-range charts, so shortening this does not blank the Analytics history. Deleting rows frees space <em>inside</em> the database file; <strong>Reclaim space</strong> below returns it to the disk.</p>
+    </div>
+
+    {{with .AnalyticsStorage}}
+    <div class="pt-3 border-t border-ink-100" data-analytics-storage>
+      <div class="text-xs font-medium text-ink-600 mb-2">Storage</div>
+      <dl class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        {{if .SQLite}}<div><dt class="text-ink-500">Database file</dt><dd class="font-mono text-ink-800">{{fmtBytes .DBBytes}}</dd></div>
+        <div><dt class="text-ink-500">Reclaimable</dt><dd class="font-mono text-ink-800">{{fmtBytes .FreePageBytes}}</dd></div>{{end}}
+        <div><dt class="text-ink-500">Oldest event</dt><dd class="font-mono text-ink-800">{{if .Oldest.IsZero}}—{{else}}{{fmtIn .Oldest "2006-01-02"}}{{end}}</dd></div>
+        <div><dt class="text-ink-500">Newest event</dt><dd class="font-mono text-ink-800">{{if .Newest.IsZero}}—{{else}}{{fmtRel .Newest}}{{end}}</dd></div>
+      </dl>
+      <div class="mt-3 text-xs text-ink-600 space-y-1">
+        {{with .LastPrune}}
+          <div>Last prune: {{if not .FinishedAt}}<span class="ui-status ui-status--info">running</span> since {{fmtRel .StartedAt}}{{else if .Error}}<span class="ui-status ui-status--danger">failed</span> {{fmtRel .StartedAt}} — <span class="font-mono">{{.Error}}</span>{{else}}{{fmtRel .StartedAt}} — removed <span class="font-mono">{{.Deleted}}</span> events{{if ge .Remaining 0}}, <span class="font-mono">{{.Remaining}}</span> kept{{end}}{{if .Cutoff}} (older than {{fmtIn .Cutoff "2006-01-02"}}){{end}}{{end}}</div>
+        {{else}}<div>Last prune: not yet run.</div>{{end}}
+        {{with .LastVacuum}}
+          <div>Last reclaim: {{if not .FinishedAt}}<span class="ui-status ui-status--info">running</span> since {{fmtRel .StartedAt}}{{else if .Error}}<span class="ui-status ui-status--danger">failed</span> {{fmtRel .StartedAt}} — <span class="font-mono">{{.Error}}</span>{{else}}{{fmtRel .StartedAt}} — <span class="font-mono">{{fmtBytes .BeforeBytes}} → {{fmtBytes .AfterBytes}}</span>{{end}}</div>
+        {{end}}
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <button type="submit" formaction="/settings/analytics/prune" formmethod="post" class="ui-button ui-button--secondary text-xs"{{if .PruneRunning}} disabled{{end}}>Prune now</button>
+        {{if .SQLite}}<button type="submit" formaction="/settings/analytics/vacuum" formmethod="post" class="ui-button ui-button--secondary text-xs"{{if not .VacuumPossible}} disabled title="{{.VacuumBlockedBy}}"{{end}}>Reclaim space</button>{{end}}
+        <span class="text-xs text-ink-400">{{if .SQLite}}Reclaim rewrites the database file without the deleted rows. It needs free disk for a full copy and pauses writes (including analytics ingest) while it runs — a few seconds per GB. Run it after a large prune, at a quiet moment.{{else}}On MariaDB, run <code class="font-mono">OPTIMIZE TABLE access_events</code> to reclaim space.{{end}}</span>
+      </div>
+    </div>
+    {{end}}
+
     {{/* Live ingest metrics — rendered only when the listener is up, which
          is always in a normal run but would be nil in tests. Atomic counters
          so reading them is safe from the request handler's goroutine. */}}
