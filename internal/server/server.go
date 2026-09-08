@@ -8507,11 +8507,12 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if strings.TrimSpace(p.AdvancedConfig) == "" {
 		return ""
 	}
-	if errMsg := validateProxyAdvancedDirectives(p.AdvancedConfig); errMsg != "" {
+	// v2.42.2: judge the repaired config, exactly what the adapter sees.
+	if errMsg := validateProxyAdvancedDirectives(normalizeProxyAdvancedConfig(p.AdvancedConfig)); errMsg != "" {
 		return errMsg
 	}
 	if _, _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p); err != nil {
-		return "Advanced config rejected by Caddy: " + err.Error()
+		return friendlyAdvancedRejection(err) // v2.42.2
 	}
 	return ""
 }
@@ -8600,7 +8601,9 @@ func (s *Server) adaptProxyAdvanced(p models.ProxyHost) ([]any, map[string]any, 
 // returns the handlers that run before the host's reverse_proxy plus, since
 // v2.40.0, the fields of a `reverse_proxy { … }` block to merge into it.
 func (s *Server) adaptProxyAdvancedWithClient(caddyCl *caddy.Client, p models.ProxyHost) ([]any, map[string]any, error) {
-	src := fmt.Sprintf("localhost {\n%s\n}\n", p.AdvancedConfig)
+	// v2.42.2: repairs applied here too, so configs saved before the
+	// repairs existed adapt on the next sync without being re-saved.
+	src := fmt.Sprintf("localhost {\n%s\n}\n", normalizeProxyAdvancedConfig(p.AdvancedConfig))
 	adapted, err := caddyCl.Adapt(src)
 	if err != nil {
 		return nil, nil, err

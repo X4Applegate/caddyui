@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -118,10 +119,17 @@ func TestAdvancedReverseProxyBlockThroughRealCaddy(t *testing.T) {
 	if s.validateProxyAdvanced(caddy.New(admin, "", ""), &p) != "" {
 		t.Errorf("validateProxyAdvanced should accept the block")
 	}
+	// v2.42.1: a bare sub-directive is wrapped, so it is simply accepted…
 	bare := p
 	bare.AdvancedConfig = "flush_interval -1"
-	if msg := s.validateProxyAdvanced(caddy.New(admin, "", ""), &bare); !strings.Contains(msg, "sub-directive") {
-		t.Errorf("bare sub-directive should be explained, got %q", msg)
+	if msg := s.validateProxyAdvanced(caddy.New(admin, "", ""), &bare); msg != "" {
+		t.Errorf("bare sub-directive should be repaired and accepted, got %q", msg)
+	}
+	// …while a genuinely unknown option gets the v2.42.2 explanation.
+	bogus := p
+	bogus.AdvancedConfig = "reverse_proxy {\n\tbogus_option 1\n}\n"
+	if msg := s.validateProxyAdvanced(caddy.New(admin, "", ""), &bogus); !strings.Contains(msg, "`bogus_option` is not an option Caddy knows there") {
+		t.Errorf("unknown option should be explained, got %q", msg)
 	}
 }
 
@@ -150,5 +158,81 @@ func TestWrapBareReverseProxySubdirectives(t *testing.T) {
 	// After wrapping, validation no longer complains and the block adapts.
 	if msg := validateProxyAdvancedDirectives(wrapBareReverseProxySubdirectives("flush_interval -1")); msg != "" {
 		t.Errorf("wrapped source should validate, got %q", msg)
+	}
+}
+
+// v2.42.2: JSON-style transport names are respelled and transport options
+// under reverse_proxy move into its transport block — including the exact
+// config from the report (flush_interval plus a transport block using
+// read_buffer_size / write_buffer_size).
+func TestNormalizeProxyAdvancedConfigRepairsTransportOptions(t *testing.T) {
+	reported := "flush_interval -1\n\ntransport http {\n    dial_timeout 30s\n    response_header_timeout 300s\n    read_buffer_size 16384\n    write_buffer_size 16384\n}\n"
+	got := normalizeProxyAdvancedConfig(reported)
+	for _, want := range []string{"reverse_proxy {", "\tflush_interval -1", "read_buffer 16384", "write_buffer 16384", "dial_timeout 30s"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("normalized config missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "read_buffer_size") || strings.Contains(got, "write_buffer_size") {
+		t.Errorf("JSON names should be respelled:\n%s", got)
+	}
+	if msg := validateProxyAdvancedDirectives(got); msg != "" {
+		t.Errorf("normalized config should validate, got %q", msg)
+	}
+
+	// Transport options typed directly under reverse_proxy move into a new transport block.
+	got = relocateTransportSubdirectives("reverse_proxy {\n\tflush_interval -1\n\tread_buffer 8192\n\tdial_timeout 10s\n}\n")
+	want := "reverse_proxy {\n\tflush_interval -1\n\ttransport http {\n\t\tread_buffer 8192\n\t\tdial_timeout 10s\n\t}\n}\n"
+	if got != want {
+		t.Errorf("relocate into new block = %q\nwant %q", got, want)
+	}
+	// … or into the existing one.
+	got = relocateTransportSubdirectives("reverse_proxy {\n\tread_buffer 8192\n\ttransport http {\n\t\tdial_timeout 10s\n\t}\n}\n")
+	want = "reverse_proxy {\n\ttransport http {\n\t\tdial_timeout 10s\n\t\tread_buffer 8192\n\t}\n}\n"
+	if got != want {
+		t.Errorf("relocate into existing block = %q\nwant %q", got, want)
+	}
+	for _, unchanged := range []string{"", "encode gzip\n", "reverse_proxy {\n\tflush_interval -1\n\ttransport http {\n\t\tread_buffer 1\n\t}\n}\n"} {
+		if got := normalizeProxyAdvancedConfig(unchanged); got != unchanged {
+			t.Errorf("%q should be untouched, got %q", unchanged, got)
+		}
+	}
+	if got := respellTransportAliases("  max_response_header_size 64KiB # note"); got != "  max_response_header 64KiB # note" {
+		t.Errorf("respell = %q", got)
+	}
+
+	err := errors.New(`caddy rejected Caddyfile: {"error":"adapting config using caddyfile adapter: parsing caddyfile tokens for 'reverse_proxy': unrecognized subdirective read_buffer_size, at Caddyfile:7"}`)
+	msg := friendlyAdvancedRejection(err)
+	if !strings.Contains(msg, "`read_buffer_size` is not an option Caddy knows there") || !strings.Contains(msg, "spelled `read_buffer`") || !strings.Contains(msg, "Upstream") || !strings.Contains(msg, "Caddy said:") {
+		t.Errorf("friendly message = %q", msg)
+	}
+	if msg := friendlyAdvancedRejection(errors.New("something else")); msg != "Advanced config rejected by Caddy: something else" {
+		t.Errorf("non-subdirective errors pass through, got %q", msg)
+	}
+}
+
+// The reported config adapts through a real Caddy once repaired; set
+// CADDYUI_TEST_CADDY_ADMIN to run.
+func TestReportedTransportConfigThroughRealCaddy(t *testing.T) {
+	admin := os.Getenv("CADDYUI_TEST_CADDY_ADMIN")
+	if admin == "" {
+		t.Skip("CADDYUI_TEST_CADDY_ADMIN not set")
+	}
+	s := &Server{}
+	p := models.ProxyHost{Domains: "cloud.example.test", ForwardScheme: "http", ForwardHost: "nextcloud", ForwardPort: 80, Enabled: true,
+		AdvancedConfig: "flush_interval -1\n\ntransport http {\n    dial_timeout 30s\n    response_header_timeout 300s\n    read_buffer_size 16384\n    write_buffer_size 16384\n}\n"}
+	if msg := s.validateProxyAdvanced(caddy.New(admin, "", ""), &p); msg != "" {
+		t.Fatalf("repaired config should be accepted, got %q", msg)
+	}
+	handlers, overrides, err := s.adaptProxyAdvancedWithClient(caddy.New(admin, "", ""), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := caddy.BuildProxyRoute(p, handlers)
+	caddy.MergeReverseProxyOverrides(route, overrides)
+	rp := route["handle"].([]any)[len(route["handle"].([]any))-1].(map[string]any)
+	transport, _ := rp["transport"].(map[string]any)
+	if transport == nil || transport["read_buffer_size"] == nil || transport["write_buffer_size"] == nil || transport["response_header_timeout"] == nil || rp["flush_interval"] == nil {
+		t.Errorf("merged handler = %v", rp)
 	}
 }

@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.42.2] - 2026-09-08 - Advanced config: JSON-style transport names and misplaced transport options are repaired
+
+### Fixed
+
+- Saving a proxy host whose Advanced config used Caddy's JSON field names inside a transport block — `read_buffer_size 16384` / `write_buffer_size 16384`, as reported for a Nextcloud host — failed with `unrecognized subdirective read_buffer_size`. In a Caddyfile those options are spelled `read_buffer`, `write_buffer` and `max_response_header`; CaddyUI now respells them, and moves transport-only options typed directly under `reverse_proxy` (timeouts, buffers, keepalive, TLS, versions…) into the block's `transport http { … }`, merging with an existing one. The repairs also apply when an already-saved Advanced config is adapted for a sync, so such hosts start working on the next sync without being re-saved.
+- When Caddy still rejects an unknown sub-directive, the message now says which name it is, how it is spelled in a Caddyfile, where transport options go, and that the same settings exist as dedicated form options (Upstream → timeouts and buffers, Streaming → Flush immediately).
+
+---
+
 ## [2.42.1] - 2026-09-08 - Changes Caddy rejects are refused up front, failed syncs are visible
 
 ### Fixed
