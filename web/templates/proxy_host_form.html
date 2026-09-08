@@ -3901,9 +3901,15 @@ document.addEventListener('DOMContentLoaded', function() {
       <p class="text-xs text-ink-500 mt-1.5">
         Extra Caddyfile directives that run before <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code> — headers, compression,
         body limits, matchers, etc. Validated via Caddy's <code class="font-mono bg-ink-100 px-1 rounded">/adapt</code> on save.
-        Terminal handlers are rejected: <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code>, <code class="font-mono bg-ink-100 px-1 rounded">redir</code>,
+        Terminal handlers are rejected: <code class="font-mono bg-ink-100 px-1 rounded">redir</code>,
         <code class="font-mono bg-ink-100 px-1 rounded">respond</code>, <code class="font-mono bg-ink-100 px-1 rounded">file_server</code> can't be used here —
         create an <a href="/raw-routes/new" class="text-brand-600 hover:text-brand-700">Advanced route</a> for those.
+      </p>
+      <p class="text-xs text-ink-500 mt-1.5" data-advanced-reverse-proxy-hint>
+        To tune the proxy itself, add a <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy { … }</code> block <em>without</em> an upstream address:
+        its sub-directives (<code class="font-mono bg-ink-100 px-1 rounded">flush_interval -1</code>, <code class="font-mono bg-ink-100 px-1 rounded">header_up</code>,
+        <code class="font-mono bg-ink-100 px-1 rounded">transport http { … }</code>, <code class="font-mono bg-ink-100 px-1 rounded">lb_policy</code>, health checks…) are merged into
+        this host's own reverse_proxy, where your Forward host / port and the options above still apply. Typed bare, those lines are not site directives and Caddy rejects them.
       </p>
     </div>
   </details>

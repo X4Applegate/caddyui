@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.40.0] - 2026-09-08 - Advanced config accepts a reverse_proxy block
+
+### Added
+
+- A proxy host's **Advanced config** can now carry a `reverse_proxy { … }` block with no upstream address. Its sub-directives — `flush_interval -1`, `header_up` / `header_down`, `transport http { … }`, `lb_policy`, active and passive health checks, `trusted_proxies`, and the rest — are adapted through Caddy and merged into the host's own generated `reverse_proxy` handler, so the Forward host / port and every option in the form still apply and nested settings (a `transport` with TLS already configured, upstream request headers) combine rather than replace. Blocks that name an upstream or sit behind a matcher are refused with a message saying why.
+
+### Fixed
+
+- Typing a reverse_proxy sub-directive bare in Advanced config — the reported case was `flush_interval -1` — came back from Caddy as `Caddyfile:2: unrecognized directive: flush_interval`, which says nothing about what to do. CaddyUI now catches every reverse_proxy sub-directive at the top level before adapting and explains that it belongs inside a `reverse_proxy { … }` block (with the block spelled out), and points at the dedicated form option where one exists (Streaming → Flush immediately for `flush_interval`).
+- The form's help text listed `reverse_proxy` among the rejected directives; it now describes the block instead.
+
+---
+
 ## [2.39.0] - 2026-09-08 - File-path certificates show expiry via a live TLS probe
 
 ### Added

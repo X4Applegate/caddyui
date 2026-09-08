@@ -441,6 +441,24 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 	}
 }
 
+// TestAdvancedConfigReverseProxyHintIsSurfaced guards v2.40.0: the form
+// tells users that a reverse_proxy block (no upstream) is merged into the
+// host's own handler, and no longer lists reverse_proxy as rejected.
+func TestAdvancedConfigReverseProxyHintIsSurfaced(t *testing.T) {
+	body, err := FS.ReadFile("templates/proxy_host_form.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"data-advanced-reverse-proxy-hint", "flush_interval -1", "without</em> an upstream address"} {
+		if !strings.Contains(string(body), m) {
+			t.Errorf("proxy_host_form.html missing %q", m)
+		}
+	}
+	if strings.Contains(string(body), `Terminal handlers are rejected: <code class="font-mono bg-ink-100 px-1 rounded">reverse_proxy</code>`) {
+		t.Error("reverse_proxy must no longer be listed as a rejected directive")
+	}
+}
+
 // TestLiveCertificateProbeIsSurfaced guards v2.39.0: file-path certificates
 // CaddyUI cannot read get their expiry from a live TLS probe of the node, and
 // every page that shows a custom certificate says where the data came from.

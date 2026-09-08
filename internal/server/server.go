@@ -8406,7 +8406,7 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if errMsg := validateProxyAdvancedDirectives(p.AdvancedConfig); errMsg != "" {
 		return errMsg
 	}
-	if _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p); err != nil {
+	if _, _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p); err != nil {
 		return "Advanced config rejected by Caddy: " + err.Error()
 	}
 	return ""
@@ -8419,11 +8419,15 @@ func validateProxyAdvancedDirectives(src string) string {
 	// any of these as top-level directives here would splice a second terminal
 	// handler before it, silently breaking routing. Reject at save time rather
 	// than waiting for the sync to succeed with a broken result.
-	banned := []string{"reverse_proxy", "redir", "respond", "file_server"}
+	// v2.40.0: reverse_proxy is no longer banned — a `reverse_proxy { … }`
+	// block with no upstream is merged into the host's own handler (see
+	// proxy_advanced_overrides.go); one that names an upstream or sits
+	// behind a matcher is rejected after adapting.
+	banned := []string{"redir", "respond", "file_server"}
 	if bad := scanTopLevelDirective(src, banned); bad != "" {
 		return fmt.Sprintf("Advanced config can't contain `%s` — this field runs BEFORE the proxy's own reverse_proxy handler. Put request-side directives here (header, encode, request_body, rewrite, etc.) and let the Forward host/port handle the upstream.", bad)
 	}
-	return ""
+	return reverseProxySubdirectiveError(src)
 }
 
 // scanTopLevelDirective returns the first top-level (brace-depth 0) directive
@@ -8484,22 +8488,25 @@ func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request
 // adapter has a valid site-address context. The adapter normally enforces
 // directive order inside the site block, so we get a handle[] list in the
 // correct order — we return that list untouched for the caller to splice in.
-func (s *Server) adaptProxyAdvanced(p models.ProxyHost) ([]any, error) {
+func (s *Server) adaptProxyAdvanced(p models.ProxyHost) ([]any, map[string]any, error) {
 	return s.adaptProxyAdvancedWithClient(s.Caddy, p)
 }
 
-func (s *Server) adaptProxyAdvancedWithClient(caddyCl *caddy.Client, p models.ProxyHost) ([]any, error) {
+// adaptProxyAdvancedWithClient adapts the Advanced config through Caddy and
+// returns the handlers that run before the host's reverse_proxy plus, since
+// v2.40.0, the fields of a `reverse_proxy { … }` block to merge into it.
+func (s *Server) adaptProxyAdvancedWithClient(caddyCl *caddy.Client, p models.ProxyHost) ([]any, map[string]any, error) {
 	src := fmt.Sprintf("localhost {\n%s\n}\n", p.AdvancedConfig)
 	adapted, err := caddyCl.Adapt(src)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	routes := extractAdaptedRoutes(adapted.Result)
 	if len(routes) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	handle, _ := routes[0]["handle"].([]any)
-	return handle, nil
+	return extractReverseProxyOverrides(handle)
 }
 
 // --- build helpers ---
@@ -8524,18 +8531,21 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 			}
 		}
 		var advanced []any
+		var advancedOverrides map[string]any
 		if strings.TrimSpace(p.AdvancedConfig) != "" {
-			h, err := s.adaptProxyAdvanced(p)
+			h, overrides, err := s.adaptProxyAdvanced(p)
 			if err != nil {
 				// Don't fail the whole sync — log and push the route without advanced
 				// handlers. The form-level validation should have caught bad syntax
 				// before save, so this branch is for rare drift cases.
 				log.Printf("caddy sync: proxy id=%d advanced_config adapt failed: %v", p.ID, err)
 			} else {
-				advanced = h
+				advanced, advancedOverrides = h, overrides
 			}
 		}
-		routes = append(routes, caddy.BuildProxyRoute(p, append(preHandlers, advanced...)))
+		route := caddy.BuildProxyRoute(p, append(preHandlers, advanced...))
+		caddy.MergeReverseProxyOverrides(route, advancedOverrides)
+		routes = append(routes, route)
 	}
 	for _, rd := range redirs {
 		if !rd.Enabled || len(rd.DomainList()) == 0 {
@@ -10831,6 +10841,7 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	advancedError := ""
+	var previewOverrides map[string]any
 	if strings.TrimSpace(p.AdvancedConfig) != "" {
 		if validationError := validateProxyAdvancedDirectives(p.AdvancedConfig); validationError != "" {
 			advancedError = validationError
@@ -10841,10 +10852,11 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 			}
 			if caddyClient == nil {
 				advancedError = "Caddy adapter is unavailable"
-			} else if handlers, adaptErr := s.adaptProxyAdvancedWithClient(caddyClient, *p); adaptErr != nil {
+			} else if handlers, overrides, adaptErr := s.adaptProxyAdvancedWithClient(caddyClient, *p); adaptErr != nil {
 				advancedError = adaptErr.Error()
 			} else {
 				previewHandlers = append(previewHandlers, handlers...)
+				previewOverrides = overrides
 			}
 		}
 	}
@@ -10864,6 +10876,7 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	previewProxy.ForwardProxyURL = redactPreviewURL(previewProxy.ForwardProxyURL)
 	previewProxy.ForwardAuthURL = redactPreviewURL(previewProxy.ForwardAuthURL)
 	route := caddy.BuildProxyRoute(previewProxy, previewHandlers)
+	caddy.MergeReverseProxyOverrides(route, previewOverrides)
 	route = redactProxyRoutePreview(route).(map[string]any)
 	caddyfile := caddy.RenderProxyHostCaddyfile(*p)
 	enc := json.NewEncoder(w)
