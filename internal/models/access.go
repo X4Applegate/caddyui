@@ -1088,14 +1088,23 @@ func TopBrowsers(db *sql.DB, since time.Time, host string, limit int, serverIDs 
 // a time. Events are appended in time order, so taking the lowest ids first
 // finds the oldest rows without needing a ts index. stop, when non-nil, is
 // polled between batches. Returns how many rows were deleted.
-func PruneAccessEventsBatched(db *sql.DB, olderThan time.Time, batch int, mariadb bool, stop func() bool) (int64, error) {
+//
+// v2.43.1: the SQLite pool is a single connection, so back-to-back batches
+// starve every page request for the whole run — a first prune of tens of
+// millions of rows made the UI crawl for twenty minutes. pause is slept
+// between batches so requests interleave; progress, when non-nil, is told
+// the running total after each batch.
+func PruneAccessEventsBatched(db *sql.DB, olderThan time.Time, batch int, mariadb bool, pause time.Duration, stop func() bool, progress func(int64)) (int64, error) {
 	if batch <= 0 {
-		batch = 20000
+		batch = 5000
 	}
 	var total int64
 	for {
 		if stop != nil && stop() {
 			return total, nil
+		}
+		if total > 0 && pause > 0 {
+			time.Sleep(pause)
 		}
 		var res sql.Result
 		var err error
@@ -1109,6 +1118,9 @@ func PruneAccessEventsBatched(db *sql.DB, olderThan time.Time, batch int, mariad
 		}
 		n, _ := res.RowsAffected()
 		total += n
+		if progress != nil && n > 0 {
+			progress(total)
+		}
 		if n < int64(batch) {
 			return total, nil
 		}

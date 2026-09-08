@@ -34,9 +34,14 @@ const (
 
 	defaultAnalyticsRetentionDays = 30
 	maxAnalyticsRetentionDays     = 3650
-	accessPruneBatch              = 20000
-	accessPruneEvery              = time.Hour
-	accessPruneFirstAfter         = 60 * time.Second
+	// v2.43.1: 5,000 rows per batch and a pause between batches. The SQLite
+	// pool is one connection, so a prune that never yields blocks every page
+	// request until it finishes — 20,000-row batches back to back made the
+	// UI take six seconds per page for the whole first run.
+	accessPruneBatch      = 5000
+	accessPruneBatchPause = 200 * time.Millisecond
+	accessPruneEvery      = time.Hour
+	accessPruneFirstAfter = 60 * time.Second
 )
 
 // analyticsRetentionDays is the configured retention: default 30, 0 = keep
@@ -129,7 +134,13 @@ func (s *Server) runAccessPrune(manual bool) accessPruneStatus {
 	st.Cutoff = &cutoff
 	s.storeJSONSetting(settingAnalyticsPruneStatus, st) // visible as "running"
 	mariadb := appdb.BackendOf(s.DB) == appdb.BackendMariaDB
-	deleted, err := models.PruneAccessEventsBatched(s.DB, cutoff, accessPruneBatch, mariadb, nil)
+	var lastLogged int64
+	deleted, err := models.PruneAccessEventsBatched(s.DB, cutoff, accessPruneBatch, mariadb, accessPruneBatchPause, nil, func(total int64) {
+		if total-lastLogged >= 1000000 {
+			lastLogged = total
+			log.Printf("analytics: prune in progress — %d events removed so far", total)
+		}
+	})
 	st.Deleted = deleted
 	if err != nil {
 		st.Error = err.Error()

@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.43.1] - 2026-09-09 - The first big prune no longer slows every page
+
+### Fixed
+
+- The first analytics prune after upgrading to v2.43.0 — tens of millions of backlog rows on an install that had never pruned — made every page take several seconds for the whole run. CaddyUI's SQLite pool is a single connection, and the prune ran its 20,000-row batches back to back, so each request waited for the next batch to finish. Batches are now 5,000 rows with a 200 ms pause between them, so requests interleave; the run takes a little longer and the UI stays responsive. Progress is logged every million rows.
+
+---
+
 ## [2.43.0] - 2026-09-09 - Analytics retention actually runs, is configurable, and space can be reclaimed
 
 ### Fixed
