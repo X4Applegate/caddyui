@@ -56,14 +56,15 @@ func TestRunAccessPruneHonoursRetention(t *testing.T) {
 
 	// Batches smaller than the backlog still remove everything old.
 	seedAccessEvents(t, s, 30, 60*24*time.Hour)
-	n, err := models.PruneAccessEventsBatched(s.DB, time.Now().Add(-30*24*time.Hour), 7, false, nil)
-	if err != nil || n != 30 {
-		t.Fatalf("batched prune = %d, %v", n, err)
+	var seen []int64
+	n, err := models.PruneAccessEventsBatched(s.DB, time.Now().Add(-30*24*time.Hour), 7, false, time.Millisecond, nil, func(t int64) { seen = append(seen, t) })
+	if err != nil || n != 30 || len(seen) != 5 || seen[len(seen)-1] != 30 {
+		t.Fatalf("batched prune = %d, %v (progress %v)", n, err, seen)
 	}
 	// stop is honoured between batches.
 	seedAccessEvents(t, s, 20, 60*24*time.Hour)
 	calls := 0
-	n, err = models.PruneAccessEventsBatched(s.DB, time.Now().Add(-30*24*time.Hour), 5, false, func() bool { calls++; return calls > 2 })
+	n, err = models.PruneAccessEventsBatched(s.DB, time.Now().Add(-30*24*time.Hour), 5, false, 0, func() bool { calls++; return calls > 2 }, nil)
 	if err != nil || n != 10 {
 		t.Fatalf("stopped prune = %d, %v", n, err)
 	}
