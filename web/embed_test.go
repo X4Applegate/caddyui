@@ -441,6 +441,27 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 	}
 }
 
+// TestCertificateExportIsSurfaced guards v2.42.0: the managed section of
+// the certificate form carries the export settings and status, and the fleet
+// server form carries the data-directory field the export depends on.
+func TestCertificateExportIsSurfaced(t *testing.T) {
+	for file, markers := range map[string][]string{
+		"templates/certificate_form.html": {"data-certificate-export", `name="export_dir"`, `name="export_cert_file"`, `name="export_key_file"`, `formaction="/certificates/{{.Cert.ID}}/export"`, ".ExportStatus"},
+		"templates/server_form.html":      {"data-data-dir-field", `name="data_dir"`},
+		"templates/docs.html":             {"Export a managed certificate to a directory"},
+	} {
+		body, err := FS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		for _, m := range markers {
+			if !strings.Contains(string(body), m) {
+				t.Errorf("%s missing %q", file, m)
+			}
+		}
+	}
+}
+
 // TestCertificateDeployPickerCoversEverySource guards v2.41.0: the "Also
 // configure on" picker is outside the managed-only section and explains what
 // travels for each source.

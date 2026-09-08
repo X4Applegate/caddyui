@@ -59,7 +59,17 @@
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Log ingest target <span class="text-ink-400 font-normal text-xs">(optional — host:port this node sends its logs to)</span></label>
       <input type="text" name="ingest_target" value="{{.Target.IngestTarget}}" placeholder="blank = fleet-wide target from Settings → Analytics"
         class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
-      <p class="text-xs text-ink-500 mt-1.5">CaddyUI configures this node to ship its access logs, certificate events and runtime logs here — that is what powers Analytics, certificate status and Server Logs for it. Blank uses the fleet-wide target from Settings → Analytics (default <code class="bg-ink-100 px-1 rounded font-mono">caddyui:9019</code>), which only works for a Caddy on the same Docker network as CaddyUI. A node on another host needs an address it can actually reach — the CaddyUI host as seen from that node, e.g. <code class="bg-ink-100 px-1 rounded font-mono">10.8.0.1:9019</code> over a VPN or <code class="bg-ink-100 px-1 rounded font-mono">192.168.1.10:9019</code> on a LAN — with port 9019 published on the CaddyUI container.</p>
+      <p class="text-xs text-ink-500 mt-1.5" data-ingest-help>CaddyUI configures this node to ship its access logs, certificate events and runtime logs here — that is what powers Analytics, certificate status and Server Logs for it. Blank uses the fleet-wide target from Settings → Analytics (default <code class="bg-ink-100 px-1 rounded font-mono">caddyui:9019</code>), which only works for a Caddy on the same Docker network as CaddyUI. A node on another host needs an address it can actually reach — the CaddyUI host as seen from that node, e.g. <code class="bg-ink-100 px-1 rounded font-mono">10.8.0.1:9019</code> over a VPN or <code class="bg-ink-100 px-1 rounded font-mono">192.168.1.10:9019</code> on a LAN — with port 9019 published on the CaddyUI container.</p>
+    </div>
+  </div>
+
+  {{/* ── v2.42.0: data directory for certificate export ── */}}
+  <div class="p-6 space-y-4 border-t border-ink-100" data-data-dir-field>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Data directory <span class="text-ink-400 font-normal text-xs">(optional — this node's Caddy data volume, as mounted inside the CaddyUI container)</span></label>
+      <input type="text" name="data_dir" value="{{.Target.DataDir}}" placeholder="/caddy-data"
+        class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition" />
+      <p class="text-xs text-ink-500 mt-1.5">Lets CaddyUI read the certificates this Caddy obtained and copy them to a directory after every renewal (Certificates → edit a managed certificate → <strong>Export to a directory</strong>). Mount the node's data volume into the CaddyUI container, read-only is enough — e.g. <code class="bg-ink-100 px-1 rounded font-mono">caddy_data:/caddy-data:ro</code> under the caddyui service — and enter the mount path here. Only possible for a Caddy whose volume this CaddyUI host can see; leave blank for remote nodes.</p>
     </div>
   </div>
 

@@ -113,6 +113,8 @@ type Server struct {
 	// local listener instead of <admin host>:443.
 	certProbeRunMu    sync.Mutex
 	certProbeTargetFn func(serverID int64, probeName string) string
+	// v2.42.0: serializes certificate export passes (certificate_export.go).
+	certExportRunMu sync.Mutex
 }
 
 type apiTokenScopeContextKey struct{}
@@ -128,6 +130,11 @@ func (s *Server) SetAnalyticsIngest(ing *analytics.Ingest) {
 
 func (s *Server) SetCaddyLogHub(hub *caddylogs.Hub) {
 	s.caddyLogHub = hub
+	if hub != nil {
+		// v2.42.0: an issuance/renewal reported by a node triggers the
+		// export of every exporting certificate that covers the name.
+		hub.OnCertificateActive = s.handleCertificateActive
+	}
 }
 
 func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, caddyfilePath string, version string, dbPath string) (*Server, error) {
@@ -540,6 +547,8 @@ func (s *Server) Routes() http.Handler {
 		// Caddy, so viewers may trigger them like the Refresh button before.
 		r.Post("/certificates/probe", s.probeCertificatesHandler)
 		r.Post("/certificates/{id}/probe", s.probeCertificateHandler)
+		// v2.42.0: Export now — writes files, so write access is required.
+		r.With(s.requireWrite).Post("/certificates/{id}/export", s.exportCertificateHandler)
 		r.Get("/raw-routes", s.listRawRoutes)
 		r.Get("/docs", s.getDocs)
 		r.Get("/api/docs", s.getAPIDocs)
@@ -3311,6 +3320,7 @@ func (s *Server) bulkDeleteCertificates(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		s.deleteCertificateProbe(id)
+		s.deleteCertificateExportStatus(id)
 		deleted++
 		_ = models.LogActivity(s.DB, sid, cu.Email, "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
 	}
@@ -7058,11 +7068,13 @@ func (s *Server) newCertificate(w http.ResponseWriter, r *http.Request) {
 	// v2.7.3: Users list fuels the admin-only Owner picker on the form.
 	// Non-admins get nil — the template skips rendering the picker.
 	data := map[string]any{
-		"User":         s.currentUser(r),
-		"Cert":         &models.Certificate{Source: models.CertSourcePEM},
-		"Users":        s.adminUserList(r),
-		"OtherServers": s.otherManagedServers(r),
-		"Section":      "certs",
+		"ExportDataDir": s.serverDataDir(s.currentServerID(r)), // v2.42.0
+		"Export":        models.CertificateExport{},
+		"User":          s.currentUser(r),
+		"Cert":          &models.Certificate{Source: models.CertSourcePEM},
+		"Users":         s.adminUserList(r),
+		"OtherServers":  s.otherManagedServers(r),
+		"Section":       "certs",
 	}
 	s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 }
@@ -7113,6 +7125,21 @@ func (s *Server) parseCertificateForm(r *http.Request) (*models.Certificate, str
 		if caddyDNSProviderConfig(c.DNSProvider, s.dnsCredsFor(c.DNSProvider, c.DNSProfileID), "") == nil {
 			return nil, "The selected DNS credential profile is missing required credentials"
 		}
+		// v2.42.0: export to a directory after every issuance/renewal.
+		exportJSON, err := models.NormalizeCertificateExportJSON(models.CertificateExport{
+			Dir:      r.FormValue("export_dir"),
+			CertFile: r.FormValue("export_cert_file"),
+			KeyFile:  r.FormValue("export_key_file"),
+		})
+		if err != nil {
+			return nil, err.Error()
+		}
+		if exportJSON != "" {
+			if _, err := safeAbsolutePath(r.FormValue("export_dir")); err != nil {
+				return nil, "Export directory: " + err.Error()
+			}
+		}
+		c.Export = exportJSON
 	}
 	return c, ""
 }
@@ -7169,6 +7196,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
+	s.exportCertificateSoon(s.currentServerID(r), *c)
 	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
@@ -7200,6 +7228,7 @@ func (s *Server) editCertificate(w http.ResponseWriter, r *http.Request) {
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "certs",
 	}
+	s.addCertificateExportViewData(data, id, *c)
 	s.render(w, r, "certificate_form.html", s.applyDNSViewData(s.currentServerID(r), data))
 }
 
@@ -7266,6 +7295,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
+	s.exportCertificateSoon(s.currentServerID(r), *c)
 	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
@@ -7321,6 +7351,7 @@ func (s *Server) deleteCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.deleteCertificateProbe(id)
+	s.deleteCertificateExportStatus(id)
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
