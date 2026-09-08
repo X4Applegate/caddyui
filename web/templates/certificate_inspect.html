@@ -21,10 +21,24 @@
   </div>
 </div>
 
-{{if not .Fingerprint}}
+{{/* v2.39.0: a file-path certificate CaddyUI cannot read is described from
+     a live TLS handshake with the node instead (see certificate_probe.go). */}}
+{{if .FromProbe}}
+<div class="bg-blue-50 border border-blue-200 text-blue-900 px-4 py-3 rounded-xl mb-6 text-sm max-w-3xl" data-inspect-from-probe>
+  <strong>Read from a live TLS probe.</strong>
+  CaddyUI cannot read <code class="font-mono text-xs">{{.Cert.CertPath}}</code> from its own container{{if .ReadError}} (<span class="font-mono text-xs">{{.ReadError}}</span>){{end}},
+  so the details below are what {{if .Probe.ServerName}}<strong>{{.Probe.ServerName}}</strong>{{else}}Caddy{{end}} served for
+  <code class="font-mono text-xs">{{.Probe.ProbeName}}</code> {{fmtRel .Probe.CheckedAt}}.
+  To read the file directly, mount its directory into the CaddyUI container read-only at the same path — for example
+  <code class="font-mono text-xs">- /certs:/certs:ro</code> under the caddyui service in your compose file.
+</div>
+{{else if not .Fingerprint}}
 <div class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-6 text-sm max-w-3xl">
   {{if eq .Cert.Source "path"}}
-  Certificate details cannot be parsed — this certificate is stored as a file path on the Caddy host. CaddyUI does not read the file contents directly.
+  CaddyUI cannot read <code class="font-mono text-xs">{{.Cert.CertPath}}</code> from its own container{{if .ReadError}} (<span class="font-mono text-xs">{{.ReadError}}</span>){{end}}{{if .Probe}},
+  and the live TLS probe of {{if .Probe.ServerName}}<strong>{{.Probe.ServerName}}</strong>{{else}}Caddy{{end}} for <code class="font-mono text-xs">{{.Probe.ProbeName}}</code>
+  {{if eq .Probe.Status "mismatch"}}found a different certificate: {{.Probe.Error}}{{else}}failed: {{.Probe.Error}}{{end}}{{end}}.
+  Mount the directory into the CaddyUI container read-only at the same path (for example <code class="font-mono text-xs">- /certs:/certs:ro</code>) to read the file directly.
   {{else}}
   Certificate PEM is empty. No details to display.
   {{end}}
@@ -122,6 +136,59 @@
       <div class="flex flex-col sm:flex-row px-5 py-3 gap-1 sm:gap-4">
         <dt class="text-xs font-medium text-ink-500 sm:w-36 shrink-0 pt-0.5">SHA-256 Fingerprint</dt>
         <dd class="text-xs font-mono text-ink-700 break-all leading-relaxed">{{.Fingerprint}}</dd>
+      </div>
+    </dl>
+  </div>
+  {{end}}
+
+  {{/* v2.39.0: Live check card — what the node actually serves right now. */}}
+  {{if .Probe}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100" data-live-check>
+    <div class="px-5 py-3 bg-ink-50 rounded-t-xl flex items-center justify-between gap-3">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-ink-500">Live check</h2>
+      <form method="post" action="/certificates/{{.Cert.ID}}/probe">
+        <button type="submit" class="ui-button ui-button--quiet text-xs">Probe now</button>
+      </form>
+    </div>
+    <dl class="divide-y divide-ink-100">
+      <div class="flex flex-col sm:flex-row px-5 py-3 gap-1 sm:gap-4">
+        <dt class="text-xs font-medium text-ink-500 sm:w-36 shrink-0 pt-0.5">Status</dt>
+        <dd class="text-sm text-ink-800">
+          {{if eq .Probe.Status "healthy"}}<span class="ui-status ui-status--success">Serving</span>
+          {{else if eq .Probe.Status "expiring"}}<span class="ui-status ui-status--warning">Serving, expires in {{.Probe.DaysLeft}} days</span>
+          {{else if eq .Probe.Status "expired"}}<span class="ui-status ui-status--danger">Serving an expired certificate</span>
+          {{else if eq .Probe.Status "mismatch"}}<span class="ui-status ui-status--warning">Not served</span>
+          {{else}}<span class="ui-status ui-status--neutral">Unreachable</span>{{end}}
+          {{if .Probe.Error}}<div class="text-xs text-ink-500 mt-1 break-all">{{.Probe.Error}}</div>{{end}}
+        </dd>
+      </div>
+      <div class="flex flex-col sm:flex-row px-5 py-3 gap-1 sm:gap-4">
+        <dt class="text-xs font-medium text-ink-500 sm:w-36 shrink-0 pt-0.5">Probed</dt>
+        <dd class="text-sm font-mono text-ink-800 break-all">{{if .Probe.ServerName}}{{.Probe.ServerName}} · {{end}}{{.Probe.Target}} with SNI {{.Probe.ProbeName}}</dd>
+      </div>
+      {{if .Probe.HasCertificate}}
+      <div class="flex flex-col sm:flex-row px-5 py-3 gap-1 sm:gap-4">
+        <dt class="text-xs font-medium text-ink-500 sm:w-36 shrink-0 pt-0.5">Served expiry</dt>
+        <dd class="text-sm font-mono {{if lt .Probe.DaysLeft 0}}text-red-700 font-semibold{{else if le .Probe.DaysLeft 30}}text-amber-700 font-semibold{{else}}text-ink-800{{end}}">{{fmtIn .Probe.NotAfter "2006-01-02 15:04"}} ({{.Probe.DaysLeft}} days)</dd>
+      </div>
+      <div class="flex flex-col sm:flex-row px-5 py-3 gap-1 sm:gap-4">
+        <dt class="text-xs font-medium text-ink-500 sm:w-36 shrink-0 pt-0.5">Served issuer</dt>
+        <dd class="text-sm font-mono text-ink-800 break-all">{{.Probe.Issuer}}</dd>
+      </div>
+      {{if .ServedKnown}}
+      <div class="flex flex-col sm:flex-row px-5 py-3 gap-1 sm:gap-4">
+        <dt class="text-xs font-medium text-ink-500 sm:w-36 shrink-0 pt-0.5">Matches {{if eq .Cert.Source "pem"}}stored PEM{{else}}file{{end}}</dt>
+        <dd class="text-sm text-ink-800">
+          {{if .ServedMatches}}<span class="ui-status ui-status--success">Same certificate</span>
+          {{else}}<span class="ui-status ui-status--warning">Different certificate</span>
+          <div class="text-xs text-ink-500 mt-1">Caddy loads file certificates when its config loads, so a renewed file is served only after a Caddy reload (Dashboard → Sync Caddy re-applies the config).</div>{{end}}
+        </dd>
+      </div>
+      {{end}}
+      {{end}}
+      <div class="flex flex-col sm:flex-row px-5 py-3 gap-1 sm:gap-4">
+        <dt class="text-xs font-medium text-ink-500 sm:w-36 shrink-0 pt-0.5">Checked</dt>
+        <dd class="text-sm text-ink-800">{{fmtDateTime .Probe.CheckedAt}} <span class="text-ink-400">({{fmtRel .Probe.CheckedAt}})</span> — re-checked every 30 minutes, after saving, and by Refresh status.</dd>
       </div>
     </dl>
   </div>

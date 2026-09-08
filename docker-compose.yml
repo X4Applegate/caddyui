@@ -55,6 +55,11 @@ services:
       # Mount the same Caddyfile Caddy reads so paste-import can auto-load
       # snippet definitions. Read-only — caddyui never writes it.
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # File-path certificates (Certificates → New → "file path") name files
+      # inside the *Caddy* container. Mount the same directory here, read-only
+      # and at the same path, and CaddyUI reads expiry/issuer straight from the
+      # file. Without it CaddyUI falls back to a live TLS probe of Caddy.
+      # - ./certs:/certs:ro
     environment:
       CADDYUI_DB: /data/caddyui.db
       CADDYUI_LISTEN: :8080

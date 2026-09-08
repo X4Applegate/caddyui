@@ -3,11 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -16,7 +13,6 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"html/template"
 	"image/png"
@@ -112,6 +108,11 @@ type Server struct {
 	runtimeLogMu       sync.Mutex
 	runtimeLogTimers   map[int64]*time.Timer
 	certificateProbeFn func(models.CaddyServer, models.Certificate) managedCertificateServerStatus
+	// v2.39.0: live TLS probes of custom (PEM / file-path) certificates, see
+	// certificate_probe.go. certProbeTargetFn lets tests point the dial at a
+	// local listener instead of <admin host>:443.
+	certProbeRunMu    sync.Mutex
+	certProbeTargetFn func(serverID int64, probeName string) string
 }
 
 type apiTokenScopeContextKey struct{}
@@ -535,6 +536,10 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/certificates", s.listCertificates)
 		r.Get("/certificates/{id}/inspect", s.getCertificateInspect)
 		r.Get("/certificates/{id}/managed-status", s.getManagedCertificateStatus)
+		// v2.39.0: live TLS probes of custom certificates. Read-only towards
+		// Caddy, so viewers may trigger them like the Refresh button before.
+		r.Post("/certificates/probe", s.probeCertificatesHandler)
+		r.Post("/certificates/{id}/probe", s.probeCertificateHandler)
 		r.Get("/raw-routes", s.listRawRoutes)
 		r.Get("/docs", s.getDocs)
 		r.Get("/api/docs", s.getAPIDocs)
@@ -2260,6 +2265,10 @@ type dashboardRecommendationInput struct {
 	AutoSnapshots     bool
 	DismissedUnused   string
 	Now               time.Time
+	// v2.39.0: best-known expiry per custom certificate (stored PEM, readable
+	// file, or the last live TLS probe) — see customCertificateExpiries.
+	// Callers that leave it nil still get stored-PEM expiries.
+	CertificateExpiry map[int64]time.Time
 }
 
 func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardRecommendation {
@@ -2335,21 +2344,28 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 		if isUnusedCustomCertificate(c, referencedCerts) {
 			unusedCustomCerts = append(unusedCustomCerts, c)
 		}
-		if c.Source != models.CertSourcePEM {
+		if !isCustomCertificate(c) {
 			continue
 		}
-		if t := parsePEMExpiry(c.CertPEM); t != nil {
-			if t.Before(now) {
-				expired++
-			} else if t.Sub(now) < 30*24*time.Hour {
-				expiringSoon++
+		t, known := in.CertificateExpiry[c.ID]
+		if !known && c.Source == models.CertSourcePEM {
+			if e := parsePEMExpiry(c.CertPEM); e != nil {
+				t, known = *e, true
 			}
+		}
+		if !known {
+			continue
+		}
+		if t.Before(now) {
+			expired++
+		} else if t.Sub(now) < 30*24*time.Hour {
+			expiringSoon++
 		}
 	}
 	if expired > 0 {
-		add("critical", "Custom certificates are expired", fmt.Sprintf("%d uploaded PEM certificate(s) are already expired.", expired), "/certificates", "Review certs")
+		add("critical", "Custom certificates are expired", fmt.Sprintf("%d custom certificate(s) are already expired.", expired), "/certificates", "Review certs")
 	} else if expiringSoon > 0 {
-		add("warning", "Custom certificates expire soon", fmt.Sprintf("%d uploaded PEM certificate(s) expire within 30 days.", expiringSoon), "/certificates", "Review certs")
+		add("warning", "Custom certificates expire soon", fmt.Sprintf("%d custom certificate(s) expire within 30 days.", expiringSoon), "/certificates", "Review certs")
 	}
 	unusedFingerprint := unusedCertificateFingerprint(in.Certificates, referencedCerts)
 	if in.IsAdmin && len(unusedCustomCerts) > 0 && unusedFingerprint != in.DismissedUnused {
@@ -2616,6 +2632,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		AdminAllowlistSet: adminAllowlistSet,
 		AutoSnapshots:     s.autoSnapshotsEnabled(),
 		DismissedUnused:   dismissedUnused,
+		CertificateExpiry: s.customCertificateExpiries(certs),
 		Now:               time.Now(),
 	})
 
@@ -3293,6 +3310,7 @@ func (s *Server) bulkDeleteCertificates(w http.ResponseWriter, r *http.Request) 
 			log.Printf("bulk-delete cert %d: %v", id, err)
 			continue
 		}
+		s.deleteCertificateProbe(id)
 		deleted++
 		_ = models.LogActivity(s.DB, sid, cu.Email, "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
 	}
@@ -4249,12 +4267,8 @@ func (s *Server) crossDeployRawRoute(actor string, sourceServerID int64, rr *mod
 // parsePEMExpiry decodes the first PEM certificate block in pemData and
 // returns its NotAfter expiry time, or nil if it cannot be parsed.
 func parsePEMExpiry(pemData string) *time.Time {
-	block, _ := pem.Decode([]byte(pemData))
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
+	cert := parsePEMLeaf(pemData)
+	if cert == nil {
 		return nil
 	}
 	t := cert.NotAfter
@@ -4275,6 +4289,15 @@ type certView struct {
 	CanEdit   bool // per-row ownership (see above)
 	IsUnused  bool // custom PEM/path certificate with no resource reference
 	Lifecycle *models.CertificateLifecycleStatus
+	// v2.39.0: where ExpiresAt came from — "stored" (PEM in the DB), "file"
+	// (CertPath readable from this container) or "probe" (the last live TLS
+	// handshake with the node, see certificate_probe.go). Probe is the last
+	// probe result for any custom certificate; ServedDiffers flags a file or
+	// stored PEM whose serial is not what Caddy is serving — typically a
+	// renewed file Caddy has not reloaded yet.
+	ExpirySource  string
+	Probe         *liveCertificateInfo
+	ServedDiffers bool
 }
 
 type autoDomainView struct {
@@ -6680,12 +6703,29 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 			unusedCount++
 		}
 		var exp *time.Time
-		switch c.Source {
-		case models.CertSourcePEM:
-			exp = parsePEMExpiry(c.CertPEM)
-		case models.CertSourcePath:
-			if data, readErr := os.ReadFile(c.CertPath); readErr == nil {
-				exp = parsePEMExpiry(string(data))
+		if isCustomCertificate(c) {
+			var leaf *x509.Certificate
+			if pemData, readErr := customCertificatePEM(c); readErr == nil {
+				leaf = parsePEMLeaf(pemData)
+			}
+			if leaf != nil {
+				t := leaf.NotAfter
+				exp = &t
+				view.ExpirySource = "file"
+				if c.Source == models.CertSourcePEM {
+					view.ExpirySource = "stored"
+				}
+			}
+			// v2.39.0: a file-path certificate CaddyUI cannot read falls back
+			// to what the node actually serves for its domain.
+			view.Probe = s.certificateProbeFor(c.ID)
+			if view.Probe.HasCertificate() {
+				if exp == nil {
+					exp = view.Probe.NotAfter
+					view.ExpirySource = "probe"
+				} else if leaf != nil && leaf.SerialNumber.Text(16) != view.Probe.SerialNumber {
+					view.ServedDiffers = true
+				}
 			}
 		}
 		if exp != nil {
@@ -6763,78 +6803,69 @@ func (s *Server) getCertificateInspect(w http.ResponseWriter, r *http.Request) {
 		"Section": "certs",
 	}
 
-	pemData := cert.CertPEM
-	if pemData == "" && cert.Source == models.CertSourcePath {
-		// Path-based cert: try reading the file so we can still parse it.
-		if raw, readErr := os.ReadFile(cert.CertPath); readErr == nil {
-			pemData = string(raw)
-		}
-	}
-
-	if pemData == "" {
-		s.render(w, r, "certificate_inspect.html", data)
-		return
-	}
-
-	block, _ := pem.Decode([]byte(pemData))
-	if block == nil {
-		s.render(w, r, "certificate_inspect.html", data)
-		return
-	}
-	parsed, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		s.render(w, r, "certificate_inspect.html", data)
-		return
-	}
-
-	// Subject / Issuer
-	data["Subject"] = parsed.Subject.String()
-	data["Issuer"] = parsed.Issuer.String()
-
-	// SANs: DNS names, IPs, URIs
-	sans := make([]string, 0, len(parsed.DNSNames)+len(parsed.IPAddresses)+len(parsed.URIs))
-	sans = append(sans, parsed.DNSNames...)
-	for _, ip := range parsed.IPAddresses {
-		sans = append(sans, ip.String())
-	}
-	for _, uri := range parsed.URIs {
-		sans = append(sans, uri.String())
-	}
-	data["SANs"] = sans
-
-	// Validity window
-	data["NotBefore"] = parsed.NotBefore
-	data["NotAfter"] = parsed.NotAfter
-	data["DaysLeft"] = int(time.Until(parsed.NotAfter).Hours() / 24)
-
-	// Key type and bits
-	keyType := "Unknown"
-	keyBits := 0
-	switch k := parsed.PublicKey.(type) {
-	case *rsa.PublicKey:
-		keyType = "RSA"
-		keyBits = k.N.BitLen()
-	case *ecdsa.PublicKey:
-		keyType = "ECDSA"
-		keyBits = k.Curve.Params().BitSize
-	case ed25519.PublicKey:
-		keyType = "Ed25519"
-	}
-	data["KeyType"] = keyType
-	data["KeyBits"] = keyBits
-
-	// Serial number (hex)
-	data["SerialNumber"] = parsed.SerialNumber.Text(16)
-
-	// SHA-256 fingerprint over the raw DER bytes
-	fp := sha256.Sum256(parsed.Raw)
-	fpParts := make([]string, len(fp))
-	for i, b := range fp {
-		fpParts[i] = fmt.Sprintf("%02X", b)
-	}
-	data["Fingerprint"] = strings.Join(fpParts[:], ":")
-
+	s.fillCertificateInspectData(data, id, *cert)
 	s.render(w, r, "certificate_inspect.html", data)
+}
+
+// fillCertificateInspectData adds the parsed certificate details to data:
+// from the stored PEM or the readable file when there is one, else (v2.39.0)
+// from a live TLS probe of the node — refreshed here when the stored result
+// is stale, so Inspect always shows something recent. Keys are the ones
+// certificate_inspect.html reads; FromProbe marks the fallback.
+func (s *Server) fillCertificateInspectData(data map[string]any, id int64, cert models.Certificate) {
+	if cert.ID == 0 {
+		cert.ID = id // probe results are keyed by certificate ID
+	}
+	pemData, readErr := customCertificatePEM(cert)
+	if readErr != nil {
+		data["ReadError"] = readErr.Error()
+	}
+	var probe *liveCertificateInfo
+	if isCustomCertificate(cert) {
+		probe = s.certificateProbeFor(id)
+		if probe.Stale() {
+			serverID, _ := models.CertificateServerID(s.DB, id)
+			fresh := s.probeCustomCertificate(serverID, cert)
+			_ = s.storeCertificateProbe(fresh)
+			probe = &fresh
+		}
+		data["Probe"] = probe
+	}
+
+	fill := func(sum x509Summary) {
+		data["Subject"] = sum.Subject
+		data["Issuer"] = sum.Issuer
+		data["SANs"] = sum.SANs
+		data["NotBefore"] = sum.NotBefore
+		data["NotAfter"] = sum.NotAfter
+		data["DaysLeft"] = int(time.Until(sum.NotAfter).Hours() / 24)
+		data["KeyType"] = sum.KeyType
+		data["KeyBits"] = sum.KeyBits
+		data["SerialNumber"] = sum.SerialNumber
+		data["Fingerprint"] = sum.Fingerprint
+	}
+
+	leaf := parsePEMLeaf(pemData)
+	if leaf == nil {
+		// Nothing readable locally: show what the node serves for the
+		// certificate's domain instead, and say so.
+		if probe.HasCertificate() {
+			data["FromProbe"] = true
+			fill(x509Summary{
+				Subject: probe.Subject, Issuer: probe.Issuer, SANs: probe.SANs,
+				NotBefore: *probe.NotBefore, NotAfter: *probe.NotAfter,
+				KeyType: probe.KeyType, KeyBits: probe.KeyBits,
+				SerialNumber: probe.SerialNumber, Fingerprint: probe.Fingerprint,
+			})
+		}
+		return
+	}
+	sum := summarizeX509(leaf)
+	fill(sum)
+	if probe.HasCertificate() {
+		data["ServedKnown"] = true
+		data["ServedMatches"] = probe.Fingerprint == sum.Fingerprint
+	}
 }
 
 type managedCertificateServerStatus struct {
@@ -6881,23 +6912,11 @@ func (s *Server) probeManagedCertificate(server models.CaddyServer, cert models.
 		host = result.ProbeName
 	}
 	target := net.JoinHostPort(strings.Trim(host, "[]"), "443")
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	conn, err := tls.DialWithDialer(dialer, "tcp", target, &tls.Config{
-		ServerName:         result.ProbeName,
-		InsecureSkipVerify: true, // nolint:gosec // diagnostic probe: hostname and expiry are checked below, including expired certs
-		MinVersion:         tls.VersionTLS12,
-	})
+	leaf, err := dialLeafCertificate(target, result.ProbeName, customCertificateProbeTimeout)
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
-	defer conn.Close()
-	peers := conn.ConnectionState().PeerCertificates
-	if len(peers) == 0 {
-		result.Error = "server returned no peer certificate"
-		return result
-	}
-	leaf := peers[0]
 	if err := leaf.VerifyHostname(result.ProbeName); err != nil {
 		result.Status = "mismatch"
 		result.Error = err.Error()
@@ -7125,6 +7144,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	c.ID = id
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
+	s.probeCertificateSoon(s.currentServerID(r), *c)
 	if c.Source == models.CertSourceManaged {
 		s.crossDeployManagedCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	}
@@ -7223,6 +7243,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
+	s.probeCertificateSoon(s.currentServerID(r), *c)
 	if c.Source == models.CertSourceManaged {
 		s.crossDeployManagedCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	}
@@ -7279,6 +7300,7 @@ func (s *Server) deleteCertificate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.deleteCertificateProbe(id)
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)

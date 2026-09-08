@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.39.0] - 2026-09-08 - File-path certificates show expiry via a live TLS probe
+
+### Added
+
+- **Live TLS probe for custom certificates.** A *file path* certificate names files inside the Caddy container, which CaddyUI usually cannot read from its own container — so the Certificates page showed no expiry at all for them, and Inspect gave up. CaddyUI now opens a TLS connection to the Caddy node for the certificate's domain (the same handshake it already uses to confirm managed certificates) and reads what is actually served: expiry, days left, issuer, SANs, key type, serial and fingerprint. Probes run every 30 minutes, after a certificate is saved, when **Refresh status** is pressed, and before Inspect renders when the last result is stale. Results are kept in the database so they survive a restart.
+- The Certificates list marks such rows *live TLS probe*, shows **Not served** when Caddy answered with a certificate for a different name, and **Unverified** when the node could not be reached (hover for the reason). Inspect gets a **Live check** card for every PEM and file-path certificate with a **Probe now** button.
+- When CaddyUI *can* read the file (or the PEM is stored), the Live check compares it with what Caddy serves and says **Different certificate** when the serial numbers differ — the usual sign of a file renewed on disk that Caddy has not reloaded yet. The list shows the same warning inline.
+- The Operations dashboard's "custom certificates expire soon / are expired" recommendations now count file-path certificates too, using the file when readable and the live probe otherwise. They previously counted stored PEMs only.
+
+### Changed
+
+- **Zero-code alternative documented:** mount the certificate directory into the CaddyUI container read-only at the same path Caddy sees (for example `- /certs:/certs:ro`), and CaddyUI reads the file directly. The docs Certificates section, the file-path form hint and a commented line in `docker-compose.yml` now say so.
+
+---
+
 ## [2.38.1] - 2026-09-08 - Dependency updates
 
 ### Changed

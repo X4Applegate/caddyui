@@ -441,6 +441,28 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 	}
 }
 
+// TestLiveCertificateProbeIsSurfaced guards v2.39.0: file-path certificates
+// CaddyUI cannot read get their expiry from a live TLS probe of the node, and
+// every page that shows a custom certificate says where the data came from.
+func TestLiveCertificateProbeIsSurfaced(t *testing.T) {
+	for file, markers := range map[string][]string{
+		"templates/certificates.html":        {`action="/certificates/probe"`, `.ExpirySource "probe"`, `.ServedDiffers`, `.Probe.Status "mismatch"`},
+		"templates/certificate_inspect.html": {`.FromProbe`, `data-live-check`, `/probe"`, `.ServedMatches`, `:ro`},
+		"templates/certificate_form.html":    {"live TLS probe", "read-only"},
+		"templates/docs.html":                {"File-path certificates", ":ro"},
+	} {
+		body, err := FS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		for _, m := range markers {
+			if !strings.Contains(string(body), m) {
+				t.Errorf("%s missing %q", file, m)
+			}
+		}
+	}
+}
+
 // TestCSRFClientPlumbing guards the two client-side halves of CSRF protection.
 // The hidden form input is stamped into rendered HTML server-side (see
 // csrfInjectForms), but scripted callers depend on these two pieces: the meta
