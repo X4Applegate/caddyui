@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.42.0] - 2026-09-08 - Export a managed certificate to a directory
+
+### Added
+
+- **Export to a directory** on managed (ACME) certificates. Other services on the same host — a mail server is the usual case — need the certificate Caddy obtains, and need it again after every renewal. Mount the node's Caddy data volume into the CaddyUI container (read-only is enough, e.g. `caddy_data:/caddy-data:ro`), enter that mount path as the server's new **Data directory** under Caddy Fleet → edit, then give the certificate an export directory and file names (defaults `fullchain.pem` and `privkey.pem`). CaddyUI locates the newest certificate Caddy stored for the definition's domains — across issuers, wildcard names included — and copies the chain and key out atomically, the key readable by owner only. Exports run when the node reports an issuance or renewal (the certificate-event stream CaddyUI already receives), every 10 minutes as a safety net, after the certificate is saved, and on **Export now**; nothing is rewritten while the stored serial is unchanged. The form shows the last export (serial, expiry, files, or the error) and every export is recorded in the Activity log.
+- With this, a wildcard that a certbot job maintained for a mail server can move to Managed ACME: Caddy renews it and CaddyUI drops the files where the mail server reads them.
+
+### Changed
+
+- Certificate file paths and export directories typed into forms are vetted before any file access: absolute, cleaned, no `..`.
+
+---
+
 ## [2.41.0] - 2026-09-08 - Fleet sync and "Also configure on" for PEM and file-path certificates
 
 ### Added

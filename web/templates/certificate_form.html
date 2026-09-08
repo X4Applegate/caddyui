@@ -113,6 +113,44 @@
       <a href="/settings" class="font-medium text-brand-700 hover:underline">Settings → DNS</a>, then return here.
     </div>
     {{end}}
+    {{/* v2.42.0: export the certificate Caddy obtained to a directory. */}}
+    <div id="export" class="pt-4 border-t border-ink-100 scroll-mt-20" data-certificate-export>
+      <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Export to a directory</div>
+      <p class="text-xs text-ink-500 mb-3">After every issuance and renewal, copy this certificate out of Caddy's storage so another service on this host — a mail server, for example — can use it. Requires this node's Caddy data volume to be mounted into the CaddyUI container and its path set under Caddy Fleet → edit server → <strong>Data directory</strong>{{if .ExportDataDir}} (currently <code class="font-mono bg-ink-100 px-1 rounded">{{.ExportDataDir}}</code>){{else}} — <span class="text-amber-700">not set for this server yet</span>{{end}}. The export directory must be a path inside the CaddyUI container, typically a bind mount the other service also sees.</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Export directory <span class="text-ink-400 font-normal text-xs">(blank = off)</span></label>
+          <input name="export_dir" value="{{with .Export}}{{.Dir}}{{end}}" placeholder="/exports/mail" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Certificate file <span class="text-ink-400 font-normal text-xs">(full chain)</span></label>
+          <input name="export_cert_file" value="{{with .Export}}{{.CertFile}}{{end}}" placeholder="fullchain.pem" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">Private key file</label>
+          <input name="export_key_file" value="{{with .Export}}{{.KeyFile}}{{end}}" placeholder="privkey.pem" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        </div>
+      </div>
+      {{if .ExportStatus}}
+      <div class="mt-3 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2 text-xs text-ink-700 space-y-1" data-certificate-export-status>
+        {{if .ExportStatus.Error}}
+          <div><span class="ui-status ui-status--danger">Export failed</span> <span class="text-ink-500">{{fmtRel .ExportStatus.CheckedAt}}</span></div>
+          <div class="font-mono break-all text-red-700">{{.ExportStatus.Error}}</div>
+        {{else}}
+          <div><span class="ui-status ui-status--success">Exported</span> <span class="text-ink-500">{{if .ExportStatus.ExportedAt}}{{fmtDateTime .ExportStatus.ExportedAt}} ({{fmtRel .ExportStatus.ExportedAt}}){{end}} · checked {{fmtRel .ExportStatus.CheckedAt}}</span></div>
+        {{end}}
+        {{if .ExportStatus.SerialNumber}}<div>Serial <span class="font-mono">{{.ExportStatus.SerialNumber}}</span>{{if .ExportStatus.NotAfter}} · expires {{fmtIn .ExportStatus.NotAfter "2006-01-02"}} ({{.ExportStatus.DaysLeft}} days){{end}}</div>{{end}}
+        {{if .ExportStatus.Files}}<div>Files: <span class="font-mono break-all">{{range $i, $f := .ExportStatus.Files}}{{if $i}}, {{end}}{{$f}}{{end}}</span></div>{{end}}
+        {{if .ExportStatus.Source}}<div class="text-ink-500">From <span class="font-mono break-all">{{.ExportStatus.Source}}</span></div>{{end}}
+      </div>
+      {{end}}
+      {{if and .Cert.ID (ne .User.Role "view")}}
+      <div class="mt-3 flex items-center gap-3">
+        <button type="submit" formaction="/certificates/{{.Cert.ID}}/export" formmethod="post" class="ui-button ui-button--secondary text-xs">Export now</button>
+        <span class="text-xs text-ink-400">Uses the saved export settings and always rewrites the files. Exports also run when this node reports a renewal, every 10 minutes as a safety net, and after you save.</span>
+      </div>
+      {{end}}
+    </div>
   </div>
 
   {{/* v2.41.0: the picker applies to every source, so it lives outside the

@@ -60,6 +60,12 @@ services:
       # and at the same path, and CaddyUI reads expiry/issuer straight from the
       # file. Without it CaddyUI falls back to a live TLS probe of Caddy.
       # - ./certs:/certs:ro
+      # Certificate export (Certificates → edit a managed certificate → Export
+      # to a directory): mount Caddy's data volume here read-only and enter
+      # /caddy-data as the server's Data directory (Caddy Fleet → edit), plus
+      # a writable directory the consuming service also mounts.
+      # - caddy_data:/caddy-data:ro
+      # - ./exports:/exports
     environment:
       CADDYUI_DB: /data/caddyui.db
       CADDYUI_LISTEN: :8080
