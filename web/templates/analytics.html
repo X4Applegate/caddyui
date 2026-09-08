@@ -37,7 +37,7 @@
       Export CSV
     </a>
     {{if .IsAdmin}}
-    <a href="/settings#analytics" class="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-700 border border-brand-200 hover:border-brand-300 px-3 py-1.5 rounded-lg transition">
+    <a href="/settings/analytics" class="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-700 border border-brand-200 hover:border-brand-300 px-3 py-1.5 rounded-lg transition">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="3"/></svg>
       Settings
     </a>
@@ -50,7 +50,7 @@
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
   <div class="flex-1">
     <div class="text-sm font-medium text-amber-900">Access log forwarding is off</div>
-    <p class="text-xs text-amber-800 mt-0.5">Turn it on in <a href="/settings#analytics" class="underline font-medium">Settings → Analytics</a> to start collecting visitor data.</p>
+    <p class="text-xs text-amber-800 mt-0.5">Turn it on in <a href="/settings/analytics" class="underline font-medium">Settings → Analytics</a> to start collecting visitor data.</p>
   </div>
 </div>
 {{end}}{{end}}
@@ -170,7 +170,7 @@
           </div>
           <div class="text-ink-600 text-sm font-medium">No traffic yet</div>
           <p class="text-xs text-ink-500 mt-1 max-w-sm mx-auto">
-          {{if .IsAdmin}}{{if .AnalyticsEnabled}}Waiting for Caddy to ship its first access log entry. Make sure your Caddy container can resolve the ingest target.{{else}}Enable access log forwarding in <a href="/settings#analytics" class="underline">Settings → Analytics</a>.{{end}}{{else}}No traffic has been recorded for the hosts you own yet.{{end}}
+          {{if .IsAdmin}}{{if .AnalyticsEnabled}}Waiting for Caddy to ship its first access log entry. Make sure your Caddy container can resolve the ingest target.{{else}}Enable access log forwarding in <a href="/settings/analytics" class="underline">Settings → Analytics</a>.{{end}}{{else}}No traffic has been recorded for the hosts you own yet.{{end}}
           </p>
           {{/* v2.37.0: with one node in scope, say where it ships its logs and why that may fail */}}
           {{with .ScopeIngest}}{{if $.IsAdmin}}

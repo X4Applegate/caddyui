@@ -320,7 +320,7 @@ func (s *Server) pruneAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = models.LogActivity(s.DB, 0, s.currentUserEmail(r), "analytics_prune", "access_events", fmt.Sprintf("manual prune, retention %d days", analyticsRetentionDays(s)), true)
 	}
-	http.Redirect(w, r, "/settings#analytics", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/analytics", http.StatusSeeOther)
 }
 
 // vacuumAnalyticsHandler: POST /settings/analytics/vacuum — Reclaim space.
@@ -328,7 +328,7 @@ func (s *Server) vacuumAnalyticsHandler(w http.ResponseWriter, r *http.Request) 
 	if err := s.startVacuum(); err != nil {
 		_ = models.LogActivity(s.DB, 0, s.currentUserEmail(r), "analytics_vacuum", "database", err.Error(), false)
 	}
-	http.Redirect(w, r, "/settings#analytics", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/analytics", http.StatusSeeOther)
 }
 
 // parseAnalyticsRetentionDays validates the settings form value: blank keeps

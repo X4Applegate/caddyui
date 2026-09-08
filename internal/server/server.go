@@ -842,6 +842,7 @@ func (s *Server) Routes() http.Handler {
 
 			// Feature F: settings page (admin-only).
 			r.Get("/settings", s.getSettings)
+			r.Get("/settings/{section}", s.getSettings) // v2.44.0
 			r.Post("/settings", s.postSettings)
 			r.Post("/settings/analytics/prune", s.pruneAnalyticsHandler)   // v2.43.0
 			r.Post("/settings/analytics/vacuum", s.vacuumAnalyticsHandler) // v2.43.0
@@ -2312,7 +2313,7 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 	}
 
 	if in.GlobalMaintenance {
-		add("critical", "Global maintenance mode is active", "Every proxy host is serving the maintenance response until this is turned off and Caddy is synced.", "/settings#settings-general", "Open settings")
+		add("critical", "Global maintenance mode is active", "Every proxy host is serving the maintenance response until this is turned off and Caddy is synced.", "/settings/general", "Open settings")
 	} else if in.MaintenanceCount > 0 {
 		add("warning", "Proxy hosts are in maintenance", fmt.Sprintf("%d enabled proxy host(s) are currently serving maintenance responses.", in.MaintenanceCount), "/proxy-hosts?status=maintenance", "Review hosts")
 	}
@@ -2358,7 +2359,7 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 		add("warning", "Managed DNS is incomplete", fmt.Sprintf("%d resource(s) have a DNS provider selected but no zone saved yet.", incompleteDNS), "/proxy-hosts", "Review DNS")
 	}
 	if missingProfiles > 0 {
-		add("critical", "DNS profile references are missing", fmt.Sprintf("%d resource(s) reference a deleted or unavailable DNS credential profile.", missingProfiles), "/settings#settings-dns", "Fix profiles")
+		add("critical", "DNS profile references are missing", fmt.Sprintf("%d resource(s) reference a deleted or unavailable DNS credential profile.", missingProfiles), "/settings/dns", "Fix profiles")
 	}
 
 	expiringSoon := 0
@@ -2413,10 +2414,10 @@ func buildDashboardRecommendations(in dashboardRecommendationInput) []dashboardR
 
 	if in.IsAdmin {
 		if !in.Require2FA && !in.RequireTOTP {
-			add("warning", "2FA is not required", "Admins can enable required TOTP enrollment to reduce account-takeover risk.", "/settings#settings-security", "Open security")
+			add("warning", "2FA is not required", "Admins can enable required TOTP enrollment to reduce account-takeover risk.", "/settings/security", "Open security")
 		}
 		if !in.AdminAllowlistSet {
-			add("info", "Admin IP allowlist is empty", "Restricting CaddyUI to trusted IPs or CIDRs can reduce exposure for homelab installs.", "/settings#settings-security", "Open security")
+			add("info", "Admin IP allowlist is empty", "Restricting CaddyUI to trusted IPs or CIDRs can reduce exposure for homelab installs.", "/settings/security", "Open security")
 		}
 		if len(in.Snapshots) == 0 {
 			add("warning", "No config snapshots yet", "Take a manual snapshot so there is a known-good Caddy config to restore.", "/snapshots", "Take snapshot")
@@ -14137,6 +14138,14 @@ func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	// v2.44.0: one page per area; /settings is the first page.
+	settingsPage := defaultSettingsSection
+	if raw := chi.URLParam(r, "section"); raw != "" {
+		if settingsPage = settingsSectionSlug(raw); settingsPage == "" {
+			http.NotFound(w, r)
+			return
+		}
+	}
 	webhookURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL)
 	// v2.12.51: ntfy.sh push channel — load alongside the existing webhook.
 	ntfyURL, _ := models.GetSetting(s.DB, settingNotifyNtfyURL)
@@ -14446,20 +14455,27 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"FaviconURL":     mustGetSetting(s.DB, settingFaviconURL),
 		"AdminAllowlist": mustGetSetting(s.DB, settingAdminAllowlist),
 		// v2.12.0: configurable session duration + global catch-all 404
-		"SessionDays":       mustGetSetting(s.DB, settingSessionDays),
-		"CatchAll404HTML":   mustGetSetting(s.DB, settingCatchAll404HTML),
-		"GlobalMaintenance": mustGetSetting(s.DB, settingGlobalMaintenance),
-		"AutoSyncHours":     mustGetSetting(s.DB, settingAutoSyncHours),
-		"ActivityLogDays":   mustGetSetting(s.DB, settingActivityLogDays),
-		"MaxLoginAttempts":  mustGetSetting(s.DB, settingMaxLoginAttempts),
-		"DisableHTTP3":      mustGetSetting(s.DB, settingDisableHTTP3),
-		"DatabaseBackend":   string(appdb.BackendOf(s.DB)),
-		"Section":           "settings",
+		"SessionDays":          mustGetSetting(s.DB, settingSessionDays),
+		"CatchAll404HTML":      mustGetSetting(s.DB, settingCatchAll404HTML),
+		"GlobalMaintenance":    mustGetSetting(s.DB, settingGlobalMaintenance),
+		"AutoSyncHours":        mustGetSetting(s.DB, settingAutoSyncHours),
+		"ActivityLogDays":      mustGetSetting(s.DB, settingActivityLogDays),
+		"MaxLoginAttempts":     mustGetSetting(s.DB, settingMaxLoginAttempts),
+		"DisableHTTP3":         mustGetSetting(s.DB, settingDisableHTTP3),
+		"DatabaseBackend":      string(appdb.BackendOf(s.DB)),
+		"Section":              "settings",
+		"SettingsSection":      settingsPage,                       // v2.44.0
+		"SettingsSectionLabel": settingsSectionLabel(settingsPage), // v2.44.0
+		"SettingsNav":          settingsSections,                   // v2.44.0
+		"SettingsAnchorsJSON":  settingsAnchorsJSON(),              // v2.44.0
 	})
 }
 
 func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
+	// v2.44.0: the posted page owns a subset of keys; "" is the legacy
+	// whole-form post (API clients, old bookmarks) and saves everything.
+	settingsPage := settingsSectionSlug(r.FormValue("settings_section"))
 	integrationSettingsPresent := r.FormValue("fleet_integrations_present") == "1"
 	accessLogFormCfg := loadFleetAccessLogConfig(s.DB)
 	crowdSecFormCfg := loadCrowdSecConfig(s.DB)
@@ -14796,22 +14812,31 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// to re-enter secrets just to toggle a checkbox. Non-secret fields
 	// (for example Namecheap's API user/client IP and Route 53's region/
 	// access-key ID) are always overwritten so users can edit or clear them.
-	for _, d := range dns.Descriptors() {
-		for _, c := range d.Credentials {
-			v := strings.TrimSpace(r.FormValue(c.Key))
-			if v == "" && c.Secret {
-				// Empty + secret field → preserve existing value.
-				continue
+	// v2.44.0: provider credentials and allow-lists only exist on the DNS
+	// page; collecting them from any other page would clear them.
+	if settingsPage == "" || settingsPage == "dns" {
+		for _, d := range dns.Descriptors() {
+			for _, c := range d.Credentials {
+				v := strings.TrimSpace(r.FormValue(c.Key))
+				if v == "" && c.Secret {
+					// Empty + secret field → preserve existing value.
+					continue
+				}
+				kv[c.Key] = v
 			}
-			kv[c.Key] = v
+			// v2.4.7: per-provider zone allow-list. Always overwrite — an
+			// empty textarea means "remove the allow-list, accept every zone
+			// again". Normalised form (lowercase, deduped, comma-separated)
+			// is what we persist, even though the textarea offers lines for
+			// readability.
+			allowRaw := r.FormValue(d.ID + "_zone_allowlist")
+			kv[zoneAllowlistKey(d.ID)] = strings.Join(parseZoneAllowlist(allowRaw), ",")
 		}
-		// v2.4.7: per-provider zone allow-list. Always overwrite — an
-		// empty textarea means "remove the allow-list, accept every zone
-		// again". Normalised form (lowercase, deduped, comma-separated)
-		// is what we persist, even though the textarea offers lines for
-		// readability.
-		allowRaw := r.FormValue(d.ID + "_zone_allowlist")
-		kv[zoneAllowlistKey(d.ID)] = strings.Join(parseZoneAllowlist(allowRaw), ",")
+	}
+	// v2.44.0: client_ip_headers lives on the Security page but is saved by
+	// the integrations bundle above; save it directly when its field posted.
+	if _, present := r.PostForm["client_ip_headers"]; present && !integrationSettingsPresent {
+		kv[settingClientIPHeaders] = strings.TrimSpace(r.FormValue("client_ip_headers"))
 	}
 	if _, ok := r.PostForm["dns_profile_name"]; ok {
 		if err := s.saveDNSProfiles(s.parseDNSProfilesForm(r)); err != nil {
@@ -14852,6 +14877,14 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	if t := strings.TrimSpace(r.FormValue("notify_ntfy_token")); t != "" {
 		kv[settingNotifyNtfyToken] = t
 	}
+	// v2.44.0: keep only the keys the posted page owns.
+	if settingsPage != "" {
+		for k := range kv {
+			if owner, known := settingsKeySection[k]; known && owner != settingsPage {
+				delete(kv, k)
+			}
+		}
+	}
 	for k, v := range kv {
 		if err := models.SetSetting(s.DB, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -14864,8 +14897,14 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// is ignored — we already validated above, so LoadLocation can't fail
 	// here barring a race with tzdata being unloaded (won't happen in a
 	// container with /usr/share/zoneinfo baked in).
-	_ = setActiveLocation(timezone)
-	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", "notify+smtp", smtpHost, true)
+	if settingsPage == "" || settingsPage == "general" {
+		_ = setActiveLocation(timezone)
+	}
+	activityDetail := "notify+smtp"
+	if settingsPage != "" {
+		activityDetail = "page:" + settingsPage
+	}
+	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "settings_update", activityDetail, smtpHost, true)
 
 	// v2.7.0: push the analytics toggle through to the live ingest +
 	// Caddy admin API after saving to the settings table. Errors are
@@ -14873,14 +14912,16 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// the Settings page's "Analytics" card reflects the current wiring
 	// state so the admin can retry. This avoids a half-saved "settings
 	// didn't persist, Caddy pivoted anyway" that would be very confusing.
-	if err := s.applyAnalyticsToggle(loadAnalyticsConfig(s.DB)); err != nil {
-		log.Printf("settings: analytics toggle: %v", err)
-	}
-	// The certificate monitor shares the analytics ingest target even when
-	// visitor analytics itself is disabled. Refresh it after target/timeout
-	// changes so lifecycle events keep flowing to the right listener.
-	if err := s.ReconcileCertificateLogs(); err != nil {
-		log.Printf("settings: certificate log monitoring: %v", err)
+	if settingsPage == "" || settingsPage == "analytics" {
+		if err := s.applyAnalyticsToggle(loadAnalyticsConfig(s.DB)); err != nil {
+			log.Printf("settings: analytics toggle: %v", err)
+		}
+		// The certificate monitor shares the analytics ingest target even when
+		// visitor analytics itself is disabled. Refresh it after target/timeout
+		// changes so lifecycle events keep flowing to the right listener.
+		if err := s.ReconcileCertificateLogs(); err != nil {
+			log.Printf("settings: certificate log monitoring: %v", err)
+		}
 	}
 
 	// v2.4.0: per-server public IP update. The settings form submits one
@@ -14943,15 +14984,21 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	go func(serverIDs []int64) {
-		// syncCaddy temporarily swaps s.Caddy, so fleet syncs stay sequential.
-		for _, serverID := range serverIDs {
-			if err := s.syncCaddy(serverID, false); err != nil {
-				log.Printf("settings: auto-sync server %d after save failed (non-fatal): %v", serverID, err)
+	if settingsSectionSyncsCaddy(settingsPage) { // v2.44.0
+		go func(serverIDs []int64) {
+			// syncCaddy temporarily swaps s.Caddy, so fleet syncs stay sequential.
+			for _, serverID := range serverIDs {
+				if err := s.syncCaddy(serverID, false); err != nil {
+					log.Printf("settings: auto-sync server %d after save failed (non-fatal): %v", serverID, err)
+				}
 			}
-		}
-	}(serverIDsToSync)
+		}(serverIDsToSync)
+	}
 
+	if settingsPage != "" {
+		http.Redirect(w, r, "/settings/"+settingsPage+"?saved=1", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }
 
@@ -14993,7 +15040,7 @@ func (s *Server) postClearDNSProvider(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r),
 		"dns_provider_clear", "dns:"+id, "", true)
 
-	http.Redirect(w, r, "/settings?cleared="+url.QueryEscape(id), http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/dns?cleared="+url.QueryEscape(id), http.StatusSeeOther)
 }
 
 func (s *Server) postTestWebhook(w http.ResponseWriter, r *http.Request) {
