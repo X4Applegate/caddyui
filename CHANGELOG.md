@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.38.1] - 2026-09-08 - Dependency updates
+
+### Changed
+
+- **Go modules**: `github.com/aws/aws-sdk-go-v2` 1.43.7 → 1.45.1 (with `credentials` 1.20.2 and `service/route53` 1.68.0), `github.com/go-sql-driver/mysql` 1.10.0 → 1.10.1, `golang.org/x/crypto` 0.55.0 → 0.56.0 and `modernc.org/sqlite` 1.57.0 → 1.58.0. The module's minimum Go version moved from 1.25 to 1.26; the Docker image already builds with Go 1.27, so nothing changes for the shipped binary beyond the newer libraries. No application code changed. (#71)
+
+---
+
 ## [2.38.0] - 2026-09-04 - Expectations: post-apply checks with automatic rollback
 
 ### Added
