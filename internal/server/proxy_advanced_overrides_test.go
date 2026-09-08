@@ -124,3 +124,31 @@ func TestAdvancedReverseProxyBlockThroughRealCaddy(t *testing.T) {
 		t.Errorf("bare sub-directive should be explained, got %q", msg)
 	}
 }
+
+// v2.42.1: bare reverse_proxy sub-directives are moved into a reverse_proxy
+// block (merged into an existing one), blocks travel intact, and sources
+// with nothing to move come back byte-identical.
+func TestWrapBareReverseProxySubdirectives(t *testing.T) {
+	got, names := wrapBareReverseProxySubdirectivesNamed("flush_interval -1\nencode gzip\n")
+	if got != "encode gzip\nreverse_proxy {\n\tflush_interval -1\n}\n" || len(names) != 1 || names[0] != "flush_interval" {
+		t.Errorf("simple wrap = %q (%v)", got, names)
+	}
+	got, _ = wrapBareReverseProxySubdirectivesNamed("flush_interval -1")
+	if got != "reverse_proxy {\n\tflush_interval -1\n}\n" {
+		t.Errorf("only a sub-directive = %q", got)
+	}
+	got, names = wrapBareReverseProxySubdirectivesNamed("header X-Frame-Options DENY\ntransport http {\n\tread_timeout 30s\n}\nreverse_proxy {\n\theader_up X-Real-IP {remote_host}\n}\n")
+	want := "header X-Frame-Options DENY\nreverse_proxy {\n\theader_up X-Real-IP {remote_host}\n\ttransport http {\n\tread_timeout 30s\n\t}\n}\n"
+	if got != want || len(names) != 1 || names[0] != "transport" {
+		t.Errorf("merge into existing block = %q (%v)\nwant %q", got, names, want)
+	}
+	for _, unchanged := range []string{"", "encode gzip\n", "reverse_proxy {\n\tflush_interval -1\n}\n", "request_body {\n\tmax_size 10MB\n}\n"} {
+		if got, names := wrapBareReverseProxySubdirectivesNamed(unchanged); got != unchanged || names != nil {
+			t.Errorf("%q should be untouched, got %q (%v)", unchanged, got, names)
+		}
+	}
+	// After wrapping, validation no longer complains and the block adapts.
+	if msg := validateProxyAdvancedDirectives(wrapBareReverseProxySubdirectives("flush_interval -1")); msg != "" {
+		t.Errorf("wrapped source should validate, got %q", msg)
+	}
+}

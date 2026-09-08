@@ -36,12 +36,8 @@ func (e HostExpectation) Normalized() HostExpectation {
 	} else {
 		e.Scheme = "https"
 	}
-	e.Path = strings.TrimSpace(e.Path)
-	if e.Path == "" {
-		e.Path = "/"
-	} else if !strings.HasPrefix(e.Path, "/") {
-		e.Path = "/" + e.Path
-	}
+	// Exactly one leading slash: a request path, never a protocol-relative URL.
+	e.Path = "/" + strings.TrimLeft(strings.TrimSpace(e.Path), "/")
 	if e.ExpectStatus < 100 || e.ExpectStatus > 599 {
 		e.ExpectStatus = 0
 	}

@@ -441,6 +441,20 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 	}
 }
 
+// TestFailedSyncBannerIsSurfaced guards v2.42.1 (issue #74): a sync Caddy
+// rejected is shown on every page with retry and dismiss actions.
+func TestFailedSyncBannerIsSurfaced(t *testing.T) {
+	body, err := FS.ReadFile("templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{".SyncErrors", "data-sync-error", "/sync-error/clear", "/sync-reapply"} {
+		if !strings.Contains(string(body), m) {
+			t.Errorf("layout.html missing %q", m)
+		}
+	}
+}
+
 // TestCertificateExportIsSurfaced guards v2.42.0: the managed section of
 // the certificate form carries the export settings and status, and the fleet
 // server form carries the data-directory field the export depends on.

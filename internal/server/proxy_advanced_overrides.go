@@ -146,3 +146,93 @@ func describeOverrides(overrides map[string]any) string {
 	}
 	return strings.Join(keys, ", ")
 }
+
+// wrapBareReverseProxySubdirectives (v2.42.1) moves reverse_proxy
+// sub-directives typed at the top level of an Advanced config into a
+// `reverse_proxy { … }` block — merged into an existing one when there is
+// one — so `flush_interval -1` on its own simply works instead of being
+// explained back to the user. Multi-line sub-directives (a transport block)
+// move with their braces. Sources that need no change come back unchanged.
+func wrapBareReverseProxySubdirectives(src string) string {
+	out, _ := wrapBareReverseProxySubdirectivesNamed(src)
+	return out
+}
+
+func wrapBareReverseProxySubdirectivesNamed(src string) (string, []string) {
+	isSub := map[string]bool{}
+	for _, d := range reverseProxySubdirectives {
+		isSub[d] = true
+	}
+	stripped := func(line string) string {
+		t := strings.TrimSpace(line)
+		if i := strings.Index(t, "#"); i >= 0 {
+			t = strings.TrimSpace(t[:i])
+		}
+		return t
+	}
+	braces := func(line string) int {
+		d := 0
+		for _, ch := range stripped(line) {
+			switch ch {
+			case '{':
+				d++
+			case '}':
+				d--
+			}
+		}
+		return d
+	}
+	lines := strings.Split(src, "\n")
+	var top, moved, names []string
+	depth := 0
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		t := stripped(line)
+		first := ""
+		if t != "" {
+			first = strings.Fields(t)[0]
+		}
+		if depth == 0 && first != "" && isSub[first] {
+			names = append(names, first)
+			moved = append(moved, "\t"+strings.TrimSpace(line))
+			d := braces(line)
+			i++
+			for d > 0 && i < len(lines) {
+				moved = append(moved, "\t"+strings.TrimSpace(lines[i]))
+				d += braces(lines[i])
+				i++
+			}
+			continue
+		}
+		top = append(top, line)
+		depth += braces(line)
+		i++
+	}
+	if len(moved) == 0 {
+		return src, nil
+	}
+	// Merge into an existing top-level reverse_proxy block when there is one.
+	depth = 0
+	for i, line := range top {
+		t := stripped(line)
+		if depth == 0 && t != "" && strings.Fields(t)[0] == "reverse_proxy" && strings.HasSuffix(t, "{") {
+			d := braces(line)
+			for j := i + 1; j < len(top); j++ {
+				d += braces(top[j])
+				if d == 0 {
+					merged := append([]string{}, top[:j]...)
+					merged = append(merged, moved...)
+					merged = append(merged, top[j:]...)
+					return strings.TrimRight(strings.Join(merged, "\n"), "\n") + "\n", names
+				}
+			}
+		}
+		depth += braces(line)
+	}
+	body := strings.TrimRight(strings.Join(top, "\n"), "\n")
+	block := "reverse_proxy {\n" + strings.Join(moved, "\n") + "\n}\n"
+	if strings.TrimSpace(body) == "" {
+		return block, names
+	}
+	return body + "\n" + block, names
+}

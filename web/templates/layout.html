@@ -733,6 +733,18 @@ if ('serviceWorker' in navigator) {
             </div>
           </div>
           {{end}}
+          {{/* v2.42.1 (issue #74): the last sync to a server failed — shown on every page until a sync succeeds */}}
+          {{range .SyncErrors}}
+          <div class="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-900" role="alert" data-sync-error="{{.ServerID}}">
+            <div class="font-semibold">Caddy on {{.ServerName}} rejected the last sync — your latest changes there are <u>not</u> live.</div>
+            <div class="text-xs mt-1 break-words font-mono">{{.Error}}</div>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <form method="post" action="/servers/{{.ServerID}}/sync-reapply"><button type="submit" class="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition">Retry sync now</button></form>
+              <form method="post" action="/servers/{{.ServerID}}/sync-error/clear"><button type="submit" class="text-xs px-3 py-1.5 rounded-lg border border-amber-300 text-amber-900 hover:bg-amber-100 transition">Dismiss</button></form>
+              <span class="text-xs text-amber-800">{{fmtIn .At "2006-01-02 15:04:05"}} · fix the cause (a certificate file Caddy cannot open, for example), then retry</span>
+            </div>
+          </div>
+          {{end}}
           {{block "content" .}}{{end}}
         </div>
       </main>
