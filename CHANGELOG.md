@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.42.1] - 2026-09-08 - Changes Caddy rejects are refused up front, failed syncs are visible
+
+### Fixed
+
+- **A proxy host, redirection or certificate that Caddy would not load was saved anyway** ([#74](https://github.com/X4Applegate/caddyui/issues/74)). The form said "saved", the sync failed only in the log, the live config stayed as it was — and every later sync for that server failed the same way. The reported case: a file-path certificate whose files exist on the host but not inside the Caddy container. Proxy hosts, redirections and certificates are now validated against Caddy before they are saved, as Advanced routes already were; a file Caddy cannot open comes back as "Caddy cannot open /path for certificate X … the file must exist inside the Caddy container — mount the directory into Caddy or paste the PEM instead".
+- **A failed sync is now visible.** When a sync is rejected for any reason after a save, an amber banner on every page names the server and Caddy's error, with **Retry sync now** and **Dismiss**, until the next sync succeeds.
+- The Caddyfile view of a host with a custom certificate rendered only a comment; a file-path certificate now renders as a real `tls <cert> <key>` line, and stored PEM / managed certificates say how Caddy gets them. The Caddyfile export does the same.
+- The Caddyfile view and export printed an Advanced config `reverse_proxy { … }` block verbatim after the host's own `reverse_proxy` block, i.e. as a second one; its sub-directives now render inside the generated block, marked "from Advanced config".
+- A reverse_proxy sub-directive typed bare in a host's Advanced config — `flush_interval -1` on its own — is now moved into a `reverse_proxy { … }` block automatically (merged into an existing block when there is one, multi-line sub-directives included) instead of being explained back to you.
+
+### Security
+
+- Two CodeQL findings from v2.38.0: the post-apply banner's "back" redirect no longer accepts a protocol-relative `//host` path, and expectation paths are normalised to exactly one leading slash.
+
+---
+
 ## [2.42.0] - 2026-09-08 - Export a managed certificate to a directory
 
 ### Added
