@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.43.0] - 2026-09-09 - Analytics retention actually runs, is configurable, and space can be reclaimed
+
+### Fixed
+
+- **Raw analytics events were never pruned.** The 30-day prune loop has existed since v2.7.0, but nothing ever started it, so `access_events` grew without bound — one production database had reached 22 GB with 63 million rows older than 30 days. The loop now starts with the other background workers, runs an hour after start-up and hourly after that, and deletes in batches of 20,000 so the write lock is never held for long even on a first run against months of backlog.
+
+### Added
+
+- **Settings → Analytics → Keep raw events for N days** (default 30; 0 keeps forever). Per-day totals per host are kept in a separate rollup, so shortening the retention does not blank long-range charts.
+- A **Storage** panel on the same card: database file size, space already freed inside the file, oldest and newest event, the last prune (rows removed and kept) and the last reclaim, with **Prune now** and **Reclaim space** buttons. Reclaim runs SQLite's VACUUM in the background — the only thing that actually shrinks the file after rows are deleted — and is refused when the data volume lacks room for a full copy; on MariaDB the panel points at `OPTIMIZE TABLE` instead. Both actions are recorded in the Activity log.
+- The Docker image sets `SQLITE_TMPDIR=/data` so VACUUM has a working directory in the scratch-based image, which has no `/tmp`.
+
+---
+
 ## [2.42.2] - 2026-09-08 - Advanced config: JSON-style transport names and misplaced transport options are repaired
 
 ### Fixed

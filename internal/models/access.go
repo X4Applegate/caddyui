@@ -1082,3 +1082,60 @@ func TopBrowsers(db *sql.DB, since time.Time, host string, limit int, serverIDs 
 	}
 	return out, nil
 }
+
+// PruneAccessEventsBatched (v2.43.0) deletes events older than olderThan in
+// batches, so a long-overdue prune never holds the write lock for minutes at
+// a time. Events are appended in time order, so taking the lowest ids first
+// finds the oldest rows without needing a ts index. stop, when non-nil, is
+// polled between batches. Returns how many rows were deleted.
+func PruneAccessEventsBatched(db *sql.DB, olderThan time.Time, batch int, mariadb bool, stop func() bool) (int64, error) {
+	if batch <= 0 {
+		batch = 20000
+	}
+	var total int64
+	for {
+		if stop != nil && stop() {
+			return total, nil
+		}
+		var res sql.Result
+		var err error
+		if mariadb {
+			res, err = db.Exec(`DELETE FROM access_events WHERE ts < ? ORDER BY id LIMIT ?`, olderThan.Unix(), batch)
+		} else {
+			res, err = db.Exec(`DELETE FROM access_events WHERE id IN (SELECT id FROM access_events WHERE ts < ? ORDER BY id LIMIT ?)`, olderThan.Unix(), batch)
+		}
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < int64(batch) {
+			return total, nil
+		}
+	}
+}
+
+// AccessEventBounds returns the timestamps of the oldest and newest events
+// (zero when the table is empty). Read from the ends of the id order, which
+// is instant however large the table is.
+func AccessEventBounds(db *sql.DB) (oldest, newest time.Time, err error) {
+	var lo, hi int64
+	if err = db.QueryRow(`SELECT ts FROM access_events ORDER BY id ASC LIMIT 1`).Scan(&lo); err != nil {
+		if err == sql.ErrNoRows {
+			return time.Time{}, time.Time{}, nil
+		}
+		return
+	}
+	if err = db.QueryRow(`SELECT ts FROM access_events ORDER BY id DESC LIMIT 1`).Scan(&hi); err != nil {
+		return
+	}
+	return time.Unix(lo, 0).UTC(), time.Unix(hi, 0).UTC(), nil
+}
+
+// CountAccessEvents is a full count — cheap once retention keeps the table
+// small, so it is taken after each prune rather than on every page view.
+func CountAccessEvents(db *sql.DB) (int64, error) {
+	var n int64
+	err := db.QueryRow(`SELECT COUNT(*) FROM access_events`).Scan(&n)
+	return n, err
+}

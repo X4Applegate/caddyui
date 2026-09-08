@@ -115,6 +115,9 @@ type Server struct {
 	certProbeTargetFn func(serverID int64, probeName string) string
 	// v2.42.0: serializes certificate export passes (certificate_export.go).
 	certExportRunMu sync.Mutex
+	// v2.43.0: analytics retention — one prune and one VACUUM at a time.
+	accessPruneMu sync.Mutex
+	vacuumMu      sync.Mutex
 }
 
 type apiTokenScopeContextKey struct{}
@@ -164,6 +167,9 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	go s.runMaintenanceWindowLoop()
 	go s.runActivityLogCleanup()
 	go s.runAccessDailyAggregator()
+	// v2.43.0: this loop existed since v2.7.0 but was never started, so
+	// access_events grew without bound (analytics_retention.go).
+	go s.pruneAccessLoop()
 	return s, nil
 }
 
@@ -837,6 +843,8 @@ func (s *Server) Routes() http.Handler {
 			// Feature F: settings page (admin-only).
 			r.Get("/settings", s.getSettings)
 			r.Post("/settings", s.postSettings)
+			r.Post("/settings/analytics/prune", s.pruneAnalyticsHandler)   // v2.43.0
+			r.Post("/settings/analytics/vacuum", s.vacuumAnalyticsHandler) // v2.43.0
 			r.Post("/settings/test-webhook", s.postTestWebhook)
 			r.Post("/settings/test-email", s.postTestEmail)
 			r.Post("/settings/test-crowdsec", s.postTestCrowdSec)
@@ -14402,6 +14410,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AnalyticsSoftStart":         analyticsCfg.SoftStart,
 		"AnalyticsDialTimeoutSec":    int(analyticsCfg.DialTimeout / time.Second),
 		"AnalyticsIngestStats":       analyticsIngestSnap,
+		"AnalyticsRetentionDays":     analyticsRetentionDays(s), // v2.43.0
+		"AnalyticsStorage":           s.analyticsStorageView(),  // v2.43.0
 		// Fleet access logging and CrowdSec integrations (v2.21.0).
 		"AccessLogEnabled":        accessLogCfg.Enabled,
 		"AccessLogPath":           accessLogCfg.Path,
@@ -14603,6 +14613,12 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// v2.43.0: retention days (0 = keep forever).
+	analyticsRetention, err := parseAnalyticsRetentionDays(r.FormValue("analytics_retention_days"), analyticsRetentionDays(s))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	analyticsDialTimeoutSec := int(currentAnalyticsCfg.DialTimeout / time.Second)
 	if raw, present := r.PostForm["analytics_dial_timeout_sec"]; present && len(raw) > 0 && strings.TrimSpace(raw[0]) != "" {
 		n, err := strconv.Atoi(strings.TrimSpace(raw[0]))
@@ -14721,6 +14737,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingAnalyticsExcludeIPs:      analyticsExclude,
 		settingAnalyticsSoftStart:       analyticsSoftStart,
 		settingAnalyticsDialTimeoutSec:  strconv.Itoa(analyticsDialTimeoutSec),
+		settingAnalyticsRetentionDays:   strconv.Itoa(analyticsRetention), // v2.43.0
 		// v2.10.0: trusted proxies + custom site title
 		settingTrustedProxies: strings.TrimSpace(r.FormValue("trusted_proxies")),
 		settingSiteTitle:      strings.TrimSpace(r.FormValue("site_title")),

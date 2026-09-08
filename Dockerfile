@@ -96,7 +96,10 @@ COPY --chmod=1777 --from=build /out/tmp /tmp
 USER 10001
 
 EXPOSE 8080
-ENV CADDYUI_DB=/data/caddyui.db \
+# SQLITE_TMPDIR: VACUUM (Settings → Analytics → Reclaim space) writes its
+# working copy to a temp directory; the scratch image has no /tmp.
+ENV SQLITE_TMPDIR=/data \
+    CADDYUI_DB=/data/caddyui.db \
     CADDYUI_LISTEN=:8080 \
     CADDY_ADMIN_URL=http://caddy:2019
 VOLUME ["/data"]
