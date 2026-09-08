@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -423,8 +422,8 @@ func fleetCertificateCopy(source models.Certificate) (copy models.Certificate, b
 		copy.DNSProvider, copy.DNSProfileID = "", ""
 	case models.CertSourcePath:
 		copy.DNSProvider, copy.DNSProfileID = "", ""
-		certPEM, certErr := os.ReadFile(source.CertPath)
-		keyPEM, keyErr := os.ReadFile(source.KeyPath)
+		certPEM, certErr := readCertificateFile(source.CertPath)
+		keyPEM, keyErr := readCertificateFile(source.KeyPath)
 		if certErr == nil && keyErr == nil && parsePEMLeaf(string(certPEM)) != nil && strings.Contains(string(keyPEM), "PRIVATE KEY") {
 			copy.Source = models.CertSourcePEM
 			copy.CertPEM, copy.KeyPEM = strings.TrimSpace(string(certPEM)), strings.TrimSpace(string(keyPEM))
