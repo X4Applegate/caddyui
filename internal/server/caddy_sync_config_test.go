@@ -372,12 +372,12 @@ func TestEnsureManagedCertificateOnServerDeduplicatesEquivalentSubjects(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := s.ensureManagedCertificateOnServer("test", sourceServerID, targetID, source, 0)
+	created, err := s.ensureCertificateOnServer("test", sourceServerID, targetID, source, 0)
 	if err != nil || !created {
 		t.Fatalf("first ensure = created %v, err %v; want created", created, err)
 	}
 	source.Domains = "example.com, *.example.com"
-	created, err = s.ensureManagedCertificateOnServer("test", sourceServerID, targetID, source, 0)
+	created, err = s.ensureCertificateOnServer("test", sourceServerID, targetID, source, 0)
 	if err != nil || created {
 		t.Fatalf("second ensure = created %v, err %v; want existing equivalent", created, err)
 	}

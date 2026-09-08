@@ -32,6 +32,9 @@ type fleetSyncSummary struct {
 	// skipped on purpose, not lost to a bug.
 	ProxiesSkipped   int
 	RawRoutesSkipped int
+	// v2.41.0: file-path certificates whose files CaddyUI could not read were
+	// copied by path reference only — the files must exist on the target.
+	CertificatesByPath int
 }
 
 func (s fleetSyncSummary) Changed() int {
@@ -43,7 +46,7 @@ func (s fleetSyncSummary) Changed() int {
 
 func (s fleetSyncSummary) String() string {
 	out := fmt.Sprintf(
-		"proxies: %d added, %d updated; redirects: %d added, %d updated; advanced routes: %d added, %d updated; managed certificates: %d added, %d updated",
+		"proxies: %d added, %d updated; redirects: %d added, %d updated; advanced routes: %d added, %d updated; certificates: %d added, %d updated",
 		s.ProxiesCreated, s.ProxiesUpdated,
 		s.RedirectsCreated, s.RedirectsUpdated,
 		s.RawRoutesCreated, s.RawRoutesUpdated,
@@ -53,7 +56,25 @@ func (s fleetSyncSummary) String() string {
 		out += fmt.Sprintf("; skipped as node-local: %d proxies, %d advanced routes",
 			s.ProxiesSkipped, s.RawRoutesSkipped)
 	}
+	if s.CertificatesByPath > 0 {
+		out += fmt.Sprintf("; %d certificate(s) copied by file path only — the files must exist on the target at the same paths", s.CertificatesByPath)
+	}
 	return out
+}
+
+// mappedCertificateID resolves a source certificate reference to its copy on
+// the target, or 0 when the certificate has not been copied there. v2.41.0:
+// a host created on the target keeps using the same custom certificate
+// instead of silently falling back to Auto TLS.
+func (s *Server) mappedCertificateID(sourceServerID, certificateID, targetServerID int64) int64 {
+	if certificateID == 0 {
+		return 0
+	}
+	id, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceCertificate, certificateID, targetServerID)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 func fleetOwnerID(owner sql.NullInt64) int64 {
@@ -171,6 +192,9 @@ func (s *Server) upsertFleetProxyHost(sourceServerID, targetServerID int64, sour
 
 	copy := source
 	preserveProxyTargetPolicy(&copy, existing, targetServerID)
+	if existing == nil {
+		copy.CertificateID = s.mappedCertificateID(sourceServerID, source.CertificateID, targetServerID)
+	}
 	created := existing == nil
 	changed := true
 	if existing != nil {
@@ -255,6 +279,9 @@ func (s *Server) upsertFleetRedirectionHost(sourceServerID, targetServerID int64
 
 	copy := source
 	preserveRedirectTargetPolicy(&copy, existing)
+	if existing == nil {
+		copy.CertificateID = s.mappedCertificateID(sourceServerID, source.CertificateID, targetServerID)
+	}
 	created := existing == nil
 	changed := true
 	if existing != nil {
@@ -347,6 +374,9 @@ func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, sourc
 
 	copy := source
 	preserveRawRouteTargetPolicy(&copy, existing)
+	if existing == nil {
+		copy.CertificateID = s.mappedCertificateID(sourceServerID, source.CertificateID, targetServerID)
+	}
 	created := existing == nil
 	changed := true
 	if existing != nil {
@@ -371,42 +401,79 @@ func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, sourc
 	return fleetUpsertResult{ID: targetID, Created: created, Changed: changed}, nil
 }
 
-func (s *Server) upsertFleetManagedCertificate(sourceServerID, targetServerID int64, source models.Certificate, ownerID int64) (fleetUpsertResult, error) {
-	if source.Source != models.CertSourceManaged {
-		return fleetUpsertResult{}, fmt.Errorf("only Caddy-managed certificates can be copied between environments")
+// fleetCertificateCopy is how a source certificate is represented on a target
+// node. Managed definitions copy their DNS-01 settings only — each node
+// orders its own certificate. Stored PEMs copy their content. v2.41.0: a
+// file-path certificate is copied as stored PEM when CaddyUI can read both
+// files (the target host cannot see the source's disk, so a path would point
+// at nothing there), and by path reference otherwise, in which case the
+// files must exist on the target at the same paths; byPath reports that.
+func fleetCertificateCopy(source models.Certificate) (copy models.Certificate, byPath bool) {
+	copy = source
+	copy.OwnerID = sql.NullInt64{}
+	copy.OwnerEmail = ""
+	copy.CreatedAt = time.Time{}
+	copy.UpdatedAt = time.Time{}
+	switch source.Source {
+	case models.CertSourceManaged:
+		copy.CertPEM, copy.KeyPEM, copy.CertPath, copy.KeyPath = "", "", "", ""
+	case models.CertSourcePEM:
+		copy.CertPath, copy.KeyPath = "", ""
+		copy.DNSProvider, copy.DNSProfileID = "", ""
+	case models.CertSourcePath:
+		copy.DNSProvider, copy.DNSProfileID = "", ""
+		certPEM, certErr := readCertificateFile(source.CertPath)
+		keyPEM, keyErr := readCertificateFile(source.KeyPath)
+		if certErr == nil && keyErr == nil && parsePEMLeaf(string(certPEM)) != nil && strings.Contains(string(keyPEM), "PRIVATE KEY") {
+			copy.Source = models.CertSourcePEM
+			copy.CertPEM, copy.KeyPEM = strings.TrimSpace(string(certPEM)), strings.TrimSpace(string(keyPEM))
+			copy.CertPath, copy.KeyPath = "", ""
+		} else {
+			copy.CertPEM, copy.KeyPEM = "", ""
+			byPath = true
+		}
 	}
+	return copy, byPath
+}
+
+// fleetCertificateMatches pairs a source certificate with a target row that
+// has no deployment mapping yet: same domain set and the same kind (managed
+// with managed, custom with custom — a PEM copy of a file-path source is
+// still custom). Name breaks ties.
+func fleetCertificateMatches(target, source models.Certificate) bool {
+	if !sameDomainSet(target.DomainList(), source.DomainList()) {
+		return false
+	}
+	return (target.Source == models.CertSourceManaged) == (source.Source == models.CertSourceManaged)
+}
+
+// upsertFleetCertificate creates or updates the target's copy of source
+// (see fleetCertificateCopy) and records the deployment mapping. byPath is
+// true when a file-path certificate could only be copied by reference.
+func (s *Server) upsertFleetCertificate(sourceServerID, targetServerID int64, source models.Certificate, ownerID int64) (result fleetUpsertResult, byPath bool, err error) {
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceCertificate, source.ID, targetServerID)
 	if err != nil {
-		return fleetUpsertResult{}, err
+		return fleetUpsertResult{}, false, err
 	}
 	var existing *models.Certificate
 	if targetID > 0 {
 		existing, err = models.GetCertificate(s.DB, targetID)
 		if err != nil {
-			return fleetUpsertResult{}, err
+			return fleetUpsertResult{}, false, err
 		}
 	} else {
 		targets, err := models.ListCertificates(s.DB, targetServerID)
 		if err != nil {
-			return fleetUpsertResult{}, err
+			return fleetUpsertResult{}, false, err
 		}
 		for i := range targets {
-			if targets[i].Source == models.CertSourceManaged && sameDomainSet(targets[i].DomainList(), source.DomainList()) {
+			if fleetCertificateMatches(targets[i], source) && (existing == nil || targets[i].Name == source.Name) {
 				existing = &targets[i]
 				targetID = targets[i].ID
-				break
 			}
 		}
 	}
-	copy := source
-	copy.OwnerID = sql.NullInt64{}
-	copy.OwnerEmail = ""
-	copy.CreatedAt = time.Time{}
-	copy.UpdatedAt = time.Time{}
-	copy.CertPEM = ""
-	copy.KeyPEM = ""
-	copy.CertPath = ""
-	copy.KeyPath = ""
+	copy, byPath := fleetCertificateCopy(source)
 	created := existing == nil
 	changed := true
 	if existing != nil {
@@ -416,10 +483,6 @@ func (s *Server) upsertFleetManagedCertificate(sourceServerID, targetServerID in
 		current.OwnerEmail = ""
 		current.CreatedAt = time.Time{}
 		current.UpdatedAt = time.Time{}
-		current.CertPEM = ""
-		current.KeyPEM = ""
-		current.CertPath = ""
-		current.KeyPath = ""
 		if sameDomainSet(current.DomainList(), copy.DomainList()) {
 			current.Domains = copy.Domains
 		}
@@ -436,18 +499,19 @@ func (s *Server) upsertFleetManagedCertificate(sourceServerID, targetServerID in
 		}
 	}
 	if err != nil {
-		return fleetUpsertResult{}, err
+		return fleetUpsertResult{}, byPath, err
 	}
 	if err := models.SaveFleetDeployment(s.DB, sourceServerID, models.FleetResourceCertificate, source.ID, targetServerID, targetID); err != nil {
-		return fleetUpsertResult{}, err
+		return fleetUpsertResult{}, byPath, err
 	}
-	return fleetUpsertResult{ID: targetID, Created: created, Changed: changed}, nil
+	return fleetUpsertResult{ID: targetID, Created: created, Changed: changed}, byPath, nil
 }
 
 // syncFleetConfiguration performs a one-way, non-destructive merge from the
 // selected managed environment into another one. Source routes are created or
-// updated; target-only routes remain untouched. Per-target DNS records and
-// custom certificate choices are intentionally preserved.
+// updated; target-only routes remain untouched. Per-target DNS records and an
+// existing target host's certificate choice are intentionally preserved; a
+// host created by the sync references the copy of its source certificate.
 func (s *Server) syncFleetConfiguration(actor string, sourceServerID, targetServerID int64) (fleetSyncSummary, error) {
 	if _, _, err := s.validateFleetPair(sourceServerID, targetServerID); err != nil {
 		return fleetSyncSummary{}, err
@@ -474,14 +538,17 @@ func (s *Server) syncFleetConfiguration(actor string, sourceServerID, targetServ
 
 	var summary fleetSyncSummary
 	var syncErrors []error
+	// v2.41.0: every certificate travels, not only managed definitions —
+	// see fleetCertificateCopy. Certificates go first so the hosts copied
+	// below can resolve their certificate references (mappedCertificateID).
 	for _, certificate := range certificates {
-		if certificate.Source != models.CertSourceManaged {
+		result, byPath, err := s.upsertFleetCertificate(sourceServerID, targetServerID, certificate, fleetOwnerID(certificate.OwnerID))
+		if err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("certificate %q: %w", certificate.Name, err))
 			continue
 		}
-		result, err := s.upsertFleetManagedCertificate(sourceServerID, targetServerID, certificate, fleetOwnerID(certificate.OwnerID))
-		if err != nil {
-			syncErrors = append(syncErrors, fmt.Errorf("managed certificate %q: %w", certificate.Name, err))
-			continue
+		if byPath {
+			summary.CertificatesByPath++
 		}
 		if result.Created {
 			summary.CertificatesCreated++

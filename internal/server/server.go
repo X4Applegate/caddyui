@@ -4043,11 +4043,12 @@ func (s *Server) crossDeployProxyHost(actor string, sourceServerID int64, p *mod
 		// same instead of obtaining an unrelated per-host certificate.
 		for _, cert := range sourceCerts {
 			if cert.Source == models.CertSourceManaged && certificateCoversAnyDomain(cert, p.DomainList()) {
-				if _, err := s.ensureManagedCertificateOnServer(actor, sourceServerID, sid, cert, 0); err != nil {
+				if _, err := s.ensureCertificateOnServer(actor, sourceServerID, sid, cert, 0); err != nil {
 					log.Printf("cross-deploy managed certificate to server %d: %v", sid, err)
 				}
 			}
 		}
+		s.ensureReferencedCertificate(actor, sourceServerID, sid, p.CertificateID)
 		result, err := s.upsertFleetProxyHost(sourceServerID, sid, *p, 0)
 		if err != nil {
 			log.Printf("cross-deploy proxy to server %d: %v", sid, err)
@@ -4143,11 +4144,13 @@ func managedWildcardForHost(certs []models.Certificate, host string) *models.Cer
 	return nil
 }
 
-// ensureManagedCertificateOnServer creates or updates the paired managed
-// certificate definition. The Caddy instances still manage their own keys and
-// ACME orders independently; only declarative DNS-01 configuration is copied.
-func (s *Server) ensureManagedCertificateOnServer(actor string, sourceServerID, targetServerID int64, source models.Certificate, ownerID int64) (bool, error) {
-	result, err := s.upsertFleetManagedCertificate(sourceServerID, targetServerID, source, ownerID)
+// ensureCertificateOnServer creates or updates the target's copy of a
+// certificate (see fleetCertificateCopy). Managed definitions copy their
+// DNS-01 settings only — each Caddy still orders its own certificate; stored
+// PEMs copy their content; file-path certificates are copied as PEM when
+// readable, by path reference otherwise (v2.41.0).
+func (s *Server) ensureCertificateOnServer(actor string, sourceServerID, targetServerID int64, source models.Certificate, ownerID int64) (bool, error) {
+	result, byPath, err := s.upsertFleetCertificate(sourceServerID, targetServerID, source, ownerID)
 	if err != nil {
 		return false, err
 	}
@@ -4157,22 +4160,41 @@ func (s *Server) ensureManagedCertificateOnServer(actor string, sourceServerID, 
 	} else if result.Changed {
 		detail = "updated " + source.Domains
 	}
+	if byPath {
+		detail += " (by file path — the files must exist on the target)"
+	}
 	_ = models.LogActivity(s.DB, targetServerID, actor, "cert_cross_deploy", fmt.Sprintf("cert:%d", result.ID), detail, true)
 	return result.Changed, nil
 }
 
-func (s *Server) crossDeployManagedCertificate(actor string, sourceServerID int64, cert models.Certificate, serverIDs []int64) {
+// ensureReferencedCertificate copies the custom certificate a host refers to
+// onto the target before the host itself is copied, so the created host can
+// resolve the reference (mappedCertificateID). v2.41.0.
+func (s *Server) ensureReferencedCertificate(actor string, sourceServerID, targetServerID, certificateID int64) {
+	if certificateID == 0 {
+		return
+	}
+	cert, err := models.GetCertificate(s.DB, certificateID)
+	if err != nil || cert == nil {
+		return
+	}
+	if _, err := s.ensureCertificateOnServer(actor, sourceServerID, targetServerID, *cert, 0); err != nil {
+		log.Printf("cross-deploy referenced certificate %d to server %d: %v", certificateID, targetServerID, err)
+	}
+}
+
+func (s *Server) crossDeployCertificate(actor string, sourceServerID int64, cert models.Certificate, serverIDs []int64) {
 	s.fleetDeployMu.Lock()
 	defer s.fleetDeployMu.Unlock()
 
 	for _, targetServerID := range serverIDs {
 		if _, _, err := s.validateFleetPair(sourceServerID, targetServerID); err != nil {
-			log.Printf("cross-deploy managed certificate target %d: %v", targetServerID, err)
+			log.Printf("cross-deploy certificate target %d: %v", targetServerID, err)
 			continue
 		}
-		changed, err := s.ensureManagedCertificateOnServer(actor, sourceServerID, targetServerID, cert, 0)
+		changed, err := s.ensureCertificateOnServer(actor, sourceServerID, targetServerID, cert, 0)
 		if err != nil {
-			log.Printf("cross-deploy managed certificate to server %d: %v", targetServerID, err)
+			log.Printf("cross-deploy certificate to server %d: %v", targetServerID, err)
 			_ = models.LogActivity(s.DB, targetServerID, actor, "cert_cross_deploy", "cert:new", cert.Domains, false)
 			continue
 		}
@@ -4195,6 +4217,7 @@ func (s *Server) crossDeployRedirectionHost(actor string, sourceServerID int64, 
 			_ = models.LogActivity(s.DB, sourceServerID, actor, "redirect_cross_deploy", fmt.Sprintf("server:%d", sid), err.Error(), false)
 			continue
 		}
+		s.ensureReferencedCertificate(actor, sourceServerID, sid, rh.CertificateID)
 		result, err := s.upsertFleetRedirectionHost(sourceServerID, sid, *rh, 0)
 		if err != nil {
 			log.Printf("cross-deploy redirect to server %d: %v", sid, err)
@@ -4243,6 +4266,7 @@ func (s *Server) crossDeployRawRoute(actor string, sourceServerID int64, rr *mod
 			_ = models.LogActivity(s.DB, sourceServerID, actor, "raw_cross_deploy", fmt.Sprintf("server:%d", sid), err.Error(), false)
 			continue
 		}
+		s.ensureReferencedCertificate(actor, sourceServerID, sid, rr.CertificateID)
 		result, err := s.upsertFleetRawRoute(sourceServerID, sid, *rr, 0)
 		if err != nil {
 			log.Printf("cross-deploy raw route to server %d: %v", sid, err)
@@ -7145,9 +7169,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
-	if c.Source == models.CertSourceManaged {
-		s.crossDeployManagedCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
-	}
+	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
@@ -7244,9 +7266,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
-	if c.Source == models.CertSourceManaged {
-		s.crossDeployManagedCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
-	}
+	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
