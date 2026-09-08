@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.41.0] - 2026-09-08 - Fleet sync and "Also configure on" for PEM and file-path certificates
+
+### Added
+
+- **Custom certificates travel with the fleet.** Caddy Fleet → Sync configuration and the certificate form's **Also configure on** picker previously copied managed (ACME) definitions only, so a wildcard uploaded as PEM or referenced by file path had to be re-uploaded on every node by hand. Both now copy every certificate: a PEM certificate is stored on the target with its certificate and private key (save it again after replacing the PEM to push a renewal), and a file-path certificate is copied as stored PEM when CaddyUI can read both files — the target host cannot see the source's disk — or by path reference otherwise, in which case the sync summary and Activity log say so and the files must exist on the target at the same paths.
+- Proxy hosts, redirections and Advanced routes that a sync or **Also deploy to** creates on a target now reference the copy of their certificate instead of silently falling back to Auto TLS; **Also deploy to** copies a host's custom certificate first so the reference resolves. Existing target hosts keep their own certificate choice, as before.
+
+### Changed
+
+- The fleet sync summary reads "certificates: N added, N updated" (formerly "managed certificates") and appends how many were copied by file path only. The picker's help text describes what travels for each source, and the docs Certificates section too.
+
+---
+
 ## [2.40.0] - 2026-09-08 - Advanced config accepts a reverse_proxy block
 
 ### Added

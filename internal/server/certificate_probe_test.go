@@ -263,3 +263,19 @@ func TestDashboardRecommendationsCountPathCertificates(t *testing.T) {
 		}
 	}
 }
+
+// Certificate file paths are admin input: only absolute, clean paths without
+// ".." are ever opened.
+func TestSafeAbsolutePath(t *testing.T) {
+	for _, bad := range []string{"", "certs/x.pem", "/certs/../etc/passwd", "/certs/..x.pem", "relative/../x"} {
+		if _, err := safeAbsolutePath(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+	if got, err := safeAbsolutePath(" /certs//example.com/./fullchain.pem "); err != nil || got != "/certs/example.com/fullchain.pem" {
+		t.Errorf("clean absolute path: %q, %v", got, err)
+	}
+	if _, err := readCertificateFile("/nonexistent/../x.pem"); err == nil || !strings.Contains(err.Error(), "..") {
+		t.Errorf("readCertificateFile must refuse traversal, got %v", err)
+	}
+}

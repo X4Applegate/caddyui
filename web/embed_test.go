@@ -441,6 +441,27 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 	}
 }
 
+// TestCertificateDeployPickerCoversEverySource guards v2.41.0: the "Also
+// configure on" picker is outside the managed-only section and explains what
+// travels for each source.
+func TestCertificateDeployPickerCoversEverySource(t *testing.T) {
+	body, err := FS.ReadFile("templates/certificate_form.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	picker := strings.Index(html, "data-certificate-deploy-picker")
+	managed := strings.Index(html, `id="src-managed"`)
+	if picker < 0 || managed < 0 || picker < managed && strings.Index(html[picker:], `id="src-managed"`) >= 0 {
+		t.Fatalf("picker must come after the managed section (picker=%d managed=%d)", picker, managed)
+	}
+	for _, m := range []string{`name="deploy_to"`, "<strong>PEM:</strong>", "<strong>File path:</strong>", "stored PEM"} {
+		if !strings.Contains(html, m) {
+			t.Errorf("certificate_form.html missing %q", m)
+		}
+	}
+}
+
 // TestAdvancedConfigReverseProxyHintIsSurfaced guards v2.40.0: the form
 // tells users that a reverse_proxy block (no upstream) is merged into the
 // host's own handler, and no longer lists reverse_proxy as rejected.

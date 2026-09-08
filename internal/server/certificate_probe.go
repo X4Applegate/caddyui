@@ -174,13 +174,23 @@ func customCertificatePEM(cert models.Certificate) (string, error) {
 		if strings.TrimSpace(cert.CertPath) == "" {
 			return "", fmt.Errorf("no certificate path configured")
 		}
-		raw, err := os.ReadFile(cert.CertPath)
+		raw, err := readCertificateFile(cert.CertPath)
 		if err != nil {
 			return "", err
 		}
 		return string(raw), nil
 	}
 	return "", nil
+}
+
+// readCertificateFile reads an admin-configured certificate or key file
+// after safeAbsolutePath has vetted the path.
+func readCertificateFile(path string) ([]byte, error) {
+	clean, err := safeAbsolutePath(path)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(clean)
 }
 
 // dialLeafCertificate opens a TLS connection to target with serverName as
