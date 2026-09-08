@@ -93,6 +93,10 @@ func findStorageCertificate(dataDir string, domains []string) (*storageCertifica
 	var best *storageCertificate
 	var looked []string
 	for _, root := range caddyStorageCertificateRoots(dataDir) {
+		root, err := safeAbsolutePath(root)
+		if err != nil {
+			continue
+		}
 		issuers, err := os.ReadDir(root)
 		if err != nil {
 			continue
@@ -107,9 +111,12 @@ func findStorageCertificate(dataDir string, domains []string) (*storageCertifica
 				if name == "" {
 					continue
 				}
+				if strings.Contains(issuer.Name(), "..") || strings.Contains(name, "..") {
+					continue
+				}
 				crt := filepath.Join(root, issuer.Name(), name, name+".crt")
 				key := filepath.Join(root, issuer.Name(), name, name+".key")
-				raw, err := os.ReadFile(crt)
+				raw, err := readCertificateFile(crt)
 				if err != nil {
 					continue
 				}
@@ -218,13 +225,23 @@ func (s *Server) exportCertificate(serverID int64, cert models.Certificate, forc
 	if strings.TrimSpace(srv.DataDir) == "" {
 		return fail(fmt.Errorf("no Data directory is set for %s — mount the node's Caddy data volume into the CaddyUI container and enter its path under Caddy Fleet → edit server", srv.Name))
 	}
-	stored, err := findStorageCertificate(srv.DataDir, cert.DomainList())
+	// Both directories are operator input (server form, certificate form):
+	// vet them here, right before any file access, like certificate paths.
+	dataDir, err := safeAbsolutePath(srv.DataDir)
+	if err != nil {
+		return fail(fmt.Errorf("Data directory: %w", err))
+	}
+	exportDir, err := safeAbsolutePath(cfg.Dir)
+	if err != nil {
+		return fail(fmt.Errorf("export directory: %w", err))
+	}
+	stored, err := findStorageCertificate(dataDir, cert.DomainList())
 	if err != nil {
 		return fail(err)
 	}
 	serial := stored.Leaf.SerialNumber.Text(16)
-	certOut := filepath.Join(cfg.Dir, cfg.CertFile)
-	keyOut := filepath.Join(cfg.Dir, cfg.KeyFile)
+	certOut := filepath.Join(exportDir, filepath.Base(cfg.CertFile))
+	keyOut := filepath.Join(exportDir, filepath.Base(cfg.KeyFile))
 	if !force && st.SerialNumber == serial {
 		if _, certErr := os.Stat(certOut); certErr == nil {
 			if _, keyErr := os.Stat(keyOut); keyErr == nil {
@@ -234,16 +251,16 @@ func (s *Server) exportCertificate(serverID int64, cert models.Certificate, forc
 			}
 		}
 	}
-	certPEM, err := os.ReadFile(stored.CertPath)
+	certPEM, err := readCertificateFile(stored.CertPath)
 	if err != nil {
 		return fail(fmt.Errorf("read %s: %w", stored.CertPath, err))
 	}
-	keyPEM, err := os.ReadFile(stored.KeyPath)
+	keyPEM, err := readCertificateFile(stored.KeyPath)
 	if err != nil {
 		return fail(fmt.Errorf("read %s: %w", stored.KeyPath, err))
 	}
-	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
-		return fail(fmt.Errorf("create %s: %w", cfg.Dir, err))
+	if err := os.MkdirAll(exportDir, 0o755); err != nil {
+		return fail(fmt.Errorf("create %s: %w", exportDir, err))
 	}
 	if err := writeFileAtomic(certOut, certPEM, 0o644); err != nil {
 		return fail(fmt.Errorf("write %s: %w", certOut, err))
@@ -256,7 +273,7 @@ func (s *Server) exportCertificate(serverID int64, cert models.Certificate, forc
 	st.Source, st.Files, st.SerialNumber, st.NotAfter, st.ExportedAt, st.Error = stored.CertPath, []string{certOut, keyOut}, serial, &notAfter, &now, ""
 	_ = s.storeCertificateExportStatus(st)
 	_ = models.LogActivity(s.DB, serverID, "system", "cert_export", fmt.Sprintf("cert:%d", cert.ID),
-		fmt.Sprintf("exported %s (serial %s, expires %s) to %s", cert.Domains, serial, notAfter.Format("2006-01-02"), cfg.Dir), true)
+		fmt.Sprintf("exported %s (serial %s, expires %s) to %s", cert.Domains, serial, notAfter.Format("2006-01-02"), exportDir), true)
 	return st, nil
 }
 
