@@ -49,7 +49,7 @@
     </div>
   </div>
 
-  <div id="src-pem" class="{{if eq .Cert.Source "path"}}hidden{{end}} space-y-4 pt-2">
+  <div id="src-pem" class="{{if ne .Cert.Source "pem"}}hidden{{end}} space-y-4 pt-2">
     <div>
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Certificate PEM</label>
       <textarea name="cert_pem" rows="10" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" class="w-full rounded-lg border border-ink-200 px-3 py-2 font-mono text-xs bg-ink-50 focus:bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.Cert.CertPEM}}</textarea>

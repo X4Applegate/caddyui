@@ -16,6 +16,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 - Certificate file paths and export directories typed into forms are vetted before any file access: absolute, cleaned, no `..`.
 
+### Fixed
+
+- Editing a managed certificate showed the Paste PEM text areas above the managed settings; the PEM section is now hidden unless PEM is the selected source.
+
 ---
 
 ## [2.41.0] - 2026-09-08 - Fleet sync and "Also configure on" for PEM and file-path certificates
