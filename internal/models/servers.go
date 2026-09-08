@@ -41,7 +41,13 @@ type CaddyServer struct {
 	// defaulted to "caddyui:9019" — a Docker service name only containers on
 	// the same network can resolve — so every node on another host silently
 	// shipped nothing: no analytics, no certificate status, no runtime logs.
-	IngestTarget  string
+	IngestTarget string
+	// DataDir (v2.42.0) is where THIS node's Caddy data volume is mounted
+	// inside the CaddyUI container (e.g. /caddy-data for the compose
+	// service's caddy_data volume). Lets CaddyUI read the certificates Caddy
+	// stored and export them to a directory (Certificates → Export). Empty =
+	// not mounted; only a Caddy whose volume this host can see can set it.
+	DataDir       string
 	LastContactAt sql.NullTime
 	CreatedAt     time.Time
 }
@@ -58,13 +64,13 @@ func (c CaddyServer) TagList() []string {
 	return out
 }
 
-const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), COALESCE(ingest_target,''), last_contact_at, created_at`
+const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), COALESCE(ingest_target,''), COALESCE(data_dir,''), last_contact_at, created_at`
 
 func scanCaddyServer(s interface {
 	Scan(dest ...any) error
 }) (CaddyServer, error) {
 	var c CaddyServer
-	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.IngestTarget, &c.LastContactAt, &c.CreatedAt)
+	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.IngestTarget, &c.DataDir, &c.LastContactAt, &c.CreatedAt)
 	return c, err
 }
 
@@ -165,11 +171,11 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 		c.Status = CaddyServerStatusUnknown
 	}
 	res, err := db.Exec(
-		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip, ingest_target) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip, ingest_target, data_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), c.Status,
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
-		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget),
+		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), strings.TrimSpace(c.DataDir),
 	)
 	if err != nil {
 		return 0, err
@@ -180,11 +186,11 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 func UpdateCaddyServer(db *sql.DB, c *CaddyServer) error {
 	c.Type = normalizeServerType(c.Type)
 	_, err := db.Exec(
-		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=?, ingest_target=? WHERE id=?`,
+		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=?, ingest_target=?, data_dir=? WHERE id=?`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), strings.TrimSpace(c.Version),
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
-		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), c.ID,
+		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), strings.TrimSpace(c.DataDir), c.ID,
 	)
 	return err
 }

@@ -139,6 +139,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		AdminUsername: strings.TrimSpace(r.FormValue("admin_username")),
 		AdminPassword: r.FormValue("admin_password"),
 		IngestTarget:  strings.TrimSpace(r.FormValue("ingest_target")), // v2.37.0
+		DataDir:       strings.TrimSpace(r.FormValue("data_dir")),      // v2.42.0
 	}
 	renderErr := func(msg string) {
 		s.render(w, r, "server_form.html", map[string]any{
@@ -207,6 +208,7 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 	existing.Version = strings.TrimSpace(r.FormValue("version"))
 	existing.AdminUsername = strings.TrimSpace(r.FormValue("admin_username"))
 	existing.IngestTarget = strings.TrimSpace(r.FormValue("ingest_target")) // v2.37.0
+	existing.DataDir = strings.TrimSpace(r.FormValue("data_dir"))           // v2.42.0
 	// Password: if the form submitted a blank value AND the user didn't explicitly
 	// check the "clear password" box, keep the existing one. Protects against
 	// masked-field UX where the password isn't re-typed on every edit.

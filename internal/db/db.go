@@ -630,6 +630,15 @@ func migrate(db *sql.DB) error {
 	// v2.37.0: per-node log ingest target (host:port). '' = the fleet-wide
 	// Settings → Analytics target. Nodes on other hosts can't resolve the
 	// default Docker service name, so they need their own.
+	// v2.42.0: data_dir — where this node's Caddy data volume is mounted in
+	// the CaddyUI container, for certificate export.
+	if hasDataDir, err := columnExists(db, "caddy_servers", "data_dir"); err != nil {
+		return err
+	} else if !hasDataDir {
+		if _, err := db.Exec(`ALTER TABLE caddy_servers ADD COLUMN data_dir TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add data_dir to caddy_servers: %w", err)
+		}
+	}
 	hasIngestTarget, err := columnExists(db, "caddy_servers", "ingest_target")
 	if err != nil {
 		return err
@@ -2267,6 +2276,11 @@ func migrate(db *sql.DB) error {
 	}
 	// v2.17.0: standalone Caddy-managed ACME certificates reuse a saved DNS
 	// credential profile for DNS-01 issuance and renewal.
+	// v2.42.0: export_json — copy a managed certificate out of Caddy's
+	// storage to a directory after every renewal (models/certificate_export.go).
+	if !columnExists2(db, "certificates", "export_json") {
+		migrationStep(db, `ALTER TABLE certificates ADD COLUMN export_json TEXT NOT NULL DEFAULT ''`)
+	}
 	if !columnExists2(db, "certificates", "dns_provider") {
 		migrationStep(db, `ALTER TABLE certificates ADD COLUMN dns_provider TEXT NOT NULL DEFAULT ''`)
 	}

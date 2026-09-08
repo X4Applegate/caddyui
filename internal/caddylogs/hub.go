@@ -40,6 +40,12 @@ type CaptureState struct {
 type Hub struct {
 	DB *sql.DB
 
+	// OnCertificateActive (v2.42.0) is called, when set, after a node reports
+	// a certificate obtained/renewed/loaded for an identifier — the server
+	// uses it to export certificates to a directory. Called synchronously
+	// on the ingest path, so implementations must return quickly.
+	OnCertificateActive func(serverID int64, identifier string)
+
 	mu      sync.RWMutex
 	nextID  uint64
 	entries []Entry
@@ -108,6 +114,9 @@ func (h *Hub) AcceptLine(line []byte) {
 	for _, state := range states {
 		if err := models.UpsertCertificateLifecycle(h.DB, state); err != nil {
 			log.Printf("certificate lifecycle: store %s on server %d: %v", state.Identifier, state.ServerID, err)
+		}
+		if state.Phase == "active" && h.OnCertificateActive != nil {
+			h.OnCertificateActive(state.ServerID, state.Identifier)
 		}
 	}
 }
