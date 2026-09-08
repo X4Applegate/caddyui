@@ -6,7 +6,11 @@
     <p class="text-sm text-ink-500 mt-1">Upload a certificate or have Caddy obtain and renew one with ACME DNS-01.</p>
   </div>
   <div class="flex items-center gap-2 self-start shrink-0">
-    <button id="refresh-certificate-status" type="button" class="ui-button ui-button--quiet">Refresh status</button>
+    {{/* v2.39.0: Refresh also re-probes every custom (PEM / file-path)
+         certificate over TLS — see certificate_probe.go — then reloads. */}}
+    <form method="post" action="/certificates/probe" class="inline">
+      <button id="refresh-certificate-status" type="submit" class="ui-button ui-button--quiet" title="Re-check what each Caddy node serves for the custom certificates, then reload">Refresh status</button>
+    </form>
     {{/* v2.7.2: + New visible to admin and user roles. View-only accounts
          can still see the table for reference but can't create a cert. */}}
     {{if ne .User.Role "view"}}
@@ -76,6 +80,10 @@
         {{else}}
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 shrink-0">{{.DaysLeft}}d</span>
         {{end}}
+        {{if eq .ExpirySource "probe"}}<span class="text-[10px] text-ink-400 shrink-0" title="CaddyUI cannot read {{.CertPath}} from its container; this is what {{if .Probe.ServerName}}{{.Probe.ServerName}}{{else}}Caddy{{end}} served for {{.Probe.ProbeName}} {{fmtRel .Probe.CheckedAt}}">live probe</span>{{end}}
+      {{else if and (ne .Source "managed") .Probe}}
+        {{if eq .Probe.Status "mismatch"}}<span class="ui-status ui-status--warning shrink-0" title="{{.Probe.Error}}">Not served</span>
+        {{else}}<span class="ui-status ui-status--neutral shrink-0" title="Live TLS probe of {{.Probe.ProbeName}} failed {{fmtRel .Probe.CheckedAt}}: {{.Probe.Error}}">Unverified</span>{{end}}
       {{else if eq .Source "managed"}}
         {{if .Lifecycle}}
           {{if eq .Lifecycle.Phase "active"}}<span class="ui-status ui-status--success shrink-0" title="{{.Lifecycle.Message}}">Issued</span>
@@ -99,6 +107,7 @@
       </div>
     </div>
     {{end}}
+    {{if .ServedDiffers}}<div class="text-[11px] text-amber-700 mb-1" title="The file (or stored PEM) and the certificate Caddy is serving have different serial numbers. Caddy reads file certificates when its config loads, so a renewed file needs a Caddy reload.">Caddy serves a different certificate{{if .Probe.NotAfter}} (expires {{fmtIn .Probe.NotAfter "Jan 2, 2006"}}){{end}}</div>{{end}}
     <div class="text-xs text-ink-500 font-mono mb-3 break-all">{{.Domains}}</div>
     {{/* Admin-only: owner chip. User-role doesn't need this since the list
          is already scoped to their own + global anyway. */}}
@@ -230,6 +239,12 @@
             {{else}}
               <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700" title="{{fmtIn .ExpiresAt "Jan 2, 2006"}}">{{.DaysLeft}}d left</span>
             {{end}}
+            {{if eq .ExpirySource "probe"}}<div class="text-[10px] text-ink-400 mt-1" title="CaddyUI cannot read {{.CertPath}} from its container; this is what {{if .Probe.ServerName}}{{.Probe.ServerName}}{{else}}Caddy{{end}} served for {{.Probe.ProbeName}}">live probe · {{fmtRel .Probe.CheckedAt}}</div>{{end}}
+            {{if .ServedDiffers}}<div class="text-[10px] text-amber-700 mt-1" title="The file (or stored PEM) and the certificate Caddy is serving have different serial numbers. Caddy reads file certificates when its config loads, so a renewed file needs a Caddy reload.">Caddy serves a different certificate{{if .Probe.NotAfter}} (expires {{fmtIn .Probe.NotAfter "Jan 2, 2006"}}){{end}}</div>{{end}}
+          {{else if and (ne .Source "managed") .Probe}}
+            {{if eq .Probe.Status "mismatch"}}<span class="ui-status ui-status--warning" title="{{.Probe.Error}}">Not served</span>
+            {{else}}<span class="ui-status ui-status--neutral" title="Live TLS probe of {{.Probe.ProbeName}} failed: {{.Probe.Error}}">Unverified</span>{{end}}
+            <div class="text-[10px] text-ink-400 mt-1">probed {{fmtRel .Probe.CheckedAt}}</div>
           {{else if eq .Source "managed"}}
             {{if .Lifecycle}}
               {{if eq .Lifecycle.Phase "active"}}<span class="ui-status ui-status--success" title="{{.Lifecycle.Message}}">Issued</span>
@@ -418,8 +433,6 @@
 
 // v2.25.2: client-side status refresh and sortable certificate tables.
 (function() {
-  var refresh = document.getElementById('refresh-certificate-status');
-  if (refresh) refresh.addEventListener('click', function() { window.location.reload(); });
 
   document.querySelectorAll('[data-sort-table]').forEach(function(table) {
     var body = table.querySelector('[data-sort-body]');
