@@ -191,7 +191,7 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 		SSLEnabled:             r.FormValue("ssl_enabled") == "on",
 		SSLForced:              r.FormValue("ssl_forced") == "on",
 		HTTP2Support:           r.FormValue("http2_support") == "on",
-		AdvancedConfig:         r.FormValue("advanced_config"),
+		AdvancedConfig:         wrapBareReverseProxySubdirectives(r.FormValue("advanced_config")), // v2.42.1
 		Enabled:                r.FormValue("enabled") == "on",
 		CertificateID:          certID,
 		AccessList:             strings.TrimSpace(r.FormValue("access_list")),

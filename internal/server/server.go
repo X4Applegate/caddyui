@@ -814,8 +814,9 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/servers/{id}/config", s.viewServerConfig)
 			r.Post("/servers/{id}", s.updateServer)
 			r.Post("/servers/{id}/sync-from-current", s.syncServerFromCurrent)
-			r.Post("/servers/{id}/sync-reapply", s.reapplySyncHandler)      // v2.38.0
-			r.Post("/servers/{id}/sync-hold/clear", s.clearSyncHoldHandler) // v2.38.0
+			r.Post("/servers/{id}/sync-reapply", s.reapplySyncHandler)        // v2.38.0
+			r.Post("/servers/{id}/sync-hold/clear", s.clearSyncHoldHandler)   // v2.38.0
+			r.Post("/servers/{id}/sync-error/clear", s.clearSyncErrorHandler) // v2.42.1
 			r.Post("/servers/{id}/delete", s.deleteServer)
 			r.Get("/server-logs", s.getServerLogs)
 			r.Get("/api/server-logs/status", s.serverLogStatus)
@@ -1144,6 +1145,12 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	if _, ok := data["SyncHolds"]; !ok {
 		if servers, ok := data["Servers"].([]models.CaddyServer); ok && len(servers) > 0 {
 			data["SyncHolds"] = s.activeSyncHolds(servers)
+		}
+	}
+	// v2.42.1: servers whose last sync failed — layout banner.
+	if _, ok := data["SyncErrors"]; !ok {
+		if servers, ok := data["Servers"].([]models.CaddyServer); ok && len(servers) > 0 {
+			data["SyncErrors"] = s.activeSyncErrors(servers)
 		}
 	}
 	if _, ok := data["CurrentServer"]; !ok {
@@ -4530,6 +4537,12 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// v2.42.1 (issue #74): refuse a host Caddy would not load instead of
+	// saving it and failing every later sync.
+	if errMsg := s.previewProxyHostValidate(s.currentServerID(r), p); errMsg != "" {
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	id, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, p)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -4711,6 +4724,10 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	needCreate := p.DNSProvider != "" && p.DNSZoneID != "" && !p.DNSSkipRecord &&
 		(p.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || domainChanged || recordModeChanged)
 
+	if errMsg := s.previewProxyHostValidate(s.currentServerID(r), p); errMsg != "" { // v2.42.1 (issue #74)
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	if err := models.UpdateProxyHost(s.DB, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -5020,6 +5037,10 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if errMsg := s.previewRedirectValidate(s.currentServerID(r), rh); errMsg != "" { // v2.42.1 (issue #74)
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
+	}
 	id, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), rhOwnerID, rh)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -5111,6 +5132,10 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	// (the form has no hidden field for it — same as proxy hosts).
 	if old != nil {
 		rh.DNSRecordID = old.DNSRecordID
+	}
+	if errMsg := s.previewRedirectValidate(s.currentServerID(r), rh); errMsg != "" { // v2.42.1 (issue #74)
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
 	}
 	if err := models.UpdateRedirectionHost(s.DB, rh); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -7187,6 +7212,13 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// v2.42.1 (issue #74): a file-path certificate Caddy cannot open is
+	// refused here, with the container-path explanation, instead of being
+	// saved and breaking every later sync of this server.
+	if errMsg := s.previewCertificateValidate(s.currentServerID(r), c); errMsg != "" {
+		s.renderCertificateFormError(w, r, c, errMsg)
+		return
+	}
 	id, err := models.CreateCertificate(s.DB, s.currentServerID(r), ownerID, c)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -7275,6 +7307,10 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.ID = id
+	if errMsg := s.previewCertificateValidate(s.currentServerID(r), c); errMsg != "" { // v2.42.1 (issue #74)
+		s.renderCertificateFormError(w, r, c, errMsg)
+		return
+	}
 	if err := models.UpdateCertificate(s.DB, c); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -7530,20 +7566,8 @@ func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (stri
 // would reject the resulting config — so callers can refuse to save instead of
 // committing a change that breaks the live config on next sync.
 func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) string {
-	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true, nil)
-	if err != nil {
-		return ""
-	}
-	redirs, err := models.ListRedirectionHosts(s.DB, serverID, 0, true, nil)
-	if err != nil {
-		return ""
-	}
-	raws, err := models.ListRawRoutes(s.DB, serverID, 0, true, nil)
-	if err != nil {
-		return ""
-	}
-	certs, err := models.ListCertificates(s.DB, serverID)
-	if err != nil {
+	proxies, redirs, raws, certs, ok := s.serverResources(serverID)
+	if !ok {
 		return ""
 	}
 	replaced := false
@@ -7557,6 +7581,15 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 	if !replaced {
 		raws = append(raws, *rr)
 	}
+	return s.validateProposedConfig(serverID, proxies, redirs, raws, certs)
+}
+
+// validateProposedConfig builds the config a sync would push for these
+// resources and asks Caddy to validate it. Returns "" when Caddy accepts it
+// or cannot be reached — a save must not be blocked by an unrelated outage.
+// v2.42.1 (issue #74): shared by the proxy host, redirection and certificate
+// forms as well as Advanced routes.
+func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
 	caddyCl := s.caddyForServer(serverID)
 	current, _, err := caddyCl.FetchConfig()
 	if err != nil {
@@ -8167,7 +8200,27 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 	return nil
 }
 
+// syncCaddy pushes the DB state for serverID to its Caddy and records the
+// outcome per server (v2.42.1, issue #74): a failure shows on every page
+// until the next successful sync, so a rejected change can no longer fail
+// silently in the log while the form says "saved".
 func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
+	err := s.syncCaddyInner(serverID, forceTLS)
+	if err == nil {
+		s.clearSyncError(serverID)
+		return nil
+	}
+	if s.syncHoldFor(serverID) == nil { // a post-apply hold has its own banner
+		name := ""
+		if srv, lookupErr := models.GetCaddyServer(s.DB, serverID); lookupErr == nil && srv != nil {
+			name = srv.Name
+		}
+		s.setSyncError(serverID, name, err)
+	}
+	return err
+}
+
+func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	// Load the target server so we can use its AdminURL for the Caddy client.
 	srv, err := models.GetCaddyServer(s.DB, serverID)
 	if err != nil {
@@ -10929,7 +10982,7 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	route := caddy.BuildProxyRoute(previewProxy, previewHandlers)
 	caddy.MergeReverseProxyOverrides(route, previewOverrides)
 	route = redactProxyRoutePreview(route).(map[string]any)
-	caddyfile := caddy.RenderProxyHostCaddyfile(*p)
+	caddyfile := caddy.RenderProxyHostCaddyfileWithCertificate(*p, s.certificateForCaddyfile(p.CertificateID))
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	response := map[string]any{"route": route, "caddyfile": caddyfile}
@@ -11987,7 +12040,7 @@ func (s *Server) exportProxyHostCaddyfile(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	body := caddy.RenderProxyHostCaddyfile(*ph)
+	body := caddy.RenderProxyHostCaddyfileWithCertificate(*ph, s.certificateForCaddyfile(ph.CertificateID))
 	fname := strings.ReplaceAll(strings.SplitN(ph.Domains, ",", 2)[0], "*", "_")
 	fname = strings.TrimSpace(fname)
 	if fname == "" {
@@ -12065,7 +12118,8 @@ func (s *Server) exportServerCaddyfile(w http.ResponseWriter, r *http.Request) {
 		serverName = srv.Name
 	}
 
-	body := caddy.RenderServerCaddyfile(serverName, hosts, redirects, raws)
+	certs, _ := models.ListCertificates(s.DB, sid)
+	body := caddy.RenderServerCaddyfile(serverName, hosts, redirects, raws, certs)
 	ts := time.Now().Format("20060102-150405")
 	fname := "Caddyfile"
 	if serverName != "" {

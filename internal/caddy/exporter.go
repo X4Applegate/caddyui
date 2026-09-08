@@ -26,7 +26,11 @@ import (
 // `serverName` is just metadata for the file header banner. Disabled hosts
 // are skipped — the export is "what's actually serving traffic", not "every
 // row in the DB". Pass an empty serverName to omit the banner.
-func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirects []models.RedirectionHost, raws []models.RawRoute) string {
+func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirects []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
+	certByID := make(map[int64]*models.Certificate, len(certs))
+	for i := range certs {
+		certByID[certs[i].ID] = &certs[i]
+	}
 	var b strings.Builder
 	if serverName != "" {
 		fmt.Fprintf(&b, "# CaddyUI export — %s\n", serverName)
@@ -48,7 +52,7 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 		if !ph.Enabled {
 			continue
 		}
-		b.WriteString(RenderProxyHostCaddyfile(ph))
+		b.WriteString(RenderProxyHostCaddyfileWithCertificate(ph, certByID[ph.CertificateID]))
 		b.WriteString("\n")
 	}
 	for _, rh := range redirects {
@@ -75,6 +79,14 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 // any non-default ones in a leading `# Notes:` comment so users know to
 // re-set them in the UI after a round-trip.
 func RenderProxyHostCaddyfile(p models.ProxyHost) string {
+	return RenderProxyHostCaddyfileWithCertificate(p, nil)
+}
+
+// RenderProxyHostCaddyfileWithCertificate is RenderProxyHostCaddyfile with
+// the host's custom certificate resolved (v2.42.1, issue #74): a file-path
+// certificate renders as a real `tls <cert> <key>` line, a stored PEM or a
+// managed definition as a comment saying how Caddy gets it.
+func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Certificate) string {
 	var b strings.Builder
 
 	// Site block header — space-separated hostname list per Caddyfile spec.
@@ -134,7 +146,16 @@ func RenderProxyHostCaddyfile(p models.ProxyHost) string {
 	// public hostname; we only need an explicit `tls` directive for custom
 	// certs or specific CA hints.
 	if p.CertificateID > 0 {
-		fmt.Fprintf(&b, "\t# Custom certificate ID %d (uploaded via CaddyUI; not represented in Caddyfile — Caddy will use its automatic cert resolution at runtime)\n", p.CertificateID)
+		switch {
+		case cert != nil && cert.Source == models.CertSourcePath && cert.CertPath != "" && cert.KeyPath != "":
+			fmt.Fprintf(&b, "\ttls %s %s\n", cert.CertPath, cert.KeyPath)
+		case cert != nil && cert.Source == models.CertSourcePEM:
+			fmt.Fprintf(&b, "\t# tls: stored PEM certificate %q — CaddyUI loads it into Caddy's certificate pool directly (load_pem); a Caddyfile would need the files on disk\n", cert.Name)
+		case cert != nil && cert.Source == models.CertSourceManaged:
+			fmt.Fprintf(&b, "\t# tls: managed certificate %q (%s) — Caddy obtains it via DNS-01 and serves it by SNI\n", cert.Name, cert.Domains)
+		default:
+			fmt.Fprintf(&b, "\t# Custom certificate ID %d (uploaded via CaddyUI; not represented in Caddyfile — Caddy will use its automatic cert resolution at runtime)\n", p.CertificateID)
+		}
 	} else if !p.SSLEnabled {
 		// SSL explicitly off — site listens on HTTP only.
 		b.WriteString("\ttls off\n")
@@ -275,13 +296,23 @@ func RenderProxyHostCaddyfile(p models.ProxyHost) string {
 		b.WriteString("\t\t}\n")
 	}
 
+	// v2.42.1: a `reverse_proxy { … }` block in the Advanced config is merged
+	// into the host's own handler at sync time (v2.40.0), so render its
+	// sub-directives inside this block rather than as a second reverse_proxy.
+	advancedRest, advancedInner := splitAdvancedReverseProxyBlock(p.AdvancedConfig)
+	if len(advancedInner) > 0 {
+		b.WriteString("\t\t# from Advanced config\n")
+		for _, line := range advancedInner {
+			fmt.Fprintf(&b, "\t\t%s\n", line)
+		}
+	}
 	b.WriteString("\t}\n")
 
 	// Advanced raw config — verbatim user input, indented to match the site
 	// block. Trailing newline preserved.
-	if strings.TrimSpace(p.AdvancedConfig) != "" {
+	if strings.TrimSpace(advancedRest) != "" {
 		b.WriteString("\n\t# --- Advanced raw config (from CaddyUI) ---\n")
-		for _, line := range strings.Split(p.AdvancedConfig, "\n") {
+		for _, line := range strings.Split(advancedRest, "\n") {
 			if line == "" {
 				b.WriteString("\n")
 			} else {
@@ -380,4 +411,66 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// splitAdvancedReverseProxyBlock separates a top-level `reverse_proxy { … }`
+// block from the rest of an Advanced config. inner holds the block's lines
+// with one level of indentation removed; rest is everything else, verbatim.
+func splitAdvancedReverseProxyBlock(src string) (rest string, inner []string) {
+	if strings.TrimSpace(src) == "" {
+		return src, nil
+	}
+	stripped := func(line string) string {
+		t := strings.TrimSpace(line)
+		if i := strings.Index(t, "#"); i >= 0 {
+			t = strings.TrimSpace(t[:i])
+		}
+		return t
+	}
+	braces := func(line string) int {
+		d := 0
+		for _, ch := range stripped(line) {
+			switch ch {
+			case '{':
+				d++
+			case '}':
+				d--
+			}
+		}
+		return d
+	}
+	lines := strings.Split(src, "\n")
+	var kept []string
+	depth := 0
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		t := stripped(line)
+		if depth == 0 && t != "" && strings.Fields(t)[0] == "reverse_proxy" && strings.HasSuffix(t, "{") {
+			d := braces(line)
+			j := i + 1
+			var block []string
+			for ; j < len(lines) && d > 0; j++ {
+				d += braces(lines[j])
+				if d > 0 {
+					block = append(block, lines[j])
+				}
+			}
+			if d == 0 {
+				for _, bl := range block {
+					if strings.TrimSpace(bl) != "" {
+						inner = append(inner, strings.TrimPrefix(strings.TrimSpace(bl), "\t"))
+					}
+				}
+				i = j
+				continue
+			}
+		}
+		kept = append(kept, line)
+		depth += braces(line)
+		i++
+	}
+	if inner == nil {
+		return src, nil
+	}
+	return strings.Join(kept, "\n"), inner
 }
