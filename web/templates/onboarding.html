@@ -103,7 +103,7 @@
           <p>Saved provider profiles let CaddyUI create DNS records and let Caddy complete DNS-01 challenges for wildcard certificates.</p>
           {{if eq .User.Role "admin"}}
           <div class="onboarding-step__actions">
-            <a href="/settings#settings-dns" class="ui-button {{if .DNSConfigured}}ui-button--secondary{{else}}ui-button--primary{{end}}">
+            <a href="/settings/dns" class="ui-button {{if .DNSConfigured}}ui-button--secondary{{else}}ui-button--primary{{end}}">
               {{if .DNSConfigured}}Review DNS profiles{{else}}Add DNS provider{{end}}
             </a>
             <a href="/docs#proxy-hosts" class="ui-section-header__action">How automation works →</a>
@@ -128,7 +128,7 @@
             <a href="/totp/setup" class="ui-button {{if .TOTPEnabled}}ui-button--secondary{{else}}ui-button--primary{{end}}">
               {{if .TOTPEnabled}}Review two-factor auth{{else}}Enable two-factor auth{{end}}
             </a>
-            {{if eq .User.Role "admin"}}<a href="/settings#settings-security" class="ui-section-header__action">Security policy →</a>{{end}}
+            {{if eq .User.Role "admin"}}<a href="/settings/security" class="ui-section-header__action">Security policy →</a>{{end}}
           </div>
         </article>
       </li>

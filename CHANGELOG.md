@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.44.0] - 2026-09-09 - Settings is now a set of pages
+
+### Changed
+
+- **Settings is split into eight pages** — General, Notifications, DNS, Security, Analytics, Integrations, AI assistant, Backup — with a navigation column (a scrolling row on narrow screens) instead of one form with sixteen cards and a row of jump links. `/settings` opens General; each page lives at `/settings/<page>`, and old in-page links such as `/settings#settings-smtp` are redirected to the page that now holds the card.
+- Each page saves only its own settings. The save handler now owns a table of which page holds which key and writes nothing else, so saving General cannot blank the SMTP host or the analytics target. DNS provider credentials and integration settings are only collected from their own pages. Saving Notifications, AI or Backup no longer triggers a Caddy sync, which they never affected.
+- Links across the app and the docs that pointed at Settings anchors now open the right page directly.
+
+---
+
 ## [2.43.1] - 2026-09-09 - The first big prune no longer slows every page
 
 ### Fixed
