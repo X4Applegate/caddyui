@@ -441,6 +441,33 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 	}
 }
 
+// TestSettingsPagesAreGuarded guards v2.44.0: every card sits inside a page
+// guard, the form carries the page it posts for, the integrations-only
+// hidden input lives inside its page, and the nav links to every page.
+func TestSettingsPagesAreGuarded(t *testing.T) {
+	body, err := FS.ReadFile("templates/settings.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, m := range []string{`name="settings_section"`, "data-settings-nav", `href="/settings/{{.Slug}}"`, ".SettingsAnchorsJSON", `{{if eq .SettingsSection "general"}}`, `{{if eq .SettingsSection "backup"}}`} {
+		if !strings.Contains(html, m) {
+			t.Errorf("settings.html missing %q", m)
+		}
+	}
+	if strings.Count(html, "{{if eq .SettingsSection") < 10 {
+		t.Errorf("expected every card to be page-guarded, found %d guards", strings.Count(html, "{{if eq .SettingsSection"))
+	}
+	present := strings.Index(html, `name="fleet_integrations_present"`)
+	guard := strings.Index(html, `{{if eq .SettingsSection "integrations"}}`)
+	if present < 0 || guard < 0 || present < guard {
+		t.Errorf("fleet_integrations_present must sit inside the integrations page guard (input at %d, guard at %d)", present, guard)
+	}
+	if strings.Contains(html, `href="#settings-`) {
+		t.Errorf("in-page jump links should be gone")
+	}
+}
+
 // TestAnalyticsRetentionIsSurfaced guards v2.43.0: the retention field and
 // the storage view with Prune now / Reclaim space live on the Analytics card.
 func TestAnalyticsRetentionIsSurfaced(t *testing.T) {

@@ -1,33 +1,29 @@
 {{define "title"}}Settings · CaddyUI{{end}}
 {{define "content"}}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Settings</h1>
-  <p class="text-sm text-ink-500 mt-1">Application-wide settings for notifications and email.</p>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Settings <span class="text-ink-300 font-normal">/</span> {{.SettingsSectionLabel}}</h1>
+  <p class="text-sm text-ink-500 mt-1">{{range .SettingsNav}}{{if eq .Slug $.SettingsSection}}{{.Blurb}}{{end}}{{end}}</p>
 </div>
 
-{{/* ── v2.6.0: jump-to-section nav ──────────────────────────────────
-     Settings has grown past 600 lines rendered — admins who just want
-     to tweak Timezone or CAPTCHA shouldn't have to scroll past SMTP
-     every time. Each link targets a card ID below; scroll-mt-20 on
-     the cards accounts for the top header so they don't land flush
-     under the nav bar. Smooth-scroll comes from html { scroll-behavior }
-     in app.css (auto-disabled for prefers-reduced-motion). */}}
-<nav aria-label="Settings sections" class="mb-6 max-w-2xl flex flex-wrap gap-1.5">
-  <a href="#settings-general"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">General</a>
-  <a href="#settings-smtp"        class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Email</a>
-  <a href="#settings-notifications" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifications</a>
-  <a href="#settings-timezone"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Timezone</a>
-  <a href="#settings-dns-ips"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">DNS IPs</a>
-  <a href="#settings-dns-providers" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">DNS Providers</a>
-  <a href="#settings-captcha"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CAPTCHA</a>
-  <a href="#settings-security"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Security</a>
-  <a href="#settings-access-logs" class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Access logs</a>
-  <a href="#settings-metrics"     class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Metrics</a>
-  <a href="#settings-crowdsec"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">CrowdSec</a>
-  <a href="#analytics"            class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Analytics</a>
-  <a href="#settings-notifier"    class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Notifier</a>
-  <a href="#settings-backup"      class="inline-flex items-center text-xs font-medium text-ink-600 hover:text-brand-700 bg-white hover:bg-ink-50 border border-ink-200 hover:border-brand-300 px-2.5 py-1.5 rounded-lg transition">Backup</a>
+{{/* v2.44.0: one page per area. The nav is a column beside the content on
+     wide screens and a scrolling row above it on narrow ones. Old in-page
+     anchors (/settings#settings-smtp …) are redirected to the right page
+     by the script at the bottom. */}}
+<div class="lg:flex lg:items-start lg:gap-8">
+<nav aria-label="Settings pages" data-settings-nav class="mb-6 lg:mb-0 lg:w-52 lg:shrink-0 lg:sticky lg:top-20">
+  <ul class="flex lg:flex-col gap-1 overflow-x-auto pb-1 lg:pb-0">
+    {{range .SettingsNav}}
+    <li class="shrink-0">
+      <a href="/settings/{{.Slug}}" {{if eq .Slug $.SettingsSection}}aria-current="page"{{end}}
+         class="block rounded-lg px-3 py-2 text-sm transition {{if eq .Slug $.SettingsSection}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50 hover:text-ink-900{{end}}">
+        <span class="block">{{.Label}}</span>
+        <span class="hidden lg:block text-[11px] leading-snug {{if eq .Slug $.SettingsSection}}text-brand-600/80{{else}}text-ink-400{{end}}">{{.Blurb}}</span>
+      </a>
+    </li>
+    {{end}}
+  </ul>
 </nav>
+<div class="min-w-0 flex-1">
 
 {{if .Success}}
 <div data-toast="success" class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">Settings saved successfully.</div>
@@ -40,8 +36,9 @@
 {{end}}
 
 <form method="post" action="/settings" class="max-w-2xl space-y-8">
-  <input type="hidden" name="fleet_integrations_present" value="1">
+  <input type="hidden" name="settings_section" value="{{.SettingsSection}}">
 
+{{if eq .SettingsSection "general"}}
   {{/* ── General ── */}}
   <div id="settings-general" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
@@ -142,6 +139,8 @@
     </div>
   </div>
 
+{{end}}
+{{if eq .SettingsSection "ai"}}
   {{/* ── v2.11.15: AI assistant. v2.12.36: multi-provider — Ollama (local),
        Ollama Cloud, Claude (Anthropic), or any OpenAI-compatible API. ── */}}
   <div id="settings-ai" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-4">
@@ -300,6 +299,8 @@
     </div>
   </div>
 
+{{end}}
+{{if eq .SettingsSection "notifications"}}
   {{/* ── SMTP ── */}}
   <div id="settings-smtp" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
@@ -463,6 +464,8 @@
     </div>
   </div>
 
+{{end}}
+{{if eq .SettingsSection "general"}}
   {{/* ── Timezone (v2.4.12) ── */}}
   {{/* Admin-picked IANA zone that every DB-stored timestamp renders through
        (cert expiry, activity log, snapshots, "last updated" markers). Priority
@@ -518,6 +521,8 @@
     </div>
   </div>
 
+{{end}}
+{{if eq .SettingsSection "dns"}}
   {{/* ── DNS — per-server public IPs (v2.4.0) ── */}}
   <div id="settings-dns-ips" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-3">
     <div>
@@ -701,6 +706,8 @@
   {{end}}
   </div>{{/* /settings-dns-providers */}}
 
+{{end}}
+{{if eq .SettingsSection "security"}}
   {{/* ── CAPTCHA (v2.5.0) ── Unified card for Cloudflare Turnstile and Google
        reCAPTCHA v3. The provider radio hot-swaps which pair of key fields is
        visible via the inline JS below — server-side normalizeCaptchaProvider
@@ -911,6 +918,9 @@
     </div>
   </div>
 
+{{end}}
+{{if eq .SettingsSection "integrations"}}
+  <input type="hidden" name="fleet_integrations_present" value="1">
   {{/* ── Caddy fleet file access logs (v2.21.0) ── */}}
   <div id="settings-access-logs" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
@@ -1122,6 +1132,7 @@
     </div>
   </div>
 
+{{end}}
   {{/* ── Visitor Analytics (v2.7.0) ──
        Privacy-light traffic stats built from Caddy's access logs. When the
        toggle below is ON we (a) install a `net` log writer in the live
@@ -1130,6 +1141,7 @@
        textarea below. No DNT opt-in UI, no 3rd-party tracker loaded —
        everything runs on localhost and persists in the CaddyUI DB. */}}
   {{/* v2.38.0: post-apply checks (expectations) */}}
+{{if eq .SettingsSection "general"}}
   <div id="expectations" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-4">
     <div>
       <div class="text-sm font-semibold text-ink-900">Post-apply checks</div>
@@ -1142,6 +1154,8 @@
     </label>
   </div>
 
+{{end}}
+{{if eq .SettingsSection "analytics"}}
   <div id="analytics" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="flex items-center gap-2 mb-0.5">
@@ -1260,31 +1274,32 @@
     </div>
     {{end}}
 
-    <div class="pt-3 border-t border-ink-100 flex flex-wrap items-center gap-3">
-      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
-      <span class="text-xs text-ink-400">Saving re-applies the Caddy-side logger config.</span>
-    </div>
   </div>
 
-  <div class="flex items-center gap-3">
-    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save settings</button>
+{{end}}
+  {{if ne .SettingsSection "backup"}}
+  <div class="flex flex-wrap items-center gap-3">
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save {{.SettingsSectionLabel}} settings</button>
+    {{if eq .SettingsSection "analytics"}}<span class="text-xs text-ink-400">Saving re-applies the Caddy-side logger config.</span>{{end}}
   </div>
+  {{end}}
 </form>
 
 {{/* One empty form per configured DNS provider, lives OUTSIDE the main
      settings form. The "Clear credentials" buttons inside each provider
      card use HTML5 form="clear-dns-<id>" to post to these instead of the
      big settings form. onsubmit confirm() gates the destructive POST. */}}
-{{range .DNSProviders}}{{if .Configured}}
+{{if eq .SettingsSection "dns"}}{{range .DNSProviders}}{{if .Configured}}
 <form id="clear-dns-{{.ID}}" method="post" action="/settings/dns-provider/{{.ID}}/clear" class="hidden"
       onsubmit="return confirm('Clear all {{.DisplayName}} API credentials? Existing DNS records on {{.DisplayName}} stay in place — this only removes the keys stored in CaddyUI.')"></form>
-{{end}}{{end}}
+{{end}}{{end}}{{end}}
 
 {{/* The Test Email and Test Webhook buttons used to live in their own
      cards here, but v2.4.12 moved them up into the SMTP and Webhook cards
      above (next to each section's Save button) so you can edit → save →
      test without scrolling to the bottom of the page. */}}
 
+{{if eq .SettingsSection "notifications"}}
 {{/* ── Notifier status ── */}}
 <div id="settings-notifier" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-6">
   <div class="text-sm font-semibold text-ink-800 mb-3">Notifier Status</div>
@@ -1293,6 +1308,8 @@
   </div>
 </div>
 
+{{end}}
+{{if eq .SettingsSection "backup"}}
 {{/* ── Backup ── */}}
 <div id="settings-backup" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-5">
   <div class="text-sm font-semibold text-ink-800 mb-1">Database Backup</div>
@@ -1310,6 +1327,20 @@
   {{end}}
 </div>
 
+{{end}}
+</div>
+</div>
+
+<script>
+// v2.44.0: old in-page anchors land on whichever page they now live on.
+(function() {
+  var anchors = {{.SettingsAnchorsJSON}};
+  var hash = (location.hash || '').replace(/^#/, '');
+  if (hash && anchors[hash] && anchors[hash] !== {{printf "%q" .SettingsSection}}) {
+    location.replace('/settings/' + anchors[hash] + '#' + hash);
+  }
+})();
+</script>
 <script>
 function testEmail() {
   var btn = document.getElementById('test-email-btn');
@@ -1385,7 +1416,7 @@ function testCrowdSec(serverID, btn) {
 }
 
 (function() {
-  fetch('/api/notifier-status')
+  if (document.getElementById('notifier-status')) fetch('/api/notifier-status')
     .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(d) {
       if (!d) return;

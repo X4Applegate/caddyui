@@ -4,7 +4,7 @@
   {{if eq .GlobalMaintenance "1"}}
   <div class="ops-alert ops-alert--warning" role="status">
     <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-    <span><strong>Global maintenance mode is active.</strong> All proxy hosts are serving a 503 page. <a href="/settings#settings-general">Turn it off in Settings</a> and sync Caddy to restore service.</span>
+    <span><strong>Global maintenance mode is active.</strong> All proxy hosts are serving a 503 page. <a href="/settings/general">Turn it off in Settings</a> and sync Caddy to restore service.</span>
   </div>
   {{else if .MaintenanceCount}}
   <div class="ops-alert ops-alert--warning" role="status">
