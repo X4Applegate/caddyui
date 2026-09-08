@@ -4085,6 +4085,12 @@ func GetSetting(db *sql.DB, key string) (string, error) {
 	return v, err
 }
 
+// DeleteSetting removes one settings row. Missing keys are not an error.
+func DeleteSetting(db *sql.DB, key string) error {
+	_, err := db.Exec("DELETE FROM settings WHERE `key` = ?", key)
+	return err
+}
+
 func SetSetting(db *sql.DB, key, value string) error {
 	result, err := db.Exec("UPDATE settings SET value = ? WHERE `key` = ?", value, key)
 	if err != nil {
@@ -4325,6 +4331,16 @@ func ListCertificateOptionsForUser(db *sql.DB, serverID int64, viewerID int64, i
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// CertificateServerID returns the Caddy server a certificate row belongs to.
+// Certificate deliberately carries no ServerID field (fleet sync compares
+// whole structs across servers), so callers that need the owning node —
+// the live TLS probe dials that node — ask for it separately.
+func CertificateServerID(db *sql.DB, id int64) (int64, error) {
+	var serverID int64
+	err := db.QueryRow(`SELECT server_id FROM certificates WHERE id = ?`, id).Scan(&serverID)
+	return serverID, err
 }
 
 func GetCertificate(db *sql.DB, id int64) (*Certificate, error) {

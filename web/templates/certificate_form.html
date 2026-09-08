@@ -71,6 +71,7 @@
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Private key file path</label>
       <input name="key_path" value="{{.Cert.KeyPath}}" placeholder="/certs/example.com/privkey.pem" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       <p class="text-xs text-ink-500 mt-1.5">Mount the directory into the Caddy container (e.g. <code class="font-mono bg-ink-100 px-1 rounded">./certs:/certs:ro</code>).</p>
+      <p class="text-xs text-ink-500 mt-1.5">Expiry and issuer come from a live TLS probe of the Caddy node (every 30 minutes and on Refresh status). To read the file itself, also mount the same directory into the CaddyUI container read-only, at the same path.</p>
     </div>
   </div>
 
