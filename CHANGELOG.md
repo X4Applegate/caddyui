@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **CI**: pull requests are now reviewed by Claude (`anthropics/claude-code-action`) instead of the Codex GitHub App — an automatic review on every non-draft, non-Dependabot pull request, and `@claude` in an issue or PR comment for questions and follow-up changes. Runs on the maintainer's Claude subscription via a `CLAUDE_CODE_OAUTH_TOKEN` repository secret; the jobs skip themselves when the secret is absent. No effect on the shipped image.
+
+---
+
 ## [2.44.0] - 2026-09-09 - Settings is now a set of pages
 
 ### Changed
