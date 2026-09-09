@@ -1,0 +1,78 @@
+# Automatic pull-request review by Claude (replaces the Codex reviewer).
+#
+# Setup, once, by a repo admin:
+#   1. Install the Claude GitHub App on this repository: https://github.com/apps/claude
+#   2. Add ONE repository secret (Settings → Secrets and variables → Actions):
+#        CLAUDE_CODE_OAUTH_TOKEN  — Claude Pro/Max subscription; generate with `claude setup-token`
+#      or ANTHROPIC_API_KEY      — pay-as-you-go API key from console.anthropic.com
+#      and uncomment the matching input below.
+# Until a secret exists the job skips itself instead of failing.
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # Dependency bumps get no review; they only touch go.mod / workflows.
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Check that a Claude credential is configured
+        id: creds
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          APIKEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$OAUTH" ] && [ -z "$APIKEY" ]; then
+            echo "No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret — skipping review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.creds.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Review the pull request
+        if: steps.creds.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          use_sticky_comment: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are reviewing a pull request for CaddyUI, a Go web UI that manages Caddy
+            through its admin API (Go 1.26, chi router, html/template pages under
+            web/templates, SQLite or MariaDB via internal/db and internal/models).
+            The riskiest code is anything that builds or pushes Caddy config
+            (internal/caddy, syncCaddy and the apply*/write* helpers in
+            internal/server) and anything that touches TLS certificates.
+
+            Review the diff for:
+            - correctness bugs and regressions, especially in config generation and sync;
+            - security (path handling, injection, secrets in templates or logs, auth checks);
+            - data safety (migrations for both SQLite and MariaDB, destructive operations);
+            - missing or misleading tests, and CHANGELOG entries that do not match the change.
+
+            Be concrete: cite file and line, say what breaks and how. Skip style nits.
+            Post inline comments where they belong and finish with one short summary
+            comment; if nothing is wrong, say so in one line.
+          claude_args: |
+            --allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(go build:*),Bash(go vet:*),Bash(go test:*)"
