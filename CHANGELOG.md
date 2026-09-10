@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.45.2] - 2026-09-10 - Security headers were never sent
+
+### Fixed
+
+- **Response-header handlers that both deleted and set the same header shipped no header at all.** Caddy applies header operations in the order add → set → delete, so the v2.10.4/v2.10.5 "delete-then-set" pattern used by the Security Headers bundle, the standalone Permissions-Policy, X-Robots-Tag (both toggles), `add_x_xss_protection_disabled` and `add_content_type_nosniff` deleted our own value right after setting it. Every host with Security Headers enabled was serving no `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options` or `Referrer-Policy` (Nextcloud's setup check flagged all four). Verified against Caddy 2.11.2. The handlers now `set` only — `set` already replaces any upstream value, so nothing stacks. Existing hosts are fixed on the next sync; no form changes needed.
+- **Security Headers bundle now respects the per-host "Strip response headers" list**, the same way it already respected the global one. A host that strips `X-Frame-Options` with the bundle on used to get `SAMEORIGIN` back from the bundle's own set (masked until now by the delete bug above). Regression test added.
+
+---
+
 ## [2.45.1] - 2026-09-10 - Gandi collision wording
 
 ### Fixed
