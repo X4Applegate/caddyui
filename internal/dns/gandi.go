@@ -16,9 +16,9 @@ import (
 // Zones are domains: Zone.ID == Zone.Name == the bare domain, like Porkbun.
 // Records are RRsets keyed by (name, type) with a list of values and no
 // per-record ID, so CaddyUI's record ID is the composite "name/type"
-// ("app/A", "@/A" for the apex) and DeleteRecord removes the whole RRset —
-// which is what the Override flow wants. Names are relative to the zone,
-// "@" for the apex. TTL floor is 300 seconds.
+// ("app/A", "@/A" for the apex) and DeleteRecord removes the whole RRset
+// CaddyUI created. Names are relative to the zone, "@" for the apex. TTL
+// floor is 300 seconds.
 //
 // API reference: https://api.gandi.net/docs/livedns/
 
@@ -179,7 +179,7 @@ func (g *gandiProvider) CreateRecord(zone Zone, fqdn, content, rtype string, ttl
 	status, err := g.do("POST", "/domains/"+url.PathEscape(zone.ID)+"/records", body, nil)
 	if err != nil {
 		if status == http.StatusConflict {
-			return nil, fmt.Errorf("gandi: a %s record set named %q already exists in %s — delete it first or choose Override", rtype, name, zone.Name)
+			return nil, fmt.Errorf("gandi: a %s record set named %q already exists in %s — CaddyUI never overwrites records it did not create; remove or change that set in the Gandi console, then save again", rtype, name, zone.Name)
 		}
 		return nil, err
 	}
