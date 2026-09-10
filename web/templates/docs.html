@@ -23,6 +23,7 @@
     <li><a href="#digitalocean" class="text-brand-600 hover:text-brand-700 hover:underline">DigitalOcean DNS</a></li>
     <li><a href="#hetzner" class="text-brand-600 hover:text-brand-700 hover:underline">Hetzner DNS</a></li>
     <li><a href="#route53" class="text-brand-600 hover:text-brand-700 hover:underline">Amazon Route 53 DNS</a></li>
+    <li><a href="#gandi" class="text-brand-600 hover:text-brand-700 hover:underline">Gandi DNS</a></li>
     <li><a href="#import" class="text-brand-600 hover:text-brand-700 hover:underline">Import from Caddy</a></li>
     <li><a href="#snapshots" class="text-brand-600 hover:text-brand-700 hover:underline">Snapshots & Backup</a></li>
     <li><a href="#multiserver" class="text-brand-600 hover:text-brand-700 hover:underline">Multi-server</a></li>
@@ -435,6 +436,25 @@
       <li>The zone (domain) must already be created in Hetzner DNS Console and the registrar's nameservers must point at <code class="font-mono">hydrogen.ns.hetzner.com</code> + <code class="font-mono">helium.ns.hetzner.de</code> + <code class="font-mono">oxygen.ns.hetzner.com</code>.</li>
     </ol>
     <p class="text-xs text-ink-500">Hetzner returns opaque zone IDs (not the domain name) — CaddyUI stores both so the proxy-host list and log lines can display the human-readable zone name.</p>
+  </div>
+</section>
+
+{{/* ── Gandi DNS (v2.45.0) ── */}}
+<section id="gandi" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+    </span>
+    Gandi DNS
+  </h2>
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5 text-sm text-ink-700 leading-relaxed space-y-3">
+    <p>CaddyUI drives Gandi's <strong>LiveDNS</strong> API: it lists your domains, creates and removes the A records for proxy hosts, redirections and Advanced routes, and reuses the same token for Caddy's DNS-01 certificate issuance.</p>
+    <ol class="list-decimal ml-5 space-y-1.5">
+      <li>In <a href="https://admin.gandi.net/" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-700">admin.gandi.net</a> open <em>User settings → Personal Access Token (PAT)</em> and create a token for the organization that owns the domains, with the permission to manage domain name technical configurations. Copy it — Gandi shows it once.</li>
+      <li>Paste it into <a href="/settings/dns" class="text-brand-600 hover:text-brand-700">Settings → DNS → Gandi</a>. CaddyUI sends it as a <code class="font-mono">Bearer</code> token; the older <code class="font-mono">Apikey</code> scheme is not supported.</li>
+      <li>The domain must use Gandi's LiveDNS nameservers (the default for domains registered at Gandi). Domains delegated elsewhere do not appear in the picker.</li>
+    </ol>
+    <p class="text-xs text-ink-500">LiveDNS stores records as sets keyed by name and type, so CaddyUI's record reference is <code class="font-mono">name/type</code> (for example <code class="font-mono">app/A</code>, <code class="font-mono">@/A</code> for the apex). Creating a record that already has a set at that name and type is refused rather than merged — use Override on the collision warning to replace it. TTLs below 300 seconds are raised to 300, the LiveDNS minimum. For DNS-01 the connected Caddy needs the <code class="font-mono">github.com/caddy-dns/gandi</code> module; the repository's <code class="font-mono">Dockerfile.caddy</code> includes it from v2.45.0.</p>
   </div>
 </section>
 
