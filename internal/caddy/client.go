@@ -1483,58 +1483,51 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		// the bundle's set re-adds X-Frame-Options (or whatever) right after
 		// the v2.9.168 strip handler tries to remove it. Empty bundle after
 		// filtering = no handler emitted at all (skip the whole block).
-		if len(p.GlobalStripHeaders) > 0 {
-			for _, name := range p.GlobalStripHeaders {
-				for k := range secHdrs {
-					if strings.EqualFold(k, name) {
-						delete(secHdrs, k)
-					}
+		// v2.45.2: the per-host strip_response_headers list gets the same
+		// treatment. Its delete handler runs *before* the bundle's deferred
+		// set (later handlers wrap the ResponseWriter innermost), so a host
+		// that strips X-Frame-Options while the bundle is on would otherwise
+		// get SAMEORIGIN back. Before v2.45.2 the bundle's own delete hid
+		// this by removing every header anyway.
+		stripNames := append([]string{}, p.GlobalStripHeaders...)
+		for _, h := range strings.Split(p.StripResponseHeaders, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				stripNames = append(stripNames, h)
+			}
+		}
+		for _, name := range stripNames {
+			for k := range secHdrs {
+				if strings.EqualFold(k, name) {
+					delete(secHdrs, k)
 				}
 			}
 		}
-		// v2.10.4: delete-then-set semantics. Caddy's response.set on an
-		// already-present header (when the upstream sets the same header
-		// itself, e.g. CaddyUI's own middleware as of v2.10.3) appends a
-		// second value rather than replacing it, leaving the client with
-		// duplicate X-Frame-Options / X-Content-Type-Options lines. Adding
-		// `delete` first guarantees the upstream's value is cleared before
-		// we set our own, so the bundle ships exactly one of each header.
+		// v2.10.4 added a `delete` of every bundle header alongside the `set`,
+		// believing Caddy applied delete before set. It does the opposite:
+		// Caddy's HeaderOps.ApplyTo runs add, set, then delete, so a handler
+		// that both sets and deletes the same name ends with the header
+		// absent. Every host with the bundle on shipped *no* HSTS /
+		// X-Frame-Options / X-Content-Type-Options / Referrer-Policy at all
+		// (verified against Caddy 2.11.2). `set` alone replaces any
+		// upstream value, so it is the whole fix (v2.45.2).
 		// v2.12.16: skip the whole handler if the global-strip filter
-		// removed every entry — emitting an empty set/delete block is
-		// noise.
+		// removed every entry — emitting an empty set block is noise.
 		if len(secHdrs) > 0 {
-			// v2.30.0: sort the delete list. Ranging a Go map yields a random
-			// order, so this emitted a different-but-equivalent JSON array on
-			// every call. Caddy's admin API compares configs structurally, so
-			// each sync of a host with Security Headers enabled looked like a
-			// real change: an avoidable config reload every time, and a
-			// spurious diff in every config snapshot. Measured before the fix:
-			// 5 distinct payloads from 300 identical inputs.
-			names := make([]string, 0, len(secHdrs))
-			for k := range secHdrs {
-				names = append(names, k)
-			}
-			sort.Strings(names)
-			delHdrs := make([]any, 0, len(names))
-			for _, k := range names {
-				delHdrs = append(delHdrs, k)
-			}
 			handlers = append(handlers, map[string]any{
 				"handler": "headers",
 				"response": map[string]any{
-					"delete": delHdrs,
-					"set":    secHdrs,
+					"set": secHdrs,
 				},
 			})
 		}
 	} else if p.PermissionsPolicy != "" {
 		// Even without the full security bundle, still inject Permissions-Policy alone.
 		// v2.10.5: delete+set so an upstream-set value doesn't pile up alongside ours.
+		// v2.45.2: the `delete` was dropped — Caddy applies delete after set, which removed the header entirely; `set` alone replaces any upstream value.
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
-				"delete": []any{"Permissions-Policy"},
-				"set":    map[string]any{"Permissions-Policy": []any{p.PermissionsPolicy}},
+				"set": map[string]any{"Permissions-Policy": []any{p.PermissionsPolicy}},
 			},
 		})
 	}
@@ -2114,11 +2107,11 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	// v2.9.259: add_x_robots_noindex_quick — quick X-Robots-Tag noindex toggle.
 	// v2.10.5: delete+set so a stacked upstream / bundle / XRobotsTag-text value
 	// doesn't end up alongside ours.
+	// v2.45.2: the `delete` was dropped — Caddy applies delete after set, which removed the header entirely; `set` alone replaces any upstream value.
 	if p.AddXRobotsNoindexQuick {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
-				"delete": []any{"X-Robots-Tag"},
 				"set": map[string]any{
 					"X-Robots-Tag": []any{"noindex, nofollow"},
 				},
@@ -2550,11 +2543,11 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	// v2.9.202: add_x_xss_protection_disabled — set X-XSS-Protection: 0 response header (disable legacy XSS filter).
 	// v2.10.5: delete+set so the bundle's "1; mode=block" doesn't end up
 	// alongside our "0" when both are enabled.
+	// v2.45.2: the `delete` was dropped — Caddy applies delete after set, which removed the header entirely; `set` alone replaces any upstream value.
 	if p.AddXXSSProtectionDisabled {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
-				"delete": []any{"X-Xss-Protection"},
 				"set": map[string]any{
 					"X-Xss-Protection": []any{"0"},
 				},
@@ -2844,11 +2837,11 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	}
 	// v2.9.81: x_robots_tag — X-Robots-Tag response header for search-engine control.
 	// v2.10.5: delete+set so this overrides any upstream value cleanly.
+	// v2.45.2: the `delete` was dropped — Caddy applies delete after set, which removed the header entirely; `set` alone replaces any upstream value.
 	if p.XRobotsTag != "" {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
-				"delete": []any{"X-Robots-Tag"},
 				"set": map[string]any{
 					"X-Robots-Tag": []any{p.XRobotsTag},
 				},
@@ -3476,11 +3469,11 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	// v2.9.108: add_content_type_nosniff — add X-Content-Type-Options: nosniff response header.
 	// v2.10.5: delete+set so this doesn't stack alongside the bundle's nosniff
 	// when both `security_headers_enabled` and this individual toggle are on.
+	// v2.45.2: the `delete` was dropped — Caddy applies delete after set, which removed the header entirely; `set` alone replaces any upstream value.
 	if p.AddContentTypeNosniff {
 		handlers = append(handlers, map[string]any{
 			"handler": "headers",
 			"response": map[string]any{
-				"delete": []any{"X-Content-Type-Options"},
 				"set": map[string]any{
 					"X-Content-Type-Options": []any{"nosniff"},
 				},
