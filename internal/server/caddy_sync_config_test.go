@@ -104,6 +104,8 @@ func TestCaddyDNSProviderConfig(t *testing.T) {
 		{"godaddy", dns.GoDaddy, map[string]string{"gd_api_key": "key", "gd_api_secret": "secret"}, map[string]any{"name": "godaddy", "api_token": "key:secret"}},
 		{"digitalocean", dns.DigitalOcean, map[string]string{"do_api_token": "token"}, map[string]any{"name": "digitalocean", "auth_token": "token"}},
 		{"hetzner", dns.Hetzner, map[string]string{"hetzner_api_token": "token"}, map[string]any{"name": "hetzner", "api_token": "token"}},
+		{"gandi", dns.Gandi, map[string]string{"gandi_api_token": " pat "}, map[string]any{"name": "gandi", "bearer_token": "pat"}},
+		{"gandi-blank", dns.Gandi, map[string]string{"gandi_api_token": ""}, nil},
 		{"route53", dns.Route53, map[string]string{"route53_access_key_id": "AKIAEXAMPLE", "route53_secret_access_key": "secret"}, map[string]any{"name": "route53", "access_key_id": "AKIAEXAMPLE", "secret_access_key": "secret", "region": "us-east-1"}},
 		{"route53-temporary", dns.Route53, map[string]string{"route53_access_key_id": "AKIAEXAMPLE", "route53_secret_access_key": "secret", "route53_session_token": "session", "route53_region": "us-gov-west-1"}, map[string]any{"name": "route53", "access_key_id": "AKIAEXAMPLE", "secret_access_key": "secret", "session_token": "session", "region": "us-gov-west-1"}},
 	}
