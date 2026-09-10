@@ -7,6 +7,8 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 [![Docker Pulls](https://img.shields.io/docker/pulls/applegater/caddyui?label=pulls)](https://hub.docker.com/r/applegater/caddyui)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8)](https://go.dev/)
 
+**Documentation:** the [CaddyUI wiki](https://github.com/X4Applegate/caddyui/wiki) covers installation, every Settings page, proxy hosts and the Caddyfile-to-form mapping, certificates, DNS providers, the fleet, observability, the REST API and troubleshooting. The same guide ships inside the app under **Docs**.
+
 **Lighthouse:** Performance **99** · Accessibility **100** · Best Practices **100** · SEO **100** *(measured on `/login` from Google's PageSpeed Insights against a residential-ISP install — `:v2.12.53` and later)*
 
 ---
