@@ -5,7 +5,7 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 [![License: CaddyUI-SAL 1.0](https://img.shields.io/badge/license-CaddyUI--SAL%201.0-blue)](LICENSE)
 [![Docker Hub](https://img.shields.io/docker/v/applegater/caddyui?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/applegater/caddyui)
 [![Docker Pulls](https://img.shields.io/docker/pulls/applegater/caddyui?label=pulls)](https://hub.docker.com/r/applegater/caddyui)
-[![Go 1.25](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev/)
+[![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8)](https://go.dev/)
 
 **Lighthouse:** Performance **99** · Accessibility **100** · Best Practices **100** · SEO **100** *(measured on `/login` from Google's PageSpeed Insights against a residential-ISP install — `:v2.12.53` and later)*
 
@@ -47,6 +47,28 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 ---
 
 ## Features
+
+### Certificates, safer syncs and Settings in v2.39 – v2.45
+
+- **Live TLS probe for file-path certificates** *(v2.39.0)* — a certificate stored as a file path inside the Caddy container now shows expiry, issuer and days left from what the node actually serves, instead of nothing; Inspect gains a **Live check** card and warns when a renewed file has not been reloaded by Caddy.
+- **Fleet sync for every certificate** *(v2.41.0)* — **Sync configuration** and **Also configure on** copy PEM and file-path certificates too (a readable file-path certificate travels as stored PEM), and hosts created on a target keep referencing the copied certificate instead of falling back to Auto TLS.
+- **Export a managed certificate to a directory** *(v2.42.0)* — mount the node's Caddy data volume, set its **Data directory** on the Caddy Fleet entry, and CaddyUI copies the chain and key out after every issuance and renewal for a mail server or any other service, with **Export now** on the certificate form.
+- **Changes Caddy rejects are refused up front** *(v2.42.1)* — proxy hosts, redirections and certificates are validated against Caddy before they are saved (for example a certificate file Caddy cannot open), and a sync that fails afterwards shows an amber banner on every page with the exact error and **Retry sync now**.
+- **Advanced config understands `reverse_proxy { … }`** *(v2.40.0 – v2.42.2)* — sub-directives such as `flush_interval -1`, `header_up` and `transport http { … }` are merged into the host's own handler; bare sub-directives, JSON-style option names and misplaced transport options are repaired instead of rejected.
+- **Analytics retention that actually runs** *(v2.43.0 / v2.43.1)* — the raw-event prune loop now starts (it never had), retention is a setting, and Settings → Analytics shows a **Storage** panel with file size, oldest event and reclaimable space plus **Prune now** and **Reclaim space**.
+- **Settings is a set of pages** *(v2.44.0)* — General, Notifications, DNS, Security, Analytics, Integrations, AI assistant and Backup, each saving only its own settings.
+- **Gandi managed DNS** *(v2.45.0)* — a LiveDNS Personal Access Token drives A-record management and DNS-01 issuance; `Dockerfile.caddy` builds the `caddy-dns/gandi` module.
+- **Security headers really are sent** *(v2.45.2)* — hosts with the Security Headers bundle enabled were serving none of them, because Caddy applies header deletes after sets; fixed on the next sync.
+
+### Post-apply checks, monitoring and hardening in v2.26 – v2.38
+
+- **Expectations: post-apply checks with automatic rollback** *(v2.38.0)* — declare the requests a host must keep answering (method, path, expected status or Location, maximum latency, valid TLS). CaddyUI runs them after every sync; if one fails it loads the previous live config back into Caddy, pauses automatic syncs for that server and shows a banner with **Re-apply now** / **Keep the rolled-back config**. Suggested by Caddy's maintainer.
+- **Each node ships its logs to a target it can reach** *(v2.37.0)* — a per-node **Log ingest target** on the Caddy Fleet entry, so remote nodes' Analytics, certificate status and Server Logs work beyond the Docker network.
+- **Advanced routes on custom ports keep their listener** *(v2.36.1)* — a `:7070 { … }` block becomes its own Caddy server instead of being folded into :443; the Certificates page also lists Advanced routes' Auto-TLS domains *(v2.36.2)*.
+- **Monitoring you can shape** — health checks with any HTTP method *(v2.36.0)*; **Automatic / Custom / Off** status monitoring per host, with Custom path, method, expected status, interval and timeout *(v2.28.0)*; **Off** silences all three probes *(v2.35.0)*; an always-present link to each host's public health history *(v2.35.1)*.
+- **Node-local hosts and routes** *(v2.33.0)* — resources whose upstream only resolves on one node (a Docker service name, a VPN address) are excluded from fleet sync and **Also deploy to**, and counted rather than silently dropped.
+- **Hardening** — a CSRF token on every state-changing request *(v2.29.0)*; a Content-Security-Policy on CaddyUI's own pages and byte-identical generated config *(v2.30.0)*; no third-party scripts at runtime *(v2.27.0)*.
+- **Everyday improvements** — live Caddyfile and JSON preview on the proxy host form *(v2.26.0)*; **Also deploy to** for Advanced routes *(v2.27.0)*; the Analytics page four times faster at scale *(v2.31.0)*; full dates on Server Logs and Live Traffic with a **Clear** that sticks *(v2.35.5, v2.37.1)*.
 
 ### Fleet observability in v2.25
 
@@ -113,14 +135,14 @@ See the [complete managed wildcard workflow](#managed-wildcard-certificates-v217
 - **⌘K / Ctrl+K command palette** — global search across every proxy host, redirection, raw route, and certificate. `↑/↓ Enter Esc`. Color-coded type pills. *(v2.11.5)*
 - **Bulk multi-select on every list page** — checkbox + select-all + floating Enable / Disable / Delete bar on `/proxy-hosts`, `/redirection-hosts`, `/raw-routes`, and `/certificates`. *(v2.11.6, .9, .10)*
 - **Drag-to-reorder rows** — HTML5 ⠿ handle on `/proxy-hosts` and `/redirection-hosts`. *(v2.11.11)*
-- **Live route-JSON preview** on the proxy-host edit form — see the exact Caddy route JSON your form would push, refreshing as you type. *(v2.11.13)*
+- **Live route preview** on the proxy-host edit form — the exact Caddy route JSON and a Caddyfile excerpt your form would push, refreshing as you type. *(v2.11.13, v2.26.0)*
 - **Multi-server health widget** on the dashboard — one card per registered Caddy server with status, host count, version, last seen. *(v2.11.16)*
 - **AI assistant — bring your own backend** *(v2.11.15, v2.12.36+)* — opt-in floating chat button that answers Caddy / TLS / DNS questions and writes production-grade Caddyfile snippets on demand. Pick any backend in Settings → AI assistant: **Ollama (local)** for fully-offline on your GPU, **Ollama Cloud** for hosted MoE models that won't fit on a homelab card (qwen3-coder:480b, gpt-oss:120b, etc.), **Anthropic Claude** (Haiku 4.5 / Sonnet 4.6 / Opus 4.7), or **any OpenAI-compatible API** (also covers OpenRouter, Groq, Together, vLLM, LM Studio). Conversation memory (multi-turn), markdown rendering, and a custom system prompt setting are shared by every backend.
 - **AI auto-fill — chat your hosts into existence** *(v2.12.11+)* — describe what you want in plain English (*"set up nextcloud at cloud.example.com pointing to nextcloud:80"*, *"redirect old.example.com to new.example.com permanently"*) and the assistant emits a structured `create_proxy_host(...)` / `create_redirection(...)` tool call. The chat panel renders a confirmation card with the exact arguments — click **Apply** and the resource is created, the form is filled in for you, and Caddy is auto-synced. Every AI-driven exec writes an `ai_tool_call` activity-log entry so admins can audit what the AI did. Works on Claude 4.x, GPT-4, qwen2.5+, llama3.1+, and gemma2.
 - **DNS-01 certificate issuance** — select Managed DNS on a proxy, redirection, or advanced route and CaddyUI reuses that credential profile for Let's Encrypt DNS-01. Supports Cloudflare, Porkbun, Namecheap, GoDaddy, DigitalOcean, Hetzner, Amazon Route 53, and Gandi; the connected Caddy needs the matching `caddy-dns` plugin. Wildcards are supported, and public A-record creation can be disabled for internal/split-DNS services. *(Route 53 added in v2.23.0; DNS-01-only mode in v2.23.1)*
 - **Per-hostname DNS-record pre-flight** on multi-domain routes — checklist showing which records will be created vs already exist. *(v2.12.1)*
 - **Managed DNS on redirections** — closes the long-standing gap where redirects had no DNS plumbing. Now creates A records per hostname on save, deletes on row removal. *(v2.12.2)*
-- **Per-section Save buttons on Settings** — no more scroll-to-bottom for a one-toggle change. *(v2.12.6)*
+- **Settings pages** — General, Notifications, DNS, Security, Analytics, Integrations, AI assistant and Backup, each with its own save. *(v2.44.0; per-section save since v2.12.6)*
 - **Active-server-scoped dashboard cards** — Requests / Visitors / Bandwidth Today now reflect only the server selected in the picker, including traffic to wildcard SAN hostnames. *(v2.12.8, v2.12.9)*
 
 ### Managed wildcard certificates (v2.17+)
@@ -133,24 +155,27 @@ Use one DNS-01 wildcard across matching proxy hosts without exporting or copying
 4. Leave matching proxy hosts on **Auto** TLS. CaddyUI detects the covering wildcard and prevents redundant exact-host certificate orders.
 5. Edit the managed certificate later to see live deployment, issuer, expiry, and renewal health for every configured server.
 
-Your Caddy build must include the matching `caddy-dns` provider module. The repository's [`Dockerfile.caddy`](Dockerfile.caddy) includes all seven DNS providers supported by CaddyUI; the stock `caddy:2-alpine` image does not.
+Your Caddy build must include the matching `caddy-dns` provider module. The repository's [`Dockerfile.caddy`](Dockerfile.caddy) includes all eight DNS providers supported by CaddyUI; the stock `caddy:2-alpine` image does not.
 
 ### Routing
 
 - **Proxy Hosts** — point domains at upstream services with one-click TLS via Caddy's automatic HTTPS
 - **Redirections** — 301/302/307/308 redirect rules across hostnames; path-based rules with `redirect_rules`; sunset-date 410 conversion; wildcard subdomain capture
-- **Advanced Routes** — import raw Caddyfile blocks or write JSON directly for anything the UI can't model
-- **Certificates** — upload custom PEM / path-based certificates or create standalone Caddy-managed DNS-01 wildcard certificates; expiry alerts via email or webhook
+- **Advanced Routes** — import raw Caddyfile blocks or write JSON directly for anything the UI can't model; a block on a custom port (`:7070 { … }`) keeps its own listener, and routes can be deployed to other nodes with **Also deploy to**
+- **Certificates** — upload custom PEM / path-based certificates or create standalone Caddy-managed DNS-01 wildcard certificates; live TLS probe for expiry of file-path certificates, export of a managed certificate's chain and key to a directory after every renewal, fleet sync for every kind, expiry alerts via email or webhook
 - **Managed DNS** — optionally create the A record for a new proxy host, redirection, or advanced route without leaving CaddyUI; records created by CaddyUI are auto-deleted with the row. The same credentials drive DNS-01 certificate issuance even when public A-record creation is disabled. Providers: **Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap, Amazon Route 53, Gandi**. Zone lookup is automatic from the domain.
 - **Paste Caddyfile import** — convert a Caddyfile into managed proxy hosts / redirections / advanced routes; smart classifier auto-routes each block to the right table *(v2.10.7+)*. Re-classify button rescues older imports
 - **Import from Caddy** — pull your existing live Caddy config into the DB on first run
-- **Per-host options surface (~70 fields)** — request / response headers (X-Forwarded-*, security headers, cache hints), path-based upstream overrides, multi-upstream routing, active health checks, upstream TLS settings, request blocking (deny by path / query / user-agent / method)
+- **Per-host options surface (~70 fields)** — request / response headers (X-Forwarded-*, security headers, cache hints), path-based upstream overrides, multi-upstream routing, active health checks, upstream TLS settings, request blocking (deny by path / query / user-agent / method), plus an **Advanced config** box for extra Caddyfile directives and a `reverse_proxy { … }` block merged into the host's own handler
+- **Post-apply checks** — expectations per host, run after every sync, with automatic rollback of the live config when one fails
+- **Validated before saving** — changes Caddy would reject are refused with a plain explanation, and a sync that fails afterwards is shown on every page until it succeeds
 - **Branded error pages** — CaddyUI-styled 404 / 502 / 503 / 504 pages are injected into Caddy automatically
 
 ### Multi-server
 
 - **Remote Caddy management** — manage multiple Caddy instances from a single UI; switch with a dropdown. Edge hosts only need Caddy — no CaddyUI container required (see [Agent mode](#agent-mode-edge-only-caddy-no-caddyui))
 - **Per-server scoping** — proxy hosts, redirections, routes, and certificates are all scoped to the active server; cross-server conflicts can't happen
+- **Fleet sync and Also deploy to** — copy a whole environment, or one host, redirection, route or certificate, onto other nodes; node-local resources stay where they belong, and each node has its own public IP, log ingest target and data directory
 
 ### Access control
 
@@ -159,12 +184,13 @@ Your Caddy build must include the matching `caddy-dns` provider module. The repo
 - **Groups** *(v2.7.4)* — admin bundles `user`-role accounts into a team; every member sees every other member's resources in their list views (read-only), with a `Team` chip so it's clear which rows are "mine" vs. "my teammate's"
 - **2FA / TOTP** — per-user time-based one-time passwords
 - **Login CAPTCHA** — optional Cloudflare Turnstile or reCAPTCHA v3 gate on the login form
+- **Hardened by default** — CSRF tokens on every state-changing request, a Content-Security-Policy on CaddyUI's own pages, no third-party scripts at runtime, admin IP allowlist, login attempt limits
 
 ### Observability
 
 - **Fleet observability** *(v2.25.0)* — attribute requests to the node that actually handled them, stream temporary in-memory runtime logs from **Observe → Server Logs**, and surface per-node ACME progress/errors from structured Caddy TLS events
 - **Prometheus metrics** *(v2.24.0)* — enable base HTTP metrics, per-host labels, and Caddy 2.11+ catch-all host observation on selected fleet servers. CaddyUI validates each target, preserves metrics it does not own, and shows the protected Admin URL's `/metrics` scrape target
-- **Visitor analytics** *(v2.7.0)* — opt-in per-host traffic counters; top hosts, 24 h sparkline, status-code mix, unique visitors. Per-server filter for multi-Caddy fleets. The Caddy log writer uses soft-start failover so Caddy can boot while CaddyUI is offline
+- **Visitor analytics** *(v2.7.0)* — opt-in per-host traffic counters; top hosts, 24 h sparkline, status-code mix, unique visitors. Per-server filter for multi-Caddy fleets. The Caddy log writer uses soft-start failover so Caddy can boot while CaddyUI is offline. Raw events are kept for a configurable number of days (default 30) with per-day rollups for long-range charts, and a Storage panel reclaims space *(v2.43.0)*
 - **Upstream health** — live health check per proxy; polls Caddy's own admin API so Docker-internal hostnames work correctly
 - **App health** — detects whether the upstream actually responds, not just whether its TCP port is open
 - **Activity log** — every create / edit / delete / sync action is logged with actor, timestamp, and resource
@@ -172,8 +198,9 @@ Your Caddy build must include the matching `caddy-dns` provider module. The repo
 Certificate lifecycle monitoring and Server Logs share the structured ingest
 target configured under **Settings → Analytics**, even when visitor analytics
 is disabled. Every managed Caddy node must be able to reach that private
-host and port (default `caddyui:9019` on the repository Docker network). Do
-not publish the ingest listener to the internet.
+host and port (default `caddyui:9019` on the repository Docker network); a
+node on another host gets its own **Log ingest target** on its Caddy Fleet
+entry *(v2.37.0)*. Do not publish the ingest listener to the internet.
 
 ### Operational
 
@@ -181,7 +208,8 @@ not publish the ingest listener to the internet.
 - **Snapshots** — automatic and manual Caddy configuration snapshots on both backends; one-click full-file backup on SQLite
 - **Email notifications** — SMTP support (STARTTLS / TLS / plain) for cert-expiry and upstream-health alerts
 - **Webhook notifications** — generic JSON POST for cert-expiry (pair with any notifier that accepts webhooks)
-- **Update notifications** — sidebar badge when a newer Docker Hub release is available
+- **Update notifications** — the Operations dashboard announces a newer Docker Hub release
+- **Settings pages** — eight focused pages instead of one long form, each saving only its own settings
 - **Dark mode** — toggleable, remembers your choice; system preference respected on first visit
 - **PWA** — installable on desktop and mobile; offline-capable service worker
 
