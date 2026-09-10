@@ -5,7 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
-## [Unreleased]
+## [2.45.0] - 2026-09-10 - Gandi managed DNS
+
+### Added
+
+- **Gandi provider support** ([discussion #72](https://github.com/X4Applegate/caddyui/discussions/72)): CaddyUI drives Gandi's LiveDNS v5 API with a Personal Access Token — domain discovery for the zone picker, managed A-record creation, collision detection and cleanup for proxy hosts, redirections and Advanced routes, and the same token is handed to Caddy for DNS-01 certificate issuance (`github.com/caddy-dns/gandi`, now built into `Dockerfile.caddy`). LiveDNS keeps records as sets keyed by name and type, so CaddyUI references them as `name/type`, refuses to create over an existing set (Override replaces it), and raises TTLs below the LiveDNS minimum of 300 seconds. Settings → DNS gets a Gandi card and the in-app guide a Gandi section.
 
 ### Changed
 

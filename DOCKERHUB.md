@@ -203,7 +203,7 @@ Per-host export also available from the proxy-host edit page.
 - **DNS-01 cert auto-issuance** — selecting Managed DNS emits the matching ACME policy for ordinary and wildcard names
 - **Standalone managed wildcards** — create auto-renewed DNS-01 wildcard certificates without a proxy host or pasted private key
 - **Visible Auto TLS certificate selection** — the Caddy-managed table names the wildcard reused by each covered domain and labels per-host certificates clearly
-- **Managed DNS** for Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap, and Amazon Route 53 — auto-creates A records on save and reuses the credentials for DNS-01
+- **Managed DNS** for Cloudflare, DigitalOcean, Hetzner, Porkbun, GoDaddy, Namecheap, Amazon Route 53, and Gandi — auto-creates A records on save and reuses the credentials for DNS-01
 - **Multi-server fleet management** — manage multiple Caddy instances from one UI, switch with a dropdown, and idempotently sync the selected environment's complete managed routing configuration to another server
 - **Three-role RBAC** — admin / user / view, with per-user resource ownership and group-based shared visibility
 - **2FA / TOTP**, login CAPTCHA (Turnstile or reCAPTCHA), session management

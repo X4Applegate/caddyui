@@ -1324,6 +1324,8 @@ const (
 
 	// Hetzner DNS (v2.3.0).
 	settingHetznerAPIToken = "hetzner_api_token"
+	// v2.45.0: Gandi LiveDNS personal access token (discussion #72).
+	settingGandiAPIToken = "gandi_api_token"
 
 	// Amazon Route 53 (v2.23.0). Region defaults to us-east-1 in both the
 	// CaddyUI API adapter and the caddy-dns/route53 module. Session token is
@@ -1353,6 +1355,7 @@ var dnsProviderCredKeys = map[string][]string{
 	dns.DigitalOcean: {settingDOAPIToken},
 	dns.Hetzner:      {settingHetznerAPIToken},
 	dns.Route53:      {settingRoute53AccessKeyID, settingRoute53SecretAccessKey, settingRoute53SessionToken, settingRoute53Region},
+	dns.Gandi:        {settingGandiAPIToken}, // v2.45.0
 }
 
 type dnsCredentialProfile struct {
@@ -6093,6 +6096,12 @@ func caddyDNSProviderConfig(providerID string, creds map[string]string, zoneID s
 			return nil
 		}
 		return map[string]any{"name": "hetzner", "api_token": token}
+	case dns.Gandi: // v2.45.0 — github.com/caddy-dns/gandi takes the same PAT as CaddyUI
+		token := strings.TrimSpace(creds[settingGandiAPIToken])
+		if token == "" {
+			return nil
+		}
+		return map[string]any{"name": "gandi", "bearer_token": token}
 	case dns.Route53:
 		accessKey := strings.TrimSpace(creds[settingRoute53AccessKeyID])
 		secretKey := strings.TrimSpace(creds[settingRoute53SecretAccessKey])

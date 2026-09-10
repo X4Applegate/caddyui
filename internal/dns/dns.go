@@ -1,6 +1,6 @@
 // Package dns exposes a unified interface over the DNS providers CaddyUI
 // knows how to drive (currently Cloudflare, Porkbun, Namecheap, GoDaddy,
-// DigitalOcean, Hetzner, Amazon Route 53).
+// DigitalOcean, Hetzner, Amazon Route 53, Gandi).
 //
 // The goal is a single set of operations — list zones, create/delete a record
 // pointing at the proxy-host's server IP, test credentials — that server.go
@@ -11,7 +11,7 @@
 //
 // A proxy_hosts row carries three unified columns:
 //
-//	dns_provider    — one of Cloudflare/Porkbun/Namecheap/GoDaddy/DigitalOcean/Hetzner/Route53 IDs, or empty
+//	dns_provider    — one of Cloudflare/Porkbun/Namecheap/GoDaddy/DigitalOcean/Hetzner/Route53/Gandi IDs, or empty
 //	dns_zone_id     — provider-native zone identifier (opaque for CF/Hetzner; bare domain for others)
 //	dns_zone_name   — base domain name for display ("example.com")
 //	dns_record_id   — provider-native record identifier, set after CreateRecord
@@ -37,6 +37,7 @@ const (
 	DigitalOcean = "digitalocean"
 	Hetzner      = "hetzner"
 	Route53      = "route53"
+	Gandi        = "gandi" // v2.45.0
 )
 
 // Zone is a provider-agnostic view of a DNS zone on the user's account.
