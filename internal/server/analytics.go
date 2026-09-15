@@ -724,6 +724,12 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 	if err4 != nil {
 		log.Printf("analytics: TopErrorPaths(%s): %v", host, err4)
 	}
+	// issue #94: exact status-code + path breakdown, so "1200 4xx" becomes
+	// "404 /wp-login.php ×840" — what is actually failing/being probed.
+	errorDetails, err5 := models.TopErrorDetails(s.DB, since, host, 15, serverScopeID)
+	if err5 != nil {
+		log.Printf("analytics: TopErrorDetails(%s): %v", host, err5)
+	}
 	browsers, _ := models.TopBrowsers(s.DB, since, host, 8, serverScopeID)
 
 	bucketSec := int64(3600) // 1h buckets regardless of window — keeps the
@@ -748,6 +754,7 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 		"ServerScopeName":   serverScopeName,
 		"Window":            window,
 		"WindowLabel":       formatWindow(window),
+		"WindowQuery":       windowQuery(window),
 		"Totals":            totals,
 		"Paths":             paths,
 		"Clients":           clients,
@@ -757,6 +764,7 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 		"ResponseTime":      rtStats,
 		"Bandwidth":         bandwidth,
 		"ErrorPaths":        errorPaths,
+		"ErrorDetails":      errorDetails,
 		"Browsers":          browsers,
 		"Section":           "analytics",
 		"ViewsChange":       viewsChange,
@@ -766,6 +774,148 @@ func (s *Server) getAnalyticsHost(w http.ResponseWriter, r *http.Request) {
 		"VisitorsUp":        visitorsUp,
 		"VisitorsChangeAbs": visitorsChangeAbs,
 		"PrevPeriod":        fmt.Sprintf("prev %s", formatWindow(window)),
+	})
+}
+
+// analyticsScope carries the resolved+authorized host, server scope and time
+// window shared by the per-host drill-down endpoints (issue #94).
+type analyticsScope struct {
+	Host            string
+	User            *models.User
+	IsAdmin         bool
+	ServerScopeID   int64
+	ServerScopeName string
+	Window          time.Duration
+	Since           time.Time
+	Now             time.Time
+}
+
+// resolveAnalyticsScope validates the {host} URL param, authorizes the caller
+// for it, and parses the window/server scope. It returns ok=false when it has
+// already written a response (redirect / 404), so callers must simply return.
+func (s *Server) resolveAnalyticsScope(w http.ResponseWriter, r *http.Request) (*analyticsScope, bool) {
+	host := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "host")))
+	if host == "" {
+		http.Redirect(w, r, "/analytics", http.StatusSeeOther)
+		return nil, false
+	}
+	u := s.currentUser(r)
+	isAdmin := u != nil && u.Role == models.RoleAdmin
+	serverScopeID := s.analyticsServerScope(r)
+	if !isAdmin {
+		allowed, err := s.scopedHostsForAnalytics(u, serverScopeID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return nil, false
+		}
+		ok := false
+		for _, h := range allowed {
+			if h == host {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			// 404 (not 403) so a viewer can't enumerate hosts they can't see.
+			http.NotFound(w, r)
+			return nil, false
+		}
+	}
+	window := 7 * 24 * time.Hour
+	switch strings.ToLower(r.URL.Query().Get("window")) {
+	case "1d", "24h", "day":
+		window = 24 * time.Hour
+	case "30d":
+		window = 30 * 24 * time.Hour
+	}
+	now := time.Now()
+	serverScopeName := "All servers"
+	if serverScopeID > 0 {
+		serverScopeName = fmt.Sprintf("Server %d", serverScopeID)
+		if server, _ := models.GetCaddyServer(s.DB, serverScopeID); server != nil {
+			serverScopeName = server.Name
+		}
+	}
+	return &analyticsScope{
+		Host:            host,
+		User:            u,
+		IsAdmin:         isAdmin,
+		ServerScopeID:   serverScopeID,
+		ServerScopeName: serverScopeName,
+		Window:          window,
+		Since:           now.Add(-window),
+		Now:             now,
+	}, true
+}
+
+// getAnalyticsVisitor renders the per-visitor drill-down for a single client IP
+// on a host: its top paths, status breakdown, exact error detail and user
+// agents. Answers "is this a noisy client or someone probing?" (issue #94).
+func (s *Server) getAnalyticsVisitor(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.resolveAnalyticsScope(w, r)
+	if !ok {
+		return
+	}
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if ip == "" {
+		http.Redirect(w, r, "/analytics/"+sc.Host, http.StatusSeeOther)
+		return
+	}
+	views, _ := models.VisitorTotals(s.DB, sc.Since, sc.Host, ip, sc.ServerScopeID)
+	paths, _ := models.VisitorPaths(s.DB, sc.Since, sc.Host, ip, 30, sc.ServerScopeID)
+	status, _ := models.VisitorStatusBuckets(s.DB, sc.Since, sc.Host, ip, sc.ServerScopeID)
+	errorDetails, _ := models.VisitorErrorDetails(s.DB, sc.Since, sc.Host, ip, 20, sc.ServerScopeID)
+	agents, _ := models.VisitorUserAgents(s.DB, sc.Since, sc.Host, ip, 10, sc.ServerScopeID)
+
+	s.render(w, r, "analytics_visitor.html", map[string]any{
+		"User":             sc.User,
+		"IsAdmin":          sc.IsAdmin,
+		"Host":             sc.Host,
+		"ClientIP":         ip,
+		"SelectedServerID": sc.ServerScopeID,
+		"ServerScopeName":  sc.ServerScopeName,
+		"Window":           sc.Window,
+		"WindowLabel":      formatWindow(sc.Window),
+		"WindowQuery":      windowQuery(sc.Window),
+		"Views":            views,
+		"Paths":            paths,
+		"Status":           status,
+		"ErrorDetails":     errorDetails,
+		"UserAgents":       agents,
+		"Section":          "analytics",
+	})
+}
+
+// getAnalyticsPath renders the per-path drill-down for a single path on a host:
+// which visitors requested it and its status breakdown (issue #94).
+func (s *Server) getAnalyticsPath(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.resolveAnalyticsScope(w, r)
+	if !ok {
+		return
+	}
+	path := r.URL.Query().Get("p")
+	if path == "" {
+		http.Redirect(w, r, "/analytics/"+sc.Host, http.StatusSeeOther)
+		return
+	}
+	totals, _ := models.PathTotals(s.DB, sc.Since, sc.Host, path, sc.ServerScopeID)
+	clients, _ := models.PathClients(s.DB, sc.Since, sc.Host, path, 30, sc.ServerScopeID)
+	status, _ := models.PathStatusBuckets(s.DB, sc.Since, sc.Host, path, sc.ServerScopeID)
+
+	s.render(w, r, "analytics_path.html", map[string]any{
+		"User":             sc.User,
+		"IsAdmin":          sc.IsAdmin,
+		"Host":             sc.Host,
+		"Path":             path,
+		"SelectedServerID": sc.ServerScopeID,
+		"ServerScopeName":  sc.ServerScopeName,
+		"Window":           sc.Window,
+		"WindowLabel":      formatWindow(sc.Window),
+		"WindowQuery":      windowQuery(sc.Window),
+		"Totals":           totals,
+		"Clients":          clients,
+		"Status":           status,
+		"Section":          "analytics",
 	})
 }
 
@@ -851,6 +1001,19 @@ func fillBandwidthBuckets(raw []models.BandwidthBucket, from, to time.Time, buck
 // formatWindow turns a duration into a label for the page headline. Used
 // by both the overview page (7d default, no override) and the per-host
 // page (1d / 7d / 30d selectable).
+// windowQuery maps a window duration back to the ?window= value used across the
+// analytics pages, so drill-down links preserve the selected window.
+func windowQuery(d time.Duration) string {
+	switch {
+	case d <= 24*time.Hour:
+		return "1d"
+	case d >= 30*24*time.Hour:
+		return "30d"
+	default:
+		return "7d"
+	}
+}
+
 func formatWindow(d time.Duration) string {
 	h := int(d.Hours())
 	switch {

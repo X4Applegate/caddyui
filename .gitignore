@@ -50,3 +50,6 @@ bin/
 
 # Claude Code session state — local-only, never commit
 .claude/
+
+# OpenClaw CLI shared images (not part of the project)
+.openclaw-cli-images/

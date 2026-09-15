@@ -135,7 +135,7 @@
         {{range .Paths}}
         <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
           <td class="px-5 py-2 text-xs font-mono text-ink-500 uppercase">{{.Method}}</td>
-          <td class="px-5 py-2 text-ink-700 font-mono text-xs truncate max-w-[260px]" title="{{.Path}}">{{if .Path}}{{.Path}}{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+          <td class="px-5 py-2 font-mono text-xs truncate max-w-[260px]" title="{{.Path}}">{{if .Path}}<a href="/analytics/{{urlquery $.Host}}/path?p={{urlquery .Path}}&amp;window={{$.WindowQuery}}&amp;server={{if eq $.SelectedServerID 0}}all{{else}}{{$.SelectedServerID}}{{end}}" class="text-brand-600 hover:text-brand-700 hover:underline">{{.Path}}</a>{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
           <td class="px-5 py-2 text-right">
             <div class="inline-flex items-center gap-2">
               <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
@@ -173,7 +173,7 @@
         {{if eq $topClient 0}}{{$topClient = 1}}{{end}}
         {{range .Clients}}
         <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
-          <td class="px-5 py-2 text-ink-700 font-mono text-xs">{{if .ClientIP}}{{.ClientIP}}{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+          <td class="px-5 py-2 font-mono text-xs">{{if .ClientIP}}<a href="/analytics/{{urlquery $.Host}}/visitor?ip={{urlquery .ClientIP}}&amp;window={{$.WindowQuery}}&amp;server={{if eq $.SelectedServerID 0}}all{{else}}{{$.SelectedServerID}}{{end}}" class="text-brand-600 hover:text-brand-700 hover:underline">{{.ClientIP}}</a>{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
           <td class="px-5 py-2 text-right">
             <div class="inline-flex items-center gap-2">
               <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
@@ -244,6 +244,46 @@
           <div class="inline-flex items-center gap-2">
             <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
               <div class="h-full bg-red-400" style="width: {{mulDivInt .Count 100 $topErr}}%"></div>
+            </div>
+            <span class="text-ink-700 font-mono tabular-nums">{{.Count}}</span>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{/* ── Error detail: exact status + path (issue #94) ── */}}
+{{if .ErrorDetails}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden mb-6">
+  <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+    <div class="text-sm font-medium text-ink-800">Error detail</div>
+    <div class="text-xs text-ink-400">exact status &amp; path · {{.WindowLabel}}</div>
+  </div>
+  <table class="w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-2.5 font-medium w-16">Status</th>
+        <th class="px-5 py-2.5 font-medium w-14">Method</th>
+        <th class="px-5 py-2.5 font-medium">Path</th>
+        <th class="px-5 py-2.5 font-medium text-right">Count</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{$topEd := 0}}
+      {{range .ErrorDetails}}{{if gt .Count $topEd}}{{$topEd = .Count}}{{end}}{{end}}
+      {{if eq $topEd 0}}{{$topEd = 1}}{{end}}
+      {{range .ErrorDetails}}
+      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+        <td class="px-5 py-2"><span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-medium {{if ge .Status 500}}bg-red-50 text-red-700{{else}}bg-amber-50 text-amber-700{{end}}">{{.Status}}</span></td>
+        <td class="px-5 py-2 text-xs font-mono text-ink-500 uppercase">{{.Method}}</td>
+        <td class="px-5 py-2 font-mono text-xs truncate max-w-[260px]" title="{{.Path}}">{{if .Path}}<a href="/analytics/{{urlquery $.Host}}/path?p={{urlquery .Path}}&amp;window={{$.WindowQuery}}&amp;server={{if eq $.SelectedServerID 0}}all{{else}}{{$.SelectedServerID}}{{end}}" class="text-brand-600 hover:text-brand-700 hover:underline">{{.Path}}</a>{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+        <td class="px-5 py-2 text-right">
+          <div class="inline-flex items-center gap-2">
+            <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+              <div class="h-full {{if ge .Status 500}}bg-red-400{{else}}bg-amber-400{{end}}" style="width: {{mulDivInt .Count 100 $topEd}}%"></div>
             </div>
             <span class="text-ink-700 font-mono tabular-nums">{{.Count}}</span>
           </div>
