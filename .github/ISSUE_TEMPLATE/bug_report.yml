@@ -1,0 +1,96 @@
+name: Bug report
+description: Report a reproducible problem in CaddyUI
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in the details below so it can be reproduced.
+
+        **Security issue?** Do not file it here — follow the [security policy](https://github.com/X4Applegate/caddyui/security/policy) instead.
+        **Question or "how do I…"?** Please use [Discussions → Q&A](https://github.com/X4Applegate/caddyui/discussions/categories/q-a).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I searched existing [issues](https://github.com/X4Applegate/caddyui/issues) and [discussions](https://github.com/X4Applegate/caddyui/discussions) and did not find a duplicate.
+          required: true
+        - label: I am running a currently released version (or `main`), not a very old build.
+          required: true
+  - type: input
+    id: caddyui-version
+    attributes:
+      label: CaddyUI version
+      description: Shown in the sidebar footer (e.g. v2.46.0).
+      placeholder: v2.46.0
+    validations:
+      required: true
+  - type: input
+    id: caddy-version
+    attributes:
+      label: Caddy version
+      description: Shown on the Servers page (e.g. v2.11.2).
+      placeholder: v2.11.2
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - Docker (applegater/caddyui)
+        - Native Linux binary / systemd
+        - Built from source
+        - Other (describe below)
+    validations:
+      required: true
+  - type: dropdown
+    id: db-backend
+    attributes:
+      label: Database backend
+      options:
+        - SQLite (default)
+        - MariaDB
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and OS
+      description: For UI issues include the browser; always include the host OS/arch.
+      placeholder: Firefox 139 on Ubuntu 24.04 (amd64)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, from a known starting point, that trigger the bug.
+      placeholder: |
+        1. Go to '...'
+        2. Click '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Server logs, browser console errors, or a failing sync banner. This is automatically formatted as code.
+      render: shell
+    validations:
+      required: false

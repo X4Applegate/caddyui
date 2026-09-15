@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help
+    url: https://github.com/X4Applegate/caddyui/discussions/categories/q-a
+    about: Ask "how do I…" and usage questions in Discussions → Q&A.
+  - name: Ideas and general discussion
+    url: https://github.com/X4Applegate/caddyui/discussions
+    about: Share open-ended ideas or feedback that isn't a concrete bug or feature yet.
+  - name: Report a security vulnerability
+    url: https://github.com/X4Applegate/caddyui/security/policy
+    about: Please report vulnerabilities privately — do not open a public issue.
+  - name: Documentation
+    url: https://github.com/X4Applegate/caddyui/wiki
+    about: Installation, configuration, and troubleshooting guides.

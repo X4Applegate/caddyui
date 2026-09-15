@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a capability or improvement for CaddyUI
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! For open-ended ideas or "would it make sense to…" questions, [Discussions → Ideas](https://github.com/X4Applegate/caddyui/discussions) is also a good home.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I searched existing [issues](https://github.com/X4Applegate/caddyui/issues) and [discussions](https://github.com/X4Applegate/caddyui/discussions) and did not find a duplicate.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do, and what makes it hard today? Describe the real-world scenario, not just the feature.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like CaddyUI to do? If it maps to a Caddy directive or Caddyfile behavior, mention it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or other approaches you weighed.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, links, or anything else that helps.
+    validations:
+      required: false
