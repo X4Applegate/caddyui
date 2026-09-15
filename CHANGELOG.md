@@ -12,7 +12,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 - **Per-visitor and per-path analytics drill-down** ([issue #94](https://github.com/X4Applegate/caddyui/issues/94)): on a host's Analytics page, client IPs and paths are now links. Clicking a **visitor** opens a view of that IP's top paths, status breakdown, exact error detail and user-agents — useful for telling a noisy/misconfigured client apart from someone probing or fuzzing. Clicking a **path** shows which visitors requested it and its status breakdown. Everything stays scoped to the selected window (1d/7d/30d) and server filter, and reuses the existing per-host access-event range scans.
 - **Exact error detail** on the host page and both drill-downs: instead of only a "4xx" total, an **Error detail** table breaks errors down by exact status code + path (e.g. `404 /wp-login.php ×840`), so you can see what is actually failing or being probed.
 
+---
 
+## [2.46.0] - 2026-09-14 - Internal CA for local services
 
 ### Added
 
