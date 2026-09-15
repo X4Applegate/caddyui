@@ -50,8 +50,9 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### Certificates, safer syncs and Settings in v2.39 – v2.45
+### Certificates, safer syncs and Settings in v2.39 – v2.46
 
+- **Internal CA (`tls internal`) for local services** *(v2.46.0)* — a proxy host can now be served from Caddy's built-in self-signed CA instead of ACME, for internal or local-network services where a publicly trusted certificate isn't wanted or possible. Tick **Internal CA (self-signed)** in the host's TLS section (Auto TLS only); CaddyUI issues via Caddy's `internal` issuer and skips DNS-01 for that host. No special Caddy build required — clients just need to trust Caddy's root CA.
 - **Live TLS probe for file-path certificates** *(v2.39.0)* — a certificate stored as a file path inside the Caddy container now shows expiry, issuer and days left from what the node actually serves, instead of nothing; Inspect gains a **Live check** card and warns when a renewed file has not been reloaded by Caddy.
 - **Fleet sync for every certificate** *(v2.41.0)* — **Sync configuration** and **Also configure on** copy PEM and file-path certificates too (a readable file-path certificate travels as stored PEM), and hosts created on a target keep referencing the copied certificate instead of falling back to Auto TLS.
 - **Export a managed certificate to a directory** *(v2.42.0)* — mount the node's Caddy data volume, set its **Data directory** on the Caddy Fleet entry, and CaddyUI copies the chain and key out after every issuance and renewal for a mail server or any other service, with **Export now** on the certificate form.
