@@ -210,6 +210,24 @@ func TestBuildInternalTLSAutomationPolicies(t *testing.T) {
 	}
 }
 
+// An internal-CA host must never be folded into automatic_https.skip_certificates
+// by wildcard-managed-certificate coverage: it gets its own cert from the
+// internal issuer, so skipping it would leave it with no certificate at all.
+func TestBuildSkipCertificatesExcludesInternalTLSHosts(t *testing.T) {
+	proxies := []models.ProxyHost{
+		{Domains: "nas.home.lan", Enabled: true, SSLEnabled: true, InternalTLS: true},
+	}
+	certs := []models.Certificate{
+		{Source: models.CertSourceManaged, Domains: "*.home.lan"},
+	}
+	skip := buildSkipCertificates(proxies, nil, nil, certs)
+	for _, s := range skip {
+		if s == "nas.home.lan" {
+			t.Fatalf("internal-CA host must not be in skip_certificates; got %#v", skip)
+		}
+	}
+}
+
 // buildDNSAutomationPolicies must not emit a DNS-01 policy for a host that
 // opted into internal-CA issuance, even if it still carries a DNS provider.
 func TestDNSAutomationPoliciesSkipInternalTLSHosts(t *testing.T) {

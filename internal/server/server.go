@@ -8376,9 +8376,10 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	// host has a min version configured — writeTLSConnectionPoliciesSubtree
 	// handles the nil case by clearing stale policies that may exist.
 	tlsConnPolicies := caddy.BuildTLSConnectionPolicies(proxies)
-	dnsPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
-	// v2.46.0: internal-CA issuance policies, merged alongside DNS-01 policies.
-	dnsPolicies = append(dnsPolicies, buildInternalTLSAutomationPolicies(proxies)...)
+	// DNS-01 issuance policies plus (v2.46.0) internal-CA issuance policies,
+	// pushed together into apps.tls.automation.
+	tlsAutomationPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
+	tlsAutomationPolicies = append(tlsAutomationPolicies, buildInternalTLSAutomationPolicies(proxies)...)
 
 	current, currentJSON, err := s.Caddy.FetchConfig()
 	if err != nil {
@@ -8401,7 +8402,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, skipAccessLogs)
 	applyTLSConnectionPolicies(proposed, tlsConnPolicies)
-	applyAutomationPolicies(proposed, dnsPolicies)
+	applyAutomationPolicies(proposed, tlsAutomationPolicies)
 	applyClientIPSettings(proposed, s.DB)
 	applyFleetAccessLog(proposed, accessLogCfg, loadAnalyticsConfig(s.DB).Enabled, serverID)
 	applyPrometheusMetrics(proposed, metricsCfg, serverID)
@@ -8515,12 +8516,12 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	// Hosts with Managed DNS selected use that provider for ACME DNS-01. The
 	// same policies were included in validation above, so a missing Caddy DNS
 	// module is reported before any subtrees are modified.
-	if len(dnsPolicies) > 0 {
-		if err := pushAutomationPoliciesVia(s.Caddy, dnsPolicies); err != nil {
+	if len(tlsAutomationPolicies) > 0 {
+		if err := pushAutomationPoliciesVia(s.Caddy, tlsAutomationPolicies); err != nil {
 			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_automation_failed", "", err.Error(), false)
-			return fmt.Errorf("apply DNS-01 automation policies: %w", err)
+			return fmt.Errorf("apply TLS automation policies: %w", err)
 		}
-		log.Printf("caddy sync: pushed %d DNS-01 automation polic(ies)", len(dnsPolicies))
+		log.Printf("caddy sync: pushed %d TLS automation polic(ies)", len(tlsAutomationPolicies))
 	}
 
 	detail := fmt.Sprintf("proxies=%d redirects=%d passthrough=%d certs=%d",
@@ -8839,8 +8840,16 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 	// route obtains the wildcard certificate, and the exact route reuses it
 	// from Caddy's cache. Never skip wildcard subjects themselves, because
 	// those are what command Caddy to obtain the managed certificate.
-	addCoveredExact := func(hosts []string, enabled, sslEnabled bool, certificateID int64) {
+	addCoveredExact := func(hosts []string, enabled, sslEnabled bool, certificateID int64, internalTLS bool) {
 		if !enabled || !sslEnabled || certificateID != 0 {
+			return
+		}
+		// v2.46.0: an internal-CA host gets its own certificate from the
+		// `internal` issuer (buildInternalTLSAutomationPolicies), so it is
+		// never covered by a wildcard managed (DNS-01) certificate. Skipping
+		// it here would tell Caddy not to manage the cert at all, leaving the
+		// host with none.
+		if internalTLS {
 			return
 		}
 		for _, host := range hosts {
@@ -8867,13 +8876,13 @@ func buildSkipCertificates(proxies []models.ProxyHost, redirs []models.Redirecti
 		}
 	}
 	for _, proxy := range proxies {
-		addCoveredExact(proxy.DomainList(), proxy.Enabled, proxy.SSLEnabled, proxy.CertificateID)
+		addCoveredExact(proxy.DomainList(), proxy.Enabled, proxy.SSLEnabled, proxy.CertificateID, proxy.InternalTLS)
 	}
 	for _, redirect := range redirs {
-		addCoveredExact(redirect.DomainList(), redirect.Enabled, redirect.SSLEnabled, redirect.CertificateID)
+		addCoveredExact(redirect.DomainList(), redirect.Enabled, redirect.SSLEnabled, redirect.CertificateID, false)
 	}
 	for _, raw := range raws {
-		addCoveredExact(rawRouteHosts(raw), raw.Enabled, true, raw.CertificateID)
+		addCoveredExact(rawRouteHosts(raw), raw.Enabled, true, raw.CertificateID, false)
 	}
 	out := make([]any, 0, len(set))
 	for d := range set {
