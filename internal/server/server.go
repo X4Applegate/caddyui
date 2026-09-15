@@ -769,6 +769,8 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/analytics", s.getAnalytics)
 		r.Get("/analytics/export.csv", s.exportAnalyticsCSV)
 		r.Get("/analytics/{host}", s.getAnalyticsHost)
+		r.Get("/analytics/{host}/visitor", s.getAnalyticsVisitor) // issue #94
+		r.Get("/analytics/{host}/path", s.getAnalyticsPath)       // issue #94
 		r.Get("/live-traffic", s.getLiveTraffic)
 		r.Get("/api/live-traffic/stream", s.liveTrafficStream)
 
