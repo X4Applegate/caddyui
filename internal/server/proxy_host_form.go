@@ -686,6 +686,10 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.MonitorTimeoutSec = clampAtoi(r.FormValue("monitor_timeout_sec"), 0, 1, 120)
 	// v2.33.0: node-local — never sync this host to another Caddy.
 	ph.NodeLocal = r.FormValue("node_local") == "on"
+	// v2.46.0 (discussion #91): issue this host's certificate from Caddy's
+	// internal CA instead of ACME. Only meaningful with Auto TLS (no custom
+	// certificate selected); buildInternalTLSAutomationPolicies enforces that.
+	ph.InternalTLS = r.FormValue("internal_tls") == "on"
 	// v2.9.266: proxy_redirect_rules — JSON array of path-based redirects
 	// fired before the reverse_proxy. Same shape as redirection_hosts.
 	ph.ProxyRedirectRules = func() string {

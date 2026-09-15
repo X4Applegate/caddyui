@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.46.0] - 2026-09-14 - Internal CA for local services
+
+### Added
+
+- **Serve a proxy host from Caddy's internal CA** ([discussion #91](https://github.com/X4Applegate/caddyui/discussions/91)): a new **Internal CA (self-signed)** option in a proxy host's TLS section issues that host's certificate from Caddy's built-in local CA instead of ACME/Let's Encrypt — the equivalent of `tls internal` — for services on a private network where a publicly trusted certificate isn't wanted or possible. On sync CaddyUI emits a `tls.automation` policy scoped to the host's domains with the `internal` issuer, and excludes the host from DNS-01 issuance. The `internal` issuer is a core Caddy module, so no special Caddy build is required; clients must trust Caddy's root CA. Applies only when the TLS certificate is left on **Auto** (a custom or DNS-01 managed certificate still takes precedence).
+
+---
+
 ## [2.45.2] - 2026-09-10 - Security headers were never sent
 
 ### Fixed

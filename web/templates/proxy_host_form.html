@@ -394,6 +394,13 @@ document.addEventListener('DOMContentLoaded', function() {
         {{end}}
       </select>
       <p class="text-xs text-ink-500 mt-1.5">Select a custom certificate or let Caddy manage it automatically. <a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a></p>
+      {{/* v2.46.0 (discussion #91): issue from Caddy's internal (self-signed) CA
+           instead of ACME. Only applies on Auto TLS (certificate_id = 0). */}}
+      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer mt-3">
+        <input type="checkbox" name="internal_tls" value="on" {{if .Host.InternalTLS}}checked{{end}}
+               class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span>Internal CA (self-signed)<span class="block text-xs text-ink-500 mt-0.5 font-normal">Issue this host's certificate from Caddy's built-in CA instead of Let's Encrypt — for internal or local-network services. Clients must trust Caddy's root CA. Applies only when the certificate above is <strong>Auto</strong>.</span></span>
+      </label>
     </div>
   </details>
 

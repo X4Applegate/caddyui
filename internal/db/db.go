@@ -2320,6 +2320,13 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("create access_events server index: %w", err)
 	}
 
+	// v2.46.0 (discussion #91): internal_tls — issue a proxy host's certificate
+	// from Caddy's internal (self-signed) CA instead of ACME, for local-network
+	// services where a publicly trusted certificate isn't wanted.
+	if !columnExists2(db, "proxy_hosts", "internal_tls") {
+		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN internal_tls INTEGER NOT NULL DEFAULT 0`)
+	}
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {

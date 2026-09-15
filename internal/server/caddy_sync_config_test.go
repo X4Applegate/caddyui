@@ -169,6 +169,90 @@ func TestDNSAutomationPoliciesSeparateRoute53ZonesAndKeepDNSOnlyHosts(t *testing
 	}
 }
 
+func TestBuildInternalTLSAutomationPolicies(t *testing.T) {
+	proxies := []models.ProxyHost{
+		{Domains: "nas.home.lan", Enabled: true, SSLEnabled: true, InternalTLS: true},
+		{Domains: "printer.home.lan", Enabled: true, SSLEnabled: true, InternalTLS: true},
+		// Excluded: opted in but pinned to a custom certificate.
+		{Domains: "custom.home.lan", Enabled: true, SSLEnabled: true, InternalTLS: true, CertificateID: 7},
+		// Excluded: not opted in (default Auto ACME).
+		{Domains: "public.example.com", Enabled: true, SSLEnabled: true},
+		// Excluded: disabled and SSL-off hosts never issue.
+		{Domains: "off.home.lan", Enabled: false, SSLEnabled: true, InternalTLS: true},
+		{Domains: "plain.home.lan", Enabled: true, SSLEnabled: false, InternalTLS: true},
+	}
+
+	policies := buildInternalTLSAutomationPolicies(proxies)
+	if len(policies) != 1 {
+		t.Fatalf("policies = %d, want a single internal-issuer policy", len(policies))
+	}
+	issuers := policies[0]["issuers"].([]any)
+	if module := issuers[0].(map[string]any)["module"]; module != "internal" {
+		t.Fatalf("issuer module = %v, want \"internal\"", module)
+	}
+	got := map[string]bool{}
+	for _, s := range policies[0]["subjects"].([]any) {
+		got[s.(string)] = true
+	}
+	want := map[string]bool{"nas.home.lan": true, "printer.home.lan": true}
+	if len(got) != len(want) {
+		t.Fatalf("subjects = %#v, want %#v", got, want)
+	}
+	for name := range want {
+		if !got[name] {
+			t.Fatalf("missing internal-CA subject %q in %#v", name, got)
+		}
+	}
+	for _, unexpected := range []string{"custom.home.lan", "public.example.com", "off.home.lan", "plain.home.lan"} {
+		if got[unexpected] {
+			t.Fatalf("subject %q should not be issued by the internal CA", unexpected)
+		}
+	}
+}
+
+// An internal-CA host must never be folded into automatic_https.skip_certificates
+// by wildcard-managed-certificate coverage: it gets its own cert from the
+// internal issuer, so skipping it would leave it with no certificate at all.
+func TestBuildSkipCertificatesExcludesInternalTLSHosts(t *testing.T) {
+	proxies := []models.ProxyHost{
+		{Domains: "nas.home.lan", Enabled: true, SSLEnabled: true, InternalTLS: true},
+	}
+	certs := []models.Certificate{
+		{Source: models.CertSourceManaged, Domains: "*.home.lan"},
+	}
+	skip := buildSkipCertificates(proxies, nil, nil, certs)
+	for _, s := range skip {
+		if s == "nas.home.lan" {
+			t.Fatalf("internal-CA host must not be in skip_certificates; got %#v", skip)
+		}
+	}
+}
+
+// buildDNSAutomationPolicies must not emit a DNS-01 policy for a host that
+// opted into internal-CA issuance, even if it still carries a DNS provider.
+func TestDNSAutomationPoliciesSkipInternalTLSHosts(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	for key, value := range map[string]string{
+		settingRoute53AccessKeyID:     "AKIAEXAMPLE",
+		settingRoute53SecretAccessKey: "secret",
+	} {
+		if err := models.SetSetting(conn, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{DB: conn}
+	policies := s.buildDNSAutomationPolicies([]models.ProxyHost{
+		{Domains: "nas.home.lan", Enabled: true, SSLEnabled: true, InternalTLS: true, DNSProvider: dns.Route53, DNSZoneID: "ZHOME"},
+	}, nil, nil, nil)
+	if len(policies) != 0 {
+		t.Fatalf("policies = %d, want 0 — internal-CA hosts must not get a DNS-01 policy", len(policies))
+	}
+}
+
 func TestMergeAutomationPoliciesReplacesDesiredSubjectsOnly(t *testing.T) {
 	existing := []any{
 		map[string]any{"subjects": []any{"replace.example.com", "keep.example.com"}, "issuer": "old"},
