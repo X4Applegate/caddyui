@@ -4,8 +4,11 @@
 
 | Version | Supported |
 |---------|-----------|
-| 1.x     | ✅ Active  |
-| 0.x     | ❌ No longer supported — upgrade to 1.0.0 |
+| Latest `2.x` release | ✅ Active — fixes ship on top of the newest release |
+| Older `2.x`          | ⚠️ Please upgrade to the latest before reporting |
+| `1.x` and earlier    | ❌ No longer supported — upgrade to the latest `2.x` |
+
+Always run the most recent release; CaddyUI ships frequently and security fixes are not backported to older versions.
 
 ---
 
@@ -40,12 +43,13 @@ You will receive an acknowledgement within **72 hours**. If the vulnerability is
 ### Transport
 
 - CaddyUI itself is a plain HTTP server — it is designed to sit **behind Caddy** (which handles TLS termination)
-- All state-changing routes use POST; CSRF exposure is mitigated by the browser's SameSite=Lax cookie policy
+- All state-changing routes use POST and require a per-session **CSRF token** (since v2.29.0), on top of the browser's SameSite=Lax cookie policy
+- CaddyUI serves its own pages under a **Content-Security-Policy** and ships no third-party runtime scripts
 - The Caddy admin API URL is configured server-side and never exposed to the browser
 
 ### Data
 
-- All data stored in a **single SQLite file** on the server filesystem
+- Data is stored in an embedded **SQLite** file by default, or an optional **MariaDB** backend, on infrastructure you control
 - No credentials, API keys, or SMTP passwords are ever logged or transmitted to any third party
 - SMTP passwords are stored in the SQLite settings table (encrypted at rest only if you use full-disk encryption on the host)
 
@@ -57,6 +61,7 @@ Core runtime dependencies are minimal:
 |---|---|
 | `go-chi/chi` | HTTP routing |
 | `modernc.org/sqlite` | SQLite (no CGo) |
+| `go-sql-driver/mysql` | optional MariaDB backend |
 | `golang.org/x/crypto` | bcrypt + TOTP primitives |
 | `pquerna/otp` | TOTP code generation/verification |
 
