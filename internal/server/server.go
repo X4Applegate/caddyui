@@ -5968,6 +5968,11 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 		}
 	}
 	for _, p := range proxies {
+		if p.InternalTLS {
+			// v2.46.0: internal-CA hosts are issued by the internal issuer
+			// (see buildInternalTLSAutomationPolicies), never DNS-01.
+			continue
+		}
 		add(p.DomainList(), p.DNSProvider, p.DNSProfileID, p.DNSZoneID, p.SSLEnabled, p.Enabled, p.CertificateID)
 	}
 	for _, rd := range redirs {
@@ -6010,6 +6015,38 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 		})
 	}
 	return policies
+}
+
+// buildInternalTLSAutomationPolicies emits a single apps.tls.automation
+// policy that issues certificates from Caddy's internal (self-signed) CA for
+// every enabled, SSL-enabled proxy host that opted into InternalTLS and is on
+// Auto TLS (no custom certificate). The `internal` issuer is a core Caddy
+// module, so — unlike DNS-01 — this needs no special Caddy build. Intended for
+// local-network services where a publicly trusted certificate isn't wanted or
+// possible. (discussion #91)
+func buildInternalTLSAutomationPolicies(proxies []models.ProxyHost) []map[string]any {
+	seen := map[string]bool{}
+	var subjects []any
+	for _, p := range proxies {
+		if !p.Enabled || !p.SSLEnabled || !p.InternalTLS || p.CertificateID != 0 {
+			continue
+		}
+		for _, raw := range p.DomainList() {
+			d := models.NormalizeHostname(raw)
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			subjects = append(subjects, d)
+		}
+	}
+	if len(subjects) == 0 {
+		return nil
+	}
+	return []map[string]any{{
+		"subjects": subjects,
+		"issuers":  []any{map[string]any{"module": "internal"}},
+	}}
 }
 
 // buildManagedCertificateRoutes gives standalone managed certificates a host
@@ -7627,7 +7664,9 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	removeUnsupportedSkipRedirects(proposed)
 	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, buildSkipAccessLogs(proxies))
-	applyAutomationPolicies(proposed, s.buildDNSAutomationPolicies(proxies, redirs, raws, certs))
+	previewPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
+	previewPolicies = append(previewPolicies, buildInternalTLSAutomationPolicies(proxies)...) // v2.46.0
+	applyAutomationPolicies(proposed, previewPolicies)
 	// Mirror syncCaddy: preview-validation must match the config we'd push
 	// for real, otherwise a raw_route edit could validate clean here but
 	// fail with errors.routes rejection at sync time.
@@ -8338,6 +8377,8 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	// handles the nil case by clearing stale policies that may exist.
 	tlsConnPolicies := caddy.BuildTLSConnectionPolicies(proxies)
 	dnsPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
+	// v2.46.0: internal-CA issuance policies, merged alongside DNS-01 policies.
+	dnsPolicies = append(dnsPolicies, buildInternalTLSAutomationPolicies(proxies)...)
 
 	current, currentJSON, err := s.Caddy.FetchConfig()
 	if err != nil {

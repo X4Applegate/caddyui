@@ -681,8 +681,14 @@ type ProxyHost struct {
 	// nothing. Sync reports these as skipped rather than silently ignoring
 	// them.
 	NodeLocal bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// v2.46.0: issue this host's certificate from Caddy's internal
+	// (self-signed) CA instead of ACME. Intended for local-network services
+	// where a publicly trusted certificate isn't wanted or possible. Only
+	// meaningful when SSLEnabled is set and CertificateID == 0 (Auto); a
+	// custom certificate or DNS-01 managed cert takes precedence.
+	InternalTLS bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // MonitoringDisabled reports whether the operator has switched CaddyUI's own
@@ -1807,14 +1813,15 @@ const proxyHostBaseCols = `ph.id, ph.server_id, ph.domains, ph.forward_scheme, p
     COALESCE(ph.monitor_mode,'auto'), COALESCE(ph.monitor_path,''),
     COALESCE(ph.monitor_method,''), COALESCE(ph.monitor_expect_status,0),
     COALESCE(ph.monitor_interval_sec,0), COALESCE(ph.monitor_timeout_sec,0),
-    COALESCE(ph.node_local,0)`
+    COALESCE(ph.node_local,0),
+    COALESCE(ph.internal_tls,0)`
 
 // scanProxyHost pulls a single row into the struct. Centralises the
 // bool-int unpack so each query site doesn't repeat it.
 func scanProxyHost(s interface {
 	Scan(dest ...any) error
 }, p *ProxyHost, ownerEmail *string) error {
-	var ws, bce, ssl, sslf, h2, en, bae, dnsSkipRecord, nodeLocal int
+	var ws, bce, ssl, sslf, h2, en, bae, dnsSkipRecord, nodeLocal, internalTLS int
 	var ownerID int64
 	var compr, sechdrs, maint, sticky, cors, disableAccessLog, addReqID, hstsPreload, forceHTTP1, h2c, flushImm, bufResp, denyDot, corsCredentials, sslVerify, blockUA, hstsSubdomains, hcFollowRedirects, stripPfx, fwdClientIP, stripQS, decompResp, comprPrefGzip, grpcWeb, kaDisabled, corsPrivNet, robotsDisallowAll, canonicalLink, fwdHeader, blockPrivIP, brotli, stripEtag, injectReqTimestamp, stripAcceptEnc, addUpstreamTiming, stripSrvHdr, addNosniff, stripAuthHdr, addXFwdPort, addXFwdHost, addCacheCtrlNoStore, denyRefEmpty, lbCookieHTTPOnly, lbCookieSecure, tlsEarlyData, addVia, addExpectCT, stripXPoweredBy, addCacheCtrlPublic, addXReqStart, addXFwdScheme, addReqIDToResp, addXRealIP, stripIncomingXFwdFor, hcTLSSkipVerify, addCORSVary, addSrvTiming, addXDNSPrefetch, addAcceptRanges, tlsSNIFromHost, addXDlOpts, addPragmaNC, addXReqPath, addAgeZero, addXReqMethod, addXReqQuery, addXRealScheme, addOAC, addXReqReferer, addXReqOrigin, addXFwdURI, addXNoArch, addXReqHost, addXXSSDis, addXReqRemotePort, addXReqProto, addSaveDataVary, addXTraceID, addXSessionID, addXRespTraceID, addXReqLocalAddr, addXReqLocalPort, addXReqPathInfo, addXFwdPath, addXRealSSLProto, addXRealSSLCipher, addXReqUA, addXReqByteCount, addXReqReceivedAt, addXFwdMethod, addXReqOrigHost, addXReqDNT, addXReqSecure, addXReqQueryCount, addXReqIDHdrResp, addXRobotsNoindex, blockBotUA, blockAdminPaths, addXCSPDis, addXMethodOverride, disableUpstreamCompression int
 	dst := []any{
@@ -2130,7 +2137,8 @@ func scanProxyHost(s interface {
 		&p.MonitorMode, &p.MonitorPath,
 		&p.MonitorMethod, &p.MonitorExpectStatus,
 		&p.MonitorIntervalSec, &p.MonitorTimeoutSec,
-		&nodeLocal, // v2.33.0
+		&nodeLocal,   // v2.33.0
+		&internalTLS, // v2.46.0
 	}
 	if ownerEmail != nil {
 		dst = append(dst, ownerEmail)
@@ -2247,7 +2255,8 @@ func scanProxyHost(s interface {
 	p.AddXRequestMethodOverride = addXMethodOverride == 1
 	p.DisableUpstreamCompression = disableUpstreamCompression == 1 // v2.12.52
 	p.DNSSkipRecord = dnsSkipRecord == 1
-	p.NodeLocal = nodeLocal == 1 // v2.33.0
+	p.NodeLocal = nodeLocal == 1     // v2.33.0
+	p.InternalTLS = internalTLS == 1 // v2.46.0
 	if ownerID != 0 {
 		p.OwnerID = sql.NullInt64{Int64: ownerID, Valid: true}
 	}
@@ -2579,8 +2588,8 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
             add_x_csp_disabled, add_x_request_method_override, proxy_redirect_rules,
             additional_upstream_rules, expectations_json, disable_upstream_compression,
             monitor_mode, monitor_path, monitor_method, monitor_expect_status,
-            monitor_interval_sec, monitor_timeout_sec, node_local)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            monitor_interval_sec, monitor_timeout_sec, node_local, internal_tls)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
 		boolInt(p.WebsocketSupport), boolInt(p.BlockCommonExploits),
@@ -2705,7 +2714,8 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 		p.MonitorMode, p.MonitorPath,
 		p.MonitorMethod, p.MonitorExpectStatus,
 		p.MonitorIntervalSec, p.MonitorTimeoutSec,
-		boolInt(p.NodeLocal), // v2.33.0
+		boolInt(p.NodeLocal),   // v2.33.0
+		boolInt(p.InternalTLS), // v2.46.0
 	)
 	if err != nil {
 		return 0, err
@@ -3040,6 +3050,7 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
             monitor_mode=?, monitor_path=?, monitor_method=?,
             monitor_expect_status=?, monitor_interval_sec=?, monitor_timeout_sec=?,
             node_local=?,
+            internal_tls=?,
             updated_at=CURRENT_TIMESTAMP
         WHERE id = ?`,
 		p.Domains, p.ForwardScheme, p.ForwardHost, p.ForwardPort,
@@ -3346,7 +3357,8 @@ func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
 		p.MonitorMode, p.MonitorPath,
 		p.MonitorMethod, p.MonitorExpectStatus,
 		p.MonitorIntervalSec, p.MonitorTimeoutSec,
-		boolInt(p.NodeLocal), // v2.33.0
+		boolInt(p.NodeLocal),   // v2.33.0
+		boolInt(p.InternalTLS), // v2.46.0
 		p.ID,
 	)
 	if err != nil {
