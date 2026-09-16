@@ -200,6 +200,139 @@ func PathStatusBuckets(db *sql.DB, since time.Time, host, path string, serverIDs
 	return statusBucketsWhere(db, since, ` AND host = ? AND path = ?`, []any{host, path}, serverIDs...)
 }
 
+// --- Status-class drill-down (host + status class) ---
+
+// StatusCodeStat is one exact HTTP status code with its request count.
+type StatusCodeStat struct {
+	Status int
+	Count  int
+}
+
+// statusClassClause returns a WHERE fragment (+args) restricting to a status
+// class: "2xx"/"3xx"/"4xx"/"5xx" map to their hundred-range, anything else
+// ("other") matches informational/unknown codes (<200 or >=600). ok is false
+// only for a genuinely empty class string.
+func statusClassClause(class string) (string, []any, bool) {
+	switch class {
+	case "2xx":
+		return " AND status BETWEEN ? AND ?", []any{200, 299}, true
+	case "3xx":
+		return " AND status BETWEEN ? AND ?", []any{300, 399}, true
+	case "4xx":
+		return " AND status BETWEEN ? AND ?", []any{400, 499}, true
+	case "5xx":
+		return " AND status BETWEEN ? AND ?", []any{500, 599}, true
+	case "other":
+		return " AND (status < 200 OR status >= 600)", nil, true
+	default:
+		return "", nil, false
+	}
+}
+
+// StatusClassTotals returns total views + distinct visitors for a status class.
+func StatusClassTotals(db *sql.DB, since time.Time, host, class string, serverIDs ...int64) (AccessTotals, error) {
+	frag, fragArgs, ok := statusClassClause(class)
+	if host == "" || !ok {
+		return AccessTotals{}, nil
+	}
+	q := `SELECT COUNT(*), COUNT(DISTINCT client_ip) FROM access_events WHERE ts >= ? AND host = ?` + frag
+	args := append([]any{since.Unix(), host}, fragArgs...)
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	var t AccessTotals
+	err := db.QueryRow(q, args...).Scan(&t.Views, &t.Visitors)
+	return t, err
+}
+
+// StatusClassCodes returns the exact status codes within a class, most frequent first.
+func StatusClassCodes(db *sql.DB, since time.Time, host, class string, limit int, serverIDs ...int64) ([]StatusCodeStat, error) {
+	frag, fragArgs, ok := statusClassClause(class)
+	if host == "" || !ok {
+		return nil, nil
+	}
+	q := `SELECT status, COUNT(*) AS cnt FROM access_events WHERE ts >= ? AND host = ?` + frag
+	args := append([]any{since.Unix(), host}, fragArgs...)
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	q += ` GROUP BY status ORDER BY cnt DESC LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StatusCodeStat
+	for rows.Next() {
+		var s StatusCodeStat
+		if err := rows.Scan(&s.Status, &s.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// StatusClassPaths returns the top paths that produced responses in a class.
+func StatusClassPaths(db *sql.DB, since time.Time, host, class string, limit int, serverIDs ...int64) ([]PathStats, error) {
+	frag, fragArgs, ok := statusClassClause(class)
+	if host == "" || !ok {
+		return nil, nil
+	}
+	q := `SELECT path, method, COUNT(*) AS views FROM access_events WHERE ts >= ? AND host = ?` + frag
+	args := append([]any{since.Unix(), host}, fragArgs...)
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	q += ` GROUP BY path, method ORDER BY views DESC LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PathStats
+	for rows.Next() {
+		var p PathStats
+		if err := rows.Scan(&p.Path, &p.Method, &p.Views); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// StatusClassClients returns the top client IPs that received responses in a class.
+func StatusClassClients(db *sql.DB, since time.Time, host, class string, limit int, serverIDs ...int64) ([]ClientIPStats, error) {
+	frag, fragArgs, ok := statusClassClause(class)
+	if host == "" || !ok {
+		return nil, nil
+	}
+	q := `SELECT client_ip, COUNT(*) AS views FROM access_events WHERE ts >= ? AND host = ? AND client_ip != ''` + frag
+	args := append([]any{since.Unix(), host}, fragArgs...)
+	if serverClause, serverArgs := serverMatchClause(requestedServerID(serverIDs)); serverClause != "" {
+		q += serverClause
+		args = append(args, serverArgs...)
+	}
+	q += ` GROUP BY client_ip ORDER BY views DESC LIMIT ` + strconv.Itoa(limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ClientIPStats
+	for rows.Next() {
+		var c ClientIPStats
+		if err := rows.Scan(&c.ClientIP, &c.Views); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // --- Error detail (host) ---
 
 // TopErrorDetails returns the top (status, path, method) error groups on a host,

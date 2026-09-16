@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.48.0] - 2026-09-16 - Drill down by status class
+
+### Added
+
+- **Status-class drill-down** ([issue #94](https://github.com/X4Applegate/caddyui/issues/94)): the **Status mix** card and the **HTTP status breakdown** legend on a host's Analytics page are now clickable. Selecting a class (2xx/3xx/4xx/5xx/other) opens a view of the exact status codes within it, the top paths that produced them and the top visitors that received them — with the paths and IPs linking on into the per-path and per-visitor views. Same window/server scoping and top-N bounds as the rest of the drill-down. Requested by @BenRLange.
+
 ## [2.47.0] - 2026-09-15 - Deeper analytics drill-down
 
 ### Added
