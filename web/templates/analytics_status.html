@@ -1,0 +1,139 @@
+{{define "title"}}{{.ClassLabel}} · {{.Host}} · Analytics · CaddyUI{{end}}
+{{define "content"}}
+{{$srv := "all"}}{{if ne .SelectedServerID 0}}{{$srv = .SelectedServerID}}{{end}}
+{{$err := or (eq .Class "4xx") (eq .Class "5xx")}}
+<div class="flex items-center gap-2 text-xs text-ink-500 mb-2">
+  <a href="/analytics/{{urlquery .Host}}?window={{.WindowQuery}}&amp;server={{$srv}}" class="hover:text-ink-700 inline-flex items-center gap-1">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+    {{.Host}}
+  </a>
+</div>
+
+<div class="flex items-start justify-between mb-6 gap-6 flex-wrap">
+  <div class="min-w-0">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium">Status class</div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900 truncate">{{.ClassLabel}}</h1>
+    <p class="text-sm text-ink-500 mt-1">
+      {{.WindowLabel}} · {{.Totals.Views}} responses from {{.Totals.Visitors}} visitors on <span class="font-medium text-ink-700">{{.Host}}</span> · handled by {{.ServerScopeName}}
+    </p>
+  </div>
+  <div class="inline-flex rounded-lg border border-ink-200 bg-white p-0.5 text-xs shadow-card">
+    {{$cur := .WindowLabel}}
+    <a href="/analytics/{{urlquery .Host}}/status?class={{.Class}}&amp;window=1d&amp;server={{$srv}}" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 24 hours"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">24 hours</a>
+    <a href="/analytics/{{urlquery .Host}}/status?class={{.Class}}&amp;window=7d&amp;server={{$srv}}" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 7 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">7 days</a>
+    <a href="/analytics/{{urlquery .Host}}/status?class={{.Class}}&amp;window=30d&amp;server={{$srv}}" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 30 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">30 days</a>
+  </div>
+</div>
+
+{{/* ── Exact status codes in this class ── */}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden mb-6">
+  <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+    <div class="text-sm font-medium text-ink-800">Status codes</div>
+    <div class="text-xs text-ink-400">{{.ClassLabel}} · {{.WindowLabel}}</div>
+  </div>
+  <table class="w-full text-sm">
+    <thead class="bg-ink-50/50 text-left">
+      <tr class="text-xs uppercase tracking-wider text-ink-500">
+        <th class="px-5 py-2.5 font-medium w-20">Code</th>
+        <th class="px-5 py-2.5 font-medium text-right">Count</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{$topCode := 0}}
+      {{range .Codes}}{{if gt .Count $topCode}}{{$topCode = .Count}}{{end}}{{end}}
+      {{if eq $topCode 0}}{{$topCode = 1}}{{end}}
+      {{range .Codes}}
+      <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+        <td class="px-5 py-2"><span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-medium {{if ge .Status 500}}bg-red-50 text-red-700{{else if ge .Status 400}}bg-amber-50 text-amber-700{{else if ge .Status 300}}bg-sky-50 text-sky-700{{else if ge .Status 200}}bg-emerald-50 text-emerald-700{{else}}bg-ink-100 text-ink-600{{end}}">{{.Status}}</span></td>
+        <td class="px-5 py-2 text-right">
+          <div class="inline-flex items-center gap-2">
+            <div class="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+              <div class="h-full {{if $err}}bg-red-400{{else}}bg-brand-400{{end}}" style="width: {{mulDivInt .Count 100 $topCode}}%"></div>
+            </div>
+            <span class="text-ink-700 font-mono tabular-nums">{{.Count}}</span>
+          </div>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="2" class="px-5 py-10 text-center text-sm text-ink-400">No responses in this class for the window.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+  {{/* ── Top paths in this class ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+      <div class="text-sm font-medium text-ink-800">Top paths</div>
+      <div class="text-xs text-ink-400">{{len .Paths}} shown</div>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-ink-50/50 text-left">
+        <tr class="text-xs uppercase tracking-wider text-ink-500">
+          <th class="px-5 py-2.5 font-medium w-14">Method</th>
+          <th class="px-5 py-2.5 font-medium">Path</th>
+          <th class="px-5 py-2.5 font-medium text-right">Count</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{$topP := 0}}
+        {{range .Paths}}{{if gt .Views $topP}}{{$topP = .Views}}{{end}}{{end}}
+        {{if eq $topP 0}}{{$topP = 1}}{{end}}
+        {{range .Paths}}
+        <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+          <td class="px-5 py-2 text-xs font-mono text-ink-500 uppercase">{{.Method}}</td>
+          <td class="px-5 py-2 font-mono text-xs truncate max-w-[240px]" title="{{.Path}}">{{if .Path}}<a href="/analytics/{{urlquery $.Host}}/path?p={{urlquery .Path}}&amp;window={{$.WindowQuery}}&amp;server={{$srv}}" class="text-brand-600 hover:text-brand-700 hover:underline">{{.Path}}</a>{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+          <td class="px-5 py-2 text-right">
+            <div class="inline-flex items-center gap-2">
+              <div class="w-20 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+                <div class="h-full {{if $err}}bg-red-400{{else}}bg-brand-400{{end}}" style="width: {{mulDivInt .Views 100 $topP}}%"></div>
+              </div>
+              <span class="text-ink-700 font-mono tabular-nums">{{.Views}}</span>
+            </div>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="3" class="px-5 py-10 text-center text-sm text-ink-400">No path data in this window.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  {{/* ── Top visitors in this class ── */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 pt-4 pb-2">
+      <div class="text-sm font-medium text-ink-800">Top visitors</div>
+      <div class="text-xs text-ink-400">by response count</div>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-ink-50/50 text-left">
+        <tr class="text-xs uppercase tracking-wider text-ink-500">
+          <th class="px-5 py-2.5 font-medium">Client IP</th>
+          <th class="px-5 py-2.5 font-medium text-right">Count</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{$topC := 0}}
+        {{range .Clients}}{{if gt .Views $topC}}{{$topC = .Views}}{{end}}{{end}}
+        {{if eq $topC 0}}{{$topC = 1}}{{end}}
+        {{range .Clients}}
+        <tr class="border-t border-ink-100 hover:bg-ink-50/60 transition">
+          <td class="px-5 py-2 font-mono text-xs">{{if .ClientIP}}<a href="/analytics/{{urlquery $.Host}}/visitor?ip={{urlquery .ClientIP}}&amp;window={{$.WindowQuery}}&amp;server={{$srv}}" class="text-brand-600 hover:text-brand-700 hover:underline">{{.ClientIP}}</a>{{else}}<span class="text-ink-400 italic">—</span>{{end}}</td>
+          <td class="px-5 py-2 text-right">
+            <div class="inline-flex items-center gap-2">
+              <div class="w-20 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+                <div class="h-full bg-indigo-400" style="width: {{mulDivInt .Views 100 $topC}}%"></div>
+              </div>
+              <span class="text-ink-700 font-mono tabular-nums">{{.Views}}</span>
+            </div>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="2" class="px-5 py-10 text-center text-sm text-ink-400">No visitors in this window.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

@@ -919,6 +919,46 @@ func (s *Server) getAnalyticsPath(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// getAnalyticsStatus renders the per-status-class drill-down for a host: the
+// exact status codes within the class, the top paths that produced them and the
+// top visitors that received them (issue #94 follow-up). Reachable from the
+// Status mix card and the HTTP status breakdown bar.
+func (s *Server) getAnalyticsStatus(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.resolveAnalyticsScope(w, r)
+	if !ok {
+		return
+	}
+	class := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("class")))
+	labels := map[string]string{"2xx": "2xx Success", "3xx": "3xx Redirect", "4xx": "4xx Client error", "5xx": "5xx Server error", "other": "Other"}
+	label, valid := labels[class]
+	if !valid {
+		http.Redirect(w, r, "/analytics/"+sc.Host, http.StatusSeeOther)
+		return
+	}
+	totals, _ := models.StatusClassTotals(s.DB, sc.Since, sc.Host, class, sc.ServerScopeID)
+	codes, _ := models.StatusClassCodes(s.DB, sc.Since, sc.Host, class, 20, sc.ServerScopeID)
+	paths, _ := models.StatusClassPaths(s.DB, sc.Since, sc.Host, class, 30, sc.ServerScopeID)
+	clients, _ := models.StatusClassClients(s.DB, sc.Since, sc.Host, class, 30, sc.ServerScopeID)
+
+	s.render(w, r, "analytics_status.html", map[string]any{
+		"User":             sc.User,
+		"IsAdmin":          sc.IsAdmin,
+		"Host":             sc.Host,
+		"Class":            class,
+		"ClassLabel":       label,
+		"SelectedServerID": sc.ServerScopeID,
+		"ServerScopeName":  sc.ServerScopeName,
+		"Window":           sc.Window,
+		"WindowLabel":      formatWindow(sc.Window),
+		"WindowQuery":      windowQuery(sc.Window),
+		"Totals":           totals,
+		"Codes":            codes,
+		"Paths":            paths,
+		"Clients":          clients,
+		"Section":          "analytics",
+	})
+}
+
 // liveVisitorsAcrossHosts counts distinct client IPs on the given host
 // list over the last `window`. Used by the non-admin path of getAnalytics
 // so an IP visiting two owned hosts is counted once, not twice.

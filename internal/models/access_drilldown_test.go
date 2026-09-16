@@ -115,6 +115,66 @@ func TestPathDrilldownVisitorsAndTotals(t *testing.T) {
 	}
 }
 
+func TestStatusClassDrilldown(t *testing.T) {
+	conn, since := seedDrilldownEvents(t)
+
+	// 4xx: /admin x1 (1.1.1.1) + /wp-login.php x2 (2.2.2.2) = 3 views, 2 visitors.
+	totals, err := models.StatusClassTotals(conn, since, "a.example.com", "4xx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if totals.Views != 3 || totals.Visitors != 2 {
+		t.Fatalf("StatusClassTotals(4xx) = %+v, want views=3 visitors=2", totals)
+	}
+
+	codes, err := models.StatusClassCodes(conn, since, "a.example.com", "4xx", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) != 1 || codes[0].Status != 404 || codes[0].Count != 3 {
+		t.Fatalf("StatusClassCodes(4xx) = %#v, want 404 x3", codes)
+	}
+
+	paths, err := models.StatusClassPaths(conn, since, "a.example.com", "4xx", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 || paths[0].Path != "/wp-login.php" || paths[0].Views != 2 {
+		t.Fatalf("StatusClassPaths(4xx) top = %#v, want /wp-login.php x2", paths)
+	}
+
+	clients, err := models.StatusClassClients(conn, since, "a.example.com", "4xx", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clients) != 2 || clients[0].ClientIP != "2.2.2.2" || clients[0].Views != 2 {
+		t.Fatalf("StatusClassClients(4xx) = %#v, want 2.2.2.2 x2 first", clients)
+	}
+
+	// 5xx: only /api 500 x1.
+	fiveCodes, err := models.StatusClassCodes(conn, since, "a.example.com", "5xx", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fiveCodes) != 1 || fiveCodes[0].Status != 500 || fiveCodes[0].Count != 1 {
+		t.Fatalf("StatusClassCodes(5xx) = %#v, want 500 x1", fiveCodes)
+	}
+
+	// 2xx totals: 3 /login hits from 2 visitors.
+	okTotals, err := models.StatusClassTotals(conn, since, "a.example.com", "2xx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if okTotals.Views != 3 || okTotals.Visitors != 2 {
+		t.Fatalf("StatusClassTotals(2xx) = %+v, want views=3 visitors=2", okTotals)
+	}
+
+	// An invalid class yields nothing rather than scanning everything.
+	if got, _ := models.StatusClassCodes(conn, since, "a.example.com", "bogus", 10); got != nil {
+		t.Fatalf("StatusClassCodes(bogus) = %#v, want nil", got)
+	}
+}
+
 func TestTopErrorDetailsGroupsByStatusAndPath(t *testing.T) {
 	conn, since := seedDrilldownEvents(t)
 
