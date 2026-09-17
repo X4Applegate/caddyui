@@ -125,8 +125,9 @@ func (s *Server) runScheduledBackupOnce(dir string, keep int) (string, error) {
 }
 
 // postBackupRun runs one backup immediately (the "Back up now" button). Admin
-// only. Uses the directory/keep submitted with the form (so unsaved edits are
-// honoured), falling back to the stored settings.
+// only. Uses the *saved* backup directory/retention — not values from the
+// request — so an untrusted request path never reaches the filesystem (Save
+// the directory first, then Back up now).
 func (s *Server) postBackupRun(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 	if u == nil || u.Role != models.RoleAdmin {
@@ -134,19 +135,11 @@ func (s *Server) postBackupRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.backupScheduleConfig()
-	dir := strings.TrimSpace(r.FormValue(settingBackupScheduleDir))
-	if dir == "" {
-		dir = cfg.Dir
-	}
-	keep := cfg.Keep
-	if k, err := strconv.Atoi(strings.TrimSpace(r.FormValue(settingBackupScheduleKeep))); err == nil {
-		keep = k
-	}
-	if dir == "" {
-		http.Redirect(w, r, "/settings/backup?backuperr="+url.QueryEscape("set a backup directory first"), http.StatusSeeOther)
+	if cfg.Dir == "" {
+		http.Redirect(w, r, "/settings/backup?backuperr="+url.QueryEscape("set a backup directory and Save first"), http.StatusSeeOther)
 		return
 	}
-	path, err := s.runScheduledBackupOnce(dir, keep)
+	path, err := s.runScheduledBackupOnce(cfg.Dir, cfg.Keep)
 	if err != nil {
 		http.Redirect(w, r, "/settings/backup?backuperr="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
