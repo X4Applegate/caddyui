@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -31,5 +32,56 @@ func TestClassifyVerifyResolver(t *testing.T) {
 				t.Fatalf("servers = %#v, want %#v", servers, tc.wantServers)
 			}
 		})
+	}
+}
+
+// A dead first server must fail over to the next one (issue #98) — the whole
+// point of the feature is surviving a blocked/unreachable resolver.
+func TestResolveViaPlainDNSFailsOverToNextServer(t *testing.T) {
+	orig := plainDNSLookup
+	t.Cleanup(func() { plainDNSLookup = orig })
+
+	var tried []string
+	plainDNSLookup = func(server, fqdn string) ([]string, bool, error) {
+		tried = append(tried, server)
+		if server == "10.0.0.1:53" {
+			return nil, false, fmt.Errorf("i/o timeout")
+		}
+		return []string{"203.0.113.5"}, false, nil
+	}
+
+	ips, err := resolveViaPlainDNS([]string{"10.0.0.1:53", "10.0.0.2:53"}, "x.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ips) != 1 || ips[0] != "203.0.113.5" {
+		t.Fatalf("ips = %#v, want the second server's answer", ips)
+	}
+	if !reflect.DeepEqual(tried, []string{"10.0.0.1:53", "10.0.0.2:53"}) {
+		t.Fatalf("tried = %#v, want both servers in order", tried)
+	}
+}
+
+// An authoritative "no such host" is a real answer, not a reason to fail over —
+// it stops the search and reports "not live yet" (empty), like the DoH path.
+func TestResolveViaPlainDNSNotFoundStops(t *testing.T) {
+	orig := plainDNSLookup
+	t.Cleanup(func() { plainDNSLookup = orig })
+
+	var tried []string
+	plainDNSLookup = func(server, fqdn string) ([]string, bool, error) {
+		tried = append(tried, server)
+		return []string{}, true, nil
+	}
+
+	ips, err := resolveViaPlainDNS([]string{"10.0.0.1:53", "10.0.0.2:53"}, "x.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ips) != 0 {
+		t.Fatalf("ips = %#v, want empty", ips)
+	}
+	if len(tried) != 1 {
+		t.Fatalf("tried = %#v, want to stop after the first definitive answer", tried)
 	}
 }

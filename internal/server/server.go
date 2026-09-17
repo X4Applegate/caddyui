@@ -13874,43 +13874,62 @@ func resolveViaDoHURL(base, fqdn string) ([]string, error) {
 	return ips, nil
 }
 
+// plainDNSLookup is the per-server A lookup, indirected so failover ordering
+// can be tested without real network I/O.
+var plainDNSLookup = lookupAFromServer
+
 // resolveViaPlainDNS resolves A records for fqdn by querying the given DNS
-// servers directly (UDP, falling back to TCP per the Go resolver), trying each
-// server in order. A "no such host" answer is returned as an empty slice — the
-// same "record not live yet" signal the DoH path gives — so the poll keeps going.
+// servers directly, trying each in order until one actually answers. Failover
+// is decided by the DNS exchange itself, not by whether a socket could be
+// opened: a UDP "dial" to an unreachable server succeeds immediately without
+// touching the network, so relying on dial errors would pin every query to a
+// dead first server (issue #98). A server that authoritatively reports "no such
+// host" ends the search and returns an empty slice — the same "record not live
+// yet" signal the DoH path gives — so the poll keeps going.
 func resolveViaPlainDNS(servers []string, fqdn string) ([]string, error) {
+	var lastErr error
+	for _, srv := range servers {
+		ips, notFound, err := plainDNSLookup(srv, fqdn)
+		if notFound {
+			return []string{}, nil
+		}
+		if err == nil {
+			return ips, nil
+		}
+		lastErr = err // unreachable / timeout — try the next server
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no DNS servers configured")
+	}
+	return nil, lastErr
+}
+
+// lookupAFromServer queries a single DNS server for A records for fqdn. It
+// returns notFound=true when the server answered but has no such record (a
+// definitive answer, not a reason to fail over), or a non-nil err when the
+// server did not answer in time (unreachable/filtered — try the next one).
+func lookupAFromServer(server, fqdn string) (ips []string, notFound bool, err error) {
 	r := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 3 * time.Second}
-			var lastErr error
-			for _, srv := range servers {
-				conn, err := d.DialContext(ctx, network, srv)
-				if err == nil {
-					return conn, nil
-				}
-				lastErr = err
-			}
-			if lastErr == nil {
-				lastErr = fmt.Errorf("no DNS servers configured")
-			}
-			return nil, lastErr
+			return d.DialContext(ctx, network, server)
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	ips, err := r.LookupIP(ctx, "ip4", fqdn)
-	if err != nil {
-		if dnsErr, ok := err.(*net.DNSError); ok && dnsErr.IsNotFound {
-			return []string{}, nil
+	addrs, lerr := r.LookupIP(ctx, "ip4", fqdn)
+	if lerr != nil {
+		if dnsErr, ok := lerr.(*net.DNSError); ok && dnsErr.IsNotFound {
+			return []string{}, true, nil
 		}
-		return nil, err
+		return nil, false, lerr
 	}
-	out := make([]string, 0, len(ips))
-	for _, ip := range ips {
+	out := make([]string, 0, len(addrs))
+	for _, ip := range addrs {
 		out = append(out, ip.String())
 	}
-	return out, nil
+	return out, false, nil
 }
 
 // tlsHandshakeOK performs a full TLS handshake with SNI set to fqdn and
