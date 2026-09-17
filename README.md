@@ -163,7 +163,7 @@ Use one DNS-01 wildcard across matching proxy hosts without exporting or copying
 4. Leave matching proxy hosts on **Auto** TLS. CaddyUI detects the covering wildcard and prevents redundant exact-host certificate orders.
 5. Edit the managed certificate later to see live deployment, issuer, expiry, and renewal health for every configured server.
 
-Your Caddy build must include the matching `caddy-dns` provider module. The repository's [`Dockerfile.caddy`](Dockerfile.caddy) includes all eight DNS providers supported by CaddyUI; the stock `caddy:2-alpine` image does not.
+Your Caddy build must include the matching `caddy-dns` provider module. The easiest path is the prebuilt **`applegater/caddyui-caddy`** image (all eight DNS providers, the CrowdSec bouncer and the rate-limit module); it's the published build of [`Dockerfile.caddy`](Dockerfile.caddy), which you can also build yourself. The stock `caddy:2-alpine` image does not include these modules.
 
 ### Routing
 
@@ -293,7 +293,10 @@ API keys are stored in CaddyUI's selected database. The Settings UI never render
 ```yaml
 services:
   caddy:
-    image: caddy:2-alpine
+    # Batteries-included Caddy: every CaddyUI DNS provider (for ACME DNS-01),
+    # the CrowdSec bouncer, and the rate-limit module. Published build of
+    # Dockerfile.caddy. Swap for a stock/custom Caddy if you don't need those.
+    image: applegater/caddyui-caddy:stable
     container_name: caddyui-caddy
     restart: unless-stopped
     ports:
@@ -459,7 +462,7 @@ On each edge host:
 ```yaml
 services:
   caddy:
-    image: caddy:2-alpine
+    image: applegater/caddyui-caddy:stable
     container_name: caddy
     restart: unless-stopped
     # --resume is required so admin-API pushes persist across Caddy restarts.

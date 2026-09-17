@@ -26,7 +26,9 @@ section and the included `docker-compose.mariadb.yml` overlay.
 ```yaml
 services:
   caddy:
-    image: caddy:2-alpine
+    # Batteries-included Caddy (DNS providers, CrowdSec, rate-limit).
+    # Use `caddy:2-alpine` instead if you don't need those modules.
+    image: applegater/caddyui-caddy:stable
     restart: unless-stopped
     ports: ["80:80", "443:443", "443:443/udp"]
     volumes:
@@ -56,7 +58,7 @@ volumes:
 
 > **💡 Fresh install:** On first boot Caddy has no saved config yet. The `command` above seeds an empty `{}` config automatically so Caddy starts cleanly without any extra steps. Without `--resume`, admin-API pushes from CaddyUI would be lost on every `docker compose restart`.
 
-> **DNS-01 note:** Managed ACME certificates require a Caddy build containing the matching `caddy-dns` provider module. The stock `caddy:2-alpine` image in this minimal example does not include those modules. Use the repository's [`Dockerfile.caddy`](https://github.com/X4Applegate/caddyui/blob/main/Dockerfile.caddy), which includes every DNS provider supported by CaddyUI, or supply your own compatible Caddy build.
+> **DNS-01 note:** Managed ACME certificates require a Caddy build containing the matching `caddy-dns` provider module. The prebuilt [`applegater/caddyui-caddy`](https://hub.docker.com/r/applegater/caddyui-caddy) image (used above) bundles every DNS provider CaddyUI supports, plus the CrowdSec bouncer and rate-limit modules — it's the published build of the repository's [`Dockerfile.caddy`](https://github.com/X4Applegate/caddyui/blob/main/Dockerfile.caddy), which you can also build yourself. The stock `caddy:2-alpine` image does not include these modules.
 
 ### Bind-mount note
 

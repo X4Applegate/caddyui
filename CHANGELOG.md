@@ -13,7 +13,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ### Changed
 
-- `Dockerfile.caddy` now builds the [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) module. **Rebuild your custom Caddy image** (e.g. `docker compose build caddy`) to use rate limiting — enabling it on a Caddy build without the module is refused by the pre-save validation with Caddy's error.
+- `Dockerfile.caddy` now builds the [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) module. To use rate limiting, run the batteries-included Caddy — enabling it on a Caddy build without the module is refused by the pre-save validation with Caddy's error.
+- **Published custom Caddy image** [`applegater/caddyui-caddy`](https://hub.docker.com/r/applegater/caddyui-caddy) (`:stable`/`:latest`/`:v2.51.0`) — the prebuilt `Dockerfile.caddy` with all DNS providers, the CrowdSec bouncer and the rate-limit module, so fleet nodes pull one image instead of each running xcaddy. The Compose file now references it; uncomment the `build:` block to build locally instead.
 
 ## [2.50.0] - 2026-09-17 - Block an IP straight from analytics
 

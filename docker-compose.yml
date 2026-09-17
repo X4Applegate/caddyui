@@ -1,11 +1,15 @@
 services:
   caddy:
-    # Custom build — includes every DNS provider supported by CaddyUI so
-    # Managed DNS hosts can solve ACME DNS-01. See Dockerfile.caddy.
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
-    image: caddyui-caddy:latest
+    # Prebuilt custom Caddy — includes every DNS provider CaddyUI supports
+    # (for ACME DNS-01), the CrowdSec bouncer, and the rate-limit module. This
+    # is the published build of Dockerfile.caddy, so fleet nodes pull one image
+    # instead of each running xcaddy. To customise the module set, uncomment the
+    # `build:` block below (and keep or change the image tag) and run
+    # `docker compose build caddy`.
+    image: applegater/caddyui-caddy:stable
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.caddy
     container_name: caddyui-caddy
     restart: unless-stopped
     ports:
