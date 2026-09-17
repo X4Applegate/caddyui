@@ -3978,6 +3978,26 @@ func ipBlocklistSubroute(cidrList []string) map[string]any {
 	}
 }
 
+// BuildGlobalBlocklistRoute builds a single top-level route that returns 403 to
+// any request from the given CIDR ranges, regardless of host (issue #100).
+// Prepended ahead of host routing so a globally-blocked IP is rejected before it
+// reaches any site. Returns nil when the parsed list is empty.
+func BuildGlobalBlocklistRoute(raw string) map[string]any {
+	cidrList := parseCIDRList(raw)
+	if len(cidrList) == 0 {
+		return nil
+	}
+	ranges := make([]any, len(cidrList))
+	for i, c := range cidrList {
+		ranges[i] = c
+	}
+	return map[string]any{
+		"match":    []any{map[string]any{"remote_ip": map[string]any{"ranges": ranges}}},
+		"handle":   []any{map[string]any{"handler": "static_response", "status_code": 403}},
+		"terminal": true,
+	}
+}
+
 // BuildRedirectRoute constructs a single route for a redirection host.
 // v2.9.13: prepends IP allowlist subroute and/or maintenance-mode handler
 // before the redirect static_response when those features are enabled.

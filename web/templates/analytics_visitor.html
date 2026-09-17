@@ -1,6 +1,8 @@
 {{define "title"}}{{.ClientIP}} · {{.Host}} · Analytics · CaddyUI{{end}}
 {{define "content"}}
 {{$srv := "all"}}{{if ne .SelectedServerID 0}}{{$srv = .SelectedServerID}}{{end}}
+{{if .Blocked}}<div class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">Blocked <span class="font-mono">{{.Blocked}}</span> and re-synced Caddy.</div>{{end}}
+{{if .BlockErr}}<div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">That wasn't a valid IP or CIDR — nothing was blocked.</div>{{end}}
 <div class="flex items-center gap-2 text-xs text-ink-500 mb-2">
   <a href="/analytics/{{urlquery .Host}}?window={{.WindowQuery}}&amp;server={{$srv}}" class="hover:text-ink-700 inline-flex items-center gap-1">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
@@ -23,6 +25,27 @@
     <a href="/analytics/{{urlquery .Host}}/visitor?ip={{urlquery .ClientIP}}&amp;window=30d&amp;server={{$srv}}" class="px-3 py-1.5 rounded-md transition {{if eq $cur "last 30 days"}}bg-brand-50 text-brand-700 font-medium{{else}}text-ink-600 hover:bg-ink-50{{end}}">30 days</a>
   </div>
 </div>
+
+{{if .IsAdmin}}
+{{/* ── Block this visitor (issue #100) ── */}}
+{{$ret := printf "/analytics/%s/visitor?ip=%s&window=%s&server=%v" (urlquery .Host) (urlquery .ClientIP) .WindowQuery $srv}}
+<div class="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-ink-200 bg-white px-5 py-3 shadow-card">
+  <div class="text-sm text-ink-700">Block <span class="font-mono">{{.ClientIP}}</span>:</div>
+  <form method="post" action="/analytics/{{urlquery .Host}}/block?server={{$srv}}" class="inline">
+    <input type="hidden" name="ip" value="{{.ClientIP}}" />
+    <input type="hidden" name="scope" value="host" />
+    <input type="hidden" name="return" value="{{$ret}}" />
+    <button type="submit" class="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 border border-amber-300 hover:bg-amber-50 px-3 py-1.5 rounded-lg transition">On {{.Host}}</button>
+  </form>
+  <form method="post" action="/analytics/{{urlquery .Host}}/block?server={{$srv}}" class="inline" onsubmit="return confirm('Block {{.ClientIP}} across every host on the fleet?');">
+    <input type="hidden" name="ip" value="{{.ClientIP}}" />
+    <input type="hidden" name="scope" value="global" />
+    <input type="hidden" name="return" value="{{$ret}}" />
+    <button type="submit" class="inline-flex items-center gap-1.5 text-sm font-medium text-red-700 border border-red-300 hover:bg-red-50 px-3 py-1.5 rounded-lg transition">Everywhere (fleet-wide)</button>
+  </form>
+  <span class="text-xs text-ink-400">Adds a <code class="font-mono">/32</code> (or <code class="font-mono">/128</code>) rule → 403. Manage under <a href="/settings/security" class="text-brand-600 hover:underline">Settings → Security</a> / the host form.</span>
+</div>
+{{end}}
 
 {{/* ── Summary + status ── */}}
 {{$tot := addInt .Status.S2xx (addInt .Status.S3xx (addInt .Status.S4xx (addInt .Status.S5xx .Status.SOther)))}}

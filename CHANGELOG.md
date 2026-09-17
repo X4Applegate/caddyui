@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.50.0] - 2026-09-17 - Block an IP straight from analytics
+
+### Added
+
+- **Block a visitor from the analytics drill-down** ([issue #100](https://github.com/X4Applegate/caddyui/issues/100)): the per-visitor page now has admin-only **Block on <host>** and **Block everywhere (fleet-wide)** actions. "On host" appends the IP (as a `/32` or `/128`) to that host's existing IP blocklist; "everywhere" adds it to a new **global blocklist** applied as a top-level 403 route ahead of all host routing, on every non-external server. Both re-sync automatically. This closes the loop from the v2.47–2.48 drill-down: see who's probing, block them in one click.
+- **Global IP blocklist** under **Settings → Security** — view and edit (unblock) the fleet-wide list; one IP/CIDR per line.
+
 ## [2.49.0] - 2026-09-17 - Configurable verification resolver
 
 ### Added
