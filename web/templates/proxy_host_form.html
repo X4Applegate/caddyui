@@ -3322,7 +3322,7 @@ document.addEventListener('DOMContentLoaded', function() {
   })();
   </script>
 
-  <details id="ph-ip-list" class="pt-4 border-t border-ink-100"{{if or .Host.AccessList .Host.IPBlocklist .Host.TrustedProxies}} open{{end}}>
+  <details id="ph-ip-list" class="pt-4 border-t border-ink-100"{{if or .Host.AccessList .Host.IPBlocklist .Host.TrustedProxies .Host.RateLimitEnabled}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       IP Allowlist / Blocklist <span class="font-normal normal-case">(optional, comma-separated CIDRs)</span>
     </summary>
@@ -3356,6 +3356,25 @@ document.addEventListener('DOMContentLoaded', function() {
           <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Block Private / Loopback IPs</span>
         </label>
         <p class="text-xs text-gray-500 dark:text-gray-400">Reject incoming requests from RFC 1918 addresses (10.x, 172.16–31.x, 192.168.x), loopback (127.x, ::1), link-local (169.254.x), and CGNAT (100.64.x). Returns 403. Useful for public-facing hosts that should not be reachable from internal networks.</p>
+      </div>
+
+      <!-- v2.51.0 (issue #102): per-host rate limiting -->
+      <div class="mb-4 pt-3 border-t border-ink-100">
+        <label class="flex items-center gap-2 cursor-pointer mb-1.5">
+          <input type="checkbox" name="rate_limit_enabled" {{if .Host.RateLimitEnabled}}checked{{end}}
+            class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Rate limit</span>
+        </label>
+        <div class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+          <span>Allow</span>
+          <input type="number" name="rate_limit_events" min="1" max="1000000" value="{{if .Host.RateLimitEvents}}{{.Host.RateLimitEvents}}{{end}}" placeholder="100"
+            class="w-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
+          <span>requests per</span>
+          <input type="number" name="rate_limit_window_sec" min="1" max="86400" value="{{if .Host.RateLimitWindowSec}}{{.Host.RateLimitWindowSec}}{{end}}" placeholder="60"
+            class="w-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm">
+          <span>seconds, per client IP.</span>
+        </div>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Excess requests get a <strong>429</strong> (sliding window). Keyed by client IP (honours Trusted Proxies). Requires the <code class="font-mono">caddy-ratelimit</code> module in your Caddy build — the shipped <code class="font-mono">Dockerfile.caddy</code> includes it; enabling this on a build without it is refused when you save.</p>
       </div>
 
       <!-- v2.9.258: force_canonical_host -->

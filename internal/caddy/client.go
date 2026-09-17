@@ -1324,6 +1324,23 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			handlers = append(handlers, ipAllowlistSubroute(cidrList))
 		}
 	}
+	// v2.51.0 (issue #102): per-host rate limiting via caddy-ratelimit. Keyed by
+	// client IP (honours trusted_proxies), sliding window; excess requests get a
+	// 429. Placed after the block/allowlist gates so only permitted traffic is
+	// counted. Requires the caddy-ratelimit module in the running Caddy build —
+	// the pre-save validation rejects enabling it on a build without the module.
+	if p.RateLimitEnabled && p.RateLimitEvents > 0 && p.RateLimitWindowSec > 0 {
+		handlers = append(handlers, map[string]any{
+			"handler": "rate_limit",
+			"rate_limits": map[string]any{
+				fmt.Sprintf("caddyui_rl_%d", p.ID): map[string]any{
+					"key":        "{http.request.client_ip}",
+					"window":     fmt.Sprintf("%ds", p.RateLimitWindowSec),
+					"max_events": p.RateLimitEvents,
+				},
+			},
+		})
+	}
 	// v2.9.155: block_query_params — deny requests containing any of the listed query parameter names (403).
 	if p.BlockQueryParams != "" {
 		for _, param := range strings.Split(p.BlockQueryParams, ",") {

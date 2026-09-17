@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.51.0] - 2026-09-17 - Per-host rate limiting
+
+### Added
+
+- **Per-host rate limiting** ([issue #102](https://github.com/X4Applegate/caddyui/issues/102)): a proxy host can now cap requests — *allow N requests per M seconds, per client IP* — returning **429** on excess via Caddy's sliding-window `rate_limit` handler (keyed by client IP, so it honours Trusted Proxies). Configured under a host's **IP Allowlist / Blocklist** section. A natural companion to the v2.50.0 blocklist: soft-limit noisy or probing clients without a hard ban.
+
+### Changed
+
+- `Dockerfile.caddy` now builds the [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) module. **Rebuild your custom Caddy image** (e.g. `docker compose build caddy`) to use rate limiting — enabling it on a Caddy build without the module is refused by the pre-save validation with Caddy's error.
+
 ## [2.50.0] - 2026-09-17 - Block an IP straight from analytics
 
 ### Added
