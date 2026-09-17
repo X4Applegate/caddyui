@@ -1305,6 +1305,12 @@ const (
 	settingCFAPIToken = "cf_api_token"
 	settingCFProxied  = "cf_proxied"
 
+	// v2.49.0 (issue #98): resolver used for external verification lookups on
+	// the deploy/readiness checks. Empty = Cloudflare DoH (default). May be a
+	// DoH URL (https://…/dns-query) or a comma-separated list of plain DNS
+	// servers (e.g. "192.168.1.10:53") for filtered/split-horizon networks.
+	settingDNSVerifyResolver = "dns_verify_resolver"
+
 	// Legacy alias kept so pre-v2.3.0 code paths referencing
 	// settingCFServerIP continue to compile. Points at the shared key.
 	settingCFServerIP = settingServerIP
@@ -13739,7 +13745,7 @@ func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request
 	// client keeps polling, and a transient DoH failure should just
 	// look like "not ready yet".
 	if !host.DNSSkipRecord {
-		if ips, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
+		if ips, dnsErr := s.resolveVerifyA(fqdn); dnsErr == nil {
 			resp["resolved_ips"] = ips
 			if resp["proxied"] == true {
 				resp["dns_ready"] = len(ips) > 0
@@ -13770,13 +13776,76 @@ func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// verifyResolverMode classifies the admin-configured verification resolver.
+type verifyResolverMode int
+
+const (
+	verifyResolverDefault  verifyResolverMode = iota // Cloudflare DoH
+	verifyResolverDoHURL                             // custom DoH JSON endpoint
+	verifyResolverPlainDNS                           // one or more host:port DNS servers
+)
+
+// classifyVerifyResolver interprets the dns_verify_resolver setting (issue #98).
+// Blank -> default (Cloudflare DoH). A value starting with http(s):// is a
+// custom DoH endpoint. Otherwise it is a comma/space/newline-separated list of
+// plain DNS servers; a bare host gets the default :53 port.
+func classifyVerifyResolver(raw string) (verifyResolverMode, []string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return verifyResolverDefault, nil
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return verifyResolverDoHURL, []string{raw}
+	}
+	var servers []string
+	for _, f := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\n' || r == '\t'
+	}) {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if !strings.Contains(f, ":") {
+			f += ":53"
+		}
+		servers = append(servers, f)
+	}
+	if len(servers) == 0 {
+		return verifyResolverDefault, nil
+	}
+	return verifyResolverPlainDNS, servers
+}
+
+// resolveVerifyA resolves A records for fqdn using the admin-configured
+// verification resolver (issue #98), falling back to Cloudflare DoH. Used by
+// the deploy/readiness checks so filtered or split-horizon networks can point
+// verification at a reachable resolver instead of hanging on Cloudflare.
+func (s *Server) resolveVerifyA(fqdn string) ([]string, error) {
+	raw, _ := models.GetSetting(s.DB, settingDNSVerifyResolver)
+	switch mode, detail := classifyVerifyResolver(raw); mode {
+	case verifyResolverDoHURL:
+		return resolveViaDoHURL(detail[0], fqdn)
+	case verifyResolverPlainDNS:
+		return resolveViaPlainDNS(detail, fqdn)
+	default:
+		return resolveViaDoH(fqdn)
+	}
+}
+
 // resolveViaDoH queries Cloudflare DNS-over-HTTPS for A records for fqdn.
-// Returns the list of IPs, or an empty slice if the record doesn't exist
-// yet. 6-second timeout so a slow upstream doesn't stall the poll.
 func resolveViaDoH(fqdn string) ([]string, error) {
-	req, err := http.NewRequest("GET",
-		"https://cloudflare-dns.com/dns-query?name="+url.QueryEscape(fqdn)+"&type=A",
-		nil)
+	return resolveViaDoHURL("https://cloudflare-dns.com/dns-query", fqdn)
+}
+
+// resolveViaDoHURL queries any DoH JSON-API endpoint for A records for fqdn.
+// Returns the list of IPs, or an empty slice if the record doesn't exist yet.
+// 6-second timeout so a slow resolver doesn't stall the poll.
+func resolveViaDoHURL(base, fqdn string) ([]string, error) {
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	req, err := http.NewRequest("GET", base+sep+"name="+url.QueryEscape(fqdn)+"&type=A", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -13803,6 +13872,64 @@ func resolveViaDoH(fqdn string) ([]string, error) {
 		}
 	}
 	return ips, nil
+}
+
+// plainDNSLookup is the per-server A lookup, indirected so failover ordering
+// can be tested without real network I/O.
+var plainDNSLookup = lookupAFromServer
+
+// resolveViaPlainDNS resolves A records for fqdn by querying the given DNS
+// servers directly, trying each in order until one actually answers. Failover
+// is decided by the DNS exchange itself, not by whether a socket could be
+// opened: a UDP "dial" to an unreachable server succeeds immediately without
+// touching the network, so relying on dial errors would pin every query to a
+// dead first server (issue #98). A server that authoritatively reports "no such
+// host" ends the search and returns an empty slice — the same "record not live
+// yet" signal the DoH path gives — so the poll keeps going.
+func resolveViaPlainDNS(servers []string, fqdn string) ([]string, error) {
+	var lastErr error
+	for _, srv := range servers {
+		ips, notFound, err := plainDNSLookup(srv, fqdn)
+		if notFound {
+			return []string{}, nil
+		}
+		if err == nil {
+			return ips, nil
+		}
+		lastErr = err // unreachable / timeout — try the next server
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no DNS servers configured")
+	}
+	return nil, lastErr
+}
+
+// lookupAFromServer queries a single DNS server for A records for fqdn. It
+// returns notFound=true when the server answered but has no such record (a
+// definitive answer, not a reason to fail over), or a non-nil err when the
+// server did not answer in time (unreachable/filtered — try the next one).
+func lookupAFromServer(server, fqdn string) (ips []string, notFound bool, err error) {
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			return d.DialContext(ctx, network, server)
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	addrs, lerr := r.LookupIP(ctx, "ip4", fqdn)
+	if lerr != nil {
+		if dnsErr, ok := lerr.(*net.DNSError); ok && dnsErr.IsNotFound {
+			return []string{}, true, nil
+		}
+		return nil, false, lerr
+	}
+	out := make([]string, 0, len(addrs))
+	for _, ip := range addrs {
+		out = append(out, ip.String())
+	}
+	return out, false, nil
 }
 
 // tlsHandshakeOK performs a full TLS handshake with SNI set to fqdn and
@@ -14012,7 +14139,7 @@ func (s *Server) apiRawRouteDeployStatus(w http.ResponseWriter, r *http.Request)
 	// edge IP (known-proxied ranges), treat it as proxied.
 	var ips []string
 	if !rr.DNSSkipRecord {
-		if got, dnsErr := resolveViaDoH(fqdn); dnsErr == nil {
+		if got, dnsErr := s.resolveVerifyA(fqdn); dnsErr == nil {
 			ips = got
 			resp["resolved_ips"] = got
 			if looksLikeCloudflareEdge(got) {
@@ -14468,10 +14595,12 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// CF-centric keys. The template itself now uses DNSProviders +
 		// ServerIP; these stay so custom layouts built against v2.2.x
 		// don't crash during the upgrade cycle.
-		"CFServerIP":  serverIP,
-		"CFProxied":   cfProxiedStr == "1",
-		"Success":     success,
-		"ClearedName": clearedName,
+		"CFServerIP": serverIP,
+		"CFProxied":  cfProxiedStr == "1",
+		// issue #98: verification resolver override for deploy/readiness checks.
+		"DNSVerifyResolver": mustGetSetting(s.DB, settingDNSVerifyResolver),
+		"Success":           success,
+		"ClearedName":       clearedName,
 		// v2.7.0: analytics card
 		"AnalyticsEnabled":           analyticsCfg.Enabled,
 		"ExpectationsAutoRollback":   expectationsAutoRollbackEnabled(s), // v2.38.0
@@ -14730,6 +14859,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	oldServerIP := s.serverIP()
 
 	kv := map[string]string{
+		settingDNSVerifyResolver:   strings.TrimSpace(r.FormValue("dns_verify_resolver")), // issue #98
 		settingNotifyWebhookURL:    webhookURL,
 		settingNotifyWebhookSecret: webhookSecret,
 		settingNotifyNtfyURL:       ntfyURL, // v2.12.51
