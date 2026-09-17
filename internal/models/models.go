@@ -3413,6 +3413,25 @@ func UpdateProxyHostDNSSkipRecord(db *sql.DB, id int64, skip bool) error {
 	return err
 }
 
+// UpdateProxyHostIPBlocklist sets a proxy host's IP blocklist (comma-separated
+// CIDRs). Used by the one-click "block from analytics" action (issue #100).
+func UpdateProxyHostIPBlocklist(db *sql.DB, id int64, blocklist string) error {
+	_, err := db.Exec(`UPDATE proxy_hosts
+		SET ip_blocklist=?, updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`, blocklist, id)
+	return err
+}
+
+// UpdateRedirectionHostIPBlocklist sets a redirection host's IP blocklist.
+// Redirection hosts honour the same 403 blocklist as proxy hosts, so the
+// "block from analytics" action updates them too (issue #100).
+func UpdateRedirectionHostIPBlocklist(db *sql.DB, id int64, blocklist string) error {
+	_, err := db.Exec(`UPDATE redirection_hosts
+		SET ip_blocklist=?, updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`, blocklist, id)
+	return err
+}
+
 // ListProxyHostsWithDNSRecords returns a lightweight slice of all proxy
 // hosts that have an active managed DNS record. Only the fields needed for
 // lifecycle management (IP retarget, bulk delete) are populated — the

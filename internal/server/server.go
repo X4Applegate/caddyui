@@ -772,6 +772,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/analytics/{host}/visitor", s.getAnalyticsVisitor) // issue #94
 		r.Get("/analytics/{host}/path", s.getAnalyticsPath)       // issue #94
 		r.Get("/analytics/{host}/status", s.getAnalyticsStatus)   // issue #94 follow-up
+		r.Post("/analytics/{host}/block", s.postAnalyticsBlock)   // issue #100
 		r.Get("/live-traffic", s.getLiveTraffic)
 		r.Get("/api/live-traffic/stream", s.liveTrafficStream)
 
@@ -6284,6 +6285,11 @@ const settingFaviconURL = "favicon_url"
 // permitted to access the CaddyUI admin panel. When empty, all IPs are allowed.
 const settingAdminAllowlist = "admin_allowlist"
 
+// settingGlobalIPBlocklist holds newline or comma-separated IPs/CIDRs blocked
+// across every host (v2.50.0, issue #100). Applied as a top-level 403 route on
+// the main HTTP(S) servers, ahead of host routing. Empty = nothing blocked.
+const settingGlobalIPBlocklist = "global_ip_blocklist"
+
 // settingActivityLogDays specifies how many days to keep activity log entries.
 // 0 or empty = keep forever (default).
 const settingActivityLogDays = "activity_log_days"
@@ -7663,8 +7669,17 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	if err != nil {
 		return ""
 	}
-	applyRoutes(proposed, append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...))
+	previewRoutes := append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
+	// issue #100: mirror the global blocklist prepend so preview validation
+	// matches what sync would push.
+	if gb := caddy.BuildGlobalBlocklistRoute(mustGetSetting(s.DB, settingGlobalIPBlocklist)); gb != nil {
+		previewRoutes = append([]any{gb}, previewRoutes...)
+		if len(httpRoutes) > 0 {
+			httpRoutes = append([]any{gb}, httpRoutes...)
+		}
+	}
+	applyRoutes(proposed, previewRoutes)
 	applyPlainHTTPServer(proposed, httpRoutes)
 	applyRawListenServers(proposed, s.buildRawListenServers(raws)) // v2.36.1 (issue #64)
 	loadPEM, loadFiles := buildCertLoaders(certs)
@@ -8369,6 +8384,14 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	routes = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
 	httpRoutes = protectRoutesWithCrowdSec(httpRoutes, crowdSecCfg, serverID)
+	// issue #100: fleet-wide IP blocklist — a top-level 403 route ahead of all
+	// host routing, on both the HTTPS and (when present) the plain :80 server.
+	if gb := caddy.BuildGlobalBlocklistRoute(mustGetSetting(s.DB, settingGlobalIPBlocklist)); gb != nil {
+		routes = append([]any{gb}, routes...)
+		if len(httpRoutes) > 0 {
+			httpRoutes = append([]any{gb}, httpRoutes...)
+		}
+	}
 	// v2.36.1 (issue #64): Advanced routes bound to their own port(s) become
 	// separate servers; give them the same CrowdSec protection as the rest.
 	rawListenServers := s.buildRawListenServers(raws)
@@ -14599,6 +14622,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"CFProxied":  cfProxiedStr == "1",
 		// issue #98: verification resolver override for deploy/readiness checks.
 		"DNSVerifyResolver": mustGetSetting(s.DB, settingDNSVerifyResolver),
+		// issue #100: fleet-wide IP blocklist.
+		"GlobalIPBlocklist": mustGetSetting(s.DB, settingGlobalIPBlocklist),
 		"Success":           success,
 		"ClearedName":       clearedName,
 		// v2.7.0: analytics card
@@ -14860,6 +14885,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 
 	kv := map[string]string{
 		settingDNSVerifyResolver:   strings.TrimSpace(r.FormValue("dns_verify_resolver")), // issue #98
+		settingGlobalIPBlocklist:   strings.TrimSpace(r.FormValue("global_ip_blocklist")), // issue #100
 		settingNotifyWebhookURL:    webhookURL,
 		settingNotifyWebhookSecret: webhookSecret,
 		settingNotifyNtfyURL:       ntfyURL, // v2.12.51

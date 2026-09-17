@@ -895,6 +895,14 @@
         placeholder="Leave blank to allow all IPs&#10;192.168.1.0/24&#10;10.0.0.1"
         class="w-full text-sm px-3 py-2 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono">{{.AdminAllowlist}}</textarea>
     </div>
+    {{/* issue #100: fleet-wide IP blocklist */}}
+    <div class="py-4 border-b border-ink-100">
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">Global IP blocklist</label>
+      <p class="text-xs text-ink-500 mb-2">One IP or CIDR per line (or comma-separated). Blocked with <strong>403</strong> across every host, ahead of routing — the fleet-wide counterpart to a host's own blocklist. Populated by the <strong>Block everywhere</strong> action on a visitor's analytics page; remove entries here to unblock.</p>
+      <textarea name="global_ip_blocklist" rows="4"
+        placeholder="Leave blank to block nothing&#10;203.0.113.5/32&#10;198.51.100.0/24"
+        class="w-full text-sm px-3 py-2 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono">{{.GlobalIPBlocklist}}</textarea>
+    </div>
     <div class="py-4 border-b border-ink-100">
       <label class="block text-xs font-medium text-ink-700 mb-1">Session duration (days)</label>
       <div class="flex items-center gap-2">

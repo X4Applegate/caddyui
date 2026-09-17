@@ -116,6 +116,7 @@ var settingsKeySection = map[string]string{
 	settingClientIPHeaders:    "security",
 	settingDisableHTTP3:       "security",
 	settingAdminAllowlist:     "security",
+	settingGlobalIPBlocklist:  "security",
 	settingSessionDays:        "security",
 	settingMaxLoginAttempts:   "security",
 	settingCaptchaProvider:    "security",

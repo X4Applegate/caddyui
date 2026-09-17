@@ -3923,10 +3923,14 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 
 // parseCIDRList splits a comma-separated CIDR string and trims whitespace.
 func parseCIDRList(s string) []string {
-	parts := strings.Split(s, ",")
+	// Split on commas, newlines and whitespace so the UI's "one per line or
+	// comma-separated" guidance can't fold entries into one malformed CIDR that
+	// Caddy would reject on the next sync (issue #100 review).
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
 		if p != "" {
 			out = append(out, p)
 		}
@@ -3975,6 +3979,26 @@ func ipBlocklistSubroute(cidrList []string) map[string]any {
 				"terminal": true,
 			},
 		},
+	}
+}
+
+// BuildGlobalBlocklistRoute builds a single top-level route that returns 403 to
+// any request from the given CIDR ranges, regardless of host (issue #100).
+// Prepended ahead of host routing so a globally-blocked IP is rejected before it
+// reaches any site. Returns nil when the parsed list is empty.
+func BuildGlobalBlocklistRoute(raw string) map[string]any {
+	cidrList := parseCIDRList(raw)
+	if len(cidrList) == 0 {
+		return nil
+	}
+	ranges := make([]any, len(cidrList))
+	for i, c := range cidrList {
+		ranges[i] = c
+	}
+	return map[string]any{
+		"match":    []any{map[string]any{"remote_ip": map[string]any{"ranges": ranges}}},
+		"handle":   []any{map[string]any{"handler": "static_response", "status_code": 403}},
+		"terminal": true,
 	}
 }
 
