@@ -690,6 +690,20 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	// internal CA instead of ACME. Only meaningful with Auto TLS (no custom
 	// certificate selected); buildInternalTLSAutomationPolicies enforces that.
 	ph.InternalTLS = r.FormValue("internal_tls") == "on"
+	// v2.51.0 (issue #102): per-host rate limiting (caddy-ratelimit).
+	ph.RateLimitEnabled = r.FormValue("rate_limit_enabled") == "on"
+	ph.RateLimitEvents = clampAtoi(r.FormValue("rate_limit_events"), 0, 1, 1000000)
+	ph.RateLimitWindowSec = clampAtoi(r.FormValue("rate_limit_window_sec"), 0, 1, 86400)
+	// If enabled with the fields left blank, apply the form's placeholder
+	// defaults (100 requests / 60s) so a ticked box is never a silent no-op.
+	if ph.RateLimitEnabled {
+		if ph.RateLimitEvents == 0 {
+			ph.RateLimitEvents = 100
+		}
+		if ph.RateLimitWindowSec == 0 {
+			ph.RateLimitWindowSec = 60
+		}
+	}
 	// v2.9.266: proxy_redirect_rules — JSON array of path-based redirects
 	// fired before the reverse_proxy. Same shape as redirection_hosts.
 	ph.ProxyRedirectRules = func() string {

@@ -2327,6 +2327,17 @@ func migrate(db *sql.DB) error {
 		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN internal_tls INTEGER NOT NULL DEFAULT 0`)
 	}
 
+	// v2.51.0 (issue #102): per-host rate limiting via caddy-ratelimit.
+	if !columnExists2(db, "proxy_hosts", "rate_limit_enabled") {
+		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN rate_limit_enabled INTEGER NOT NULL DEFAULT 0`)
+	}
+	if !columnExists2(db, "proxy_hosts", "rate_limit_events") {
+		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN rate_limit_events INTEGER NOT NULL DEFAULT 0`)
+	}
+	if !columnExists2(db, "proxy_hosts", "rate_limit_window_sec") {
+		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN rate_limit_window_sec INTEGER NOT NULL DEFAULT 0`)
+	}
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {

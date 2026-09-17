@@ -8,7 +8,8 @@ RUN xcaddy build \
     --with github.com/caddy-dns/hetzner/v2 \
     --with github.com/caddy-dns/route53@v1.6.2 \
     --with github.com/caddy-dns/gandi \
-    --with github.com/hslatman/caddy-crowdsec-bouncer/http
+    --with github.com/hslatman/caddy-crowdsec-bouncer/http \
+    --with github.com/mholt/caddy-ratelimit
 
 FROM caddy:2.11.4-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
