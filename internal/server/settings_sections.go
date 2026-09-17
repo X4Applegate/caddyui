@@ -106,8 +106,9 @@ var settingsKeySection = map[string]string{
 	settingSMTPSecurity:        "notifications",
 	settingSMTPSkipVerify:      "notifications",
 
-	settingServerIP:  "dns",
-	settingCFProxied: "dns",
+	settingServerIP:          "dns",
+	settingCFProxied:         "dns",
+	settingDNSVerifyResolver: "dns",
 
 	settingRequire2FA:         "security",
 	settingRequireTOTP:        "security",

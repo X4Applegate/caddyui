@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.49.0] - 2026-09-17 - Configurable verification resolver
+
+### Added
+
+- **Configurable DNS resolver for verification lookups** ([issue #98](https://github.com/X4Applegate/caddyui/issues/98)): the deploy/readiness checks (proxy hosts and Advanced routes) resolve records over Cloudflare DNS-over-HTTPS by default, which stalls in environments where outbound DNS to Cloudflare is filtered. **Settings → DNS → Verification resolver** now overrides this: leave it blank for the Cloudflare DoH default, enter one or more plain DNS servers (`192.168.1.10:53`, comma-separated; `:53` assumed) to use trusted, internal, or split-horizon resolvers, or a DoH URL that supports the JSON API. Requested by @BenRLange.
+
 ## [2.48.0] - 2026-09-16 - Drill down by status class
 
 ### Added

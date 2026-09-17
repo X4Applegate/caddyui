@@ -50,8 +50,9 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### Analytics, certificates and local services in v2.39 – v2.48
+### Analytics, certificates and local services in v2.39 – v2.49
 
+- **Configurable verification resolver** *(v2.49.0)* — point the deploy/readiness DNS checks at trusted, internal, or split-horizon resolvers (plain DNS servers or a DoH URL) under **Settings → DNS**, instead of the default Cloudflare DNS-over-HTTPS — for networks where outbound DNS to Cloudflare is filtered.
 - **Drill down by status class** *(v2.48.0)* — click a class in the **Status mix** card or the **HTTP status breakdown** legend to see the exact status codes within it, the top paths that produced them and the top visitors that received them (paths and IPs link on into their own drill-downs).
 - **Deeper analytics drill-down** *(v2.47.0)* — click a visitor (client IP) to see their top paths, status mix, exact error detail and user-agents, or click a path to see which visitors requested it. An **Error detail** table shows errors by exact status code + path (`404 /wp-login.php ×840`) instead of just a "4xx" total — handy for spotting probing/fuzzing.
 - **Internal CA (`tls internal`) for local services** *(v2.46.0)* — a proxy host can now be served from Caddy's built-in self-signed CA instead of ACME, for internal or local-network services where a publicly trusted certificate isn't wanted or possible. Tick **Internal CA (self-signed)** in the host's TLS section (Auto TLS only); CaddyUI issues via Caddy's `internal` issuer and skips DNS-01 for that host. No special Caddy build required — clients just need to trust Caddy's root CA.
