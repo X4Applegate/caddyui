@@ -111,7 +111,10 @@ func (s *Server) runScheduledBackupOnce(dir string, keep int) (string, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("create backup dir: %w", err)
 	}
-	ts := time.Now().Format("20060102-150405")
+	// Millisecond resolution so a scheduled run and a manual "Back up now" in
+	// the same second can't collide on the same path (VACUUM INTO fails if the
+	// target already exists).
+	ts := time.Now().Format("20060102-150405.000")
 	path := filepath.Join(dir, backupFilePrefix+ts+backupFileSuffix)
 	if _, err := s.DB.Exec("VACUUM INTO ?", path); err != nil {
 		return "", fmt.Errorf("vacuum into %s: %w", path, err)
