@@ -884,8 +884,8 @@ func (s *Server) getAnalyticsVisitor(w http.ResponseWriter, r *http.Request) {
 		"Status":           status,
 		"ErrorDetails":     errorDetails,
 		"UserAgents":       agents,
-		"Blocked":          r.URL.Query().Get("blocked"),        // issue #100 flash
-		"BlockErr":         r.URL.Query().Get("blockerr") != "", // issue #100 flash
+		"Blocked":          r.URL.Query().Get("blocked"),  // issue #100 flash
+		"BlockErr":         r.URL.Query().Get("blockerr"), // issue #100 flash ("" | "1" | "nohost")
 		"Section":          "analytics",
 	})
 }
@@ -989,13 +989,16 @@ func normalizeBlockCIDR(raw string) (string, bool) {
 func mergeCIDRList(existing, add string) string {
 	seen := map[string]bool{}
 	var out []string
-	for _, part := range strings.Split(existing, ",") {
-		p := strings.TrimSpace(part)
-		if p == "" || seen[p] {
+	// Split on commas, newlines and whitespace so a manually newline-edited
+	// blocklist merges cleanly (issue #100 review).
+	for _, part := range strings.FieldsFunc(existing, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	}) {
+		if part == "" || seen[part] {
 			continue
 		}
-		seen[p] = true
-		out = append(out, p)
+		seen[part] = true
+		out = append(out, part)
 	}
 	if add != "" && !seen[add] {
 		out = append(out, add)
@@ -1031,12 +1034,14 @@ func (s *Server) postAnalyticsBlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	syncIDs := map[int64]bool{}
+	changed := false
 	if scope == "global" {
 		cur := mustGetSetting(s.DB, settingGlobalIPBlocklist)
 		if err := models.SetSetting(s.DB, settingGlobalIPBlocklist, mergeCIDRList(cur, cidr)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		changed = true
 		// Fleet-wide: sync every non-external server.
 		if servers, err := models.ListCaddyServers(s.DB); err == nil {
 			for _, sr := range servers {
@@ -1046,26 +1051,42 @@ func (s *Server) postAnalyticsBlock(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		var hosts []models.ProxyHost
+		// Host scope: update every proxy host AND redirection host serving this
+		// domain (both honour IPBlocklist). Iterate per server so we know which
+		// server to sync, and so "all servers" scope is covered too.
+		var serverIDs []int64
 		if serverScopeID > 0 {
-			hosts, _ = models.ListProxyHosts(s.DB, serverScopeID, u.ID, true, nil)
-		} else {
-			if servers, err := models.ListCaddyServers(s.DB); err == nil {
-				for _, sr := range servers {
-					hs, _ := models.ListProxyHosts(s.DB, sr.ID, u.ID, true, nil)
-					hosts = append(hosts, hs...)
-				}
+			serverIDs = []int64{serverScopeID}
+		} else if servers, err := models.ListCaddyServers(s.DB); err == nil {
+			for _, sr := range servers {
+				serverIDs = append(serverIDs, sr.ID)
 			}
 		}
-		for _, ph := range hosts {
-			for _, d := range ph.DomainList() {
-				if strings.EqualFold(strings.TrimSpace(d), host) {
+		for _, sid := range serverIDs {
+			proxies, _ := models.ListProxyHosts(s.DB, sid, u.ID, true, nil)
+			for _, ph := range proxies {
+				if domainListMatches(ph.DomainList(), host) {
 					_ = models.UpdateProxyHostIPBlocklist(s.DB, ph.ID, mergeCIDRList(ph.IPBlocklist, cidr))
-					syncIDs[ph.ServerID] = true
-					break
+					syncIDs[sid] = true
+					changed = true
+				}
+			}
+			redirs, _ := models.ListRedirectionHosts(s.DB, sid, u.ID, true, nil)
+			for _, rh := range redirs {
+				if domainListMatches(rh.DomainList(), host) {
+					_ = models.UpdateRedirectionHostIPBlocklist(s.DB, rh.ID, mergeCIDRList(rh.IPBlocklist, cidr))
+					syncIDs[sid] = true
+					changed = true
 				}
 			}
 		}
+	}
+
+	// Don't claim success when nothing matched (e.g. the analytics host has no
+	// managed host on the selected server) — tell the admin instead.
+	if !changed {
+		http.Redirect(w, r, back+sep+"blockerr=nohost", http.StatusSeeOther)
+		return
 	}
 
 	_ = models.LogActivity(s.DB, serverScopeID, u.Email, "analytics_block_ip", host, "scope="+scope+" cidr="+cidr, true)
@@ -1075,6 +1096,17 @@ func (s *Server) postAnalyticsBlock(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, back+sep+"blocked="+url.QueryEscape(cidr), http.StatusSeeOther)
+}
+
+// domainListMatches reports whether host equals any domain in the list,
+// case-insensitively and trimmed.
+func domainListMatches(domains []string, host string) bool {
+	for _, d := range domains {
+		if strings.EqualFold(strings.TrimSpace(d), host) {
+			return true
+		}
+	}
+	return false
 }
 
 // liveVisitorsAcrossHosts counts distinct client IPs on the given host

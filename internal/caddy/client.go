@@ -3923,10 +3923,14 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 
 // parseCIDRList splits a comma-separated CIDR string and trims whitespace.
 func parseCIDRList(s string) []string {
-	parts := strings.Split(s, ",")
+	// Split on commas, newlines and whitespace so the UI's "one per line or
+	// comma-separated" guidance can't fold entries into one malformed CIDR that
+	// Caddy would reject on the next sync (issue #100 review).
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
 		if p != "" {
 			out = append(out, p)
 		}

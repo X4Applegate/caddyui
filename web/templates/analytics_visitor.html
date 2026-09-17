@@ -2,7 +2,7 @@
 {{define "content"}}
 {{$srv := "all"}}{{if ne .SelectedServerID 0}}{{$srv = .SelectedServerID}}{{end}}
 {{if .Blocked}}<div class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">Blocked <span class="font-mono">{{.Blocked}}</span> and re-synced Caddy.</div>{{end}}
-{{if .BlockErr}}<div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">That wasn't a valid IP or CIDR — nothing was blocked.</div>{{end}}
+{{if .BlockErr}}<div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">{{if eq .BlockErr "nohost"}}No managed host for <span class="font-mono">{{.Host}}</span> on this server to block on — use <strong>Block everywhere</strong> instead.{{else}}That wasn't a valid IP or CIDR — nothing was blocked.{{end}}</div>{{end}}
 <div class="flex items-center gap-2 text-xs text-ink-500 mb-2">
   <a href="/analytics/{{urlquery .Host}}?window={{.WindowQuery}}&amp;server={{$srv}}" class="hover:text-ink-700 inline-flex items-center gap-1">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><polyline points="15 18 9 12 15 6"/></svg>
