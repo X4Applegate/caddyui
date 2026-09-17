@@ -850,6 +850,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/settings", s.postSettings)
 			r.Post("/settings/analytics/prune", s.pruneAnalyticsHandler)   // v2.43.0
 			r.Post("/settings/analytics/vacuum", s.vacuumAnalyticsHandler) // v2.43.0
+			r.Post("/settings/backup/run", s.postBackupRun)                // v2.52.0 (issue #104)
 			r.Post("/settings/test-webhook", s.postTestWebhook)
 			r.Post("/settings/test-email", s.postTestEmail)
 			r.Post("/settings/test-crowdsec", s.postTestCrowdSec)
@@ -14624,8 +14625,15 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"DNSVerifyResolver": mustGetSetting(s.DB, settingDNSVerifyResolver),
 		// issue #100: fleet-wide IP blocklist.
 		"GlobalIPBlocklist": mustGetSetting(s.DB, settingGlobalIPBlocklist),
-		"Success":           success,
-		"ClearedName":       clearedName,
+		// issue #104: scheduled backups.
+		"BackupScheduleEnabled":  mustGetSetting(s.DB, settingBackupScheduleEnabled) == "1",
+		"BackupScheduleDir":      mustGetSetting(s.DB, settingBackupScheduleDir),
+		"BackupScheduleInterval": mustGetSetting(s.DB, settingBackupScheduleInterval),
+		"BackupScheduleKeep":     mustGetSetting(s.DB, settingBackupScheduleKeep),
+		"BackupOK":               r.URL.Query().Get("backupok"),
+		"BackupErr":              r.URL.Query().Get("backuperr"),
+		"Success":                success,
+		"ClearedName":            clearedName,
 		// v2.7.0: analytics card
 		"AnalyticsEnabled":           analyticsCfg.Enabled,
 		"ExpectationsAutoRollback":   expectationsAutoRollbackEnabled(s), // v2.38.0
@@ -14883,14 +14891,23 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// detect whether we need to retarget every managed DNS record.
 	oldServerIP := s.serverIP()
 
+	backupSchedEnabled := "0"
+	if r.FormValue("backup_schedule_enabled") == "on" {
+		backupSchedEnabled = "1"
+	}
 	kv := map[string]string{
-		settingDNSVerifyResolver:   strings.TrimSpace(r.FormValue("dns_verify_resolver")), // issue #98
-		settingGlobalIPBlocklist:   strings.TrimSpace(r.FormValue("global_ip_blocklist")), // issue #100
-		settingNotifyWebhookURL:    webhookURL,
-		settingNotifyWebhookSecret: webhookSecret,
-		settingNotifyNtfyURL:       ntfyURL, // v2.12.51
-		settingNotifyDaysBefore:    strconv.Itoa(daysBefore),
-		settingSMTPHost:            smtpHost,
+		settingDNSVerifyResolver: strings.TrimSpace(r.FormValue("dns_verify_resolver")), // issue #98
+		settingGlobalIPBlocklist: strings.TrimSpace(r.FormValue("global_ip_blocklist")), // issue #100
+		// issue #104: scheduled off-host backups.
+		settingBackupScheduleEnabled:  backupSchedEnabled,
+		settingBackupScheduleDir:      strings.TrimSpace(r.FormValue("backup_schedule_dir")),
+		settingBackupScheduleInterval: strings.TrimSpace(r.FormValue("backup_schedule_interval_hours")),
+		settingBackupScheduleKeep:     strings.TrimSpace(r.FormValue("backup_schedule_keep")),
+		settingNotifyWebhookURL:       webhookURL,
+		settingNotifyWebhookSecret:    webhookSecret,
+		settingNotifyNtfyURL:          ntfyURL, // v2.12.51
+		settingNotifyDaysBefore:       strconv.Itoa(daysBefore),
+		settingSMTPHost:               smtpHost,
 		// v2.11.15: AI assistant settings.
 		settingAIEnabled: func() string {
 			for _, v := range r.PostForm["ai_enabled"] {

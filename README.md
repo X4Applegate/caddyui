@@ -50,8 +50,9 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
-### Analytics, certificates and local services in v2.39 – v2.51
+### Analytics, certificates and local services in v2.39 – v2.52
 
+- **Scheduled off-host backups** *(v2.52.0)* — automatic SQLite snapshots to a directory on an interval (keep the newest N), plus a **Back up now** button, under Settings → Backup. Point the directory at a mounted volume or share to keep copies off the host.
 - **Per-host rate limiting** *(v2.51.0)* — cap a host at *N requests per M seconds, per client IP* (429 on excess), via the `caddy-ratelimit` module now built into `Dockerfile.caddy`. Rebuild your custom Caddy image to use it.
 - **Block an IP from analytics** *(v2.50.0)* — a visitor's drill-down page gains one-click **Block on this host** and **Block everywhere (fleet-wide)** actions; the global blocklist is managed under Settings → Security. Turns "who's probing me?" into a one-click 403.
 - **Configurable verification resolver** *(v2.49.0)* — point the deploy/readiness DNS checks at trusted, internal, or split-horizon resolvers (plain DNS servers or a DoH URL) under **Settings → DNS**, instead of the default Cloudflare DNS-over-HTTPS — for networks where outbound DNS to Cloudflare is filtered.

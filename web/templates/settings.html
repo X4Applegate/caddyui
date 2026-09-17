@@ -1334,11 +1334,41 @@
     MariaDB managed backup
   </span>
   {{else}}
+  {{if .BackupOK}}<div class="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">Backup written: <span class="font-mono">{{.BackupOK}}</span></div>{{end}}
+  {{if .BackupErr}}<div class="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">Backup failed: {{.BackupErr}}</div>{{end}}
   <p class="text-xs text-ink-500 mb-3">Download a consistent snapshot of the CaddyUI database. To restore, stop the server, replace the <code class="bg-ink-100 px-1 rounded text-xs">caddyui.db</code> file, and restart.</p>
   <a href="/backup" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     Download Backup
   </a>
+
+  {{/* issue #104: scheduled off-host backups */}}
+  <div class="mt-5 pt-4 border-t border-ink-100 space-y-3">
+    <label class="flex items-center gap-2 cursor-pointer">
+      <input type="checkbox" name="backup_schedule_enabled" {{if .BackupScheduleEnabled}}checked{{end}}
+        class="w-4 h-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500">
+      <span class="text-sm font-medium text-ink-800">Scheduled backups</span>
+    </label>
+    <p class="text-xs text-ink-500">Write a snapshot to a directory on an interval and keep the newest N. Point the directory at a mounted volume, network share, or object-store gateway to keep copies off the host.</p>
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1">Backup directory <span class="text-ink-400 font-normal">(path inside the CaddyUI container)</span></label>
+      <input name="backup_schedule_dir" value="{{.BackupScheduleDir}}" type="text" placeholder="/backups"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    </div>
+    <div class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+      <span>Every</span>
+      <input name="backup_schedule_interval_hours" value="{{.BackupScheduleInterval}}" type="number" min="1" max="8760" placeholder="24"
+        class="w-24 rounded border border-ink-200 px-3 py-1.5 text-sm">
+      <span>hours, keep the newest</span>
+      <input name="backup_schedule_keep" value="{{.BackupScheduleKeep}}" type="number" min="0" max="1000" placeholder="7"
+        class="w-24 rounded border border-ink-200 px-3 py-1.5 text-sm">
+      <span>(0 = keep all).</span>
+    </div>
+    <div class="flex items-center gap-2 pt-1">
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+      <button type="submit" formaction="/settings/backup/run" formmethod="post" class="inline-flex items-center border border-ink-300 hover:bg-ink-50 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">Back up now</button>
+    </div>
+  </div>
   {{end}}
 </div>
 

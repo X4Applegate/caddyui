@@ -139,6 +139,8 @@ Fix by:
 	srv.StartCustomCertificateProbes(pollerCtx)
 	// v2.42.0: safety-net pass for certificate exports (event-driven otherwise).
 	srv.StartCertificateExports(pollerCtx)
+	// v2.52.0 (issue #104): scheduled off-host database backups (SQLite).
+	srv.StartBackupScheduler(pollerCtx)
 
 	// Opt-in startup sync. Default: no initial sync — pushing an empty config
 	// would wipe Caddy's existing routes. Set CADDYUI_SYNC_ON_START=1 once all
