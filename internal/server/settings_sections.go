@@ -147,6 +147,11 @@ var settingsKeySection = map[string]string{
 	settingAIOpenAIModel:       "ai",
 	settingAIOpenAIAPIKey:      "ai",
 	settingAISystemPrompt:      "ai",
+
+	settingBackupScheduleEnabled:  "backup",
+	settingBackupScheduleDir:      "backup",
+	settingBackupScheduleInterval: "backup",
+	settingBackupScheduleKeep:     "backup",
 }
 
 // settingsSectionSyncsCaddy reports whether saving a page can change the
