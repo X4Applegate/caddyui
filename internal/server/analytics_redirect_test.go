@@ -19,7 +19,7 @@ func TestSafeAnalyticsReturn(t *testing.T) {
 		// Valid same-origin returns are preserved.
 		{"empty falls back", "", fallback},
 		{"host analytics page", "/analytics/example.com", "/analytics/example.com"},
-		{"analytics root", "/analytics", "/analytics"},
+		{"analytics root", "/analytics", "/analytics/"},
 		{"drill-down with query", "/analytics/example.com?path=/foo&status=404", "/analytics/example.com?path=/foo&status=404"},
 
 		// Open-redirect vectors must fall back.

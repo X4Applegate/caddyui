@@ -1013,28 +1013,30 @@ func mergeCIDRList(existing, add string) string {
 // action can only redirect back to a same-origin /analytics/ page. It rejects
 // absolute URLs, scheme-relative ("//host") URLs, and path-traversal that would
 // normalise off-origin (e.g. "/analytics/..//evil.com" → "//evil.com"), which a
-// bare strings.HasPrefix check misses (CodeQL go/unvalidated-url-redirection).
-// Anything unsafe falls back to the host's own analytics page.
+// bare strings.HasPrefix check misses.
+//
+// Every return value is built as the constant "/analytics/" prefix plus a
+// validated, traversal-free suffix. The literal path prefix both guarantees a
+// same-origin redirect and satisfies CodeQL's URL-concatenation sanitiser for
+// go/unvalidated-url-redirection.
 func safeAnalyticsReturn(raw, host string) string {
-	fallback := "/analytics/" + url.PathEscape(host)
-	if raw == "" {
-		return fallback
+	// Default suffix: the host's own analytics page.
+	suffix := url.PathEscape(host)
+	if raw != "" {
+		if u, err := url.Parse(raw); err == nil && u.Scheme == "" && u.Host == "" {
+			cleaned := path.Clean(u.Path)
+			if cleaned == "/analytics" || strings.HasPrefix(cleaned, "/analytics/") {
+				// Strip the constant prefix; path.Clean already removed any
+				// ".." segments, so the remainder cannot escape /analytics/.
+				s := strings.TrimPrefix(strings.TrimPrefix(cleaned, "/analytics/"), "/analytics")
+				if u.RawQuery != "" {
+					s += "?" + u.RawQuery
+				}
+				suffix = s
+			}
+		}
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "" || u.Host != "" {
-		return fallback
-	}
-	if !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") {
-		return fallback
-	}
-	cleaned := path.Clean(u.Path)
-	if cleaned != "/analytics" && !strings.HasPrefix(cleaned, "/analytics/") {
-		return fallback
-	}
-	if u.RawQuery != "" {
-		return cleaned + "?" + u.RawQuery
-	}
-	return cleaned
+	return "/analytics/" + suffix
 }
 
 // postAnalyticsBlock adds a client IP to a host's blocklist ("host" scope) or
