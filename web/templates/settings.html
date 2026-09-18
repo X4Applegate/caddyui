@@ -903,6 +903,49 @@
         placeholder="Leave blank to block nothing&#10;203.0.113.5/32&#10;198.51.100.0/24"
         class="w-full text-sm px-3 py-2 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono">{{.GlobalIPBlocklist}}</textarea>
     </div>
+
+    {{/* issue #106: OIDC / SSO login */}}
+    <div class="py-4 border-b border-ink-100 space-y-3">
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" name="oidc_enabled" {{if .OIDCEnabled}}checked{{end}}
+          class="w-4 h-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500">
+        <span class="text-sm font-medium text-ink-900">Single sign-on (OIDC)</span>
+      </label>
+      <p class="text-xs text-ink-500">Let admins sign in through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP. Register CaddyUI as a confidential client and set its redirect URL to the callback below.</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-ink-700 mb-1">Issuer URL</label>
+          <input name="oidc_issuer" value="{{.OIDCIssuer}}" type="url" placeholder="https://sso.example.com/application/o/caddyui/"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-ink-700 mb-1">Redirect URL <span class="text-ink-400 font-normal">(callback)</span></label>
+          <input name="oidc_redirect_url" value="{{.OIDCRedirectURL}}" type="url" placeholder="https://caddyui.example.com/auth/oidc/callback"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-ink-700 mb-1">Client ID</label>
+          <input name="oidc_client_id" value="{{.OIDCClientID}}" type="text" autocomplete="off"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-ink-700 mb-1">Client secret</label>
+          <input name="oidc_client_secret" value="" type="password" autocomplete="new-password" placeholder="{{if .OIDCClientSecretSet}}•••••••• (leave blank to keep){{else}}client secret{{end}}"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-ink-700 mb-1">Button label</label>
+          <input name="oidc_button_label" value="{{.OIDCButtonLabel}}" type="text" placeholder="Sign in with SSO"
+            class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        </div>
+      </div>
+      <label class="flex items-start gap-2 cursor-pointer">
+        <input type="checkbox" name="oidc_auto_create" {{if .OIDCAutoCreate}}checked{{end}}
+          class="mt-0.5 w-4 h-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500">
+        <span class="text-sm text-ink-700">Auto-create accounts<span class="block text-xs text-ink-500">Provision a read-only user on first SSO sign-in (verified email required). Off = only users that already exist in CaddyUI can sign in via SSO. Promote roles under <a href="/users" class="text-brand-600 hover:underline">Users</a>.</span></span>
+      </label>
+    </div>
+
     <div class="py-4 border-b border-ink-100">
       <label class="block text-xs font-medium text-ink-700 mb-1">Session duration (days)</label>
       <div class="flex items-center gap-2">
