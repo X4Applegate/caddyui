@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package analytics implements the visitor-analytics ingest path: a TCP
 // listener that accepts newline-delimited JSON (NDJSON) access-log events
 // from one or more Caddy servers configured with the `net` log writer.

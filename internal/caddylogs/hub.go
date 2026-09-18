@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package caddylogs consumes Caddy's structured runtime logs. It keeps a
 // bounded in-memory ring for the admin Server Logs page and persists only the
 // latest certificate lifecycle projection; raw runtime logs never touch disk.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package dns exposes a unified interface over the DNS providers CaddyUI
 // knows how to drive (currently Cloudflare, Porkbun, Namecheap, GoDaddy,
 // DigitalOcean, Hetzner, Amazon Route 53, Gandi).

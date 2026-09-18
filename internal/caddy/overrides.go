@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package caddy
 
 // v2.40.0: a proxy host's Advanced config may carry a `reverse_proxy { … }`

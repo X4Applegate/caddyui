@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package server
 
 // v2.38.0: post-apply expectations with automatic rollback.

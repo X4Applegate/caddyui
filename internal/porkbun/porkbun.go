@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package porkbun provides a minimal Porkbun API v3 client scoped to DNS
 // record management (list domains, create / delete / list records).
 //

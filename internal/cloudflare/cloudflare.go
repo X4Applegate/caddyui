@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package cloudflare provides a minimal Cloudflare API v4 client scoped to
 // DNS record management (list zones, create / delete / list records).
 package cloudflare

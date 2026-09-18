@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package server
 
 // requiredReadinessSteps returns the number of completed operating
