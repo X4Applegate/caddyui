@@ -3,11 +3,14 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -216,7 +219,14 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u, err := models.GetUserByEmail(s.DB, email)
-	if err != nil || u == nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// A real DB failure must not be mistaken for "no such user" (which
+		// would wrongly deny — or, with auto-create on, try to provision).
+		log.Printf("oidc: lookup %s: %v", email, err)
+		http.Redirect(w, r, "/login?error=sso", http.StatusSeeOther)
+		return
+	}
+	if u == nil {
 		if !cfg.AutoCreate {
 			log.Printf("oidc: no CaddyUI account for %s and auto-create is off", email)
 			http.Redirect(w, r, "/login?error=sso_nouser", http.StatusSeeOther)
@@ -238,6 +248,20 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/login?error=sso", http.StatusSeeOther)
 			return
 		}
+	}
+
+	// Honour a user's local TOTP as a second factor even over SSO — otherwise
+	// enabling SSO would silently downgrade every TOTP-protected account. Route
+	// through the same pending-TOTP challenge that local login uses.
+	if u.TOTPEnabled && u.TOTPSecret != "" {
+		tok := oidcRandom()
+		s.pendingTOTP.Store(tok, u.ID)
+		go func() {
+			time.Sleep(5 * time.Minute)
+			s.pendingTOTP.Delete(tok)
+		}()
+		http.Redirect(w, r, "/login/totp?t="+tok, http.StatusSeeOther)
+		return
 	}
 
 	tok, exp, err := auth.CreateSessionWithTTL(s.DB, u.ID, s.sessionTTL())
