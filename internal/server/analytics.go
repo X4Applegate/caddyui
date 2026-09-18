@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -1008,6 +1009,34 @@ func mergeCIDRList(existing, add string) string {
 	return strings.Join(out, ",")
 }
 
+// safeAnalyticsReturn sanitises the user-supplied "return" value so the block
+// action can only redirect back to a same-origin /analytics/ page. It rejects
+// absolute URLs, scheme-relative ("//host") URLs, and path-traversal that would
+// normalise off-origin (e.g. "/analytics/..//evil.com" → "//evil.com"), which a
+// bare strings.HasPrefix check misses (CodeQL go/unvalidated-url-redirection).
+// Anything unsafe falls back to the host's own analytics page.
+func safeAnalyticsReturn(raw, host string) string {
+	fallback := "/analytics/" + url.PathEscape(host)
+	if raw == "" {
+		return fallback
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "" || u.Host != "" {
+		return fallback
+	}
+	if !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") {
+		return fallback
+	}
+	cleaned := path.Clean(u.Path)
+	if cleaned != "/analytics" && !strings.HasPrefix(cleaned, "/analytics/") {
+		return fallback
+	}
+	if u.RawQuery != "" {
+		return cleaned + "?" + u.RawQuery
+	}
+	return cleaned
+}
+
 // postAnalyticsBlock adds a client IP to a host's blocklist ("host" scope) or
 // the fleet-wide blocklist ("global" scope) and re-syncs, from the analytics
 // drill-down (issue #100). Admin-only, CSRF-protected by the router middleware.
@@ -1021,10 +1050,7 @@ func (s *Server) postAnalyticsBlock(w http.ResponseWriter, r *http.Request) {
 	scope := strings.TrimSpace(r.FormValue("scope"))
 	serverScopeID := s.analyticsServerScope(r)
 
-	back := r.FormValue("return")
-	if !strings.HasPrefix(back, "/analytics/") {
-		back = "/analytics/" + url.PathEscape(host)
-	}
+	back := safeAnalyticsReturn(r.FormValue("return"), host)
 	sep := "?"
 	if strings.Contains(back, "?") {
 		sep = "&"
