@@ -262,9 +262,9 @@ Multi-arch: `linux/amd64` + `linux/arm64`. Scratch base image, runs as non-root 
 
 ## 📜 License
 
-[CaddyUI Source Available License 1.0](https://github.com/X4Applegate/caddyui/blob/main/LICENSE)
+[Apache License 2.0](https://github.com/X4Applegate/caddyui/blob/main/LICENSE)
 
-Free for personal use, non-profits, educational institutions, small businesses (<50 employees, <$5M revenue), and any organization using it internally. Commercial license required to offer CaddyUI as a hosted/managed service.
+Open source and free for everyone — personal, commercial, internal, and hosted/managed-service use alike. Modify and redistribute freely; just keep the license and copyright notices and state significant changes.
 
 ---
 

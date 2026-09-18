@@ -98,4 +98,4 @@ Please include:
 
 ## License of Contributions
 
-By submitting a pull request you agree that your contribution is licensed under the same [CaddyUI Source Available License 1.0](LICENSE) as the rest of the project.
+By submitting a pull request you agree that your contribution is licensed under the same [Apache License 2.0](LICENSE) as the rest of the project.

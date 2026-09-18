@@ -2,7 +2,7 @@
 
 A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage proxy hosts, redirections, SSL certificates, and advanced routes through a clean interface, without touching config files.
 
-[![License: CaddyUI-SAL 1.0](https://img.shields.io/badge/license-CaddyUI--SAL%201.0-blue)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Docker Hub](https://img.shields.io/docker/v/applegater/caddyui?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/applegater/caddyui)
 [![Docker Pulls](https://img.shields.io/docker/pulls/applegater/caddyui?label=pulls)](https://hub.docker.com/r/applegater/caddyui)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8)](https://go.dev/)
@@ -655,12 +655,13 @@ Bug reports and issues are triaged by the maintainer with Claude's assistance. I
 
 ## License
 
-[CaddyUI Source Available License 1.0](LICENSE)
+CaddyUI is open source under the [Apache License 2.0](LICENSE).
 
-- **Free** for personal use — homelab, home server, VPS, or any individual self-hosting.
-- **Free** for non-profits, educational institutions, and small businesses (< 50 employees and < $5M revenue).
-- **Free** for any organization using it internally (not reselling it).
-- **Commercial license required** to offer CaddyUI as a hosted/managed service.
+- **Free** for everyone — personal, commercial, and internal use alike.
+- **Modify and redistribute** freely, including as part of your own products or hosted/managed services.
+- **Patent grant** included, and your contributions are welcome under the same license.
+
+The only conditions are the usual Apache-2.0 ones: keep the license and copyright notices, and state significant changes you make.
 
 ---
 
