@@ -1028,11 +1028,9 @@ func safeAnalyticsReturn(raw, host string) string {
 			if cleaned == "/analytics" || strings.HasPrefix(cleaned, "/analytics/") {
 				// Strip the constant prefix; path.Clean already removed any
 				// ".." segments, so the remainder cannot escape /analytics/.
-				s := strings.TrimPrefix(strings.TrimPrefix(cleaned, "/analytics/"), "/analytics")
-				if u.RawQuery != "" {
-					s += "?" + u.RawQuery
-				}
-				suffix = s
+				// The query string is intentionally dropped so callers can
+				// append their own status param after a literal "?".
+				suffix = strings.TrimPrefix(strings.TrimPrefix(cleaned, "/analytics/"), "/analytics")
 			}
 		}
 	}
@@ -1052,14 +1050,12 @@ func (s *Server) postAnalyticsBlock(w http.ResponseWriter, r *http.Request) {
 	scope := strings.TrimSpace(r.FormValue("scope"))
 	serverScopeID := s.analyticsServerScope(r)
 
+	// back is a sanitised, query-free /analytics/ path, so status params are
+	// appended after a literal "?" (keeps CodeQL's query-context sanitiser happy).
 	back := safeAnalyticsReturn(r.FormValue("return"), host)
-	sep := "?"
-	if strings.Contains(back, "?") {
-		sep = "&"
-	}
 	cidr, ok := normalizeBlockCIDR(r.FormValue("ip"))
 	if !ok {
-		http.Redirect(w, r, back+sep+"blockerr=1", http.StatusSeeOther)
+		http.Redirect(w, r, back+"?blockerr=1", http.StatusSeeOther)
 		return
 	}
 
@@ -1115,7 +1111,7 @@ func (s *Server) postAnalyticsBlock(w http.ResponseWriter, r *http.Request) {
 	// Don't claim success when nothing matched (e.g. the analytics host has no
 	// managed host on the selected server) — tell the admin instead.
 	if !changed {
-		http.Redirect(w, r, back+sep+"blockerr=nohost", http.StatusSeeOther)
+		http.Redirect(w, r, back+"?blockerr=nohost", http.StatusSeeOther)
 		return
 	}
 
@@ -1125,7 +1121,7 @@ func (s *Server) postAnalyticsBlock(w http.ResponseWriter, r *http.Request) {
 			log.Printf("analytics block: sync server %d failed (non-fatal): %v", sid, err)
 		}
 	}
-	http.Redirect(w, r, back+sep+"blocked="+url.QueryEscape(cidr), http.StatusSeeOther)
+	http.Redirect(w, r, back+"?blocked="+url.QueryEscape(cidr), http.StatusSeeOther)
 }
 
 // domainListMatches reports whether host equals any domain in the list,

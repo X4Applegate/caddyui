@@ -20,7 +20,8 @@ func TestSafeAnalyticsReturn(t *testing.T) {
 		{"empty falls back", "", fallback},
 		{"host analytics page", "/analytics/example.com", "/analytics/example.com"},
 		{"analytics root", "/analytics", "/analytics/"},
-		{"drill-down with query", "/analytics/example.com?path=/foo&status=404", "/analytics/example.com?path=/foo&status=404"},
+		{"query is dropped, path kept", "/analytics/example.com?path=/foo&status=404", "/analytics/example.com"},
+		{"sub-path preserved", "/analytics/example.com/visitors", "/analytics/example.com/visitors"},
 
 		// Open-redirect vectors must fall back.
 		{"absolute url", "https://evil.com", fallback},
