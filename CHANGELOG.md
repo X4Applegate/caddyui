@@ -10,6 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 ### Added
 
 - **Scheduled off-host database backups** ([issue #104](https://github.com/X4Applegate/caddyui/issues/104)): under **Settings → Backup**, enable automatic SQLite snapshots (`VACUUM INTO`) written to a directory on an interval, keeping the newest N. Point the directory at a mounted volume, network share, or object-store gateway to keep copies off the host. A **Back up now** button runs one on demand. (MariaDB installs continue to use their platform's own backup tooling.)
+- **OIDC / SSO login** ([issue #106](https://github.com/X4Applegate/caddyui/issues/106)): sign in to CaddyUI through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP — configure it under **Settings → Security**. Uses the standard auth-code flow with `state` + `nonce`, and delegates ID-token verification (JWKS, signature, `iss`/`aud`/`exp`, nonce) to the vetted `go-oidc` library. A verified email is required; it matches an existing CaddyUI user by email, or — opt-in — provisions a read-only account on first sign-in. Local login always remains available.
 
 ## [2.51.0] - 2026-09-17 - Per-host rate limiting
 

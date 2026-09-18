@@ -37,6 +37,17 @@
       {{template "captchaWidget" (dict "CaptchaEnabled" .CaptchaEnabled "CaptchaProvider" .CaptchaProvider "CaptchaSiteKey" .CaptchaSiteKey "FormID" "login-form")}}
       <button class="w-full inline-flex items-center justify-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm py-2.5 rounded-lg shadow-sm transition">Sign in</button>
     </form>
+    {{if .OIDCEnabled}}
+    <div class="flex items-center gap-3 my-5">
+      <div class="h-px flex-1 bg-ink-200"></div>
+      <span class="text-xs text-ink-400">or</span>
+      <div class="h-px flex-1 bg-ink-200"></div>
+    </div>
+    <a href="/auth/oidc/login" class="w-full inline-flex items-center justify-center gap-2 border border-ink-300 hover:bg-ink-50 text-ink-800 font-medium text-sm py-2.5 rounded-lg transition">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      {{.OIDCButtonLabel}}
+    </a>
+    {{end}}
   </div>
 </div>
 {{end}}

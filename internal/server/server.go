@@ -518,6 +518,8 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/login", s.getLogin)
 	r.Post("/login", s.postLogin)
 	r.Post("/logout", s.postLogout)
+	r.Get("/auth/oidc/login", s.getOIDCLogin)       // issue #106 (SSO)
+	r.Get("/auth/oidc/callback", s.getOIDCCallback) // issue #106 (SSO)
 	r.Get("/login/totp", s.getTOTPVerify)
 	r.Post("/login/totp", s.postTOTPVerify)
 	r.Get("/forgot-password", s.getForgotPassword)
@@ -1911,6 +1913,24 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Query().Get("invited") == "1" {
 		data["Invited"] = true
+	}
+	// issue #106: offer the SSO button when OIDC is configured; surface any
+	// SSO error the callback bounced back with a friendly message.
+	if oc := s.oidcConfig(); oc.ready() {
+		data["OIDCEnabled"] = true
+		data["OIDCButtonLabel"] = oc.ButtonLabel
+	}
+	if e := r.URL.Query().Get("error"); strings.HasPrefix(e, "sso") {
+		msg := "Single sign-on failed. Try again or use your password."
+		switch e {
+		case "sso_nouser":
+			msg = "No CaddyUI account matches your SSO identity. Ask an admin to add you."
+		case "sso_email":
+			msg = "Your identity provider didn't return a verified email address."
+		case "sso_denied":
+			msg = "Single sign-on was cancelled."
+		}
+		data["Error"] = msg
 	}
 	s.render(w, r, "login.html", data)
 }
@@ -14632,8 +14652,17 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"BackupScheduleKeep":     mustGetSetting(s.DB, settingBackupScheduleKeep),
 		"BackupOK":               r.URL.Query().Get("backupok"),
 		"BackupErr":              r.URL.Query().Get("backuperr"),
-		"Success":                success,
-		"ClearedName":            clearedName,
+		// issue #106: OIDC / SSO. The client secret is never rendered back — a
+		// bool tells the template whether one is already stored.
+		"OIDCEnabled":         mustGetSetting(s.DB, settingOIDCEnabled) == "1",
+		"OIDCIssuer":          mustGetSetting(s.DB, settingOIDCIssuer),
+		"OIDCClientID":        mustGetSetting(s.DB, settingOIDCClientID),
+		"OIDCClientSecretSet": strings.TrimSpace(mustGetSetting(s.DB, settingOIDCClientSecret)) != "",
+		"OIDCRedirectURL":     mustGetSetting(s.DB, settingOIDCRedirectURL),
+		"OIDCAutoCreate":      mustGetSetting(s.DB, settingOIDCAutoCreate) == "1",
+		"OIDCButtonLabel":     mustGetSetting(s.DB, settingOIDCButtonLabel),
+		"Success":             success,
+		"ClearedName":         clearedName,
 		// v2.7.0: analytics card
 		"AnalyticsEnabled":           analyticsCfg.Enabled,
 		"ExpectationsAutoRollback":   expectationsAutoRollbackEnabled(s), // v2.38.0
@@ -14895,6 +14924,14 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("backup_schedule_enabled") == "on" {
 		backupSchedEnabled = "1"
 	}
+	oidcEnabled := "0"
+	if r.FormValue("oidc_enabled") == "on" {
+		oidcEnabled = "1"
+	}
+	oidcAutoCreate := "0"
+	if r.FormValue("oidc_auto_create") == "on" {
+		oidcAutoCreate = "1"
+	}
 	kv := map[string]string{
 		settingDNSVerifyResolver: strings.TrimSpace(r.FormValue("dns_verify_resolver")), // issue #98
 		settingGlobalIPBlocklist: strings.TrimSpace(r.FormValue("global_ip_blocklist")), // issue #100
@@ -14903,11 +14940,18 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		settingBackupScheduleDir:      strings.TrimSpace(r.FormValue("backup_schedule_dir")),
 		settingBackupScheduleInterval: strings.TrimSpace(r.FormValue("backup_schedule_interval_hours")),
 		settingBackupScheduleKeep:     strings.TrimSpace(r.FormValue("backup_schedule_keep")),
-		settingNotifyWebhookURL:       webhookURL,
-		settingNotifyWebhookSecret:    webhookSecret,
-		settingNotifyNtfyURL:          ntfyURL, // v2.12.51
-		settingNotifyDaysBefore:       strconv.Itoa(daysBefore),
-		settingSMTPHost:               smtpHost,
+		// issue #106: OIDC / SSO login (client secret handled below, keep-blank).
+		settingOIDCEnabled:         oidcEnabled,
+		settingOIDCIssuer:          strings.TrimSpace(r.FormValue("oidc_issuer")),
+		settingOIDCClientID:        strings.TrimSpace(r.FormValue("oidc_client_id")),
+		settingOIDCRedirectURL:     strings.TrimSpace(r.FormValue("oidc_redirect_url")),
+		settingOIDCAutoCreate:      oidcAutoCreate,
+		settingOIDCButtonLabel:     strings.TrimSpace(r.FormValue("oidc_button_label")),
+		settingNotifyWebhookURL:    webhookURL,
+		settingNotifyWebhookSecret: webhookSecret,
+		settingNotifyNtfyURL:       ntfyURL, // v2.12.51
+		settingNotifyDaysBefore:    strconv.Itoa(daysBefore),
+		settingSMTPHost:            smtpHost,
 		// v2.11.15: AI assistant settings.
 		settingAIEnabled: func() string {
 			for _, v := range r.PostForm["ai_enabled"] {
@@ -15083,6 +15127,10 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// SMTP password stays keep-blank-to-preserve.
 	if smtpPassword != "" {
 		kv[settingSMTPPassword] = smtpPassword
+	}
+	// issue #106: OIDC client secret — keep-blank-to-preserve, like other secrets.
+	if v := r.FormValue("oidc_client_secret"); strings.TrimSpace(v) != "" {
+		kv[settingOIDCClientSecret] = strings.TrimSpace(v)
 	}
 	// v2.27.0: captcha secret keys — same keep-blank-to-preserve pattern. The
 	// Settings template no longer renders them into the form, so a blank field
