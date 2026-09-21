@@ -5,7 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
-## [2.52.0] - 2026-09-17 - Scheduled backups & SSO login
+## [2.52.1] - 2026-09-20 - Security: REST API v1 authorization fix
+
+### Security
+
+- **REST API v1 per-row ownership enforcement** ([GHSA-r4wm-rgc5-q834](https://github.com/X4Applegate/caddyui/security/advisories/GHSA-r4wm-rgc5-q834), **Critical**): the `/api/v1` JSON handlers for certificates, raw routes, redirection hosts, and the proxy-host toggle/maintenance endpoints omitted the per-row `owner_id` check that the HTML-form handlers already enforce. As a result, any authenticated account — including the read-only `view` role — could read any certificate's TLS private key via `GET /api/v1/certificates/{id}`, and any `user`-role account could read, overwrite, delete, or toggle other tenants' raw routes, redirection hosts, and proxy hosts. All per-row `/api/v1` handlers now pass through a single shared authorization gate (admins may access any row; other accounts only rows they validly own; NULL-owner rows are denied for non-admins), backed by a regression test. **Multi-account deployments should upgrade.** Reported by [@kta1kri](https://github.com/kta1kri).
+
+
 
 ### Added
 

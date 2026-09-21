@@ -15844,6 +15844,23 @@ func (s *Server) apiV1ListProxyHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/v1/proxy-hosts/{id}
+// apiV1OwnerOK reports whether cu may read or modify a row owned by ownerID.
+// Admins may access every row; any other authenticated account (role "user"
+// or "view") may access only rows it validly owns. A nil user or an unowned
+// (NULL owner) row is denied for non-admins — deny by default. This is the
+// single per-row authorization gate shared by every /api/v1/... handler,
+// mirroring the ownership check the HTML-form handlers already enforce, so a
+// future REST endpoint cannot silently omit it. Fixes GHSA-r4wm-rgc5-q834.
+func apiV1OwnerOK(cu *models.User, ownerID sql.NullInt64) bool {
+	if cu == nil {
+		return false
+	}
+	if cu.IsAdmin {
+		return true
+	}
+	return ownerID.Valid && ownerID.Int64 == cu.ID
+}
+
 func (s *Server) apiV1GetProxyHost(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -15856,7 +15873,7 @@ func (s *Server) apiV1GetProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if cu == nil || (!cu.IsAdmin && ph.OwnerID.Valid && ph.OwnerID.Int64 != cu.ID) {
+	if !apiV1OwnerOK(cu, ph.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -15960,7 +15977,7 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if cu != nil && !cu.IsAdmin && existing.OwnerID.Valid && existing.OwnerID.Int64 != cu.ID {
+	if !apiV1OwnerOK(cu, existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -16090,7 +16107,7 @@ func (s *Server) apiV1DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if cu != nil && !cu.IsAdmin && ph.OwnerID.Valid && ph.OwnerID.Int64 != cu.ID {
+	if !apiV1OwnerOK(cu, ph.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -16118,6 +16135,10 @@ func (s *Server) apiV1ToggleProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if !apiV1OwnerOK(s.currentUser(r), ph.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	ph.Enabled = !ph.Enabled
 	if err := models.UpdateProxyHost(s.DB, ph); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -16137,6 +16158,10 @@ func (s *Server) apiV1ToggleMaintenanceProxyHost(w http.ResponseWriter, r *http.
 	ph, err := models.GetProxyHost(s.DB, id)
 	if err != nil || ph == nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), ph.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	// Accept optional JSON body {"maintenance": true/false}; default = toggle.
@@ -16208,6 +16233,10 @@ func (s *Server) apiV1GetRedirectionHost(w http.ResponseWriter, r *http.Request)
 	rh, err := models.GetRedirectionHost(s.DB, id)
 	if err != nil || rh == nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), rh.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	writeJSON(w, http.StatusOK, redirectionHostToAPIMap(rh))
@@ -16286,6 +16315,10 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	var inp struct {
 		Domains         string `json:"domains"`
 		ForwardScheme   string `json:"forward_scheme"`
@@ -16344,6 +16377,15 @@ func (s *Server) apiV1DeleteRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	existing, err := models.GetRedirectionHost(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	if err := models.DeleteRedirectionHost(s.DB, id); err != nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
@@ -16358,6 +16400,15 @@ func (s *Server) apiV1ToggleRedirectionHost(w http.ResponseWriter, r *http.Reque
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	existing, err := models.GetRedirectionHost(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	enabled, err := models.ToggleRedirectionHost(s.DB, id)
@@ -16420,6 +16471,10 @@ func (s *Server) apiV1GetRawRoute(w http.ResponseWriter, r *http.Request) {
 	rr, err := models.GetRawRoute(s.DB, id)
 	if err != nil || rr == nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), rr.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	writeJSON(w, http.StatusOK, rawRouteToAPIMap(rr))
@@ -16488,6 +16543,10 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	var inp struct {
 		Label               string `json:"label"`
 		JSONData            string `json:"json_data"`
@@ -16536,6 +16595,15 @@ func (s *Server) apiV1DeleteRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	existing, err := models.GetRawRoute(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	if err := models.DeleteRawRoute(s.DB, id); err != nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
@@ -16550,6 +16618,15 @@ func (s *Server) apiV1ToggleRawRoute(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	existing, err := models.GetRawRoute(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	enabled, err := models.ToggleRawRoute(s.DB, id)
@@ -16618,6 +16695,10 @@ func (s *Server) apiV1GetCertificate(w http.ResponseWriter, r *http.Request) {
 	c, err := models.GetCertificate(s.DB, id)
 	if err != nil || c == nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), c.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	writeJSON(w, http.StatusOK, certificateToAPIMap(c))
@@ -16689,6 +16770,10 @@ func (s *Server) apiV1UpdateCertificate(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	var inp struct {
 		Name         string `json:"name"`
 		Domains      string `json:"domains"`
@@ -16748,6 +16833,15 @@ func (s *Server) apiV1DeleteCertificate(w http.ResponseWriter, r *http.Request) 
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	existing, err := models.GetCertificate(s.DB, id)
+	if err != nil || existing == nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if inUse, _ := models.CertificateInUse(s.DB, id); inUse > 0 {
