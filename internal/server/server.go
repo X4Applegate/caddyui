@@ -3038,6 +3038,12 @@ func (s *Server) toggleProxyHost(w http.ResponseWriter, r *http.Request) {
 // Expects form fields: ids[]={id,...} and action=enable|disable.
 // Admin/write users only (the route is inside the requireWrite middleware block).
 func (s *Server) bulkToggleProxyHosts(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -3065,6 +3071,10 @@ func (s *Server) bulkToggleProxyHosts(w http.ResponseWriter, r *http.Request) {
 		if err != nil || ph == nil {
 			continue
 		}
+		// Ownership check: admin can toggle any, others only their own.
+		if !isAdmin && (!ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID) {
+			continue
+		}
 		if ph.Enabled != enabled {
 			ph.Enabled = enabled
 			if err := models.UpdateProxyHost(s.DB, ph); err != nil {
@@ -3087,6 +3097,12 @@ func (s *Server) bulkToggleProxyHosts(w http.ResponseWriter, r *http.Request) {
 // bulkMaintenanceProxyHosts enables or disables maintenance mode for a set of
 // proxy hosts. Expects form fields: ids[]={id,...} and action=enable|disable.
 func (s *Server) bulkMaintenanceProxyHosts(w http.ResponseWriter, r *http.Request) {
+	cu := s.currentUser(r)
+	if cu == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin := cu.Role == models.RoleAdmin
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -3112,6 +3128,10 @@ func (s *Server) bulkMaintenanceProxyHosts(w http.ResponseWriter, r *http.Reques
 		}
 		ph, err := models.GetProxyHost(s.DB, id)
 		if err != nil || ph == nil {
+			continue
+		}
+		// Ownership check: admin can change any, others only their own.
+		if !isAdmin && (!ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID) {
 			continue
 		}
 		if ph.MaintenanceMode != maint {

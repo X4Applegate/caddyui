@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.52.3] - 2026-09-21 - Security: bulk proxy-host ownership + toolchain refresh
+
+### Security
+
+- **Bulk proxy-host toggle/maintenance per-row ownership (IDOR, High):** the HTML bulk endpoints `POST /proxy-hosts/bulk-toggle` and `POST /proxy-hosts/bulk-maintenance` did not enforce the per-row `owner_id` check that the single-object handlers and every other bulk handler (delete, certificate, raw-route toggle, redirection toggle) already apply. A non-admin `user`-role account could enable/disable or flip maintenance mode on **any** proxy host — including hosts owned by other tenants or admins — by submitting arbitrary `ids[]`, an availability/tampering vector on other tenants' routing. Both handlers now skip rows the caller does not own (admins remain unrestricted), matching the ownership model introduced in v2.52.1/v2.52.2. Backed by a new regression test (`bulk_ownership_test.go`). **Multi-account deployments should upgrade.** Found during an internal code review.
+- **Go toolchain pinned to 1.26.6 (native binaries):** added a `toolchain go1.26.6` directive so the standalone release binaries build on Go 1.26.6, clearing 7 reachable Go standard-library advisories present in 1.26.5 (GO-2026-6218 `net/url`, GO-2026-6091 `html/template`, GO-2026-6090 `crypto/tls`, GO-2026-6089 / GO-2026-5026 `net/http`, GO-2026-6088 `encoding/xml`, GO-2026-5972 `encoding/asn1`). `govulncheck ./...` now reports no reachable vulnerabilities. The Docker image already builds on `golang:1.27-alpine` and was unaffected.
+
+---
+
 ## [2.52.2] - 2026-09-20 - Security: proxy-host upstream SSRF guard
 
 ### Security
