@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.52.4] - 2026-09-21 - Security: login rate-limit hardening + server package split
+
+### Security
+
+- **Login brute-force limiter no longer bypassable via header spoofing (Medium):** the per-IP failed-login lockout keyed on an IP taken from `X-Real-IP` / `X-Forwarded-For` that was trusted unconditionally, so a directly connected attacker could rotate a forged header per request and never trip `max_login_attempts`. The rate-limit key now comes from `rateLimitClientIP`, which only honours forwarding headers when the immediate peer is a trusted proxy — the admin-configured `trusted_proxies` CIDRs, or (when that setting is empty) loopback/private/link-local peers, i.e. the usual "CaddyUI behind a local reverse proxy" topology. When trusted, `X-Real-IP` wins, otherwise the right-most `X-Forwarded-For` entry (the hop appended by the closest proxy, which a client cannot forge); untrusted peers key on the direct connection address. Backed by a regression test (`ratelimit_ip_test.go`). Activity-log display is unchanged.
+
+### Changed
+
+- **`internal/server/server.go` split for maintainability:** the ~17k-line handler file was decomposed (no behavior change) into focused same-package files — `api_v1.go`, `proxy_hosts.go`, `certificates.go`, `raw_routes.go`, `upstream_health.go`, `upstream_health_notifier.go`, and `dns_handlers.go` — dropping `server.go` to ~7k lines. Purely a file reorganization; `go vet`, `gofmt`, and the full test suite pass unchanged.
+
+---
+
 ## [2.52.3] - 2026-09-21 - Security: bulk proxy-host ownership + toolchain refresh
 
 ### Security
