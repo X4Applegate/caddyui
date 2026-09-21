@@ -133,7 +133,7 @@ func TestUnknownAndExpiredSessionsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`UPDATE sessions SET expires_at = ? WHERE token = ?`,
-		time.Now().Add(-time.Hour), token); err != nil {
+		time.Now().Add(-time.Hour), auth.HashSessionToken(token)); err != nil {
 		t.Fatal(err)
 	}
 	if u, err := auth.UserFromSession(conn, token); err == nil && u != nil {
@@ -142,7 +142,7 @@ func TestUnknownAndExpiredSessionsRejected(t *testing.T) {
 
 	// The expired row should also be cleaned up rather than lingering.
 	var count int
-	if err := conn.QueryRow(`SELECT COUNT(*) FROM sessions WHERE token = ?`, token).Scan(&count); err != nil {
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM sessions WHERE token = ?`, auth.HashSessionToken(token)).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -238,4 +238,38 @@ func parseCookie(t *testing.T, w *httptest.ResponseRecorder, name string) *http.
 	}
 	t.Fatalf("cookie %q was not set", name)
 	return nil
+}
+
+// TestSessionTokenStoredHashed is the regression test for the v2.52.5
+// defence-in-depth change: the sessions table must store the SHA-256 of the
+// token, never the raw cookie value, so a database disclosure cannot be
+// replayed as a live session.
+func TestSessionTokenStoredHashed(t *testing.T) {
+	conn, uid := newDB(t)
+
+	token, _, err := auth.CreateSession(conn, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The raw token must not appear in the sessions table.
+	var rawCount int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM sessions WHERE token = ?`, token).Scan(&rawCount); err != nil {
+		t.Fatal(err)
+	}
+	if rawCount != 0 {
+		t.Fatal("raw session token is stored in the database — a DB leak would be replayable")
+	}
+
+	// The hash must be present, and must resolve back to the user via the cookie.
+	var hashCount int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM sessions WHERE token = ?`, auth.HashSessionToken(token)).Scan(&hashCount); err != nil {
+		t.Fatal(err)
+	}
+	if hashCount != 1 {
+		t.Fatalf("expected exactly one hashed session row, got %d", hashCount)
+	}
+	if u, err := auth.UserFromSession(conn, token); err != nil || u == nil {
+		t.Fatalf("raw cookie token should still resolve to the user: %v", err)
+	}
 }

@@ -4,6 +4,7 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -39,6 +40,16 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// HashSessionToken returns the at-rest representation of a session token. The
+// raw token lives only in the user's cookie; the sessions table stores its
+// SHA-256 hash so that a database disclosure (backup leak, snapshot, SQLi in
+// another table) cannot be replayed as a live session cookie. This mirrors the
+// api_tokens table, which is already stored hashed.
+func HashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 func CreateSession(db *sql.DB, userID int64) (string, time.Time, error) {
 	tok, err := newToken()
 	if err != nil {
@@ -47,7 +58,7 @@ func CreateSession(db *sql.DB, userID int64) (string, time.Time, error) {
 	expires := time.Now().Add(SessionTTL)
 	_, err = db.Exec(
 		`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`,
-		tok, userID, expires,
+		HashSessionToken(tok), userID, expires,
 	)
 	if err != nil {
 		return "", time.Time{}, err
@@ -68,7 +79,7 @@ func CreateSessionWithTTL(db *sql.DB, userID int64, ttl time.Duration) (string, 
 	expires := time.Now().Add(ttl)
 	_, err = db.Exec(
 		`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`,
-		tok, userID, expires,
+		HashSessionToken(tok), userID, expires,
 	)
 	if err != nil {
 		return "", time.Time{}, err
@@ -76,8 +87,9 @@ func CreateSessionWithTTL(db *sql.DB, userID int64, ttl time.Duration) (string, 
 	return tok, expires, nil
 }
 
+// DeleteSession removes the session identified by the raw cookie token.
 func DeleteSession(db *sql.DB, token string) error {
-	_, err := db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	_, err := db.Exec(`DELETE FROM sessions WHERE token = ?`, HashSessionToken(token))
 	return err
 }
 
@@ -88,7 +100,7 @@ func UserFromSession(db *sql.DB, token string) (*models.User, error) {
 	var userID int64
 	var expires time.Time
 	err := db.QueryRow(
-		`SELECT user_id, expires_at FROM sessions WHERE token = ?`, token,
+		`SELECT user_id, expires_at FROM sessions WHERE token = ?`, HashSessionToken(token),
 	).Scan(&userID, &expires)
 	if err != nil {
 		return nil, err

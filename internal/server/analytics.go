@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/X4Applegate/caddyui/internal/auth"
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/models"
 )
@@ -1343,10 +1344,11 @@ func (s *Server) getSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	isAdmin := u.Role == models.RoleAdmin
 
-	// Get current token to mark it.
+	// Get current token to mark it. Sessions are stored hashed (the raw token
+	// lives only in the cookie), so compare against the hash of the cookie.
 	currentToken := ""
-	if c, err := r.Cookie("caddyui_session"); err == nil {
-		currentToken = c.Value
+	if c, err := r.Cookie("caddyui_session"); err == nil && c.Value != "" {
+		currentToken = auth.HashSessionToken(c.Value)
 	}
 
 	var rows []SessionRow
