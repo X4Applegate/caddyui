@@ -1976,6 +1976,74 @@ func clientIPFromRequest(r *http.Request) string {
 	return host
 }
 
+// peerHost returns the immediate TCP peer's IP (the host portion of
+// RemoteAddr, no port).
+func peerHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return host
+}
+
+// peerIsTrustedProxy reports whether the immediate peer may be trusted to have
+// set X-Forwarded-For / X-Real-IP. When the admin has configured
+// trusted_proxies, only those CIDRs/IPs are trusted. When it is empty we fall
+// back to the standard CaddyUI topology — a reverse proxy sharing the host or
+// LAN — and trust loopback and private/link-local peers only. A directly
+// connected public client is never trusted, so it cannot forge the header.
+func (s *Server) peerIsTrustedProxy(peerIP net.IP) bool {
+	if peerIP == nil {
+		return false
+	}
+	raw, _ := models.GetSetting(s.DB, settingTrustedProxies)
+	if strings.TrimSpace(raw) == "" {
+		return peerIP.IsLoopback() || peerIP.IsPrivate() || peerIP.IsLinkLocalUnicast()
+	}
+	for _, line := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' }) {
+		entry := strings.TrimSpace(line)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			if _, ipnet, err := net.ParseCIDR(entry); err == nil && ipnet.Contains(peerIP) {
+				return true
+			}
+			continue
+		}
+		if ip := net.ParseIP(entry); ip != nil && ip.Equal(peerIP) {
+			return true
+		}
+	}
+	return false
+}
+
+// rateLimitClientIP returns a client IP suitable as a security rate-limit key
+// (e.g. the login brute-force limiter). Unlike clientIPFromRequest — which
+// trusts forwarding headers unconditionally for activity-log display — this
+// only honours X-Real-IP / X-Forwarded-For when the immediate peer is a trusted
+// proxy, so a directly connected attacker cannot rotate a forged header to
+// reset the lockout counter. When trusted, X-Real-IP (a single proxy-set value)
+// wins; otherwise the right-most X-Forwarded-For entry is used, since that is
+// the hop appended by the closest trusted proxy and is not client-spoofable.
+func (s *Server) rateLimitClientIP(r *http.Request) string {
+	peer := peerHost(r)
+	if s.peerIsTrustedProxy(net.ParseIP(peer)) {
+		if v := strings.TrimSpace(r.Header.Get("X-Real-Ip")); v != "" {
+			return v
+		}
+		if v := r.Header.Get("X-Forwarded-For"); v != "" {
+			parts := strings.Split(v, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				if p := strings.TrimSpace(parts[i]); p != "" {
+					return p
+				}
+			}
+		}
+	}
+	return peer
+}
+
 func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 
@@ -1999,7 +2067,11 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	// v2.9.5: brute-force protection — check recent failed login attempts from this IP.
 	// v2.9.210: use clientIPFromRequest so installs behind a reverse proxy
 	// match by the actual visitor IP, not the proxy's loopback address.
-	clientIP := clientIPFromRequest(r)
+	// v2.52.4: the rate-limit key uses rateLimitClientIP, which only trusts the
+	// forwarded IP when the peer is a trusted proxy — a directly connected
+	// attacker can no longer forge X-Forwarded-For / X-Real-IP to bypass the
+	// lockout. Activity-log display below keeps clientIPFromRequest.
+	clientIP := s.rateLimitClientIP(r)
 	if maxStr, _ := models.GetSetting(s.DB, settingMaxLoginAttempts); maxStr != "" {
 		if maxAttempts, err := strconv.Atoi(strings.TrimSpace(maxStr)); err == nil && maxAttempts > 0 {
 			var failCount int
