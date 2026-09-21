@@ -44,6 +44,10 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		viewerID = cu.ID
 	}
 	peers := s.groupPeerIDs(r)
+	peerSet := map[int64]bool{}
+	for _, id := range peers {
+		peerSet[id] = true
+	}
 	hosts, err := models.ListProxyHostSummaries(s.DB, s.currentServerID(r), viewerID, isAdmin, peers)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -82,7 +86,7 @@ func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
 		if summary == "" {
 			summary = "custom handlers"
 		}
-		canEdit := isAdmin || (rr.OwnerID.Valid && viewerID != 0 && rr.OwnerID.Int64 == viewerID)
+		canEdit := isAdmin || (rr.OwnerID.Valid && viewerID != 0 && (rr.OwnerID.Int64 == viewerID || peerSet[rr.OwnerID.Int64]))
 		isTeam := !isAdmin && rr.OwnerID.Valid && viewerID != 0 && rr.OwnerID.Int64 != viewerID
 		advancedRows = append(advancedRows, advancedRouteRow{
 			ID: rr.ID, Label: rr.Label, Hosts: strings.Join(hosts, ", "),
@@ -284,7 +288,7 @@ func (s *Server) toggleProxyHost(w http.ResponseWriter, r *http.Request) {
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	if !isAdmin {
 		host, err := models.GetProxyHost(s.DB, id)
-		if err != nil || host == nil || !host.OwnerID.Valid || host.OwnerID.Int64 != cu.ID {
+		if err != nil || host == nil || !s.canManageOwned(cu, host.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -353,7 +357,7 @@ func (s *Server) bulkToggleProxyHosts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// Ownership check: admin can toggle any, others only their own.
-		if !isAdmin && (!ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID) {
+		if !isAdmin && (!s.canManageOwned(cu, ph.OwnerID)) {
 			continue
 		}
 		if ph.Enabled != enabled {
@@ -412,7 +416,7 @@ func (s *Server) bulkMaintenanceProxyHosts(w http.ResponseWriter, r *http.Reques
 			continue
 		}
 		// Ownership check: admin can change any, others only their own.
-		if !isAdmin && (!ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID) {
+		if !isAdmin && (!s.canManageOwned(cu, ph.OwnerID)) {
 			continue
 		}
 		if ph.MaintenanceMode != maint {
@@ -487,7 +491,7 @@ func (s *Server) bulkCertificateProxyHosts(w http.ResponseWriter, r *http.Reques
 		if err != nil || ph == nil || ph.ServerID != sid {
 			continue
 		}
-		if !isAdmin && (!ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID) {
+		if !isAdmin && (!s.canManageOwned(cu, ph.OwnerID)) {
 			continue
 		}
 		if ph.CertificateID == certID {
@@ -535,7 +539,7 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 		// Ownership check: admin can delete any, others only their own.
 		if !isAdmin {
 			ph, err := models.GetProxyHost(s.DB, id)
-			if err != nil || ph == nil || !ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID {
+			if err != nil || ph == nil || !s.canManageOwned(cu, ph.OwnerID) {
 				continue
 			}
 		}
@@ -583,7 +587,7 @@ func (s *Server) reorderProxyHosts(w http.ResponseWriter, r *http.Request) {
 		}
 		if !isAdmin {
 			ph, err := models.GetProxyHost(s.DB, id)
-			if err != nil || ph == nil || !ph.OwnerID.Valid || ph.OwnerID.Int64 != cu.ID {
+			if err != nil || ph == nil || !s.canManageOwned(cu, ph.OwnerID) {
 				continue
 			}
 		}
@@ -619,7 +623,7 @@ func (s *Server) reorderRedirectionHosts(w http.ResponseWriter, r *http.Request)
 		}
 		if !isAdmin {
 			rh, err := models.GetRedirectionHost(s.DB, id)
-			if err != nil || rh == nil || !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID {
+			if err != nil || rh == nil || !s.canManageOwned(cu, rh.OwnerID) {
 				continue
 			}
 		}
@@ -661,7 +665,7 @@ func (s *Server) bulkDeleteCertificates(w http.ResponseWriter, r *http.Request) 
 			if err != nil || cert == nil {
 				continue
 			}
-			if !cert.OwnerID.Valid || cert.OwnerID.Int64 != cu.ID {
+			if !s.canManageOwned(cu, cert.OwnerID) {
 				continue
 			}
 			if foreign, _ := models.CertificateInUseByOthers(s.DB, id, cu.ID); foreign > 0 {
@@ -798,7 +802,7 @@ func (s *Server) bulkToggleRawRoutes(w http.ResponseWriter, r *http.Request) {
 		if err != nil || rr == nil {
 			continue
 		}
-		if !isAdmin && (cu == nil || !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID) {
+		if !isAdmin && (cu == nil || !s.canManageOwned(cu, rr.OwnerID)) {
 			continue
 		}
 		if rr.Enabled != enabled {
@@ -842,7 +846,7 @@ func (s *Server) bulkDeleteRawRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		if !isAdmin {
 			rr, err := models.GetRawRoute(s.DB, id)
-			if err != nil || rr == nil || !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID {
+			if err != nil || rr == nil || !s.canManageOwned(cu, rr.OwnerID) {
 				continue
 			}
 		}
@@ -893,7 +897,7 @@ func (s *Server) bulkToggleRedirectionHosts(w http.ResponseWriter, r *http.Reque
 		if err != nil || rh == nil {
 			continue
 		}
-		if !isAdmin && (cu == nil || !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID) {
+		if !isAdmin && (cu == nil || !s.canManageOwned(cu, rh.OwnerID)) {
 			continue
 		}
 		if rh.Enabled != enabled {
@@ -937,7 +941,7 @@ func (s *Server) bulkDeleteRedirectionHosts(w http.ResponseWriter, r *http.Reque
 		}
 		if !isAdmin {
 			rh, err := models.GetRedirectionHost(s.DB, id)
-			if err != nil || rh == nil || !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID {
+			if err != nil || rh == nil || !s.canManageOwned(cu, rh.OwnerID) {
 				continue
 			}
 		}
@@ -990,7 +994,7 @@ func (s *Server) toggleRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	if !isAdmin {
 		rh, err := models.GetRedirectionHost(s.DB, id)
-		if err != nil || rh == nil || !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID {
+		if err != nil || rh == nil || !s.canManageOwned(cu, rh.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -1957,7 +1961,7 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	if !isAdmin {
-		if !p.OwnerID.Valid || p.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, p.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -1980,7 +1984,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	// Ownership check before parsing form
 	if !isAdmin {
 		existing, err := models.GetProxyHost(s.DB, id)
-		if err != nil || existing == nil || !existing.OwnerID.Valid || existing.OwnerID.Int64 != cu.ID {
+		if err != nil || existing == nil || !s.canManageOwned(cu, existing.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -2145,7 +2149,7 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	old, _ := models.GetProxyHost(s.DB, id)
 	if !isAdmin {
-		if old == nil || !old.OwnerID.Valid || old.OwnerID.Int64 != cu.ID {
+		if old == nil || !s.canManageOwned(cu, old.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

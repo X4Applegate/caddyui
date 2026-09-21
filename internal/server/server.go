@@ -3022,7 +3022,7 @@ func (s *Server) editRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	if !isAdmin {
-		if !rh.OwnerID.Valid || rh.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, rh.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -3045,7 +3045,7 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	// Ownership check before parsing form
 	if !isAdmin {
 		existing, err := models.GetRedirectionHost(s.DB, id)
-		if err != nil || existing == nil || !existing.OwnerID.Valid || existing.OwnerID.Int64 != cu.ID {
+		if err != nil || existing == nil || !s.canManageOwned(cu, existing.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -3140,7 +3140,7 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	old, _ := models.GetRedirectionHost(s.DB, id)
 	if !isAdmin {
-		if old == nil || !old.OwnerID.Valid || old.OwnerID.Int64 != cu.ID {
+		if old == nil || !s.canManageOwned(cu, old.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

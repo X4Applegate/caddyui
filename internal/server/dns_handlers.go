@@ -532,7 +532,7 @@ func (s *Server) apiProxyHostDeployStatus(w http.ResponseWriter, r *http.Request
 	// Ownership: non-admins can only poll their own hosts.
 	cu := s.currentUser(r)
 	if cu != nil && cu.Role != models.RoleAdmin {
-		if !host.OwnerID.Valid || host.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, host.OwnerID) {
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "forbidden"})
 			return
@@ -851,7 +851,7 @@ func (s *Server) proxyHostDeploying(w http.ResponseWriter, r *http.Request) {
 	}
 	cu := s.currentUser(r)
 	if cu != nil && cu.Role != models.RoleAdmin {
-		if !host.OwnerID.Valid || host.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, host.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -924,7 +924,7 @@ func (s *Server) apiRawRouteDeployStatus(w http.ResponseWriter, r *http.Request)
 	}
 	cu := s.currentUser(r)
 	if cu != nil && cu.Role != models.RoleAdmin {
-		if !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, rr.OwnerID) {
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "forbidden"})
 			return
@@ -1000,7 +1000,7 @@ func (s *Server) rawRouteDeploying(w http.ResponseWriter, r *http.Request) {
 	}
 	cu := s.currentUser(r)
 	if cu != nil && cu.Role != models.RoleAdmin {
-		if !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, rr.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

@@ -407,7 +407,7 @@ func (s *Server) exportCertificateHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	cu := s.currentUser(r)
-	if cu == nil || (cu.Role != models.RoleAdmin && (!cert.OwnerID.Valid || cert.OwnerID.Int64 != cu.ID)) {
+	if cu == nil || (cu.Role != models.RoleAdmin && (!s.canManageOwned(cu, cert.OwnerID))) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}

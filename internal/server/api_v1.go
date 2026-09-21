@@ -3,7 +3,6 @@
 package server
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -184,23 +183,6 @@ func (s *Server) apiV1ListProxyHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/v1/proxy-hosts/{id}
-// apiV1OwnerOK reports whether cu may read or modify a row owned by ownerID.
-// Admins may access every row; any other authenticated account (role "user"
-// or "view") may access only rows it validly owns. A nil user or an unowned
-// (NULL owner) row is denied for non-admins — deny by default. This is the
-// single per-row authorization gate shared by every /api/v1/... handler,
-// mirroring the ownership check the HTML-form handlers already enforce, so a
-// future REST endpoint cannot silently omit it. Fixes GHSA-r4wm-rgc5-q834.
-func apiV1OwnerOK(cu *models.User, ownerID sql.NullInt64) bool {
-	if cu == nil {
-		return false
-	}
-	if cu.IsAdmin {
-		return true
-	}
-	return ownerID.Valid && ownerID.Int64 == cu.ID
-}
-
 func (s *Server) apiV1GetProxyHost(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -213,7 +195,7 @@ func (s *Server) apiV1GetProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(cu, ph.OwnerID) {
+	if !s.canManageOwned(cu, ph.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -323,7 +305,7 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(cu, existing.OwnerID) {
+	if !s.canManageOwned(cu, existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -459,7 +441,7 @@ func (s *Server) apiV1DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(cu, ph.OwnerID) {
+	if !s.canManageOwned(cu, ph.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -487,7 +469,7 @@ func (s *Server) apiV1ToggleProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), ph.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), ph.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -512,7 +494,7 @@ func (s *Server) apiV1ToggleMaintenanceProxyHost(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), ph.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), ph.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -587,7 +569,7 @@ func (s *Server) apiV1GetRedirectionHost(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), rh.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), rh.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -667,7 +649,7 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -734,7 +716,7 @@ func (s *Server) apiV1DeleteRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -759,7 +741,7 @@ func (s *Server) apiV1ToggleRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -825,7 +807,7 @@ func (s *Server) apiV1GetRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), rr.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), rr.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -895,7 +877,7 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -952,7 +934,7 @@ func (s *Server) apiV1DeleteRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -977,7 +959,7 @@ func (s *Server) apiV1ToggleRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -1049,7 +1031,7 @@ func (s *Server) apiV1GetCertificate(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), c.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), c.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -1122,7 +1104,7 @@ func (s *Server) apiV1UpdateCertificate(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -1192,7 +1174,7 @@ func (s *Server) apiV1DeleteCertificate(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !apiV1OwnerOK(s.currentUser(r), existing.OwnerID) {
+	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}

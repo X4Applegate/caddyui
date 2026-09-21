@@ -1389,6 +1389,31 @@ func SetGroupMembers(db *sql.DB, groupID int64, userIDs []int64) error {
 	return tx.Commit()
 }
 
+// UsersShareGroup reports whether users a and b belong to at least one common
+// access-group. Used by the authorization layer to grant group members
+// collaborative management over each other's resources. A user never "shares a
+// group with themselves" here (callers handle the self/owner case first), and
+// a==b short-circuits to false to avoid a pointless query.
+func UsersShareGroup(db *sql.DB, a, b int64) (bool, error) {
+	if a == b || a == 0 || b == 0 {
+		return false, nil
+	}
+	var one int
+	err := db.QueryRow(`
+        SELECT 1
+        FROM user_groups ug1
+        INNER JOIN user_groups ug2 ON ug2.group_id = ug1.group_id
+        WHERE ug1.user_id = ? AND ug2.user_id = ?
+        LIMIT 1`, a, b).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // GroupPeerIDs returns every OTHER user ID that shares at least one group
 // with the viewer. Callers use this to expand a user's visibility scope in
 // list queries: the viewer sees rows owned by self + globals + any ID in

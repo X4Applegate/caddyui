@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.52.5] - 2026-09-21 - Session tokens hashed at rest + access-group collaborative management
+
+### Security
+
+- **Session tokens are now stored hashed (defence in depth):** the `sessions` table previously held the raw cookie token, so a database disclosure (backup leak, snapshot, or SQLi elsewhere) yielded directly replayable session cookies. Tokens are now stored as their SHA-256 (`auth.HashSessionToken`), mirroring the already-hashed `api_tokens` table; the raw token lives only in the user's cookie. Regression test in `auth_test.go`. **Upgrade note:** existing sessions are invalidated once — everyone signs in again after updating.
+
+### Changed
+
+- **Access-groups now grant collaborative management (review finding #7):** members of a shared access-group could already *see* each other's proxy hosts, redirection hosts, raw routes, and certificates in list views, but opening/editing/toggling/deleting one returned `403`. Group peers can now fully manage resources owned by users they share a group with (admins and direct owners unchanged; global/NULL-owner rows stay admin-only). All single-object REST and HTML handlers, the bulk handlers, and the list-view edit predicates now funnel through one authorization gate (`Server.canManageOwned`, backed by `models.UsersShareGroup`), so the "visible but not manageable" asymmetry is closed and future handlers cannot drift. Regression test in `group_management_test.go`.
+
+---
+
 ## [2.52.4] - 2026-09-21 - Security: login rate-limit hardening + server package split
 
 ### Security

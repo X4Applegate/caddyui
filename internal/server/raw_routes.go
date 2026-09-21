@@ -384,7 +384,7 @@ func (s *Server) editRawRoute(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	if !isAdmin {
-		if !rr.OwnerID.Valid || rr.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, rr.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -407,7 +407,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	// Ownership check before parsing form
 	if !isAdmin {
 		existing, err := models.GetRawRoute(s.DB, id)
-		if err != nil || existing == nil || !existing.OwnerID.Valid || existing.OwnerID.Int64 != cu.ID {
+		if err != nil || existing == nil || !s.canManageOwned(cu, existing.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -534,7 +534,7 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	old, _ := models.GetRawRoute(s.DB, id)
 	if !isAdmin {
-		if old == nil || !old.OwnerID.Valid || old.OwnerID.Int64 != cu.ID {
+		if old == nil || !s.canManageOwned(cu, old.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -583,7 +583,7 @@ func (s *Server) postReclassifyRawRoutes(w http.ResponseWriter, r *http.Request)
 		// list query above already filters to visible rows, but visibility
 		// includes group peers — re-check ownership before mutating.
 		if !isAdmin {
-			if !row.OwnerID.Valid || row.OwnerID.Int64 != cu.ID {
+			if !s.canManageOwned(cu, row.OwnerID) {
 				continue
 			}
 		}

@@ -126,13 +126,20 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		usageFilter = "unused"
 	}
 
+	// Precompute the group-peer set once so the per-row edit predicate does
+	// not issue a DB query per certificate.
+	peerSet := map[int64]bool{}
+	for _, id := range s.groupPeerIDs(r) {
+		peerSet[id] = true
+	}
 	views := make([]certView, 0, len(certs))
 	unusedCount := 0
 	for _, c := range certs {
 		// Edit/delete predicate: admin → always; user-role → their own rows
-		// only (not global admin-owned ones, even though they're visible in
-		// the list for the dropdown-reference case).
-		canEdit := isAdmin || (c.OwnerID.Valid && viewerID != 0 && c.OwnerID.Int64 == viewerID)
+		// and rows owned by a group peer (access-groups grant collaborative
+		// management, v2.52.5). Global admin-owned (NULL owner) rows stay
+		// admin-only even though they're visible for the dropdown-reference case.
+		canEdit := isAdmin || (c.OwnerID.Valid && viewerID != 0 && (c.OwnerID.Int64 == viewerID || peerSet[c.OwnerID.Int64]))
 		view := certView{
 			Certificate: c,
 			CanEdit:     canEdit,
@@ -631,7 +638,7 @@ func (s *Server) editCertificate(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	if !isAdmin {
-		if !c.OwnerID.Valid || cu == nil || c.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, c.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -658,7 +665,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	isAdmin := cu != nil && cu.Role == models.RoleAdmin
 	if !isAdmin {
-		if !existing.OwnerID.Valid || cu == nil || existing.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, existing.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -754,7 +761,7 @@ func (s *Server) deleteCertificate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "only admins can delete global certificates", http.StatusForbidden)
 			return
 		}
-		if cert.OwnerID.Int64 != cu.ID {
+		if !s.canManageOwned(cu, cert.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
