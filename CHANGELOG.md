@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.52.2] - 2026-09-20 - Security: proxy-host upstream SSRF guard
+
+### Security
+
+- **Proxy-host upstream SSRF guard for non-admin accounts** ([GHSA-r4wm-rgc5-q834](https://github.com/X4Applegate/caddyui/security/advisories/GHSA-r4wm-rgc5-q834), **High**): the third, lower-confidence finding noted (but not verified or fixed) in the v2.52.1 advisory is now confirmed and closed. A proxy host's `forward_host`/`forward_port`, its extra upstreams, and its upstream Host-header override flowed unvalidated into Caddy's `reverse_proxy` dial address. A low-privilege `user`-role account (per-row ownership was added in v2.52.1) could therefore create or edit a proxy host whose upstream pointed at the CaddyUI host's own loopback services, cloud metadata (`169.254.169.254`), or the Caddy admin API (`http://localhost:2019`) and reach those internal-only endpoints through the proxy (SSRF). Combined with the user-settable upstream Host-header override — which defeats the admin API's origin check — this exposed `GET /config/` (full config disclosure) and `POST /load` (RCE-grade config rewrite), reproduced end-to-end against a real Caddy. CaddyUI now validates every upstream on create **and** update, in both the REST `/api/v1` handlers and the HTML-form handlers: non-admin accounts may not target loopback, unspecified, or link-local addresses, or the configured Caddy admin endpoint. Admins remain unrestricted and private-LAN upstreams stay allowed, so delegated users can still front their own internal apps and the common single-admin "proxy to a localhost app" setup is unaffected. Backed by unit and end-to-end handler regression tests. **Deployments that grant non-admin `user`-role accounts should upgrade.** Reported by [@kta1kri](https://github.com/kta1kri).
+
+---
+
 ## [2.52.1] - 2026-09-20 - Security: REST API v1 authorization fix
 
 ### Security

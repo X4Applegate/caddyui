@@ -4568,6 +4568,13 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
 	deployTo := parseDeployTo(r)
 	cu := s.currentUser(r)
+	// SSRF guard (GHSA-r4wm-rgc5-q834): block non-admins from pointing the
+	// upstream (host, extra upstreams, or Host override) at loopback/link-local/
+	// internal management addresses such as the Caddy admin API.
+	if msg := s.validateProxyUpstreamsForUser(cu, p); msg != "" {
+		s.renderProxyHostFormError(w, r, p, msg)
+		return
+	}
 	var ownerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
 		ownerID = cu.ID
@@ -4730,6 +4737,12 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	// Parse extra upstreams (Feature D).
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
+	// SSRF guard (GHSA-r4wm-rgc5-q834): re-validate on edit so a non-admin can't
+	// switch an existing host's upstream to an internal management address.
+	if msg := s.validateProxyUpstreamsForUser(cu, p); msg != "" {
+		s.renderProxyHostFormError(w, r, p, msg)
+		return
+	}
 	deployTo := parseDeployTo(r)
 	old, _ := models.GetProxyHost(s.DB, id)
 
@@ -15943,6 +15956,12 @@ func (s *Server) apiV1CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 		BasicAuthRealm: "Restricted", CustomReqHeaders: "{}", CustomRespHeaders: "{}",
 		URLRewrites: "[]",
 	}
+	// SSRF guard (GHSA-r4wm-rgc5-q834): non-admins may not point an upstream at
+	// loopback/link-local/internal management addresses (e.g. the Caddy admin API).
+	if msg := s.validateProxyUpstreamsForUser(cu, ph); msg != "" {
+		writeJSONError(w, http.StatusForbidden, msg)
+		return
+	}
 	serverID := s.currentServerID(r)
 	ownerID := cu.ID
 	if cu.IsAdmin {
@@ -16080,6 +16099,12 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if inp.LBPolicy != "" {
 		existing.LBPolicy = inp.LBPolicy
+	}
+	// SSRF guard (GHSA-r4wm-rgc5-q834): re-validate the merged upstreams so a
+	// non-admin can't edit an existing host to target an internal address.
+	if msg := s.validateProxyUpstreamsForUser(cu, existing); msg != "" {
+		writeJSONError(w, http.StatusForbidden, msg)
+		return
 	}
 	if err := models.UpdateProxyHost(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
