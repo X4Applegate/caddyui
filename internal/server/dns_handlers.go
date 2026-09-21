@@ -1205,6 +1205,10 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		aiOpenAIModel = "gpt-4o-mini"
 	}
 	aiSystemPrompt, _ := models.GetSetting(s.DB, settingAISystemPrompt)
+	aiRequestTimeout := strings.TrimSpace(mustGetSetting(s.DB, settingAIRequestTimeoutSec))
+	if aiRequestTimeout == "" {
+		aiRequestTimeout = strconv.Itoa(defaultAIRequestTimeoutSec)
+	}
 	globalStripHdrs, _ := models.GetSetting(s.DB, settingGlobalStripResponseHeaders)
 
 	smtpHost, _ := models.GetSetting(s.DB, settingSMTPHost)
@@ -1382,6 +1386,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"AIOpenAIKeySet":      strings.TrimSpace(aiOpenAIKey) != "",
 		"AIOpenAIModel":       aiOpenAIModel,
 		"AISystemPrompt":      aiSystemPrompt,
+		"AIRequestTimeout":    aiRequestTimeout,
 		"GlobalStripHeaders":  globalStripHdrs,
 		"SMTPHost":            smtpHost,
 		"SMTPPort":            smtpPort,
@@ -1765,7 +1770,21 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		// empty submission leaves the existing key intact — same pattern as
 		// settingSMTPPassword. Rendering the actual key into the form (as
 		// v2.12.36 did) leaked it via F12 → Elements even with type="password".
-		settingAISystemPrompt:             r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
+		settingAISystemPrompt: r.FormValue("ai_system_prompt"), // preserve whitespace + newlines
+		// issue #109: per-request AI chat timeout (seconds). Blank/invalid →
+		// default; otherwise clamped to the supported range.
+		settingAIRequestTimeoutSec: func() string {
+			n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("ai_request_timeout_sec")))
+			switch {
+			case err != nil || n <= 0:
+				n = defaultAIRequestTimeoutSec
+			case n < aiRequestTimeoutMinSec:
+				n = aiRequestTimeoutMinSec
+			case n > aiRequestTimeoutMaxSec:
+				n = aiRequestTimeoutMaxSec
+			}
+			return strconv.Itoa(n)
+		}(),
 		settingGlobalStripResponseHeaders: strings.TrimSpace(r.FormValue("global_strip_response_headers")),
 		// v2.14.4: disable HTTP/3 / QUIC for compatibility with older Android clients.
 		settingDisableHTTP3: func() string {

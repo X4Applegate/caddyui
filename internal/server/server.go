@@ -6060,6 +6060,13 @@ const (
 	settingAIOllamaModel  = "ai_ollama_model"  // e.g. llama3.2:latest
 	settingAISystemPrompt = "ai_system_prompt" // v2.12.10: optional override of the built-in system prompt
 
+	// settingAIRequestTimeoutSec (issue #109) is the per-request deadline for a
+	// chat turn, in whole seconds. Empty/invalid falls back to
+	// defaultAIRequestTimeoutSec. Slow local-inference rigs (large models, CPU
+	// offload) legitimately need minutes, so the admin can raise it up to
+	// aiRequestTimeoutMaxSec.
+	settingAIRequestTimeoutSec = "ai_request_timeout_sec"
+
 	// v2.12.36: multi-provider AI assistant. Provider selector picks one of
 	// the four backends below; only the credentials for the active provider
 	// are read on each chat turn.

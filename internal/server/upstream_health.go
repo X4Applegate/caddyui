@@ -139,6 +139,28 @@ func activeAIProviderModel(db *sql.DB) (provider, model string) {
 // The system prompt frames Ollama as a CaddyUI assistant, so generic
 // model knowledge gets steered toward Caddy / reverse-proxy / DNS / TLS
 // answers without needing a fine-tuned model.
+// AI chat request-timeout bounds (issue #109).
+const (
+	defaultAIRequestTimeoutSec = 90
+	aiRequestTimeoutMinSec     = 5
+	aiRequestTimeoutMaxSec     = 3600
+)
+
+// aiRequestTimeout returns the per-chat-turn deadline. Admins can raise it under
+// Settings → AI assistant for slow local-inference rigs (large models, heavy CPU
+// offload); the stored value is clamped to
+// [aiRequestTimeoutMinSec, aiRequestTimeoutMaxSec] and falls back to
+// defaultAIRequestTimeoutSec when unset or invalid.
+func (s *Server) aiRequestTimeout() time.Duration {
+	secs := defaultAIRequestTimeoutSec
+	if raw := strings.TrimSpace(mustGetSetting(s.DB, settingAIRequestTimeoutSec)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= aiRequestTimeoutMinSec && n <= aiRequestTimeoutMaxSec {
+			secs = n
+		}
+	}
+	return time.Duration(secs) * time.Second
+}
+
 func (s *Server) apiAIChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	enabled, _ := models.GetSetting(s.DB, settingAIEnabled)
@@ -427,7 +449,7 @@ When you call a tool, do not also write a Caddyfile in the same response — the
 	// so the frontend doesn't need to know which backend answered.
 	provider, model := activeAIProviderModel(s.DB)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), s.aiRequestTimeout())
 	defer cancel()
 
 	var (

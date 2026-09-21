@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.52.6] - 2026-09-21 - Fix: per-host Basic Auth now enforced + configurable AI chat timeout
+
+### Fixed
+
+- **Per-host HTTP Basic Auth was never enforced ([#110](https://github.com/X4Applegate/caddyui/issues/110)):** enabling "Require Login" on a proxy host stored the bcrypt-hashed users and showed them in the form, but `BuildProxyRoute` never emitted Caddy's `authentication`/`http_basic` handler into the route JSON that is pushed to the live server — so requests passed straight through with no login prompt. CaddyUI now renders the `authentication` handler (bcrypt accounts + realm) as the last gate before `reverse_proxy`, so Basic Auth is actually enforced. Half-filled credential rows (blank username or hash) are skipped. **Anyone relying on per-host Basic Auth should upgrade and re-verify their protected hosts prompt for a login.** Reported by @Bappy1988. (The Caddyfile *export* still lists Basic Auth as a note rather than a directive — it is a lossy, non-round-tripping export; the live config is JSON.)
+
+### Added
+
+- **Configurable AI assistant request timeout ([#109](https://github.com/X4Applegate/caddyui/issues/109)):** the AI chat turn had a fixed 90-second deadline, which cut off slow local-inference rigs with `context deadline exceeded`. Settings → AI assistant now has a **Request timeout (seconds)** field (default 90, range 5–3600) so users running large local models with heavy CPU offload can give a turn the minutes it needs. Requested by @Bappy1988.
+
+---
+
 ## [2.52.5] - 2026-09-21 - Session tokens hashed at rest + access-group collaborative management
 
 ### Security

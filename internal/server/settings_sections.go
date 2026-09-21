@@ -156,6 +156,7 @@ var settingsKeySection = map[string]string{
 	settingAIOpenAIModel:       "ai",
 	settingAIOpenAIAPIKey:      "ai",
 	settingAISystemPrompt:      "ai",
+	settingAIRequestTimeoutSec: "ai",
 
 	settingBackupScheduleEnabled:  "backup",
 	settingBackupScheduleDir:      "backup",

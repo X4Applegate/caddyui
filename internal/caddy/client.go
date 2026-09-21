@@ -345,6 +345,27 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
+// basicAuthAccounts maps stored per-host basic-auth users to Caddy's
+// http_basic account list. Each account's password is the bcrypt hash string
+// as stored (the provider's hash.algorithm is set to "bcrypt"). Entries with an
+// empty username or hash are skipped so a half-filled row can't silently create
+// an unusable or blank credential.
+func basicAuthAccounts(users []models.BasicAuthUser) []any {
+	accounts := make([]any, 0, len(users))
+	for _, u := range users {
+		username := strings.TrimSpace(u.Username)
+		hash := strings.TrimSpace(u.BcryptHash)
+		if username == "" || hash == "" {
+			continue
+		}
+		accounts = append(accounts, map[string]any{
+			"username": username,
+			"password": hash,
+		})
+	}
+	return accounts
+}
+
 func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any {
 	domains := models.NormalizeHostnames(p.DomainList())
 
@@ -3888,6 +3909,32 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			})
 		}
 	}
+
+	// Issue #110: per-host HTTP Basic Auth. BasicAuthEnabled and its bcrypt
+	// accounts were persisted and shown in the form, but the live route JSON
+	// never emitted Caddy's authentication/http_basic handler — so no login was
+	// ever enforced and requests passed straight through. Emit it here, as the
+	// last gate before the reverse_proxy, so a request that reaches the upstream
+	// has already been authenticated.
+	if p.BasicAuthEnabled {
+		if accounts := basicAuthAccounts(p.BasicAuthUserList()); len(accounts) > 0 {
+			realm := strings.TrimSpace(p.BasicAuthRealm)
+			if realm == "" {
+				realm = "Restricted"
+			}
+			handlers = append(handlers, map[string]any{
+				"handler": "authentication",
+				"providers": map[string]any{
+					"http_basic": map[string]any{
+						"hash":     map[string]any{"algorithm": "bcrypt"},
+						"accounts": accounts,
+						"realm":    realm,
+					},
+				},
+			})
+		}
+	}
+
 	handlers = append(handlers, reverseProxy)
 
 	// v2.9.16: path-based routing — narrow the match to a specific path prefix.

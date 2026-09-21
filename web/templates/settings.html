@@ -294,6 +294,15 @@
         class="w-full font-mono text-xs rounded-lg border border-ink-200 px-3 py-2 bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.AISystemPrompt}}</textarea>
       <p class="text-xs text-ink-400 mt-1">Tip: paste the built-in prompt's examples block (Caddyfile snippets for AdGuardHome / Nextcloud / wildcard) into your custom prompt to keep the model anchored on real syntax.</p>
     </div>
+    {{/* issue #109: request timeout. Slow local-inference rigs (large models,
+         heavy CPU offload) can take minutes to prefill; raise this so chat turns
+         aren't cut off with "context deadline exceeded". */}}
+    <div class="pt-3 border-t border-ink-100">
+      <label class="block text-sm font-medium text-ink-800 mb-1">Request timeout <span class="text-ink-400 font-normal">(seconds)</span></label>
+      <p class="text-xs text-ink-500 mb-2">How long to wait for a single chat reply before giving up. The default (90s) is fine for hosted APIs and fast local models; raise it for slow local inference (large models or heavy CPU offload). Range 5–3600.</p>
+      <input type="number" name="ai_request_timeout_sec" value="{{.AIRequestTimeout}}" min="5" max="3600" step="5"
+        class="w-40 rounded-lg border border-ink-200 px-3 py-2 bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+    </div>
     <div class="pt-3 border-t border-ink-100">
       <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
     </div>
