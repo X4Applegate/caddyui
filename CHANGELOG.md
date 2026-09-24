@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.53.0] - 2026-09-24 - Security: certificate file reads confined to allowlisted directories
+
+### Security
+
+- **Certificate file reads are now confined to allowlisted directories (review finding #8, defence in depth):** `safeAbsolutePath` rejected `..` and required an absolute path, but confined nothing — so an admin-configured certificate or key path could name *any* absolute file the CaddyUI process could read (`/etc/shadow`, another tenant's key), and its contents could surface through Inspect or be inlined into the database by fleet sync. Reads now go through `confinedReadPath`, which additionally requires the file to sit inside an allowed root: the directory holding CaddyUI's database, every Caddy node's mounted **Data directory**, the conventional locations (`/etc/caddy`, `/etc/ssl`, `/etc/letsencrypt`, `/certs`, `/data`), and any directory added in the new setting below. Symlinks are resolved on **both** sides before comparing, and the resolved path is what gets opened, so a symlink planted inside an allowed root cannot step out of it and there is no gap between the check and the read. A root of `/` is dropped rather than honoured, and with no usable roots nothing is readable (fails closed). Requires admin access to exploit, so this is hardening rather than a privilege boundary. Regression tests in `paths_test.go`.
+
+  **This does not affect certificate serving.** Caddy loads certificate files itself, inside the Caddy container — CaddyUI only reads them as a convenience for the expiry column, Inspect, the probe fallback, and fleet copy-by-value. A certificate outside the allowed roots still serves exactly as before; it simply reports as unreadable in the UI, the same way a path that was never mounted into CaddyUI already does, and fleet sync copies it by path reference instead of inlining it as a PEM.
+
+### Added
+
+- **Settings → Security → "Extra certificate directories":** one absolute path per line, for deployments that mount certificates somewhere unconventional. Saved normalised (de-duplicated, unusable entries dropped), and the page lists the roots currently in effect so the confinement is never an invisible DB-only setting. Leave it empty unless CaddyUI reports a certificate it should be able to read.
+
+---
+
 ## [2.52.6] - 2026-09-21 - Fix: per-host Basic Auth now enforced + configurable AI chat timeout
 
 ### Fixed
