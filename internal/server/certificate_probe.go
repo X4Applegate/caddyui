@@ -166,9 +166,10 @@ func isCustomCertificate(c models.Certificate) bool {
 
 // customCertificatePEM returns the certificate PEM CaddyUI can read locally:
 // the stored PEM, or the file at CertPath when that path is readable from
-// this container. The error says why a path could not be read; managed
-// certificates have nothing to read and return "", nil.
-func customCertificatePEM(cert models.Certificate) (string, error) {
+// this container and sits inside one of roots. The error says why a path
+// could not be read; managed certificates have nothing to read and return
+// "", nil.
+func customCertificatePEM(cert models.Certificate, roots []string) (string, error) {
 	switch cert.Source {
 	case models.CertSourcePEM:
 		return cert.CertPEM, nil
@@ -176,7 +177,7 @@ func customCertificatePEM(cert models.Certificate) (string, error) {
 		if strings.TrimSpace(cert.CertPath) == "" {
 			return "", fmt.Errorf("no certificate path configured")
 		}
-		raw, err := readCertificateFile(cert.CertPath)
+		raw, err := readCertificateFile(cert.CertPath, roots)
 		if err != nil {
 			return "", err
 		}
@@ -186,9 +187,16 @@ func customCertificatePEM(cert models.Certificate) (string, error) {
 }
 
 // readCertificateFile reads an admin-configured certificate or key file
-// after safeAbsolutePath has vetted the path.
-func readCertificateFile(path string) ([]byte, error) {
-	clean, err := safeAbsolutePath(path)
+// after confinedReadPath has vetted the path and confined it to roots
+// (review finding #8, v2.53.0 — see confinedReadPath).
+//
+// This guards only CaddyUI's own convenience reads: Inspect, the expiry
+// column, the probe fallback and fleet copy-by-value. Caddy loads the file
+// itself, inside the Caddy container, so a certificate outside these roots
+// still serves normally — it just reports "CaddyUI cannot read this file" in
+// the UI, exactly as a path that was never mounted here already does.
+func readCertificateFile(path string, roots []string) ([]byte, error) {
+	clean, err := confinedReadPath(path, roots)
 	if err != nil {
 		return nil, err
 	}
@@ -466,11 +474,12 @@ func (s *Server) visibleCertificate(r *http.Request, id int64) (*models.Certific
 // see only stored PEMs.
 func (s *Server) customCertificateExpiries(certs []models.Certificate) map[int64]time.Time {
 	out := map[int64]time.Time{}
+	roots := s.certificateReadRoots()
 	for _, c := range certs {
 		if !isCustomCertificate(c) {
 			continue
 		}
-		if pemData, err := customCertificatePEM(c); err == nil {
+		if pemData, err := customCertificatePEM(c, roots); err == nil {
 			if leaf := parsePEMLeaf(pemData); leaf != nil {
 				out[c.ID] = leaf.NotAfter
 				continue

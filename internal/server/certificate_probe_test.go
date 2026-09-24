@@ -277,7 +277,7 @@ func TestSafeAbsolutePath(t *testing.T) {
 	if got, err := safeAbsolutePath(" /certs//example.com/./fullchain.pem "); err != nil || got != "/certs/example.com/fullchain.pem" {
 		t.Errorf("clean absolute path: %q, %v", got, err)
 	}
-	if _, err := readCertificateFile("/nonexistent/../x.pem"); err == nil || !strings.Contains(err.Error(), "..") {
+	if _, err := readCertificateFile("/nonexistent/../x.pem", []string{"/certs"}); err == nil || !strings.Contains(err.Error(), "..") {
 		t.Errorf("readCertificateFile must refuse traversal, got %v", err)
 	}
 }

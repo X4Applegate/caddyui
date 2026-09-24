@@ -1489,6 +1489,11 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// v2.10.0: trusted proxies + custom site title
 		"TrustedProxies": mustGetSetting(s.DB, settingTrustedProxies),
 		"SiteTitle":      mustGetSetting(s.DB, settingSiteTitle),
+		// v2.53.0 (review finding #8): extra directories CaddyUI may read
+		// certificate files from, plus the full effective list so the page
+		// shows what is already allowed without being configured.
+		"CertificateReadRoots":          mustGetSetting(s.DB, settingCertificateReadRoots),
+		"CertificateReadRootsEffective": strings.Join(s.certificateReadRoots(), ", "),
 		// v2.11.0: custom favicon + admin IP allowlist
 		"FaviconURL":     mustGetSetting(s.DB, settingFaviconURL),
 		"AdminAllowlist": mustGetSetting(s.DB, settingAdminAllowlist),
@@ -1915,6 +1920,15 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	// the integrations bundle above; save it directly when its field posted.
 	if _, present := r.PostForm["client_ip_headers"]; present && !integrationSettingsPresent {
 		kv[settingClientIPHeaders] = strings.TrimSpace(r.FormValue("client_ip_headers"))
+	}
+	// v2.53.0 (review finding #8): extra certificate read roots also live on
+	// the Security page. Persisted in normalised form — one absolute path per
+	// line, de-duplicated, with relative/traversing/"/" entries dropped — so
+	// the field always shows exactly what is in effect. An empty textarea
+	// means "no extras", falling back to the built-in roots.
+	if _, present := r.PostForm["certificate_read_roots"]; present {
+		fields := strings.FieldsFunc(r.FormValue("certificate_read_roots"), func(c rune) bool { return c == ',' || c == '\n' })
+		kv[settingCertificateReadRoots] = strings.Join(normalizeReadRoots(fields), "\n")
 	}
 	if _, ok := r.PostForm["dns_profile_name"]; ok {
 		if err := s.saveDNSProfiles(s.parseDNSProfilesForm(r)); err != nil {

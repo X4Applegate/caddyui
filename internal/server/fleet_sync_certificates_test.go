@@ -101,6 +101,11 @@ func TestSyncFleetConfigurationCopiesFilePathCertificates(t *testing.T) {
 	if err := os.WriteFile(keyFile, []byte(fleetTestKeyPEM+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// v2.53.0: "readable" now also means "inside certificateReadRoots", so the
+	// fixture directory has to be a configured root like a real deployment's.
+	if err := models.SetSetting(s.DB, settingCertificateReadRoots, dir); err != nil {
+		t.Fatal(err)
+	}
 	readable := models.Certificate{Name: "readable", Domains: "files.example.com", Source: models.CertSourcePath, CertPath: certFile, KeyPath: keyFile}
 	if _, err := models.CreateCertificate(s.DB, sourceServerID, 0, &readable); err != nil {
 		t.Fatal(err)
@@ -109,12 +114,26 @@ func TestSyncFleetConfigurationCopiesFilePathCertificates(t *testing.T) {
 	if _, err := models.CreateCertificate(s.DB, sourceServerID, 0, &unreadable); err != nil {
 		t.Fatal(err)
 	}
+	// Present on disk and perfectly parseable, but outside every configured
+	// root — confinement must keep it out of the database as a PEM.
+	offLimits := t.TempDir()
+	offCert, offKey := filepath.Join(offLimits, "fullchain.pem"), filepath.Join(offLimits, "privkey.pem")
+	if err := os.WriteFile(offCert, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(offKey, []byte(fleetTestKeyPEM+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	confined := models.Certificate{Name: "outside-roots", Domains: "outside.example.com", Source: models.CertSourcePath, CertPath: offCert, KeyPath: offKey}
+	if _, err := models.CreateCertificate(s.DB, sourceServerID, 0, &confined); err != nil {
+		t.Fatal(err)
+	}
 
 	summary, err := s.syncFleetConfiguration("admin@example.com", sourceServerID, targetServerID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.CertificatesCreated != 2 || summary.CertificatesByPath != 1 || !strings.Contains(summary.String(), "1 certificate(s) copied by file path only") {
+	if summary.CertificatesCreated != 3 || summary.CertificatesByPath != 2 || !strings.Contains(summary.String(), "2 certificate(s) copied by file path only") {
 		t.Fatalf("summary = %#v (%s)", summary, summary.String())
 	}
 	targets, _ := models.ListCertificates(s.DB, targetServerID)
@@ -130,9 +149,13 @@ func TestSyncFleetConfigurationCopiesFilePathCertificates(t *testing.T) {
 	if got.Source != models.CertSourcePath || got.CertPath != unreadable.CertPath || got.KeyPath != unreadable.KeyPath || got.CertPEM != "" {
 		t.Errorf("unreadable file-path certificate should be copied by reference: %+v", got)
 	}
+	got = byName["outside-roots"]
+	if got.Source != models.CertSourcePath || got.CertPath != confined.CertPath || got.CertPEM != "" || got.KeyPEM != "" {
+		t.Errorf("certificate outside the read roots must not be inlined as PEM: %+v", got)
+	}
 
 	again, err := s.syncFleetConfiguration("admin@example.com", sourceServerID, targetServerID)
-	if err != nil || again.Changed() != 0 || again.CertificatesByPath != 1 {
+	if err != nil || again.Changed() != 0 || again.CertificatesByPath != 2 {
 		t.Fatalf("repeat sync = %#v, %v; want no changes (the by-path count is informational)", again, err)
 	}
 }

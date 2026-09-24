@@ -145,16 +145,18 @@ func TestExportCertificateFromCaddyStorage(t *testing.T) {
 }
 
 func TestFindStorageCertificateExplainsMisses(t *testing.T) {
-	if _, err := findStorageCertificate(filepath.Join(t.TempDir(), "nope"), []string{"a.example.com"}); err == nil || !strings.Contains(err.Error(), "mounted") {
+	missing := t.TempDir()
+	if _, err := findStorageCertificate(filepath.Join(missing, "nope"), []string{"a.example.com"}, []string{missing}); err == nil || !strings.Contains(err.Error(), "mounted") {
 		t.Errorf("missing storage should mention the mount, got %v", err)
 	}
 	dataDir := t.TempDir()
+	roots := []string{dataDir}
 	writeStorageCertificate(t, filepath.Join(dataDir, "caddy", "certificates"), "acme-v02.api.letsencrypt.org-directory", "other.example.com", time.Now().Add(time.Hour))
-	if _, err := findStorageCertificate(dataDir, []string{"a.example.com"}); err == nil || !strings.Contains(err.Error(), "has not stored") {
+	if _, err := findStorageCertificate(dataDir, []string{"a.example.com"}, roots); err == nil || !strings.Contains(err.Error(), "has not stored") {
 		t.Errorf("unknown domain should say Caddy has not stored it, got %v", err)
 	}
 	// The certificates directory itself is accepted as the data dir too.
-	if found, err := findStorageCertificate(filepath.Join(dataDir, "caddy", "certificates"), []string{"other.example.com"}); err != nil || found == nil {
+	if found, err := findStorageCertificate(filepath.Join(dataDir, "caddy", "certificates"), []string{"other.example.com"}, roots); err != nil || found == nil {
 		t.Errorf("certificates dir as root: %v", err)
 	}
 	if storageSafeName("*.Example.COM") != "wildcard_.example.com" {

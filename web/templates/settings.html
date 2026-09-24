@@ -886,6 +886,18 @@
         placeholder="CF-Connecting-IP, X-Forwarded-For"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
     </div>
+    {{/* v2.53.0 (review finding #8): confine the certificate files CaddyUI
+         itself opens. Caddy loads certificates independently of this, so a
+         path outside these directories still serves — it just cannot be
+         previewed or copied here. */}}
+    <div class="py-4 border-b border-ink-100">
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">Extra certificate directories</label>
+      <p class="text-xs text-ink-500 mb-2">One absolute path per line. CaddyUI only opens certificate and key files inside these directories — for the expiry column, Inspect, and fleet copy-by-value. Caddy loads certificates itself, so a file outside them still serves normally; it just shows as unreadable here. Add a directory only if your certificates are mounted somewhere unusual.</p>
+      <textarea name="certificate_read_roots" rows="3"
+        placeholder="/opt/tls&#10;/mnt/certs"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.CertificateReadRoots}}</textarea>
+      <p class="text-xs text-ink-500 mt-1.5">Allowed now: <span class="font-mono break-all">{{.CertificateReadRootsEffective}}</span></p>
+    </div>
     <div class="py-4 border-b border-ink-100 flex items-start justify-between gap-4">
       <div>
         <label class="block text-sm font-medium text-ink-900 mb-1">Disable HTTP/3 (QUIC)</label>

@@ -91,7 +91,9 @@ type storageCertificate struct {
 
 // findStorageCertificate locates the newest certificate Caddy stored for any
 // of domains (first match by domain order, latest NotAfter across issuers).
-func findStorageCertificate(dataDir string, domains []string) (*storageCertificate, error) {
+// Every candidate is read through readCertificateFile, so roots must include
+// dataDir — certificateReadRoots adds each node's DataDir for exactly this.
+func findStorageCertificate(dataDir string, domains []string, roots []string) (*storageCertificate, error) {
 	var best *storageCertificate
 	var looked []string
 	for _, root := range caddyStorageCertificateRoots(dataDir) {
@@ -118,7 +120,7 @@ func findStorageCertificate(dataDir string, domains []string) (*storageCertifica
 				}
 				crt := filepath.Join(root, issuer.Name(), name, name+".crt")
 				key := filepath.Join(root, issuer.Name(), name, name+".key")
-				raw, err := readCertificateFile(crt)
+				raw, err := readCertificateFile(crt, roots)
 				if err != nil {
 					continue
 				}
@@ -237,7 +239,8 @@ func (s *Server) exportCertificate(serverID int64, cert models.Certificate, forc
 	if err != nil {
 		return fail(fmt.Errorf("export directory: %w", err))
 	}
-	stored, err := findStorageCertificate(dataDir, cert.DomainList())
+	readRoots := s.certificateReadRoots()
+	stored, err := findStorageCertificate(dataDir, cert.DomainList(), readRoots)
 	if err != nil {
 		return fail(err)
 	}
@@ -253,11 +256,11 @@ func (s *Server) exportCertificate(serverID int64, cert models.Certificate, forc
 			}
 		}
 	}
-	certPEM, err := readCertificateFile(stored.CertPath)
+	certPEM, err := readCertificateFile(stored.CertPath, readRoots)
 	if err != nil {
 		return fail(fmt.Errorf("read %s: %w", stored.CertPath, err))
 	}
-	keyPEM, err := readCertificateFile(stored.KeyPath)
+	keyPEM, err := readCertificateFile(stored.KeyPath, readRoots)
 	if err != nil {
 		return fail(fmt.Errorf("read %s: %w", stored.KeyPath, err))
 	}

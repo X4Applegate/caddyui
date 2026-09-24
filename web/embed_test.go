@@ -470,6 +470,28 @@ func TestSettingsPagesAreGuarded(t *testing.T) {
 	}
 }
 
+// TestCertificateReadRootsAreSurfaced guards v2.53.0 (review finding #8): the
+// directories CaddyUI may open certificate files from are configurable from
+// the Security page, and the page shows which ones are in effect, so the
+// confinement is never a DB-only setting an operator cannot discover.
+func TestCertificateReadRootsAreSurfaced(t *testing.T) {
+	body, err := FS.ReadFile("templates/settings.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, m := range []string{`name="certificate_read_roots"`, ".CertificateReadRoots", ".CertificateReadRootsEffective"} {
+		if !strings.Contains(html, m) {
+			t.Errorf("settings.html missing %q", m)
+		}
+	}
+	field := strings.Index(html, `name="certificate_read_roots"`)
+	guard := strings.Index(html, `{{if eq .SettingsSection "security"}}`)
+	if field < 0 || guard < 0 || field < guard {
+		t.Errorf("certificate_read_roots must sit inside the security page guard (field at %d, guard at %d)", field, guard)
+	}
+}
+
 // TestAnalyticsRetentionIsSurfaced guards v2.43.0: the retention field and
 // the storage view with Prune now / Reclaim space live on the Analytics card.
 func TestAnalyticsRetentionIsSurfaced(t *testing.T) {

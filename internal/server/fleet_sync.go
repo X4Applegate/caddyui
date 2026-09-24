@@ -410,7 +410,10 @@ func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, sourc
 // files (the target host cannot see the source's disk, so a path would point
 // at nothing there), and by path reference otherwise, in which case the
 // files must exist on the target at the same paths; byPath reports that.
-func fleetCertificateCopy(source models.Certificate) (copy models.Certificate, byPath bool) {
+// v2.53.0: "can read" now also means "inside roots" (see confinedReadPath),
+// so a certificate outside them degrades to a by-path copy instead of
+// silently pulling an arbitrary host file into the database as a PEM.
+func fleetCertificateCopy(source models.Certificate, roots []string) (copy models.Certificate, byPath bool) {
 	copy = source
 	copy.OwnerID = sql.NullInt64{}
 	copy.OwnerEmail = ""
@@ -424,8 +427,8 @@ func fleetCertificateCopy(source models.Certificate) (copy models.Certificate, b
 		copy.DNSProvider, copy.DNSProfileID = "", ""
 	case models.CertSourcePath:
 		copy.DNSProvider, copy.DNSProfileID = "", ""
-		certPEM, certErr := readCertificateFile(source.CertPath)
-		keyPEM, keyErr := readCertificateFile(source.KeyPath)
+		certPEM, certErr := readCertificateFile(source.CertPath, roots)
+		keyPEM, keyErr := readCertificateFile(source.KeyPath, roots)
 		if certErr == nil && keyErr == nil && parsePEMLeaf(string(certPEM)) != nil && strings.Contains(string(keyPEM), "PRIVATE KEY") {
 			copy.Source = models.CertSourcePEM
 			copy.CertPEM, copy.KeyPEM = strings.TrimSpace(string(certPEM)), strings.TrimSpace(string(keyPEM))
@@ -475,7 +478,7 @@ func (s *Server) upsertFleetCertificate(sourceServerID, targetServerID int64, so
 			}
 		}
 	}
-	copy, byPath := fleetCertificateCopy(source)
+	copy, byPath := fleetCertificateCopy(source, s.certificateReadRoots())
 	created := existing == nil
 	changed := true
 	if existing != nil {

@@ -105,6 +105,28 @@ func TestSettingsPagesSaveOnlyTheirOwnKeys(t *testing.T) {
 		t.Errorf("Security save changed the DNS server IP: %q", got)
 	}
 
+	// v2.53.0: extra certificate read roots are persisted normalised — one
+	// absolute path per line, de-duplicated, with unusable entries dropped.
+	rec = postSettingsPage(t, s, url.Values{
+		"settings_section":       {"security"},
+		"client_ip_headers":      {"X-Real-IP"},
+		"certificate_read_roots": {"/opt/tls, /mnt/certs\n/opt/tls\n/\nrelative/dir\n  "},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("security save → %d %s", rec.Code, rec.Body.String())
+	}
+	if got := setting(t, s, settingCertificateReadRoots); got != "/mnt/certs\n/opt/tls" {
+		t.Errorf("certificate read roots = %q", got)
+	}
+	// An empty textarea clears the extras rather than being ignored.
+	rec = postSettingsPage(t, s, url.Values{"settings_section": {"security"}, "client_ip_headers": {"X-Real-IP"}, "certificate_read_roots": {""}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("security save → %d", rec.Code)
+	}
+	if got := setting(t, s, settingCertificateReadRoots); got != "" {
+		t.Errorf("empty textarea should clear the extras, got %q", got)
+	}
+
 	// Notifications page: SMTP changes; a blank password keeps the stored one.
 	if err := models.SetSetting(s.DB, settingSMTPPassword, "secret"); err != nil {
 		t.Fatal(err)

@@ -134,6 +134,8 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]certView, 0, len(certs))
 	unusedCount := 0
+	// Resolved once for the whole page rather than per row (v2.53.0).
+	readRoots := s.certificateReadRoots()
 	for _, c := range certs {
 		// Edit/delete predicate: admin → always; user-role → their own rows
 		// and rows owned by a group peer (access-groups grant collaborative
@@ -154,7 +156,7 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		var exp *time.Time
 		if isCustomCertificate(c) {
 			var leaf *x509.Certificate
-			if pemData, readErr := customCertificatePEM(c); readErr == nil {
+			if pemData, readErr := customCertificatePEM(c, readRoots); readErr == nil {
 				leaf = parsePEMLeaf(pemData)
 			}
 			if leaf != nil {
@@ -265,7 +267,7 @@ func (s *Server) fillCertificateInspectData(data map[string]any, id int64, cert 
 	if cert.ID == 0 {
 		cert.ID = id // probe results are keyed by certificate ID
 	}
-	pemData, readErr := customCertificatePEM(cert)
+	pemData, readErr := customCertificatePEM(cert, s.certificateReadRoots())
 	if readErr != nil {
 		data["ReadError"] = readErr.Error()
 	}
