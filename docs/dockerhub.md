@@ -7,6 +7,11 @@ description". Edit here first, then publish; the publisher strips this
 leading HTML comment. Keeping it in git is deliberate: the page silently
 carried the pre-Apache-2.0 licence for a week after the relicense because
 it only ever existed on Docker Hub.
+
+The line below sets the Hub "short description" (the one-liner under the
+repository name, 100 characters max). It is published alongside this file.
+
+short-description: Open-source Caddy UI with guided publishing, certificate cleanup, TLS, SQLite, and MariaDB.
 -->
 # CaddyUI
 
