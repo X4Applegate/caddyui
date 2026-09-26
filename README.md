@@ -190,8 +190,8 @@ Your Caddy build must include the matching `caddy-dns` provider module. The easi
 ### Access control
 
 - **Three-role RBAC** — `admin` (full control), `user` (manage their own resources), `view` (read-only). Admin-only pages: Users, Groups, Settings, Caddy Servers, Snapshots
-- **Per-user ownership** — proxy hosts, redirections, advanced routes, and certificates each belong to one user; only the owner (and admins) can edit or delete them. Admins can reassign ownership from any resource's edit form
-- **Groups** *(v2.7.4)* — admin bundles `user`-role accounts into a team; every member sees every other member's resources in their list views (read-only), with a `Team` chip so it's clear which rows are "mine" vs. "my teammate's"
+- **Per-user ownership** — proxy hosts, redirections, advanced routes, and certificates each belong to one user; only the owner, their group peers, and admins can edit or delete them. Admins can reassign ownership from any resource's edit form
+- **Groups** *(v2.7.4, collaborative since v2.52.5)* — admin bundles `user`-role accounts into a team; every member sees every other member's resources in their list views, with a `Team` chip so it's clear which rows are "mine" vs. "my teammate's". Since v2.52.5 a shared row is also **manageable** by its group peers, not just visible — global (admin-owned) rows stay admin-only
 - **2FA / TOTP** — per-user time-based one-time passwords
 - **Login CAPTCHA** — optional Cloudflare Turnstile or reCAPTCHA v3 gate on the login form
 - **Hardened by default** — CSRF tokens on every state-changing request, a Content-Security-Policy on CaddyUI's own pages, no third-party scripts at runtime, admin IP allowlist, login attempt limits
