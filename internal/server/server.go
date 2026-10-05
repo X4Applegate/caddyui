@@ -579,10 +579,6 @@ func (s *Server) Routes() http.Handler {
 		// frontend can hide the floating button when not configured.
 		r.Get("/api/ai/status", s.apiAIStatus)
 		r.Post("/api/ai/chat", s.apiAIChat)
-		// v2.12.11: AI tool calling — model proposes a proxy host or
-		// redirection via tool_calls; user confirms; this endpoint actually
-		// creates it.
-		r.Post("/api/ai/exec-tool", s.apiAIExecTool)
 
 		// v2.12.27: per-user color-theme persistence so the picker in
 		// Settings follows the account across devices instead of being
@@ -652,6 +648,18 @@ func (s *Server) Routes() http.Handler {
 		// Write routes — admin-only in practice. Viewers get 403 via requireWrite.
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWrite)
+
+			// v2.12.11: AI tool calling — model proposes a proxy host or
+			// redirection via tool_calls; user confirms; this endpoint
+			// actually creates it. GHSA-5h8j-xxm3-7ggr: this was previously
+			// registered outside the requireWrite group above, so a
+			// read-only viewer could reach it directly (bypassing the UI's
+			// own confirmation step entirely) and create proxy hosts or
+			// redirections despite being blocked from every other write
+			// path. Moved here so the same role gate every other mutating
+			// route already gets is no longer something this one handler
+			// has to remember to check for itself.
+			r.Post("/api/ai/exec-tool", s.apiAIExecTool)
 
 			r.Get("/proxy-hosts/new", s.newProxyHost)
 			r.Post("/proxy-hosts", s.createProxyHost)

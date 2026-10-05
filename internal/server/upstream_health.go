@@ -804,6 +804,15 @@ func (s *Server) apiAIExecTool(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing required argument (domains, forward_host, forward_port)"})
 			return
 		}
+		// GHSA-5h8j-xxm3-7ggr: this path skipped the same non-admin upstream
+		// SSRF guard every other proxy-host creation path applies (see
+		// validateProxyUpstreamsForUser / upstream_guard.go), so a non-admin
+		// account could use the AI tool to point a proxy at the Caddy admin
+		// API, loopback, or link-local/metadata addresses.
+		if msg := s.validateProxyUpstreamsForUser(cu, ph); msg != "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+			return
+		}
 		// Domain conflict guard — same as the form path.
 		if conflict, err := models.DomainsConflict(s.DB, sid, ph.DomainList(), 0, 0); err != nil {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "validate domains: " + err.Error()})
