@@ -80,6 +80,14 @@ func (s *Server) StartCertificateLifecycleReconciler(ctx context.Context) {
 			} else if updated > 0 {
 				log.Printf("certificate lifecycle: confirmed %d previously unknown/stale subject(s)", updated)
 			}
+			// v2.55.0 (issue #115): re-apply "source push" shared managed
+			// certificates on the same cadence, so a renewal on the source
+			// reaches its fleet targets without a separate poller.
+			if attempted, err := s.pushSharedManagedCertificates(); err != nil {
+				log.Printf("certificate lifecycle: shared certificate push: %v", err)
+			} else if attempted > 0 {
+				log.Printf("certificate lifecycle: re-applied %d shared managed certificate(s) to their fleet targets", attempted)
+			}
 		}
 		run()
 		ticker := time.NewTicker(certificateProbeEvery)
@@ -179,6 +187,55 @@ func (s *Server) reconcileCertificateLifecycle() (int, error) {
 		return updated, fmt.Errorf("store probe results: %s", strings.Join(failures, "; "))
 	}
 	return updated, nil
+}
+
+// pushSharedManagedCertificates re-applies every Managed ACME certificate in
+// "source push" fleet-distribution mode (v2.55.0, issue #115) to its
+// configured targets. Hooked into the certificate lifecycle reconciler's
+// existing timer rather than a separate poller, so a renewal on the source is
+// picked up within one certificateProbeEvery interval — the same cadence the
+// reconciler already uses to confirm live issuance.
+//
+// There is no explicit "renewed" transition to watch for: certificate
+// lifecycle state (certificate_lifecycle.go) tracks ACME log phases
+// (obtaining/renewing/active/error/...), not serial numbers or NotBefore, so
+// there is nothing here to compare against for "did it renew". Rather than
+// adding that bookkeeping, this simply re-applies the source's current
+// certificate on every pass: upsertFleetCertificate's existing
+// reflect.DeepEqual diff already no-ops when the target's stored copy matches
+// what sourcePushCertificateCopy reads from the source right now, so a
+// renewal is picked up as an ordinary content change, the same way a
+// hand-replaced PEM certificate already is for the existing "Also configure
+// on" picker. sourcePushCertificateCopy's error (no Data directory, or the
+// source hasn't completed its own ACME order yet) is logged and skipped by
+// crossDeployCertificate — the next pass simply tries again.
+func (s *Server) pushSharedManagedCertificates() (int, error) {
+	servers, err := models.ListCaddyServers(s.DB)
+	if err != nil {
+		return 0, err
+	}
+	attempted := 0
+	for _, server := range servers {
+		if server.Type != models.CaddyServerTypeManaged {
+			continue
+		}
+		certs, err := models.ListCertificates(s.DB, server.ID)
+		if err != nil {
+			return attempted, fmt.Errorf("%s: list certificates: %w", server.Name, err)
+		}
+		for _, cert := range certs {
+			if cert.Source != models.CertSourceManaged || cert.FleetDistributionMode != models.CertFleetDistributionSourcePush {
+				continue
+			}
+			targets := cert.FleetPushTargetIDs()
+			if len(targets) == 0 {
+				continue
+			}
+			attempted++
+			s.crossDeployCertificate("system", server.ID, cert, targets)
+		}
+	}
+	return attempted, nil
 }
 
 func (s *Server) certificateProbeTargets(serverID int64) ([]certificateProbeTarget, error) {

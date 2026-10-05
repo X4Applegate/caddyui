@@ -2340,6 +2340,19 @@ func migrate(db *sql.DB) error {
 		migrationStep(db, `ALTER TABLE proxy_hosts ADD COLUMN rate_limit_window_sec INTEGER NOT NULL DEFAULT 0`)
 	}
 
+	// v2.55.0 (issue #115): opt-in "source push" fleet distribution for a
+	// Managed ACME certificate — one Caddy performs the ACME order and
+	// CaddyUI pushes the resulting certificate/key to the servers listed in
+	// fleet_push_targets instead of each of them running its own ACME order.
+	// Empty/default on every existing row, so behavior is unchanged until an
+	// operator opts in from the certificate form.
+	if !columnExists2(db, "certificates", "fleet_distribution_mode") {
+		migrationStep(db, `ALTER TABLE certificates ADD COLUMN fleet_distribution_mode TEXT NOT NULL DEFAULT ''`)
+	}
+	if !columnExists2(db, "certificates", "fleet_push_targets") {
+		migrationStep(db, `ALTER TABLE certificates ADD COLUMN fleet_push_targets TEXT NOT NULL DEFAULT ''`)
+	}
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {

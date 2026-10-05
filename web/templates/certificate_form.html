@@ -165,10 +165,10 @@
       <span class="block mt-1"><strong>PEM:</strong> the certificate and private key are stored on each selected server; save again after replacing them to push a renewal.</span>
       <span class="block mt-1"><strong>File path:</strong> if CaddyUI can read the files, they are copied to the other servers as stored PEM; otherwise only the paths are copied and the files must exist there at the same paths.</span>
     </p>
-    <div class="space-y-2">
+    <div class="space-y-2" id="deploy-to-list">
       {{range .OtherServers}}
       <label class="flex items-center gap-2.5 cursor-pointer select-none">
-        <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <input type="checkbox" name="deploy_to" value="{{.ID}}" {{if index $.Cert.FleetPushTargetSet .ID}}checked{{end}} onchange="updateFleetPushVisibility()" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
         <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
         {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
         <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
@@ -176,6 +176,18 @@
       {{end}}
     </div>
     <p class="text-xs text-ink-400 mt-3">Copies are independent after creation. Edit this certificate later and select a server again to add it to a newly registered server or to push a renewal.</p>
+
+    {{/* v2.55.0 (issue #115): opt-in "source push" fleet distribution — only
+         relevant for a Managed ACME certificate with at least one target
+         checked above; hidden otherwise by updateFleetPushVisibility(). */}}
+    <div id="fleet-push-mode" class="hidden mt-4 pt-4 border-t border-ink-100">
+      <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer">
+        <input type="checkbox" name="fleet_distribution_mode" value="source_push" {{if eq .Cert.FleetDistributionMode "source_push"}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span>Push this certificate instead of letting each server obtain its own
+          <span class="block text-xs text-ink-500 mt-0.5 font-normal">This server performs the ACME order; the server(s) checked above receive the resulting certificate and private key instead of running their own ACME order, and no longer need DNS API credentials for it. Requires this server's <strong>Data directory</strong> to be set under Caddy Fleet → edit server, so CaddyUI can read the certificate it obtains. Re-applied automatically after every renewal (within about an hour) as well as whenever you save this form — the first push may be skipped and retried later if this server hasn't completed its own ACME order yet. Turning this off, or unchecking a server above, stops future pushes to it but does not revert its existing copy or restart its own ACME — change its certificate's source there if you want it to go back to obtaining its own.</span>
+        </span>
+      </label>
+    </div>
   </div>
   {{end}}
 
@@ -202,7 +214,25 @@ function setCertSource(source) {
   ['pem', 'path', 'managed'].forEach(function(name) {
     document.getElementById('src-' + name).classList.toggle('hidden', name !== source);
   });
+  updateFleetPushVisibility();
 }
+// v2.55.0 (issue #115): the "source push" toggle only makes sense for a
+// Managed ACME certificate with at least one "Also configure on" target
+// checked. Unchecking either condition hides and clears it, rather than
+// silently submitting a stale selection.
+function updateFleetPushVisibility() {
+  var panel = document.getElementById('fleet-push-mode');
+  if (!panel) return;
+  var managed = document.querySelector('input[name="source"][value="managed"]');
+  var anyTarget = document.querySelectorAll('#deploy-to-list input[name="deploy_to"]:checked').length > 0;
+  var show = !!(managed && managed.checked && anyTarget);
+  panel.classList.toggle('hidden', !show);
+  if (!show) {
+    var toggle = panel.querySelector('input[name="fleet_distribution_mode"]');
+    if (toggle) toggle.checked = false;
+  }
+}
+updateFleetPushVisibility();
 {{if and .Cert.ID (eq .Cert.Source "managed")}}
 (function() {
   var list = document.getElementById('managed-status-list');

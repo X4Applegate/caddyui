@@ -4245,6 +4245,18 @@ const (
 	CertSourcePEM     = "pem"
 	CertSourcePath    = "path"
 	CertSourceManaged = "managed"
+
+	// v2.55.0 (issue #115): fleet-distribution modes for a Managed ACME
+	// certificate that has one or more "also configure on" targets.
+	// CertFleetDistributionIndependent (the zero value, and the only
+	// behavior before v2.55.0) means every target server performs its own
+	// ACME order — fleetCertificateCopy clones the DNS-01 definition only.
+	// CertFleetDistributionSourcePush means this server performs the ACME
+	// order and CaddyUI pushes the resulting certificate and private key to
+	// the targets instead, so they need no DNS credentials and run no ACME
+	// of their own. See internal/server/fleet_sync.go.
+	CertFleetDistributionIndependent = ""
+	CertFleetDistributionSourcePush  = "source_push"
 )
 
 type Certificate struct {
@@ -4261,9 +4273,24 @@ type Certificate struct {
 	// v2.42.0: Export is the JSON export configuration (certificate_export.go)
 	// for a managed certificate — copy it out of Caddy's storage to a
 	// directory after every issuance/renewal. Empty = off.
-	Export    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Export string
+	// v2.55.0 (issue #115): FleetDistributionMode opts a Managed ACME
+	// certificate into "source push" fleet distribution (see
+	// CertFleetDistributionSourcePush). Only meaningful when
+	// Source == CertSourceManaged; empty ("", CertFleetDistributionIndependent)
+	// is the original, default behavior and is left untouched for every
+	// certificate that doesn't explicitly opt in.
+	FleetDistributionMode string
+	// FleetPushTargets is the comma-separated list of target CaddyServer IDs
+	// this certificate's PEM is pushed to when
+	// FleetDistributionMode == CertFleetDistributionSourcePush. It is set from
+	// the "Also configure on" picker and read independently by the
+	// certificate lifecycle reconciler (pushSharedManagedCertificates), so a
+	// renewal is re-pushed on the reconciler's own schedule rather than only
+	// when the certificate form is saved again.
+	FleetPushTargets string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 
 	// v2.7.2: per-user ownership. OwnerID.Valid == false means admin-owned /
 	// global — any user-role account can reference it from the proxy-host
@@ -4274,6 +4301,35 @@ type Certificate struct {
 	// otherwise to avoid a JOIN round-trip in the non-admin hot path.
 	OwnerID    sql.NullInt64
 	OwnerEmail string
+}
+
+// FleetPushTargetIDs parses FleetPushTargets into target CaddyServer IDs,
+// dropping anything blank or unparsable. Mirrors DomainList's comma-separated
+// convention.
+func (c Certificate) FleetPushTargetIDs() []int64 {
+	parts := strings.Split(c.FleetPushTargets, ",")
+	out := make([]int64, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if id, err := strconv.ParseInt(p, 10, 64); err == nil && id > 0 {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// FleetPushTargetSet is FleetPushTargetIDs as a set, for template lookups —
+// certificate_form.html pre-checks "Also configure on" boxes that are already
+// a source-push target.
+func (c Certificate) FleetPushTargetSet() map[int64]bool {
+	out := make(map[int64]bool, len(c.FleetPushTargets))
+	for _, id := range c.FleetPushTargetIDs() {
+		out[id] = true
+	}
+	return out
 }
 
 func (c Certificate) DomainList() []string {
@@ -4296,7 +4352,9 @@ func (c Certificate) DomainList() []string {
 func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 	rows, err := db.Query(`
         SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path,
-               COALESCE(dns_provider,''), COALESCE(dns_profile_id,''), COALESCE(export_json,''), owner_id, created_at, updated_at
+               COALESCE(dns_provider,''), COALESCE(dns_profile_id,''), COALESCE(export_json,''),
+               COALESCE(fleet_distribution_mode,''), COALESCE(fleet_push_targets,''),
+               owner_id, created_at, updated_at
         FROM certificates WHERE server_id = ? ORDER BY id DESC`, serverID)
 	if err != nil {
 		return nil, err
@@ -4307,7 +4365,8 @@ func ListCertificates(db *sql.DB, serverID int64) ([]Certificate, error) {
 		var c Certificate
 		if err := rows.Scan(&c.ID, &c.Name, &c.Domains, &c.Source,
 			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
-			&c.DNSProvider, &c.DNSProfileID, &c.Export, &c.OwnerID,
+			&c.DNSProvider, &c.DNSProfileID, &c.Export,
+			&c.FleetDistributionMode, &c.FleetPushTargets, &c.OwnerID,
 			&c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -4331,6 +4390,7 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
 		rows, err = db.Query(`
             SELECT c.id, c.name, c.domains, c.source, c.cert_pem, c.key_pem, c.cert_path, c.key_path,
                    COALESCE(c.dns_provider,''), COALESCE(c.dns_profile_id,''), COALESCE(c.export_json,''),
+                   COALESCE(c.fleet_distribution_mode,''), COALESCE(c.fleet_push_targets,''),
                    c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
             FROM certificates c
             LEFT JOIN users u ON u.id = c.owner_id
@@ -4346,6 +4406,7 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
 		rows, err = db.Query(`
             SELECT c.id, c.name, c.domains, c.source, c.cert_pem, c.key_pem, c.cert_path, c.key_path,
                    COALESCE(c.dns_provider,''), COALESCE(c.dns_profile_id,''), COALESCE(c.export_json,''),
+                   COALESCE(c.fleet_distribution_mode,''), COALESCE(c.fleet_push_targets,''),
                    c.owner_id, c.created_at, c.updated_at, COALESCE(u.email, '')
             FROM certificates c
             LEFT JOIN users u ON u.id = c.owner_id
@@ -4362,7 +4423,8 @@ func ListCertificatesForUser(db *sql.DB, serverID int64, viewerID int64, isAdmin
 		var c Certificate
 		if err := rows.Scan(&c.ID, &c.Name, &c.Domains, &c.Source,
 			&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
-			&c.DNSProvider, &c.DNSProfileID, &c.Export, &c.OwnerID,
+			&c.DNSProvider, &c.DNSProfileID, &c.Export,
+			&c.FleetDistributionMode, &c.FleetPushTargets, &c.OwnerID,
 			&c.CreatedAt, &c.UpdatedAt, &c.OwnerEmail); err != nil {
 			return nil, err
 		}
@@ -4424,11 +4486,14 @@ func GetCertificate(db *sql.DB, id int64) (*Certificate, error) {
 	var c Certificate
 	err := db.QueryRow(`
         SELECT id, name, domains, source, cert_pem, key_pem, cert_path, key_path,
-               COALESCE(dns_provider,''), COALESCE(dns_profile_id,''), COALESCE(export_json,''), owner_id, created_at, updated_at
+               COALESCE(dns_provider,''), COALESCE(dns_profile_id,''), COALESCE(export_json,''),
+               COALESCE(fleet_distribution_mode,''), COALESCE(fleet_push_targets,''),
+               owner_id, created_at, updated_at
         FROM certificates WHERE id = ?`, id).Scan(
 		&c.ID, &c.Name, &c.Domains, &c.Source,
 		&c.CertPEM, &c.KeyPEM, &c.CertPath, &c.KeyPath,
-		&c.DNSProvider, &c.DNSProfileID, &c.Export, &c.OwnerID,
+		&c.DNSProvider, &c.DNSProfileID, &c.Export,
+		&c.FleetDistributionMode, &c.FleetPushTargets, &c.OwnerID,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -4446,10 +4511,11 @@ func CreateCertificate(db *sql.DB, serverID int64, ownerID int64, c *Certificate
 		c.Source = CertSourcePEM
 	}
 	res, err := db.Exec(`
-        INSERT INTO certificates (server_id, owner_id, name, domains, source, cert_pem, key_pem, cert_path, key_path, dns_provider, dns_profile_id, export_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        INSERT INTO certificates (server_id, owner_id, name, domains, source, cert_pem, key_pem, cert_path, key_path, dns_provider, dns_profile_id, export_json, fleet_distribution_mode, fleet_push_targets)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID, nilIfZero(ownerID), c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM,
-		c.CertPath, c.KeyPath, c.DNSProvider, c.DNSProfileID, c.Export)
+		c.CertPath, c.KeyPath, c.DNSProvider, c.DNSProfileID, c.Export,
+		c.FleetDistributionMode, c.FleetPushTargets)
 	if err != nil {
 		return 0, err
 	}
@@ -4462,9 +4528,11 @@ func UpdateCertificate(db *sql.DB, c *Certificate) error {
 	}
 	_, err := db.Exec(`
         UPDATE certificates SET name=?, domains=?, source=?, cert_pem=?, key_pem=?,
-            cert_path=?, key_path=?, dns_provider=?, dns_profile_id=?, export_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+            cert_path=?, key_path=?, dns_provider=?, dns_profile_id=?, export_json=?,
+            fleet_distribution_mode=?, fleet_push_targets=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		c.Name, c.Domains, c.Source, c.CertPEM, c.KeyPEM, c.CertPath, c.KeyPath,
-		c.DNSProvider, c.DNSProfileID, c.Export, c.ID)
+		c.DNSProvider, c.DNSProfileID, c.Export,
+		c.FleetDistributionMode, c.FleetPushTargets, c.ID)
 	return err
 }
 

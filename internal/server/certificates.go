@@ -557,8 +557,29 @@ func (s *Server) parseCertificateForm(r *http.Request) (*models.Certificate, str
 			}
 		}
 		c.Export = exportJSON
+		// v2.55.0 (issue #115): opt-in "source push" fleet distribution. A
+		// checkbox submits its value only when checked, so anything other
+		// than the expected value (including absent) means "off" — the
+		// original, default behavior. Only a Managed ACME certificate can
+		// carry this; PEM/path certificates never reach this branch, so
+		// FleetDistributionMode/FleetPushTargets stay at their zero value for
+		// every other certificate, exactly like today.
+		if r.FormValue("fleet_distribution_mode") == models.CertFleetDistributionSourcePush {
+			c.FleetDistributionMode = models.CertFleetDistributionSourcePush
+			c.FleetPushTargets = joinFleetPushTargets(parseDeployTo(r))
+		}
 	}
 	return c, ""
+}
+
+// joinFleetPushTargets formats target CaddyServer IDs as the comma-separated
+// string Certificate.FleetPushTargets/FleetPushTargetIDs expect.
+func joinFleetPushTargets(ids []int64) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	return strings.Join(parts, ",")
 }
 
 func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
@@ -575,6 +596,12 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 			KeyPath:      r.FormValue("key_path"),
 			DNSProvider:  r.FormValue("dns_provider"),
 			DNSProfileID: r.FormValue("dns_profile_id"),
+		}
+		// v2.55.0 (issue #115): don't lose the fleet-push toggle/picker
+		// selections just because some other field failed validation.
+		if r.FormValue("fleet_distribution_mode") == models.CertFleetDistributionSourcePush {
+			fallback.FleetDistributionMode = models.CertFleetDistributionSourcePush
+			fallback.FleetPushTargets = joinFleetPushTargets(parseDeployTo(r))
 		}
 		data := map[string]any{
 			"User":         s.currentUser(r),
@@ -687,6 +714,15 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		existing.KeyPath = r.FormValue("key_path")
 		existing.DNSProvider = r.FormValue("dns_provider")
 		existing.DNSProfileID = r.FormValue("dns_profile_id")
+		// v2.55.0 (issue #115): don't lose the fleet-push toggle/picker
+		// selections just because some other field failed validation.
+		if r.FormValue("fleet_distribution_mode") == models.CertFleetDistributionSourcePush {
+			existing.FleetDistributionMode = models.CertFleetDistributionSourcePush
+			existing.FleetPushTargets = joinFleetPushTargets(parseDeployTo(r))
+		} else {
+			existing.FleetDistributionMode = ""
+			existing.FleetPushTargets = ""
+		}
 		data := map[string]any{
 			"User":         s.currentUser(r),
 			"Cert":         existing,
