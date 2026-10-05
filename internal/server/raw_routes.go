@@ -640,6 +640,15 @@ func (s *Server) postReclassifyRawRoutes(w http.ResponseWriter, r *http.Request)
 		if len(classified.Proxies) == 1 {
 			ph := classified.Proxies[0]
 			ph.Enabled = row.Enabled
+			// GHSA-r4wm-rgc5-q834 (3rd finding) follow-up: ph.ForwardHost
+			// comes from the existing raw route's own JSON, which a non-admin
+			// could have pasted in before ever being classified as a proxy
+			// host — needs the same non-admin upstream guard as every other
+			// proxy-host creation path.
+			if msg := s.validateProxyUpstreamsForUser(cu, &ph); msg != "" {
+				nKept++
+				continue
+			}
 			if _, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph); err != nil {
 				nKept++
 				continue

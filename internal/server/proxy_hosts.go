@@ -2201,6 +2201,14 @@ func (s *Server) cloneProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Clone was missing the ownership check every other access to this
+	// resource enforces, so a non-admin could clone (and thereby read the
+	// full configuration of, including upstream and advanced config) any
+	// other tenant's or the admin's proxy host by guessing its ID.
+	if !s.canManageOwned(s.currentUser(r), src.OwnerID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	// Build cloned domain list — append "(copy)" to each domain.
 	domains := src.DomainList()
 	cloned := make([]string, len(domains))

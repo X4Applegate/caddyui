@@ -3189,6 +3189,13 @@ func (s *Server) cloneRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Same gap as cloneProxyHost: without this, a non-admin could clone (and
+	// thereby read the configuration of) any other tenant's or the admin's
+	// redirection host by guessing its ID.
+	if !s.canManageOwned(s.currentUser(r), src.OwnerID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	// Append "(copy)" to each domain.
 	domains := src.DomainList()
 	cloned := make([]string, len(domains))
@@ -3300,11 +3307,22 @@ func (s *Server) postImport(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	// Import always creates global/admin-owned resources (ownerID=0).
+	// Import always creates global/admin-owned resources (ownerID=0), but the
+	// account TRIGGERING the import can be any write-capable role — GHSA-r4wm-rgc5-q834
+	// (3rd finding) follow-up: the pulled-in config's ForwardHost/ForwardPort
+	// are attacker-controlled from that account's perspective (a non-admin
+	// could point Caddy's own admin API at itself via a crafted upstream
+	// Caddy config), so the same non-admin upstream guard applies here too.
+	// cu, not the resulting ownerID=0, is what the guard checks.
+	cu := s.currentUser(r)
 	nProxy, nRedir, nRaw := 0, 0, 0
 	for i := range result.Proxies {
 		p := result.Proxies[i]
 		if !claim(p.DomainList()) {
+			continue
+		}
+		if msg := s.validateProxyUpstreamsForUser(cu, &p); msg != "" {
+			log.Printf("import: skipped proxy host %q: %s", p.Domains, msg)
 			continue
 		}
 		if _, err := models.CreateProxyHost(s.DB, s.currentServerID(r), 0, &p); err == nil {
@@ -3574,6 +3592,17 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			if len(classified.Proxies) == 1 {
 				ph := classified.Proxies[0]
 				ph.Enabled = true
+				// GHSA-r4wm-rgc5-q834 (3rd finding) follow-up: ph.ForwardHost
+				// comes straight from the pasted Caddyfile block, so it needs
+				// the same non-admin upstream guard the REST/form create
+				// paths already enforce.
+				if msg := s.validateProxyUpstreamsForUser(cu, &ph); msg != "" {
+					results = append(results, caddyfileImportResult{
+						Head: label, Snippet: blockText, RouteIdx: idx,
+						Status: "error", Message: msg,
+					})
+					continue
+				}
 				id, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph)
 				if err != nil {
 					results = append(results, caddyfileImportResult{
@@ -6780,6 +6809,15 @@ func (s *Server) importProxyHost(w http.ResponseWriter, r *http.Request) {
 	var ownerID int64
 	if cu != nil {
 		ownerID = cu.ID
+	}
+	// GHSA-r4wm-rgc5-q834 (3rd finding) follow-up: this handler builds a
+	// ProxyHost straight from attacker-controlled uploaded JSON, including
+	// ForwardHost/ForwardPort/ExtraUpstreams/UpstreamHostOverride, so it
+	// needs the same non-admin upstream guard the REST and form create paths
+	// already enforce.
+	if msg := s.validateProxyUpstreamsForUser(cu, &ph); msg != "" {
+		http.Error(w, msg, http.StatusForbidden)
+		return
 	}
 	newID, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph)
 	if err != nil {
