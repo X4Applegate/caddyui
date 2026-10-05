@@ -187,6 +187,35 @@ func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (stri
 	return string(blob), listen, nil
 }
 
+// buildLayer4App adapts a server's pasted layer4 Caddyfile block (the
+// CaddyServer.Layer4Caddyfile field, issue #113) through that server's own
+// admin API and returns only the resulting apps.layer4 subtree — never any
+// other key the adapt response might contain, even if the pasted block
+// happens to produce one (see extractAdaptedLayer4App). caddyCl must already
+// be the client for the server whose text is being adapted: sync callers
+// pass the per-server-swapped s.Caddy, the save-time validator and
+// cross-deploy both build a fresh client from the target server's own
+// AdminURL/credentials.
+//
+// An empty caddyfileSrc (the default, and today's behavior for every
+// existing server) returns (nil, nil) without making an admin-API call at
+// all — no block configured, nothing to adapt. A non-2xx response from
+// Caddy (unknown "layer4" directive because caddy-l4 isn't compiled in,
+// Caddyfile syntax error, etc.) is returned as-is from caddy.Client.Adapt,
+// which already includes Caddy's diagnostic text — callers surface this as a
+// clear, actionable error rather than silently dropping the block.
+func buildLayer4App(caddyCl *caddy.Client, caddyfileSrc string) (map[string]any, error) {
+	src := strings.TrimSpace(caddyfileSrc)
+	if src == "" {
+		return nil, nil
+	}
+	adapted, err := caddyCl.Adapt(src)
+	if err != nil {
+		return nil, err
+	}
+	return extractAdaptedLayer4App(adapted.Result), nil
+}
+
 // previewRawRouteValidate simulates syncCaddy with rr swapped into the raw_routes
 // list (replacing the entry with the same ID, or appended if new) and calls
 // Caddy's /load?validate_only=true. Returns a non-empty message only when Caddy
@@ -838,6 +867,41 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 	return nil
 }
 
+// syncLayer4Only handles fleet members with a layer4 Caddyfile block
+// configured (issue #113) but no CaddyUI-managed routes or certificates yet.
+// apps.layer4 is a standalone top-level app independent of apps.http.servers
+// — like Prometheus metrics above — so it should work on a route-less server
+// without forcing the administrator to create a dummy host first.
+func (s *Server) syncLayer4Only(serverID int64, layer4Caddyfile string) error {
+	layer4App, err := buildLayer4App(s.Caddy, layer4Caddyfile)
+	if err != nil {
+		return fmt.Errorf("layer4 Caddyfile: %w", err)
+	}
+	current, currentJSON, err := s.Caddy.FetchConfig()
+	if err != nil {
+		return fmt.Errorf("fetch current config for layer4: %w", err)
+	}
+	proposed, err := deepCopyMap(current)
+	if err != nil {
+		return fmt.Errorf("clone config for layer4: %w", err)
+	}
+	applyLayer4App(proposed, layer4App)
+	if err := s.Caddy.Validate(proposed); err != nil {
+		return fmt.Errorf("caddy rejected layer4 config: %w", err)
+	}
+	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
+		if _, err := models.CreateSnapshot(s.DB, serverID, models.SnapshotSourceAuto, "auto: before layer4 sync", currentJSON); err != nil {
+			log.Printf("layer4 snapshot failed (non-fatal): %v", err)
+		}
+	}
+	if err := s.writeLayer4App(proposed); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_layer4_failed", "", err.Error(), false)
+		return fmt.Errorf("apply layer4 app: %w", err)
+	}
+	_ = models.LogActivity(s.DB, serverID, "system", "sync_layer4_applied", "", "layer4-only sync", true)
+	return nil
+}
+
 // syncCaddy pushes the DB state for serverID to its Caddy and records the
 // outcome per server (v2.42.1, issue #74): a failure shows on every page
 // until the next successful sync, so a rejected change can no longer fail
@@ -906,6 +970,16 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 		if metricsCfg.manages(serverID) {
 			return s.syncPrometheusMetricsOnly(serverID, metricsCfg)
 		}
+		// v2.56.0 (issue #113): apps.layer4 is independent of apps.http.servers,
+		// so a server dedicated to layer4 TCP/UDP routing with no CaddyUI-managed
+		// routes yet should still sync instead of being refused by the empty-
+		// routes guard below. (If a route-less server somehow has BOTH metrics
+		// and layer4 configured, the metrics-only branch above takes priority and
+		// layer4 is skipped this sync — an edge case of an edge case; it starts
+		// applying as soon as any proxy/redirect/raw-route/certificate exists.)
+		if strings.TrimSpace(srv.Layer4Caddyfile) != "" {
+			return s.syncLayer4Only(serverID, srv.Layer4Caddyfile)
+		}
 		log.Printf("caddy sync skipped: no entries in DB for server %d (refusing to push empty routes)", serverID)
 		return nil
 	}
@@ -970,6 +1044,15 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	tlsAutomationPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
 	tlsAutomationPolicies = append(tlsAutomationPolicies, buildInternalTLSAutomationPolicies(proxies)...)
 
+	// v2.56.0 (issue #113): adapt the optional layer4 Caddyfile block through
+	// this server's own admin API before fetching/mutating its config, so a
+	// typo'd block (or a build missing caddy-l4) fails the sync up front with
+	// a clear error instead of after other subtrees have already been written.
+	layer4App, err := buildLayer4App(s.Caddy, srv.Layer4Caddyfile)
+	if err != nil {
+		return fmt.Errorf("layer4 Caddyfile for %s: %w", srv.Name, err)
+	}
+
 	current, currentJSON, err := s.Caddy.FetchConfig()
 	if err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_fetch_failed", "", err.Error(), false)
@@ -996,6 +1079,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	applyFleetAccessLog(proposed, accessLogCfg, loadAnalyticsConfig(s.DB).Enabled, serverID)
 	applyPrometheusMetrics(proposed, metricsCfg, serverID)
 	applyCrowdSecApp(proposed, crowdSecCfg, serverID)
+	applyLayer4App(proposed, layer4App)
 	// v2.4.12: branded 404/502/503/504 pages with error ID + timestamp so
 	// users hitting a restart window see something nicer than Caddy's
 	// plaintext fallback and ops can correlate to access logs via {err.id}.
@@ -1034,6 +1118,10 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	if err := s.writePrometheusMetricsConfig(proposed, metricsCfg, serverID); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_metrics_failed", "", err.Error(), false)
 		return fmt.Errorf("apply Prometheus metrics: %w", err)
+	}
+	if err := s.writeLayer4App(proposed); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_layer4_failed", "", err.Error(), false)
+		return fmt.Errorf("apply layer4 app: %w", err)
 	}
 	if err := s.writeRoutesSubtree(routes); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_routes_failed", "", err.Error(), false)

@@ -2353,6 +2353,16 @@ func migrate(db *sql.DB) error {
 		migrationStep(db, `ALTER TABLE certificates ADD COLUMN fleet_push_targets TEXT NOT NULL DEFAULT ''`)
 	}
 
+	// v2.56.0 (issue #113): per-server layer4 app Caddyfile block. An admin
+	// pastes a complete `layer4 { ... }` block (github.com/mholt/caddy-l4);
+	// it is adapted through this server's own admin API on every sync and
+	// only the resulting apps.layer4 subtree is merged into the pushed
+	// config. Empty on every existing row — zero behavior change until an
+	// operator opts in from the server edit form.
+	if !columnExists2(db, "caddy_servers", "layer4_caddyfile") {
+		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN layer4_caddyfile TEXT NOT NULL DEFAULT ''`)
+	}
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {
