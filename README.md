@@ -50,6 +50,13 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ## Features
 
+### Fleet certificates, layer4 routing, and hardening in v2.53 – v2.56
+
+- **Layer4 app support** *(v2.56.0)* — paste a complete `layer4 { ... }` block (TCP/UDP routing via [`caddy-l4`](https://github.com/mholt/caddy-l4): SNI/protocol multiplexing, raw proxying, and more) into a Caddy server's own edit form. CaddyUI adapts it through that server's admin API and merges only the resulting `apps.layer4` into the config it pushes, with fleet replication via **Also copy to**. The published `applegater/caddyui-caddy` image now includes the module.
+- **Share one managed ACME certificate across fleet nodes** *(v2.55.0)* — an opt-in toggle on a Managed ACME certificate's **Also configure on** picker lets one source server perform the ACME order while CaddyUI pushes the resulting certificate and private key to the other selected servers, instead of every node ordering and renewing its own. Avoids multiplying CA rate-limit usage and keeps DNS API credentials off edge nodes.
+- **Configurable ACME DNS-01 resolver** *(v2.54.0)* — **Settings → DNS → ACME DNS-01 resolvers** points *Caddy's own* DNS-01 propagation checks at specific DNS servers, for split-horizon setups where the same zone is served privately inside the network and publicly for ACME validation. Distinct from the Verification resolver below, which only affects CaddyUI's own deploy/readiness checks.
+- **Certificate reads confined to allowlisted directories** *(v2.53.0)* — a certificate or key path can no longer name an arbitrary file on the host; reads are confined to the database directory, every Caddy node's Data directory, conventional certificate locations, and any directory an admin explicitly adds under Settings → Security.
+
 ### Analytics, certificates and local services in v2.39 – v2.52
 
 - **OIDC / SSO login** *(v2.52.0)* — sign in through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP; configure under Settings → Security. Standard auth-code flow with state/nonce and `go-oidc` token verification; verified-email matching with opt-in auto-provisioning.
@@ -161,11 +168,11 @@ Use one DNS-01 wildcard across matching proxy hosts without exporting or copying
 
 1. Go to **Settings → DNS** and save credentials for your DNS provider.
 2. Go to **Certificates → New**, choose **Managed ACME (DNS-01)**, select that credential profile, and enter a subject such as `*.example.com`.
-3. If you manage multiple Caddy servers, select them under **Also configure on**. Each server performs its own ACME order and keeps its own private key.
+3. If you manage multiple Caddy servers, select them under **Also configure on**. By default each server performs its own ACME order and keeps its own private key. Since v2.55.0, ticking **Push this certificate instead of letting each server obtain its own** flips this: this server performs the ACME order and CaddyUI pushes the resulting certificate and key to the others instead — useful for avoiding CA rate limits or keeping DNS credentials off edge nodes.
 4. Leave matching proxy hosts on **Auto** TLS. CaddyUI detects the covering wildcard and prevents redundant exact-host certificate orders.
 5. Edit the managed certificate later to see live deployment, issuer, expiry, and renewal health for every configured server.
 
-Your Caddy build must include the matching `caddy-dns` provider module. The easiest path is the prebuilt **`applegater/caddyui-caddy`** image (all eight DNS providers, the CrowdSec bouncer and the rate-limit module); it's the published build of [`Dockerfile.caddy`](Dockerfile.caddy), which you can also build yourself. The stock `caddy:2-alpine` image does not include these modules.
+Your Caddy build must include the matching `caddy-dns` provider module. The easiest path is the prebuilt **`applegater/caddyui-caddy`** image (all eight DNS providers, the CrowdSec bouncer, the rate-limit module, and `caddy-l4` for [layer4 app support](#fleet-certificates-layer4-routing-and-hardening-in-v253--v256)); it's the published build of [`Dockerfile.caddy`](Dockerfile.caddy), which you can also build yourself. The stock `caddy:2-alpine` image does not include these modules.
 
 ### Routing
 
@@ -186,6 +193,7 @@ Your Caddy build must include the matching `caddy-dns` provider module. The easi
 - **Remote Caddy management** — manage multiple Caddy instances from a single UI; switch with a dropdown. Edge hosts only need Caddy — no CaddyUI container required (see [Agent mode](#agent-mode-edge-only-caddy-no-caddyui))
 - **Per-server scoping** — proxy hosts, redirections, routes, and certificates are all scoped to the active server; cross-server conflicts can't happen
 - **Fleet sync and Also deploy to** — copy a whole environment, or one host, redirection, route or certificate, onto other nodes; node-local resources stay where they belong, and each node has its own public IP, log ingest target and data directory
+- **Layer4 app support** *(v2.56.0)* — a per-server `layer4 { ... }` Caddyfile block for TCP/UDP routing, replicated to other nodes via **Also copy to**
 
 ### Access control
 
