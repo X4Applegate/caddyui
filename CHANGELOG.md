@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.56.2] - 2026-10-05 - Security: closed 4 more SSRF-guard gaps and 2 clone-IDOR gaps
+
+### Security
+
+- **Four more proxy-host creation paths skipped the non-admin upstream SSRF guard ([GHSA-r4wm-rgc5-q834](https://github.com/X4Applegate/caddyui/security/advisories/GHSA-r4wm-rgc5-q834) follow-up):** auditing every proxy-host creation path after v2.56.1's AI-exec-tool fix turned up four more that predate `validateProxyUpstreamsForUser` (added in v2.52.2) and were never updated to call it: uploading a JSON file via **Proxy Hosts → Import**, **Import from Caddy** (pulls the live config and classifies it), pasting a Caddyfile block via **Caddyfile Import**, and reclassifying an existing raw route into a proxy host when the classifier improves. All four are reachable by any non-admin write-capable account and could previously create a proxy host pointed at the Caddy admin API, loopback, or link-local/cloud-metadata addresses. Fixed by applying the same guard every REST and form path already enforces.
+- **Clone endpoints were missing the ownership check every other access to the same resource enforces:** a non-admin account could clone — and thereby read the full configuration of, including upstream and advanced config — any other tenant's or the admin's proxy host or redirection host, simply by guessing its ID in `/proxy-hosts/{id}/clone` or `/redirection-hosts/{id}/clone`. Fixed with the same `canManageOwned` ownership check used on every other access to these resources.
+
+Both found during an internal audit, not externally reported. Regression tests added for all six.
+
+---
+
 ## [2.56.1] - 2026-10-05 - Security: AI tool-calling endpoint enforced write-role and SSRF guard
 
 ### Security
