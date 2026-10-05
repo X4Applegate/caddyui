@@ -111,6 +111,7 @@ var settingsKeySection = map[string]string{
 	settingServerIP:          "dns",
 	settingCFProxied:         "dns",
 	settingDNSVerifyResolver: "dns",
+	settingACMEDNSResolvers:  "dns",
 
 	settingRequire2FA:         "security",
 	settingRequireTOTP:        "security",

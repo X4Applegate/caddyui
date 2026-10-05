@@ -572,6 +572,13 @@
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       <p class="text-xs text-ink-500 mt-1">DNS server(s) CaddyUI uses to verify records during deploy/readiness checks. Leave blank to use Cloudflare DNS-over-HTTPS (the default). Enter one or more plain DNS servers (comma-separated; <code class="font-mono">:53</code> assumed, IPv6 as <code class="font-mono">[::1]:53</code>) to use trusted, internal, or split-horizon resolvers, or a DoH URL that supports the JSON API. Multiple servers are tried in order. Useful when outbound DNS to Cloudflare is filtered.</p>
     </div>
+    {{/* issue #116: resolver override for Caddy's own ACME DNS-01 challenge */}}
+    <div class="pt-3 border-t border-ink-100">
+      <label class="block text-sm font-medium text-ink-800 mb-1">ACME DNS-01 resolvers <span class="text-ink-400 font-normal">(optional)</span></label>
+      <input name="acme_dns_resolvers" value="{{.ACMEDNSResolvers}}" type="text" placeholder="1.1.1.1:53, 8.8.8.8:53"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+      <p class="text-xs text-ink-500 mt-1">DNS server(s) <strong>Caddy itself</strong> uses to check ACME DNS-01 TXT-record propagation when issuing or renewing a Managed DNS certificate — separate from the "Verification resolver" above, which only affects CaddyUI's own deploy/readiness checks. Leave blank to use the container's default resolver. Enter one or more plain DNS servers (comma-separated; <code class="font-mono">:53</code> assumed, IPv6 as <code class="font-mono">[::1]:53</code>). Useful for split-horizon DNS, where the internal resolver can't see the public DNS zone used for ACME validation.</p>
+    </div>
     <div class="pt-3 border-t border-ink-100">
       <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
     </div>

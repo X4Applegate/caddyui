@@ -621,6 +621,18 @@ func classifyVerifyResolver(raw string) (verifyResolverMode, []string) {
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 		return verifyResolverDoHURL, []string{raw}
 	}
+	servers := parsePlainDNSServers(raw)
+	if len(servers) == 0 {
+		return verifyResolverDefault, nil
+	}
+	return verifyResolverPlainDNS, servers
+}
+
+// parsePlainDNSServers splits raw on comma/space/newline/tab into "host:port"
+// DNS server addresses, defaulting to port 53 when none is given. Shared by
+// the verification-resolver (issue #98) and ACME DNS-01 resolver (issue #116)
+// settings, which both accept the same plain-DNS-list syntax.
+func parsePlainDNSServers(raw string) []string {
 	var servers []string
 	for _, f := range strings.FieldsFunc(raw, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\n' || r == '\t'
@@ -634,10 +646,16 @@ func classifyVerifyResolver(raw string) (verifyResolverMode, []string) {
 		}
 		servers = append(servers, f)
 	}
-	if len(servers) == 0 {
-		return verifyResolverDefault, nil
-	}
-	return verifyResolverPlainDNS, servers
+	return servers
+}
+
+// acmeDNSResolvers returns the admin-configured DNS servers (issue #116) that
+// Caddy's own ACME DNS-01 solver should query for TXT-record propagation
+// checks, instead of the container's default resolver. Returns nil when
+// unset, so Caddy's own default applies.
+func (s *Server) acmeDNSResolvers() []string {
+	raw, _ := models.GetSetting(s.DB, settingACMEDNSResolvers)
+	return parsePlainDNSServers(raw)
 }
 
 // resolveVerifyA resolves A records for fqdn using the admin-configured
@@ -1428,6 +1446,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"CFProxied":  cfProxiedStr == "1",
 		// issue #98: verification resolver override for deploy/readiness checks.
 		"DNSVerifyResolver": mustGetSetting(s.DB, settingDNSVerifyResolver),
+		// issue #116: resolver override for Caddy's own ACME DNS-01 challenge.
+		"ACMEDNSResolvers": mustGetSetting(s.DB, settingACMEDNSResolvers),
 		// issue #100: fleet-wide IP blocklist.
 		"GlobalIPBlocklist": mustGetSetting(s.DB, settingGlobalIPBlocklist),
 		// issue #104: scheduled backups.
@@ -1724,6 +1744,7 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	kv := map[string]string{
 		settingDNSVerifyResolver: strings.TrimSpace(r.FormValue("dns_verify_resolver")), // issue #98
+		settingACMEDNSResolvers:  strings.TrimSpace(r.FormValue("acme_dns_resolvers")),  // issue #116
 		settingGlobalIPBlocklist: strings.TrimSpace(r.FormValue("global_ip_blocklist")), // issue #100
 		// issue #104: scheduled off-host backups.
 		settingBackupScheduleEnabled:  backupSchedEnabled,

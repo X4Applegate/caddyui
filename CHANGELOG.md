@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.54.0] - 2026-10-05 - Configurable ACME DNS-01 resolver
+
+### Added
+
+- **Configurable DNS resolver for Caddy's own ACME DNS-01 challenge** ([issue #116](https://github.com/X4Applegate/caddyui/issues/116)): Caddy's DNS-01 solver checks TXT-record propagation using the container's default resolver, which breaks split-horizon DNS setups where the same zone is served privately inside the network and publicly (e.g. via Cloudflare) for ACME validation — the internal resolver returns the private view and the propagation check never sees the record it just created. **Settings → DNS → ACME DNS-01 resolvers** now points Caddy's propagation checks at public or otherwise-reachable resolvers (comma-separated `host:port`, `:53` assumed, IPv6 as `[::1]:53`), independent of the existing "Verification resolver" setting, which only affects CaddyUI's own deploy/readiness checks. Applies to every DNS-01 automation policy — Managed DNS proxy hosts, redirects, raw routes, and managed certificates alike. Leave blank to keep using Caddy's own default resolver. Requested by @tkkost.
+
+---
+
 ## [2.53.0] - 2026-09-24 - Security: certificate file reads confined to allowlisted directories
 
 ### Security

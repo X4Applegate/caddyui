@@ -1313,6 +1313,15 @@ const (
 	// servers (e.g. "192.168.1.10:53") for filtered/split-horizon networks.
 	settingDNSVerifyResolver = "dns_verify_resolver"
 
+	// issue #116: DNS servers Caddy's own ACME DNS-01 solver queries when
+	// checking TXT-record propagation during certificate issuance/renewal —
+	// distinct from settingDNSVerifyResolver, which only affects CaddyUI's
+	// deploy/readiness checks. Empty = Caddy's default (the container/system
+	// resolver), which fails for split-horizon DNS where the internal
+	// resolver can't see the public zone used for ACME validation. A
+	// comma-separated list of plain DNS servers, e.g. "1.1.1.1:53".
+	settingACMEDNSResolvers = "acme_dns_resolvers"
+
 	// Legacy alias kept so pre-v2.3.0 code paths referencing
 	// settingCFServerIP continue to compile. Points at the shared key.
 	settingCFServerIP = settingServerIP
@@ -3928,6 +3937,14 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 		}
 	}
 
+	// issue #116: optional DNS servers for Caddy's own ACME DNS-01 TXT-record
+	// propagation checks (split-horizon DNS). Resolved once and applied to
+	// every provider bucket below.
+	var resolvers []any
+	for _, r := range s.acmeDNSResolvers() {
+		resolvers = append(resolvers, r)
+	}
+
 	var policies []map[string]any
 	for _, b := range byProvider {
 		if len(b.subjects) == 0 {
@@ -3943,14 +3960,16 @@ func (s *Server) buildDNSAutomationPolicies(proxies []models.ProxyHost, redirs [
 		for _, s := range b.subjects {
 			subj = append(subj, s)
 		}
+		dnsChallenge := map[string]any{"provider": cfg}
+		if len(resolvers) > 0 {
+			dnsChallenge["resolvers"] = resolvers
+		}
 		policies = append(policies, map[string]any{
 			"subjects": subj,
 			"issuers": []any{map[string]any{
 				"module": "acme",
 				"challenges": map[string]any{
-					"dns": map[string]any{
-						"provider": cfg,
-					},
+					"dns": dnsChallenge,
 				},
 			}},
 		})
