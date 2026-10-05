@@ -73,6 +73,33 @@
     </div>
   </div>
 
+  {{/* ── v2.56.0 (issue #113): layer4 app Caddyfile block ── */}}
+  <div class="p-6 space-y-4 border-t border-ink-100" data-layer4-field>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Layer4 app <span class="text-ink-400 font-normal text-xs">(optional — TCP/UDP routing via github.com/mholt/caddy-l4)</span></label>
+      <textarea name="layer4_caddyfile" rows="10" spellcheck="false" placeholder="layer4 {&#10;    :8443 {&#10;        route {&#10;            proxy 127.0.0.1:9000&#10;        }&#10;    }&#10;}"
+        class="w-full px-3 py-2 border border-ink-200 rounded-lg text-sm font-mono bg-white focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition">{{.Target.Layer4Caddyfile}}</textarea>
+      <p class="text-xs text-ink-500 mt-1.5">Paste a complete <code class="bg-ink-100 px-1 rounded font-mono">layer4 { ... }</code> block, including the wrapper — CaddyUI sends it to this server's own admin API to adapt, and merges only the resulting <code class="bg-ink-100 px-1 rounded font-mono">apps.layer4</code> subtree into the config it pushes on every sync. Anything else the paste happens to adapt to is discarded. Requires a Caddy build with the <code class="bg-ink-100 px-1 rounded font-mono">caddy-l4</code> module compiled in — e.g. the <code class="bg-ink-100 px-1 rounded font-mono">applegater/caddyui-caddy</code> image. Checked against this server's admin API before saving. Leave blank to run no layer4 app here (default).</p>
+    </div>
+
+    {{if .OtherServers}}
+    <div>
+      <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also copy to</div>
+      <p class="text-xs text-ink-400 mb-3">Copy this exact layer4 Caddyfile text to other servers' own layer4 field too. Each target is checked against its own admin API — one without the caddy-l4 module compiled in is skipped and recorded in its activity log instead of silently breaking on its next sync.</p>
+      <div class="space-y-2">
+        {{range .OtherServers}}
+        <label class="flex items-center gap-2.5 cursor-pointer select-none">
+          <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+          <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+          {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
+          <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+        </label>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+  </div>
+
   {{/* ── Optional Basic Auth for the admin endpoint ── */}}
   <div class="p-6 space-y-4">
     <div>

@@ -665,6 +665,24 @@ func applyCrowdSecApp(cfg map[string]any, crowd crowdSecConfig, serverID int64) 
 	}
 }
 
+// applyLayer4App merges layer4App — the apps.layer4 subtree produced by
+// adapting a server's pasted layer4 Caddyfile block (see buildLayer4App and
+// extractAdaptedLayer4App) — into the proposed config. v2.56.0 (issue #113).
+// Mirrors applyCrowdSecApp: layer4 is a whole top-level app most syncs don't
+// have, injected only when configured and removed otherwise. Unlike the
+// CrowdSec fleet integration there's no separate "enabled for this serverID"
+// flag to consult — Layer4Caddyfile is a plain per-server field, so the
+// emptiness of layer4App itself (nil/empty when the field is "" or the
+// adapt response had no apps.layer4 key) is the on/off switch.
+func applyLayer4App(cfg map[string]any, layer4App map[string]any) {
+	apps := ensureMap(cfg, "apps")
+	if len(layer4App) > 0 {
+		apps["layer4"] = layer4App
+	} else {
+		delete(apps, "layer4")
+	}
+}
+
 func protectRoutesWithCrowdSec(routes []any, crowd crowdSecConfig, serverID int64) []any {
 	if !crowd.enabledFor(serverID) {
 		return routes
@@ -749,6 +767,30 @@ func (s *Server) writeCrowdSecApp(proposed map[string]any, enabled bool) error {
 		return nil
 	}
 	return s.Caddy.PutPath("/config/apps/crowdsec", want)
+}
+
+// writeLayer4App pushes or removes the apps.layer4 subtree populated by
+// applyLayer4App. v2.56.0 (issue #113). Mirrors writeCrowdSecApp: layer4 is a
+// whole top-level app CaddyUI now owns once a server's Layer4Caddyfile is
+// non-empty, so clearing the field must remove apps.layer4 from the live
+// config on the next sync, not just stop adding to it.
+func (s *Server) writeLayer4App(proposed map[string]any) error {
+	apps, _ := proposed["apps"].(map[string]any)
+	want, _ := apps["layer4"].(map[string]any)
+	existing, err := s.Caddy.FetchPath("/config/apps/layer4")
+	if err != nil {
+		return err
+	}
+	if len(want) == 0 {
+		if existing == nil {
+			return nil
+		}
+		return s.Caddy.DeletePath("/apps/layer4")
+	}
+	if configValuesEqual(existing, want) {
+		return nil
+	}
+	return s.Caddy.PutPath("/config/apps/layer4", want)
 }
 
 // writeFleetServerOptions applies the small server-level fields managed by the

@@ -49,9 +49,19 @@ type CaddyServer struct {
 	// service's caddy_data volume). Lets CaddyUI read the certificates Caddy
 	// stored and export them to a directory (Certificates → Export). Empty =
 	// not mounted; only a Caddy whose volume this host can see can set it.
-	DataDir       string
-	LastContactAt sql.NullTime
-	CreatedAt     time.Time
+	DataDir string
+	// Layer4Caddyfile (v2.56.0, issue #113) is an optional, complete
+	// `layer4 { ... }` Caddyfile block (github.com/mholt/caddy-l4) pasted by
+	// the admin, including the wrapper. On every sync it is adapted through
+	// THIS server's own admin API and only the resulting apps.layer4 subtree
+	// is merged into the pushed config — any other key the adapt response
+	// happens to contain is discarded. Requires a Caddy build with the
+	// caddy-l4 module compiled in (e.g. the applegater/caddyui-caddy image).
+	// Empty = no layer4 app pushed, the behavior for every server before
+	// this field existed.
+	Layer4Caddyfile string
+	LastContactAt   sql.NullTime
+	CreatedAt       time.Time
 }
 
 func (c CaddyServer) TagList() []string {
@@ -66,13 +76,13 @@ func (c CaddyServer) TagList() []string {
 	return out
 }
 
-const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), COALESCE(ingest_target,''), COALESCE(data_dir,''), last_contact_at, created_at`
+const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), COALESCE(ingest_target,''), COALESCE(data_dir,''), COALESCE(layer4_caddyfile,''), last_contact_at, created_at`
 
 func scanCaddyServer(s interface {
 	Scan(dest ...any) error
 }) (CaddyServer, error) {
 	var c CaddyServer
-	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.IngestTarget, &c.DataDir, &c.LastContactAt, &c.CreatedAt)
+	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.IngestTarget, &c.DataDir, &c.Layer4Caddyfile, &c.LastContactAt, &c.CreatedAt)
 	return c, err
 }
 
@@ -173,11 +183,12 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 		c.Status = CaddyServerStatusUnknown
 	}
 	res, err := db.Exec(
-		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip, ingest_target, data_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip, ingest_target, data_dir, layer4_caddyfile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), c.Status,
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
 		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), strings.TrimSpace(c.DataDir),
+		strings.TrimSpace(c.Layer4Caddyfile),
 	)
 	if err != nil {
 		return 0, err
@@ -188,11 +199,12 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 func UpdateCaddyServer(db *sql.DB, c *CaddyServer) error {
 	c.Type = normalizeServerType(c.Type)
 	_, err := db.Exec(
-		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=?, ingest_target=?, data_dir=? WHERE id=?`,
+		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=?, ingest_target=?, data_dir=?, layer4_caddyfile=? WHERE id=?`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), strings.TrimSpace(c.Version),
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
-		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), strings.TrimSpace(c.DataDir), c.ID,
+		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), strings.TrimSpace(c.DataDir),
+		strings.TrimSpace(c.Layer4Caddyfile), c.ID,
 	)
 	return err
 }

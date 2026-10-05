@@ -1354,11 +1354,22 @@ func marshalExtraUpstreams(r *http.Request) string {
 // otherManagedServers returns all managed Caddy servers except the one currently
 // selected in the request cookie. Used to populate the cross-deploy checkbox list.
 func (s *Server) otherManagedServers(r *http.Request) []models.CaddyServer {
+	return s.otherManagedServersExcept(s.currentServerID(r))
+}
+
+// otherManagedServersExcept returns all managed Caddy servers except excludeID.
+// v2.56.0 (issue #113): the Caddy server form's layer4 fleet-replication
+// picker needs this directly rather than through otherManagedServers — unlike
+// a proxy/redirect/raw-route, which always belongs to the currently-selected
+// server cookie, a CaddyServer row being edited can be ANY server regardless
+// of which one is currently selected, so excluding the cookie's server would
+// be wrong (it could list the server being edited as its own deploy target,
+// or wrongly hide an unrelated one).
+func (s *Server) otherManagedServersExcept(excludeID int64) []models.CaddyServer {
 	all, _ := models.ListCaddyServers(s.DB)
-	cur := s.currentServerID(r)
 	var out []models.CaddyServer
 	for _, srv := range all {
-		if srv.ID != cur && srv.Type == models.CaddyServerTypeManaged {
+		if srv.ID != excludeID && srv.Type == models.CaddyServerTypeManaged {
 			out = append(out, srv)
 		}
 	}

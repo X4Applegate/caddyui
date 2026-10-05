@@ -3804,6 +3804,18 @@ func extractAdaptedAutomationPolicies(cfg map[string]any) []map[string]any {
 	return out
 }
 
+// extractAdaptedLayer4App pulls apps.layer4 from an adapted Caddy config —
+// and only that key. v2.56.0 (issue #113): a pasted layer4 Caddyfile block is
+// adapted in isolation via buildLayer4App, and the result is trusted only for
+// this one subtree; any other top-level key the adapter happens to emit
+// (e.g. a stray "admin" or "apps.http" from unrelated pasted syntax) is
+// discarded rather than merged into the config CaddyUI pushes.
+func extractAdaptedLayer4App(cfg map[string]any) map[string]any {
+	apps, _ := cfg["apps"].(map[string]any)
+	layer4, _ := apps["layer4"].(map[string]any)
+	return layer4
+}
+
 // mergeAutomationPolicies makes incoming subject-scoped policies authoritative
 // for those subjects while preserving unrelated and catch-all live policies.
 // This is reconciliation rather than append-only merging: changing a Managed

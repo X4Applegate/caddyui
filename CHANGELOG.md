@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.56.0] - 2026-10-05 - Layer4 app support for TCP/UDP routing
+
+### Added
+
+- **Per-server layer4 app support** ([issue #113](https://github.com/X4Applegate/caddyui/issues/113)): Caddy servers running [`caddy-l4`](https://github.com/mholt/caddy-l4) — TCP/UDP-level routing such as SNI/protocol multiplexing and raw proxying — can now paste a complete `layer4 { ... }` Caddyfile block, including the wrapper, into a new field on the Caddy server edit form. CaddyUI sends it to that server's own admin API `/adapt` endpoint and merges only the resulting `apps.layer4` subtree into the config it pushes on every sync; any other key the paste happens to adapt to is discarded, so pasting something unrelated can't contaminate the rest of the config. The block is checked against the server's own admin API immediately when the form is saved — a typo, or a Caddy build without the `caddy-l4` module, is refused by the pre-save validation with Caddy's own error, instead of silently breaking the server's next scheduled sync. A server dedicated entirely to layer4 routing (no proxy hosts, redirects, raw routes, or certificates of its own) now syncs normally rather than being refused by the "nothing to push" guard. The same text can be copied to other fleet members via an **Also copy to** picker — the same UX family as the existing "Also deploy to" pickers — with each target validated against its own admin API independently, so a target whose Caddy build lacks the module is skipped rather than silently broken on its next sync. This pass intentionally covers layer4 specifically, not general Caddyfile global-options support (snippets, `trusted_proxies`, and the rest) — see the issue thread for why a fully general "paste any global option" box isn't safe on top of CaddyUI's generated server blocks. Empty by default on every existing server, so this is fully additive. Requires a Caddy build with `caddy-l4` compiled in — the published [`applegater/caddyui-caddy`](https://hub.docker.com/r/applegater/caddyui-caddy) image now includes it. Regression tests in `layer4_test.go`. Requested by @BenRLange.
+
+---
+
 ## [2.55.0] - 2026-10-05 - Share one managed ACME certificate across fleet nodes
 
 ### Added
