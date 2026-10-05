@@ -441,20 +441,100 @@ func fleetCertificateCopy(source models.Certificate, roots []string) (copy model
 	return copy, byPath
 }
 
+// sourcePushCertificateCopy builds the target-side copy for a Managed ACME
+// certificate in "source push" fleet-distribution mode (v2.55.0, issue #115):
+// instead of cloning the DNS-01 definition so the target orders its own
+// certificate — fleetCertificateCopy's default for CertSourceManaged — it
+// reads the source server's current certificate and private key straight out
+// of Caddy's on-disk storage (findStorageCertificate, the same read path the
+// v2.42.0 "export to a directory" feature uses) and hands back a plain PEM
+// certificate. A live TLS probe (the other existing read path, used by
+// certificate_probe.go) can never substitute for this: a TLS handshake never
+// reveals the server's private key, only the public leaf certificate.
+//
+// The result deliberately carries neither DNS credentials nor the
+// fleet-distribution fields: it is a plain PEM copy like any other, so the
+// target needs no DNS provider, gets no automation-policy entry of its own,
+// and is not itself mistaken for a push source if it is later used as one.
+//
+// Returns an error when the source has no Data directory configured, or has
+// not completed its own ACME order yet. Callers must treat that as "try
+// again on the next pass" and must not create or overwrite a target row with
+// an empty or partial certificate.
+func (s *Server) sourcePushCertificateCopy(sourceServerID int64, source models.Certificate) (models.Certificate, error) {
+	srv, err := models.GetCaddyServer(s.DB, sourceServerID)
+	if err != nil || srv == nil {
+		return models.Certificate{}, fmt.Errorf("load source environment %d: %w", sourceServerID, err)
+	}
+	if strings.TrimSpace(srv.DataDir) == "" {
+		return models.Certificate{}, fmt.Errorf("%s has no Data directory configured — set one under Caddy Fleet → edit server so CaddyUI can read the certificate it obtains for fleet distribution", srv.Name)
+	}
+	dataDir, err := safeAbsolutePath(srv.DataDir)
+	if err != nil {
+		return models.Certificate{}, fmt.Errorf("%s data directory: %w", srv.Name, err)
+	}
+	roots := s.certificateReadRoots()
+	stored, err := findStorageCertificate(dataDir, source.DomainList(), roots)
+	if err != nil {
+		return models.Certificate{}, fmt.Errorf("%s has not completed its own ACME order for this certificate yet: %w", srv.Name, err)
+	}
+	certPEM, err := readCertificateFile(stored.CertPath, roots)
+	if err != nil {
+		return models.Certificate{}, fmt.Errorf("read %s: %w", stored.CertPath, err)
+	}
+	keyPEM, err := readCertificateFile(stored.KeyPath, roots)
+	if err != nil {
+		return models.Certificate{}, fmt.Errorf("read %s: %w", stored.KeyPath, err)
+	}
+	copy := source
+	copy.OwnerID = sql.NullInt64{}
+	copy.OwnerEmail = ""
+	copy.CreatedAt = time.Time{}
+	copy.UpdatedAt = time.Time{}
+	copy.Source = models.CertSourcePEM
+	copy.CertPEM, copy.KeyPEM = strings.TrimSpace(string(certPEM)), strings.TrimSpace(string(keyPEM))
+	copy.CertPath, copy.KeyPath = "", ""
+	copy.DNSProvider, copy.DNSProfileID = "", ""
+	copy.FleetDistributionMode, copy.FleetPushTargets = "", ""
+	return copy, nil
+}
+
 // fleetCertificateMatches pairs a source certificate with a target row that
 // has no deployment mapping yet: same domain set and the same kind (managed
 // with managed, custom with custom — a PEM copy of a file-path source is
 // still custom). Name breaks ties.
+//
+// v2.55.0 (issue #115): a Managed source in "source push" fleet-distribution
+// mode produces a PEM copy, not a managed one (see sourcePushCertificateCopy),
+// so it is compared as non-managed here too — otherwise a target's existing
+// pushed PEM copy would never be recognized as "the same certificate" on a
+// fresh scan (no deployment mapping yet) and a duplicate row would be created
+// alongside it.
 func fleetCertificateMatches(target, source models.Certificate) bool {
 	if !sameDomainSet(target.DomainList(), source.DomainList()) {
 		return false
 	}
-	return (target.Source == models.CertSourceManaged) == (source.Source == models.CertSourceManaged)
+	sourceBecomesManagedCopy := source.Source == models.CertSourceManaged &&
+		source.FleetDistributionMode != models.CertFleetDistributionSourcePush
+	return (target.Source == models.CertSourceManaged) == sourceBecomesManagedCopy
 }
 
 // upsertFleetCertificate creates or updates the target's copy of source
 // (see fleetCertificateCopy) and records the deployment mapping. byPath is
 // true when a file-path certificate could only be copied by reference.
+//
+// v2.55.0 (issue #115): when source is a Managed ACME certificate in "source
+// push" fleet-distribution mode, the target does not get its own DNS-01
+// definition (fleetCertificateCopy's default for CertSourceManaged) — it gets
+// the source's actual certificate and private key, read off the source
+// server's Caddy storage (sourcePushCertificateCopy), so it needs no DNS
+// credentials and gets no automation-policy entry of its own
+// (buildDNSAutomationPolicies only emits one for Source == CertSourceManaged).
+// An error here (no Data directory configured, or the source hasn't
+// completed its own ACME order yet) is returned as-is: every caller already
+// treats an error from this function as "skip this one and keep going," so
+// nothing is created or overwritten on the target, and the next certificate
+// lifecycle reconciler pass simply tries again.
 func (s *Server) upsertFleetCertificate(sourceServerID, targetServerID int64, source models.Certificate, ownerID int64) (result fleetUpsertResult, byPath bool, err error) {
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceCertificate, source.ID, targetServerID)
 	if err != nil {
@@ -478,7 +558,15 @@ func (s *Server) upsertFleetCertificate(sourceServerID, targetServerID int64, so
 			}
 		}
 	}
-	copy, byPath := fleetCertificateCopy(source, s.certificateReadRoots())
+	var copy models.Certificate
+	if source.Source == models.CertSourceManaged && source.FleetDistributionMode == models.CertFleetDistributionSourcePush {
+		copy, err = s.sourcePushCertificateCopy(sourceServerID, source)
+		if err != nil {
+			return fleetUpsertResult{}, false, err
+		}
+	} else {
+		copy, byPath = fleetCertificateCopy(source, s.certificateReadRoots())
+	}
 	created := existing == nil
 	changed := true
 	if existing != nil {

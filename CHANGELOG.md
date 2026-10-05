@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.55.0] - 2026-10-05 - Share one managed ACME certificate across fleet nodes
+
+### Added
+
+- **Opt-in "source push" fleet distribution for Managed ACME certificates** ([issue #115](https://github.com/X4Applegate/caddyui/issues/115)): the "Also configure on" picker on a Managed ACME certificate previously only cloned the DNS-01 *definition* to each target server, so every target independently obtained and renewed the same certificate — multiplying ACME orders against the CA's rate limits and requiring DNS API credentials on every edge node, for fleets that just want one shared wildcard. A new **"Push this certificate instead of letting each server obtain its own"** toggle (shown once a Managed ACME certificate has at least one target checked) switches selected targets to receiving the source's actual certificate and private key instead: the source server still performs the ACME order, and CaddyUI pushes the resulting PEM to the targets through the existing PEM fleet-copy machinery, so they need no DNS credentials and get no `apps.tls.automation.policies` entry of their own. Renewals are picked up automatically by the certificate lifecycle reconciler (within about an hour) without re-saving the certificate form; a first push attempted before the source has completed its own ACME order is skipped and simply retried on the next pass rather than pushing an empty certificate. Requires the source server's **Data directory** to be set (the same prerequisite as the existing "Export to a directory" feature), since reading a private key needs direct access to Caddy's on-disk certificate storage — a live TLS probe can only ever reveal the public certificate, never the key. **Off by default and fully additive:** every certificate that doesn't explicitly opt in keeps today's independent-ACME behavior with no change. Requested by @tkkost.
+
+---
+
 ## [2.54.0] - 2026-10-05 - Configurable ACME DNS-01 resolver
 
 ### Added
