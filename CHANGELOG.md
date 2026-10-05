@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.56.1] - 2026-10-05 - Security: AI tool-calling endpoint enforced write-role and SSRF guard
+
+### Security
+
+- **Read-only viewers could create proxy hosts and redirections via the AI tool-calling endpoint ([GHSA-5h8j-xxm3-7ggr](https://github.com/X4Applegate/caddyui/security/advisories/GHSA-5h8j-xxm3-7ggr)):** `POST /api/ai/exec-tool` was registered outside the `requireWrite`-protected route group that every other mutating route lives in, so an authenticated `viewer`-role account could call it directly and persist a new proxy host or redirection despite being explicitly blocked from every normal write path. The same handler's `create_proxy_host` action also skipped `validateProxyUpstreamsForUser`, the non-admin upstream guard added for GHSA-r4wm-rgc5-q834 — a non-admin account could use the AI tool as a side channel to point a proxy at the Caddy admin API, loopback, or link-local/cloud-metadata addresses even though the normal creation paths already block exactly that. Both gaps are closed: the route now lives in the same `requireWrite` group as every other mutating endpoint, and `create_proxy_host` now runs the same SSRF validation the REST and form paths already enforce. **Anyone running multi-user CaddyUI with `viewer` accounts and the AI assistant enabled should upgrade.** Reported by Sanidi Peiris ([@sanidipeiris-alt](https://github.com/sanidipeiris-alt)) and Sithum Shihara ([@zaara2004](https://github.com/zaara2004)).
+
+---
+
 ## [2.56.0] - 2026-10-05 - Layer4 app support for TCP/UDP routing
 
 ### Added
