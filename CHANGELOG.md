@@ -5,6 +5,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.57.1] - 2026-10-06 - Security hardening release, Caddy 2.11.7, and #121
+
+A full security audit — independent reviews of authentication and authorization, of injection / SSRF / file access, and of secrets and data exposure, plus a manual review of the paths that turn user input into Caddy config — found a number of access-control and isolation gaps. **None was externally reported**; each was reproduced against the real router before being fixed, and every fix ships with a regression test that fails on the previous code. Most of them need a signed-in account below admin, so a single-operator install with no extra users is much less exposed than a multi-user one — but anyone running **user** or **view** accounts should upgrade. Admin behaviour is unchanged.
+
+### Security
+
+**Access control**
+
+- **Any role could read the live Caddy config, which contains certificate private keys and DNS API tokens.** `/caddy-config`, Import from Caddy (`/import`) and the snapshot list / download sat in the read-for-any-role group, so a read-only viewer could read every uploaded certificate's private key and the DNS provider tokens. They, with **snapshot upload / restore / delete** and the auto-snapshot setting (a customer-level user could upload arbitrary JSON and restore it to take over Caddy) and the Porkbun certificate import (which fetched private keys for any domain on the admin's Porkbun account), are now **admin-only**.
+- **A customer-level `user` account could download the whole database** (`/backup`: password hashes, TOTP secrets, every stored credential). It sat in the `requireWrite` group, which blocks only read-only viewers. Now admin-only.
+- **`GET /api/v1/certificates` returned `key_pem` for every shared certificate to every role**, including read-only API tokens. Private keys and file paths are now returned only to a browser session or full-scope token of someone who can manage that certificate.
+- **Missing per-row ownership checks** on the single-host export (`export.json` / `export.caddyfile`, which carry upstream basic-auth and API-key secrets), maintenance toggle, health page and expectation runner, and on certificate inspect. Any account could read or change another tenant's host by ID.
+- **API token scope was enforced only inside one route group**, so a `proxy_write` token could create a full-scope token, create an admin account and change settings. Scope is now enforced for every route, and API tokens cannot manage API tokens.
+- **A customer's fleet copy could overwrite another tenant's (or the admin's) host on a target server** by saving a host with the same domain and ticking *Also deploy to* — it adopted the unrelated row and reset its owner. A copy of a tenant-owned row now only updates the row CaddyUI created for it. Certificate export to a directory, certificate source-push and copying certificates between servers are admin-only.
+- **REST create/update and the JSON import skipped the duplicate-domain check** the UI enforces (a duplicate sorts first and hijacks the existing host's traffic). The import also trusted uploaded DNS record / zone / certificate ids — a crafted record id made deleting the host delete that DNS record with the admin's credentials. A non-admin can no longer reference another tenant's private certificate id.
+- Low-privilege roles saw other tenants' data: live traffic and its stream, the activity log and its CSV, the dashboard's recently-edited widget, every node's admin URL (`/api/v1/servers`) and the upstream list. All are now scoped to what the user may see. Helper endpoints that fetch or adapt user-chosen input (`test-upstream`, `preview`, `validate`) and the AI chat (which spends the admin's LLM key) now need a write-capable account.
+
+**Config injection by non-admin users (the "tenant route guard")**
+
+- **`{env.NAME}` and `{file./path}` in any tenant-controlled string are expanded by Caddy at request time** (verified on a real Caddy 2.11): a custom header, redirect target or static-response body could serve the Caddy process's environment — the shipped compose puts the DNS API token there — or any file the Caddy container can read, including its certificate storage. Caddyfile `{$ENV}` does the same while adapting, and an `import /path` reads files (a parse error echoes its first token).
+- Existing guards covered individual fields on individual paths, and each audit found another miss (Advanced routes, additional upstream rules, forward-proxy / forward-auth URLs, the redirection advanced JSON). A single guard now inspects the **generated Caddy route** for every non-admin-owned resource, at save time (clear error) and again when the config is built (enforcement for rows already stored, or saved by any path — UI, REST, import, AI tool, clone): blocked upstreams, `file_server` / `templates` / `acme_server`, dynamic upstreams and process-reading placeholders are refused or neutralised. Caddyfile text from a non-admin is refused *before* it is sent to Caddy. The upstream guard also now understands `tcp/` prefixes, unix sockets, placeholders and integer / hex IP forms, blocks more cloud-metadata addresses, and treats **every registered node's** admin API as off limits, not just the primary's.
+- CaddyUI's own probes build URLs from a host's first domain and a custom health check: a customer could set the domain to `10.8.0.2:2019` with a custom `POST` check and have CaddyUI send it to that address every minute. Non-admin domains must now be plain hostnames, custom checks are GET / HEAD only, and the direct upstream probe no longer follows redirects.
+
+**Authentication**
+
+- **The login lockout never fired**: it counted a column the failed-login row doesn't write to. `max_login_attempts` now works. Wrong two-factor codes are limited (5 per login attempt, and an account with 10 recent failures cannot start a new second-factor step — keyed on the account, so a shared proxy address cannot lock everyone out).
+- A password change or reset now signs the account out everywhere (the profile change keeps only the current browser); disabling 2FA or regenerating backup codes needs the current password; first-run setup is serialized (two simultaneous requests could create two admins) and enforces the 8-character minimum server-side.
+- Password-reset and invitation links were built from the request's `Host` header, so an unauthenticated request with a forged Host got a working reset link mailed to the victim. Links now use **`CADDYUI_PUBLIC_URL`**, else your OIDC redirect URL's origin; set it to close this completely.
+
+**Data exposure, hygiene and stability**
+
+- The request log no longer records query strings (reset and invite tokens, a newly created API token, pending 2FA tokens and the OIDC code all travel there); webhook / ntfy URLs and `CADDY_ADMIN_URL` passwords are redacted from other log lines. CSV exports neutralise spreadsheet formulas. Server data written into `innerHTML` is escaped (certificate names and upstream addresses are tenant-controlled). LIKE wildcards in host matching are escaped (a host of `*.%` matched everything). New password hashes use bcrypt cost 12, as `SECURITY.md` always said (existing hashes keep working).
+- **`syncCaddy` swapped a shared client for its whole duration**, so concurrent syncs of different servers pushed each other's routes — certificate keys and basic-auth hashes included — to the wrong node (52 and 72 cross-pushes in 40 iterations in a reproduction). Syncs are now serialized.
+
+### Fixed
+
+- **An explicit `http://` Advanced route no longer needs a certificate or an HTTPS wait** ([issue #121](https://github.com/X4Applegate/caddyui/issues/121)): a route written as `http://127.0.0.1 { … }` now drops its certificate and Force SSL on save, skips the "deploying" page that waited for an ACME certificate that never comes, and the form disables both controls with an explanation. Reported by @tkkost.
+
+### Changed
+
+- Bundled **Caddy 2.11.7** (2.11.6 carries security fixes — a `forward_auth` / `reverse_proxy` upstream-connection mix-up (GHSA-6365-7ppr-5r92), path canonicalisation for `handle_path` / `uri strip_*`, `path_regexp` backslash normalisation — and 2.11.7 fixes regressions from 2.11.6). **Go toolchain 1.26.8**, `go-jose` 4.1.5 and other dependency updates; `govulncheck` finds no affected vulnerabilities. If you run your own Caddy, update it too — the image you pull for CaddyUI's Caddy is rebuilt with these.
+
+### Upgrade notes
+
+- **Non-admin accounts:** routes that use `{env.…}` / `{file.…}` placeholders, `file_server`, or an internal upstream are no longer deployed (the save is refused with a reason; an already-stored route is skipped or neutralised at sync and logged as `route skipped`). Read-only accounts lose snapshots, the live config view and the AI chat; user accounts lose the pages listed above. Admins are unaffected.
+- Set `CADDYUI_PUBLIC_URL` if you use password reset or invitations.
+- Passwords are re-hashed at cost 12 only when next changed.
+
+### Not addressed here (tracked)
+
+Admin-reachable and hardening items found by the same audit and deliberately left for a follow-up: the Tailwind CDN script on authenticated pages (and the `unsafe-inline` / `unsafe-eval` policy that follows from it); the unauthenticated log-ingest TCP listener on `:9019` (documented as relying on network isolation); DNS-rebinding of upstream host names (the guard is config-time); OIDC account linking by verified email only (no `iss`+`sub` binding or PKCE); upstream TLS verification being off by default for `https://` upstreams; the SMTP STARTTLS downgrade; rate limiting on `/forgot-password`; request-body size limits on JSON endpoints; an optional first-run setup token; per-tenant isolation of the post-sync "expectations" auto-rollback (one tenant's failing check can roll back the whole server's config); and AI-chat error bodies being read unbounded.
+
+---
+
 ## [2.57.0] - 2026-10-06 - Automatic deployment targets for Caddy Fleet servers
 
 ### Added

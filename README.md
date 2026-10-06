@@ -525,6 +525,7 @@ edge.
 | `CADDYUI_INGEST_LISTEN` | `:9019` | Structured Caddy log ingest for analytics, certificate lifecycle, and temporary runtime streams; set empty to disable all three |
 | `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy admin API base URL |
 | `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Optional — path to a Caddyfile mounted into the CaddyUI container. Its `(name) { ... }` snippet definitions are auto-loaded so `import <name>` works in Advanced routes, Caddyfile paste import, and a proxy host's Advanced config; site blocks and global options in it are never used |
+| `CADDYUI_PUBLIC_URL` | _(empty)_ | Externally visible origin, e.g. `https://caddyui.example.com`. Used for the links in password-reset and invitation emails; without it the link is built from the request's `Host` header. |
 | `CADDYUI_SYNC_ON_START` | *(unset)* | Set to `1` to push DB state to Caddy on startup |
 
 ---
