@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.56.4] - 2026-10-06 - Fix: proxy host Advanced config could not import CADDYFILE_PATH snippets
+
+### Fixed
+
+- **`import <snippet>` in a proxy host's Advanced config was rejected with `File to import not found`** ([issue #119](https://github.com/X4Applegate/caddyui/issues/119)): snippet definitions — `(my_snippet) { ... }` — in the Caddyfile mounted at `CADDYFILE_PATH` were auto-loaded for Advanced routes and the Caddyfile paste importer, but a proxy host's own **Advanced config** was adapted without them, so a valid snippet in the mounted file could not be imported there and the save was refused with Caddy's error. All three paths now share a single snippet loader, so they can't drift apart again. As before, only `(name) { ... }` blocks are taken from the file — never its global options or site blocks — and a snippet the text defines itself wins over the mounted one. The `CADDYFILE_PATH` rows in the README and Docker Hub docs now describe this instead of calling it a paste-import reference only. Regression tests added (they fail without the fix, with the exact error from the report) and the fix was also confirmed against a real Caddy 2.11.4. Reported by @kernaxis.
+
+---
+
 ## [2.56.3] - 2026-10-05 - Multi-arch Docker images (linux/amd64 + linux/arm64)
 
 ### Changed

@@ -523,7 +523,7 @@ edge.
 | `CADDYUI_LISTEN` | `:8080` | Listen address |
 | `CADDYUI_INGEST_LISTEN` | `:9019` | Structured Caddy log ingest for analytics, certificate lifecycle, and temporary runtime streams; set empty to disable all three |
 | `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy admin API base URL |
-| `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Path to Caddyfile (optional) |
+| `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Optional — path to a Caddyfile mounted into the CaddyUI container. Its `(name) { ... }` snippet definitions are auto-loaded so `import <name>` works in Advanced routes, Caddyfile paste import, and a proxy host's Advanced config; site blocks and global options in it are never used |
 | `CADDYUI_SYNC_ON_START` | *(unset)* | Set to `1` to push DB state to Caddy on startup |
 
 ---

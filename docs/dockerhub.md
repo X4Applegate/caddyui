@@ -279,7 +279,7 @@ Multi-arch: `linux/amd64` + `linux/arm64`. Scratch base image, runs as non-root 
 | `CADDYUI_DB_DSN` | (none) | MariaDB DSN; required when `CADDYUI_DB_DRIVER=mariadb` |
 | `CADDYUI_LISTEN` | `:8080` | HTTP listen address |
 | `CADDYUI_INGEST_LISTEN` | `:9019` | Structured Caddy log ingest for analytics, certificate lifecycle, and temporary runtime streams (empty string disables all three) |
-| `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Optional — only read if you mount a Caddyfile into the CaddyUI container for the paste-import auto-classifier reference |
+| `CADDYFILE_PATH` | `/etc/caddy/Caddyfile` | Optional — path to a Caddyfile mounted into the CaddyUI container. Its `(name) { ... }` snippet definitions are auto-loaded so `import <name>` works in Advanced routes, Caddyfile paste import, and a proxy host's Advanced config; site blocks and global options in it are never used |
 | `CADDY_ADMIN_USER` / `CADDY_ADMIN_PASS` | (none) | Optional HTTP basic auth for Caddy's admin endpoint when proxied |
 
 ---
