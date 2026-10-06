@@ -129,6 +129,43 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 	}, ""
 }
 
+// withAutoLoadedSnippets prepends the snippet definitions — "(name) { ... }" —
+// found in the mounted Caddyfile (CADDYFILE_PATH) to src, so `import <name>`
+// resolves without the user pasting the definition. Only the snippet blocks
+// themselves are added — never site blocks or the global options block, which
+// would duplicate existing routes or clash with Caddy's single global-options
+// restriction. A snippet src already defines is skipped, to avoid Caddy's
+// duplicate-definition error. If CADDYFILE_PATH is unset or unreadable, or
+// holds no snippets, src is returned unchanged.
+//
+// Every path that hands user-written Caddyfile text to /adapt must go through
+// this: Advanced routes, the Caddyfile paste importer, and a proxy host's
+// Advanced config (issue #119 — that last one was missed and rejected any
+// `import <snippet>` with "File to import not found").
+func (s *Server) withAutoLoadedSnippets(src string) string {
+	if s.CaddyfilePath == "" {
+		return src
+	}
+	b, err := os.ReadFile(s.CaddyfilePath)
+	if err != nil {
+		return src
+	}
+	already := map[string]bool{}
+	for _, snip := range caddy.ExtractSnippets(src) {
+		already[caddy.HeadOfBlock(snip)] = true
+	}
+	var loaded []string
+	for _, snip := range caddy.ExtractSnippets(string(b)) {
+		if !already[caddy.HeadOfBlock(snip)] {
+			loaded = append(loaded, snip)
+		}
+	}
+	if len(loaded) == 0 {
+		return src
+	}
+	return strings.Join(loaded, "\n\n") + "\n\n" + src
+}
+
 // adaptRawRouteCaddyfile sends a Caddyfile block (the `caddyfile_src` field of a
 // raw_route) through Caddy's /adapt, prepending auto-loaded snippets from the
 // mounted Caddyfile so `import <name>` references resolve. Returns the JSON to
@@ -140,25 +177,7 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 // all serve on the union of those ports — split them into separate Advanced
 // routes to keep them apart.
 func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (string, string, error) {
-	var loadedSnippets []string
-	if s.CaddyfilePath != "" {
-		if b, err := os.ReadFile(s.CaddyfilePath); err == nil {
-			already := map[string]bool{}
-			for _, snip := range caddy.ExtractSnippets(src) {
-				already[caddy.HeadOfBlock(snip)] = true
-			}
-			for _, snip := range caddy.ExtractSnippets(string(b)) {
-				if !already[caddy.HeadOfBlock(snip)] {
-					loadedSnippets = append(loadedSnippets, snip)
-				}
-			}
-		}
-	}
-	full := src
-	if len(loadedSnippets) > 0 {
-		full = strings.Join(loadedSnippets, "\n\n") + "\n\n" + src
-	}
-	adapted, err := caddyCl.Adapt(full)
+	adapted, err := caddyCl.Adapt(s.withAutoLoadedSnippets(src))
 	if err != nil {
 		return "", "", err
 	}
@@ -1350,7 +1369,9 @@ func (s *Server) adaptProxyAdvancedWithClient(caddyCl *caddy.Client, p models.Pr
 	// v2.42.2: repairs applied here too, so configs saved before the
 	// repairs existed adapt on the next sync without being re-saved.
 	src := fmt.Sprintf("localhost {\n%s\n}\n", normalizeProxyAdvancedConfig(p.AdvancedConfig))
-	adapted, err := caddyCl.Adapt(src)
+	// Issue #119: `import <snippet>` must see the snippets from CADDYFILE_PATH,
+	// exactly as it does in Advanced routes.
+	adapted, err := caddyCl.Adapt(s.withAutoLoadedSnippets(src))
 	if err != nil {
 		return nil, nil, err
 	}

@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"net/smtp"
 	"net/url"
-	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -3409,29 +3408,8 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-load snippet definitions from the mounted Caddyfile so users can use
-	// `import <name>` without pasting the definition. We only prepend the
-	// snippet blocks themselves — never site blocks or the global options block,
-	// which would duplicate existing routes or clash with Caddy's single global
-	// options restriction. Snippets the user already redefined in the paste are
-	// skipped to avoid Caddy's duplicate-definition error.
-	var loadedSnippets []string
-	if s.CaddyfilePath != "" {
-		if b, err := os.ReadFile(s.CaddyfilePath); err == nil {
-			already := map[string]bool{}
-			for _, snip := range caddy.ExtractSnippets(src) {
-				already[caddy.HeadOfBlock(snip)] = true
-			}
-			for _, snip := range caddy.ExtractSnippets(string(b)) {
-				if !already[caddy.HeadOfBlock(snip)] {
-					loadedSnippets = append(loadedSnippets, snip)
-				}
-			}
-		}
-	}
-	fullPaste := src
-	if len(loadedSnippets) > 0 {
-		fullPaste = strings.Join(loadedSnippets, "\n\n") + "\n\n" + src
-	}
+	// `import <name>` without pasting the definition (see withAutoLoadedSnippets).
+	fullPaste := s.withAutoLoadedSnippets(src)
 
 	// Adapt the ENTIRE paste as a single unit so cross-block references work:
 	// `import <snippet>` must see `(<snippet>) { ... }` defined in the same paste,
