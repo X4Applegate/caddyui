@@ -1,0 +1,251 @@
+# Publish the multi-arch (linux/amd64 + linux/arm64) Docker images to Docker Hub
+# when a release tag is pushed:
+#
+#   applegater/caddyui         every release  -> :vX.Y.Z  :stable  :latest
+#   applegater/caddyui-caddy   only when Dockerfile.caddy changed since the
+#                              previous release tag (or when asked for by hand)
+#
+# The Caddy image is deliberately not rebuilt on every release: xcaddy fetches
+# each plugin at its latest version, so a blind rebuild could silently bump
+# plugins under everyone who pulls :stable. Its :vX.Y.Z tag names the CaddyUI
+# release that last changed the module set.
+#
+# Setup, once, by a repo admin (Settings -> Secrets and variables -> Actions):
+#   DOCKERHUB_USERNAME  Docker Hub account that owns applegater/*  (applegater)
+#   DOCKERHUB_TOKEN     Docker Hub access token, scope "Read & Write"
+#                       (Docker Hub -> Account settings -> Personal access tokens)
+# Until both secrets exist the workflow still builds both architectures, so a
+# broken multi-arch build is caught, but it pushes nothing.
+#
+# Manual run (Actions -> Release Docker images -> Run workflow):
+#   version  an existing tag such as v2.56.3 (blank = the branch you ran it on,
+#            which can only ever be a build-only check)
+#   push     off by default; on = publish to Docker Hub
+#   caddy    also rebuild applegater/caddyui-caddy
+name: Release Docker images
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to build, e.g. v2.56.3 (blank = this branch, build only)"
+        required: false
+        type: string
+      push:
+        description: "Push to Docker Hub (needs the secrets). Off = build only."
+        required: false
+        type: boolean
+        default: false
+      caddy:
+        description: "Also rebuild applegater/caddyui-caddy"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-docker-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.p.outputs.ref }}
+      version: ${{ steps.p.outputs.version }}
+      push: ${{ steps.p.outputs.push }}
+      caddy: ${{ steps.p.outputs.caddy }}
+      tags_ui: ${{ steps.p.outputs.tags_ui }}
+      tags_caddy: ${{ steps.p.outputs.tags_caddy }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.version || github.ref }}
+          fetch-depth: 0
+
+      - name: Work out version, tags and whether to push
+        id: p
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          WANT_PUSH: ${{ github.event_name == 'push' || inputs.push }}
+          WANT_CADDY: ${{ inputs.caddy }}
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${INPUT_VERSION:-$GITHUB_REF_NAME}"
+          stable_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          pre_re='^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$'
+
+          # Only a real release tag may publish. :stable and :latest move only
+          # for a plain vX.Y.Z that is the newest release, so re-running an old
+          # tag by hand can never roll them backwards; anything else gets just
+          # its own :vX.Y.Z tag.
+          kind=none
+          if [[ "$version" =~ $stable_re ]]; then
+            newest="$(git tag --list 'v*' | grep -E "$stable_re" | sort -V | tail -1)"
+            if [ "$version" = "$newest" ]; then kind=stable; else kind=older; fi
+          elif [[ "$version" =~ $pre_re ]]; then kind=pre
+          else version=dev
+          fi
+
+          push=false
+          if [ "$kind" != none ] && [ "$WANT_PUSH" = "true" ]; then
+            if [ -n "$DH_USER" ] && [ -n "$DH_TOKEN" ]; then
+              push=true
+            else
+              echo "::notice::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set - building both architectures but not pushing."
+            fi
+          fi
+
+          # Rebuild the Caddy image when asked, or when Dockerfile.caddy differs
+          # from the previous release tag (nearest tag before this commit).
+          caddy=false
+          if [ "$WANT_CADDY" = "true" ]; then
+            caddy=true
+          elif [ "$kind" != none ]; then
+            prev="$(git describe --tags --abbrev=0 "${version}^" 2>/dev/null || true)"
+            if [ -z "$prev" ]; then
+              caddy=true
+            elif ! git diff --quiet "$prev" "$version" -- Dockerfile.caddy; then
+              caddy=true
+            fi
+          fi
+
+          tags() { # tags <repo>
+            case "$kind" in
+              stable) printf '%s:%s\n%s:stable\n%s:latest\n' "$1" "$version" "$1" "$1" ;;
+              pre|older) printf '%s:%s\n' "$1" "$version" ;;
+            esac
+          }
+
+          {
+            echo "ref=${INPUT_VERSION:-$GITHUB_REF}"
+            echo "version=$version"
+            echo "push=$push"
+            echo "caddy=$caddy"
+            echo "tags_ui<<EOF"
+            tags applegater/caddyui
+            echo "EOF"
+            echo "tags_caddy<<EOF"
+            tags applegater/caddyui-caddy
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "version=$version kind=$kind push=$push caddy=$caddy"
+
+  caddyui:
+    name: applegater/caddyui
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+
+      # The Dockerfiles cross-compile on the runner's own architecture, so no
+      # QEMU is needed for the arm64 image.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        if: needs.plan.outputs.push == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build (and push) linux/amd64 + linux/arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ needs.plan.outputs.version }}
+          tags: ${{ needs.plan.outputs.tags_ui }}
+          push: ${{ needs.plan.outputs.push == 'true' }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Verify every pushed tag is one multi-arch image
+        if: needs.plan.outputs.push == 'true'
+        env:
+          TAGS: ${{ needs.plan.outputs.tags_ui }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          first=""
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            out="$(docker buildx imagetools inspect "$tag")"
+            for plat in linux/amd64 linux/arm64; do
+              grep -Eq "Platform:[[:space:]]+${plat}\$" <<<"$out" || { echo "::error::$tag is missing $plat"; exit 1; }
+            done
+            digest="$(awk '/^Digest:/{print $2; exit}' <<<"$out")"
+            first="${first:-$digest}"
+            [ "$digest" = "$first" ] || { echo "::error::$tag digest $digest differs from $first"; exit 1; }
+            echo "ok  $tag  $digest"
+          done <<<"$TAGS"
+
+  caddy:
+    name: applegater/caddyui-caddy
+    needs: plan
+    if: needs.plan.outputs.caddy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        if: needs.plan.outputs.push == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build (and push) linux/amd64 + linux/arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.caddy
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ needs.plan.outputs.tags_caddy }}
+          push: ${{ needs.plan.outputs.push == 'true' }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Verify every pushed tag is one multi-arch image
+        if: needs.plan.outputs.push == 'true'
+        env:
+          TAGS: ${{ needs.plan.outputs.tags_caddy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          first=""
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            out="$(docker buildx imagetools inspect "$tag")"
+            for plat in linux/amd64 linux/arm64; do
+              grep -Eq "Platform:[[:space:]]+${plat}\$" <<<"$out" || { echo "::error::$tag is missing $plat"; exit 1; }
+            done
+            digest="$(awk '/^Digest:/{print $2; exit}' <<<"$out")"
+            first="${first:-$digest}"
+            [ "$digest" = "$first" ] || { echo "::error::$tag digest $digest differs from $first"; exit 1; }
+            echo "ok  $tag  $digest"
+          done <<<"$TAGS"
