@@ -17,7 +17,11 @@ set -euo pipefail
 
 REPO="${DOCKERHUB_REPO:-applegater/caddyui}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE="$ROOT/docs/dockerhub.md"
+# Each repository has its own source file; DOCKERHUB_SOURCE overrides.
+case "$REPO" in
+  applegater/caddyui-caddy) SOURCE="${DOCKERHUB_SOURCE:-$ROOT/docs/dockerhub-caddy.md}" ;;
+  *)                        SOURCE="${DOCKERHUB_SOURCE:-$ROOT/docs/dockerhub.md}" ;;
+esac
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
@@ -54,7 +58,7 @@ case "${1:-diff}" in
     live > /tmp/.hub-live.$$ || die "could not read the live description"
     rendered > /tmp/.hub-local.$$
     if diff -u --label "docker hub (live)" /tmp/.hub-live.$$ \
-              --label "docs/dockerhub.md" /tmp/.hub-local.$$; then
+              --label "$(basename "$SOURCE")" /tmp/.hub-local.$$; then
       echo "in sync"
     else
       status=1
