@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.57.0] - 2026-10-06 - Automatic deployment targets for Caddy Fleet servers
+
+### Added
+
+- **Persistent default deployment targets** ([issue #120](https://github.com/X4Applegate/caddyui/issues/120)): the per-save **Also deploy to** picker only applied to the save it was ticked on, so a fleet where one Caddy is the configuration source for a fixed set of edge nodes had to re-select the same servers on every create and edit. A Caddy Fleet server's edit form now has an **Automatic deployment targets** section: tick the servers it feeds, and every proxy host, redirection and advanced route created or edited on that server in the web UI — by any user who can save there — is deployed to them on save. It uses exactly the same per-resource deployment as **Also deploy to** — idempotent, hostname changes stay attached to the right copy through the durable source-to-target mapping, target DNS records and custom certificate selections remain server-specific, and a managed wildcard certificate definition that covers the host travels with it — so nothing new has to be learned about how a deployment behaves. On the resource forms the targets appear as always-on rows labelled *default*; the **Also deploy to** picker stays available for one-off extra targets, and marking a resource **node-local** is the per-resource opt-out. Independent of the Layer4 **Also copy to** picker on the same server form, which has its own field. **Off by default and fully additive:** every existing server starts with no targets, so nothing deploys anywhere new until an operator picks some. Deleting a server also removes it from every other server's target list, so a reused ID can never start receiving another server's resources. **Deliberately not included:** deleting a resource does not delete its copies on the targets (propagating deletions is destructive, so it is left for an explicit opt-in); quick enable/disable toggles, bulk actions, Caddyfile and JSON import, and the REST API do not deploy; certificates keep their own per-certificate targets; and resources that already exist are deployed the next time they are saved — for a one-time bulk copy use **Sync from current** on the target. Deployment still happens as part of the save, exactly like **Also deploy to**, so a target that is unreachable can delay a save by up to ~10 seconds (the failure is recorded in the Activity Log); targets run one way, from the source to its edge nodes — a server that already deploys to this one cannot be added as its target, so two servers can never overwrite each other. Regression tests drive the real create and edit handlers for proxy hosts, redirections and advanced routes. Requested by @tkkost.
+
+---
+
 ## [2.56.4] - 2026-10-06 - Fix: proxy host Advanced config could not import CADDYFILE_PATH snippets
 
 ### Fixed
