@@ -190,7 +190,7 @@ func (s *Server) upsertFleetProxyHost(sourceServerID, targetServerID int64, sour
 			// above). Adopting an unrelated row that merely has the same
 			// domains let one customer overwrite another's host — or an
 			// admin's — on the target, and reset its owner.
-			if !source.OwnerID.Valid && sameDomainSet(targets[i].DomainList(), source.DomainList()) {
+			if !s.isTenantOwner(source.OwnerID) && sameDomainSet(targets[i].DomainList(), source.DomainList()) {
 				existing = &targets[i]
 				targetID = targets[i].ID
 				break
@@ -287,7 +287,7 @@ func (s *Server) upsertFleetRedirectionHost(sourceServerID, targetServerID int64
 			// above). Adopting an unrelated row that merely has the same
 			// domains let one customer overwrite another's host — or an
 			// admin's — on the target, and reset its owner.
-			if !source.OwnerID.Valid && sameDomainSet(targets[i].DomainList(), source.DomainList()) {
+			if !s.isTenantOwner(source.OwnerID) && sameDomainSet(targets[i].DomainList(), source.DomainList()) {
 				existing = &targets[i]
 				targetID = targets[i].ID
 				break
@@ -387,7 +387,7 @@ func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, sourc
 			return fleetUpsertResult{}, err
 		}
 		for i := range targets {
-			if !source.OwnerID.Valid && rawRouteIdentityMatches(targets[i], source) { // v2.57.1: see upsertFleetProxyHost
+			if !s.isTenantOwner(source.OwnerID) && rawRouteIdentityMatches(targets[i], source) { // v2.57.1: see upsertFleetProxyHost
 				existing = &targets[i]
 				targetID = targets[i].ID
 				break
@@ -585,7 +585,7 @@ func (s *Server) upsertFleetCertificate(sourceServerID, targetServerID int64, so
 			return fleetUpsertResult{}, false, err
 		}
 		for i := range targets {
-			if !source.OwnerID.Valid && fleetCertificateMatches(targets[i], source) && (existing == nil || targets[i].Name == source.Name) { // v2.57.1
+			if !s.isTenantOwner(source.OwnerID) && fleetCertificateMatches(targets[i], source) && (existing == nil || targets[i].Name == source.Name) { // v2.57.1
 				existing = &targets[i]
 				targetID = targets[i].ID
 			}

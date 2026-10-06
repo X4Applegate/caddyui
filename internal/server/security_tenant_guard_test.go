@@ -433,3 +433,30 @@ func TestNonAdminAdvancedConfigIsCheckedAfterAdapting(t *testing.T) {
 		t.Errorf("the admin's Advanced config was refused: %d", rec.Code)
 	}
 }
+
+// Some paths assign a row to an administrator's own user id (the JSON import
+// gives the row to whoever imports). Those rows are the admin's, not a
+// tenant's: the guard must not restrict them — doing so would silently drop an
+// admin's own routes on the next sync.
+func TestTenantGuardTreatsRowsOwnedByAnAdministratorAsAdminOwned(t *testing.T) {
+	e := newSecEnv(t)
+	leak := `{"X-Leak":"{env.MY_OWN}"}`
+	mk := func(owner int64) models.ProxyHost {
+		return models.ProxyHost{Domains: "h.example.test", ForwardScheme: "http", ForwardHost: "127.0.0.1", ForwardPort: 8080,
+			Enabled: true, CustomRespHeaders: leak, OwnerID: ownerNull(owner)}
+	}
+	build := func(p models.ProxyHost) string {
+		b, _ := json.Marshal(e.s.buildMergedRoutes([]models.ProxyHost{p}, nil, nil))
+		return string(b)
+	}
+	if out := build(mk(e.ids["admin"])); !strings.Contains(out, "{env.MY_OWN}") || !strings.Contains(out, "127.0.0.1") {
+		t.Errorf("a row owned by the admin's own user id was restricted:\n%s", out)
+	}
+	if out := build(mk(e.ids["alice"])); strings.Contains(out, "{env.MY_OWN}") {
+		t.Errorf("a customer-owned row kept its placeholder:\n%s", out)
+	}
+	// An owner that no longer exists cannot be vouched for.
+	if out := build(mk(987654)); strings.Contains(out, "{env.MY_OWN}") {
+		t.Errorf("a row with a deleted owner was trusted:\n%s", out)
+	}
+}

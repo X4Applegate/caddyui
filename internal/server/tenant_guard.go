@@ -301,12 +301,32 @@ func neutraliseTenantPlaceholders(v any) (any, bool) {
 	return rec(v), changed
 }
 
+// isTenantOwner reports whether a row's owner is a NON-admin account — the only
+// owners the tenant guard restricts. An empty owner (global, admin-managed) is
+// trusted; so is a row owned by an administrator's own user id, which some paths
+// create (the JSON import assigns the importing user). A row owned by a user
+// that no longer exists is treated as a tenant: restricting it is the safe
+// reading of "we cannot tell".
+func (s *Server) isTenantOwner(owner sql.NullInt64) bool {
+	if !owner.Valid {
+		return false
+	}
+	if s == nil || s.DB == nil {
+		return true
+	}
+	u, err := models.GetUserByID(s.DB, owner.Int64)
+	if err != nil || u == nil {
+		return true
+	}
+	return !isAdminUser(u)
+}
+
 // sanitizeTenantRoute is the sync-time enforcement. For a row owned by a
 // non-admin (owner.Valid) it neutralises process-reading placeholders and
 // refuses a route that fails tenantRouteViolation; admin-owned rows pass
 // through untouched. ok=false means: do not deploy this route.
 func (s *Server) sanitizeTenantRoute(owner sql.NullInt64, what string, route any) (any, bool) {
-	if !owner.Valid || route == nil {
+	if route == nil || !s.isTenantOwner(owner) {
 		return route, true
 	}
 	route, changed := neutraliseTenantPlaceholders(route)

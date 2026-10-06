@@ -4889,7 +4889,7 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		}
 		var advanced []any
 		var advancedOverrides map[string]any
-		if strings.TrimSpace(p.AdvancedConfig) != "" && p.OwnerID.Valid && tenantTextViolation(p.AdvancedConfig) != "" {
+		if strings.TrimSpace(p.AdvancedConfig) != "" && s.isTenantOwner(p.OwnerID) && tenantTextViolation(p.AdvancedConfig) != "" {
 			// {$ENV} is substituted by Caddy while ADAPTING, so the value would
 			// already be baked into the handlers; refuse before adapting.
 			log.Printf("caddy sync: proxy id=%d advanced_config skipped, not allowed for a non-admin owner: %s", p.ID, tenantTextViolation(p.AdvancedConfig))
@@ -5176,7 +5176,7 @@ func applyPlainHTTPServer(cfg map[string]any, routes []any) {
 // tenant_guard.go applied to each entry (v2.57.1).
 func (s *Server) tenantSafeRawEntries(rr models.RawRoute) []any {
 	entries := rawRouteEntries(rr)
-	if !rr.OwnerID.Valid {
+	if !s.isTenantOwner(rr.OwnerID) {
 		return entries
 	}
 	out := make([]any, 0, len(entries))
