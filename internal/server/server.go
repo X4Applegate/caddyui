@@ -23,11 +23,13 @@ import (
 	"net/http"
 	"net/smtp"
 	"net/url"
+	"os"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/X4Applegate/caddyui/internal/analytics"
@@ -56,7 +58,11 @@ type Server struct {
 	// exist in the scratch final image, and creating it at runtime as a
 	// non-root UID isn't allowed. v2.7.5.
 	DBPath      string
-	pendingTOTP sync.Map // token → userID (int64), auto-deleted after 5 min
+	pendingTOTP sync.Map   // token → userID (int64), auto-deleted after 5 min
+	setupMu     sync.Mutex // serializes first-run setup (see postSetup)
+	// pendingTOTPAttempts counts wrong second-factor codes per pending token
+	// (token → *int32) so one password check cannot buy unlimited guesses.
+	pendingTOTPAttempts sync.Map
 
 	// CSRF HMAC key, loaded from (or generated into) the settings table on
 	// first use. Per-Server rather than package-level so two Servers in the
@@ -1231,6 +1237,10 @@ func (s *Server) getSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
+	// v2.57.1: the user-count check and the insert must be one step. Two
+	// simultaneous requests could both see zero users and both create an admin.
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
 	n, err := models.CountUsers(s.DB)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1251,6 +1261,11 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if pw != pw2 {
 		s.render(w, r, "setup.html", map[string]any{"Error": "Passwords do not match"})
+		return
+	}
+	// The 8-character minimum was only an HTML attribute; enforce it here too.
+	if len(pw) < 8 {
+		s.render(w, r, "setup.html", map[string]any{"Error": "Password must be at least 8 characters"})
 		return
 	}
 	hash, err := auth.HashPassword(pw)
@@ -2064,6 +2079,30 @@ func (s *Server) rateLimitClientIP(r *http.Request) string {
 	return peer
 }
 
+// loginFailureWindow is how far back failed sign-in attempts are counted.
+const loginFailureWindow = 15 * time.Minute
+
+// maxTOTPAttemptsPerToken is how many wrong second-factor codes one pending
+// login token allows; maxTOTPFailuresPerAccount is how many wrong codes an
+// account may rack up inside loginFailureWindow, across tokens and IPs.
+const (
+	maxTOTPAttemptsPerToken   = 5
+	maxTOTPFailuresPerAccount = 10
+)
+
+// totpLockedOut reports whether an account has failed the second factor too
+// often recently. Keyed on the account, not the client IP, so it cannot lock out
+// everyone behind a shared reverse-proxy address; only someone who already
+// knows the password can trip it.
+func (s *Server) totpLockedOut(email string) bool {
+	var n int
+	_ = s.DB.QueryRow(
+		`SELECT COUNT(*) FROM activity_log WHERE action = 'login_totp_fail' AND actor = ? AND created_at > ?`,
+		email, time.Now().UTC().Add(-loginFailureWindow),
+	).Scan(&n)
+	return n >= maxTOTPFailuresPerAccount
+}
+
 func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 
@@ -2095,10 +2134,14 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	if maxStr, _ := models.GetSetting(s.DB, settingMaxLoginAttempts); maxStr != "" {
 		if maxAttempts, err := strconv.Atoi(strings.TrimSpace(maxStr)); err == nil && maxAttempts > 0 {
 			var failCount int
+			// Security (v2.57.1): the failure row stores "ip:<addr>" in the
+			// target column (see LogActivity below). This query matched the
+			// detail column instead, so it always counted 0 and the lockout
+			// never fired.
 			_ = s.DB.QueryRow(
-				`SELECT COUNT(*) FROM activity_log WHERE action = 'login_fail' AND detail LIKE ? AND created_at > ?`,
-				"%ip:"+clientIP+"%",
-				time.Now().UTC().Add(-15*time.Minute),
+				`SELECT COUNT(*) FROM activity_log WHERE action = 'login_fail' AND target = ? AND created_at > ?`,
+				"ip:"+clientIP,
+				time.Now().UTC().Add(-loginFailureWindow),
 			).Scan(&failCount)
 			if failCount >= maxAttempts {
 				renderLoginErr("Too many failed login attempts. Please wait 15 minutes and try again.")
@@ -2116,6 +2159,10 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if u.TOTPEnabled && u.TOTPSecret != "" {
+		if s.totpLockedOut(u.Email) {
+			renderLoginErr("Too many failed verification attempts for this account. Please wait 15 minutes and try again.")
+			return
+		}
 		// Generate a pre-auth token and redirect to TOTP verification.
 		b := make([]byte, 16)
 		rand.Read(b)
@@ -2218,6 +2265,11 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	if s.totpLockedOut(u.Email) {
+		s.pendingTOTPAttempts.Delete(tok)
+		renderTOTPErr("Too many failed verification attempts for this account. Please wait 15 minutes and sign in again.")
+		return
+	}
 
 	validTOTP := totplib.Validate(code, u.TOTPSecret)
 	if !validTOTP {
@@ -2229,12 +2281,21 @@ func (s *Server) postTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !validTOTP {
+		// Security (v2.57.1): the token used to be put back after every wrong
+		// code with no limit, so a known password bought unlimited guesses at
+		// a 6-digit code. A token now allows maxTOTPAttemptsPerToken guesses,
+		// and an account that keeps failing is locked out (totpLockedOut) so a
+		// fresh password login cannot reset the budget.
+		attemptsAny, _ := s.pendingTOTPAttempts.LoadOrStore(tok, new(int32))
+		attempts := atomic.AddInt32(attemptsAny.(*int32), 1)
+		_ = models.LogActivity(s.DB, 0, u.Email, "login_totp_fail", "ip:"+clientIPFromRequest(r), "invalid TOTP code", false)
+		if attempts >= maxTOTPAttemptsPerToken {
+			s.pendingTOTPAttempts.Delete(tok) // the token stays deleted
+			renderTOTPErr("Too many incorrect codes. Please sign in again.")
+			return
+		}
 		// Put token back so user can retry.
 		s.pendingTOTP.Store(tok, userID)
-		// v2.9.210: log failed TOTP attempts for the same forensic reason
-		// as login_fail — repeated login_totp_fail rows from one IP signal
-		// somebody got past the password but is brute-forcing the 2FA code.
-		_ = models.LogActivity(s.DB, 0, u.Email, "login_totp_fail", "ip:"+clientIPFromRequest(r), "invalid TOTP code", false)
 		renderTOTPErr("Invalid code. Try again.")
 		return
 	}
@@ -6445,6 +6506,41 @@ func (s *Server) getForgotPassword(w http.ResponseWriter, r *http.Request) {
 // postForgotPassword processes the forgot-password form submission.
 // Always shows the "check your email" message even if the address doesn't
 // exist (prevents email enumeration).
+// publicBaseURL is the origin (scheme://host[:port], no trailing slash) used in
+// links that CaddyUI emails out: password reset and invitations.
+//
+// Order: CADDYUI_PUBLIC_URL, then the origin of the configured OIDC redirect
+// URL, then — only as a last resort — this request's own scheme and Host. The
+// last resort is what used to be the ONLY source, which let an unauthenticated
+// POST /forgot-password with a forged Host header get a working reset link
+// pointing at the attacker mailed to the victim. Set CADDYUI_PUBLIC_URL (for
+// example https://caddyui.example.com) to close that completely.
+func (s *Server) publicBaseURL(r *http.Request) string {
+	if base := cleanBaseURL(os.Getenv("CADDYUI_PUBLIC_URL")); base != "" {
+		return base
+	}
+	if v, _ := models.GetSetting(s.DB, settingOIDCRedirectURL); v != "" {
+		if base := cleanBaseURL(v); base != "" {
+			return base
+		}
+	}
+	scheme := "http"
+	if r.TLS != nil || (s.peerIsTrustedProxy(net.ParseIP(peerHost(r))) &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")) {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+// cleanBaseURL reduces a URL to its http(s) origin, or "" when it is not one.
+func cleanBaseURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 func (s *Server) postForgotPassword(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(strings.ToLower(r.FormValue("email")))
 	if email == "" {
@@ -6462,12 +6558,10 @@ func (s *Server) postForgotPassword(w http.ResponseWriter, r *http.Request) {
 		expires := time.Now().Add(time.Hour).Unix()
 		// Store token hash in settings: key=pw_reset_<hash>, value=<userID>:<expires>
 		_ = models.SetSetting(s.DB, "pw_reset_"+hash, fmt.Sprintf("%d:%d", u.ID, expires))
-		// Determine base URL for the reset link.
-		scheme := "https"
-		if r.TLS == nil {
-			scheme = "http"
-		}
-		resetURL := fmt.Sprintf("%s://%s/reset-password?token=%s", scheme, r.Host, token)
+		// Security (v2.57.1): the link's origin is a configured value, never the
+		// request's Host header — this endpoint is unauthenticated, so a forged
+		// Host would otherwise be mailed to the victim as a working reset link.
+		resetURL := fmt.Sprintf("%s/reset-password?token=%s", s.publicBaseURL(r), token)
 		body := fmt.Sprintf(
 			"Hello %s,\n\nA password reset was requested for your CaddyUI account.\n\n"+
 				"Click the link below to set a new password (expires in 1 hour):\n\n"+
@@ -6580,11 +6674,7 @@ func (s *Server) postInviteUser(w http.ResponseWriter, r *http.Request) {
 	expires := time.Now().Add(7 * 24 * time.Hour).Unix()
 	_ = models.SetSetting(s.DB, "invite_"+hash, fmt.Sprintf("%d:%d", userID, expires))
 
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	acceptURL := fmt.Sprintf("%s://%s/accept-invite?token=%s", scheme, r.Host, token)
+	acceptURL := fmt.Sprintf("%s/accept-invite?token=%s", s.publicBaseURL(r), token) // v2.57.1: see postForgotPassword
 	body := fmt.Sprintf(
 		"You've been invited to CaddyUI.\n\n"+
 			"Click the link below to set your password and activate your account (link expires in 7 days):\n\n"+
@@ -7131,6 +7221,10 @@ func (s *Server) postProfile(w http.ResponseWriter, r *http.Request) {
 			log.Printf("profile change_password: %v", err)
 			http.Redirect(w, r, "/profile?error=Failed+to+update+password", http.StatusFound)
 			return
+		}
+		// v2.57.1: sign every OTHER device out; this browser keeps its session.
+		if c, err := r.Cookie(auth.SessionCookie); err == nil {
+			_ = auth.DeleteOtherSessions(s.DB, cu.ID, c.Value)
 		}
 		_ = models.LogActivity(s.DB, s.currentServerID(r), cu.Email, "profile_change_password", "", "", true)
 		http.Redirect(w, r, "/profile?flash=Password+changed+successfully", http.StatusFound)

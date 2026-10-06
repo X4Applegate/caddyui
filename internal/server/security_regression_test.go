@@ -366,3 +366,261 @@ func TestSecurityAPITokenScopeIsEnforcedOnEveryRoute(t *testing.T) {
 		t.Errorf("read_only token listing proxy hosts -> %d, want 200", rec.Code)
 	}
 }
+
+// --- sign-in brute force --------------------------------------------------
+
+func (e *secEnv) postForm(t *testing.T, path, remoteAddr string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	return rec
+}
+
+// The lockout counted a column the failure row never wrote to, so
+// max_login_attempts had never locked anything out.
+func TestSecurityLoginLockoutActuallyLocksOut(t *testing.T) {
+	e := newSecEnv(t)
+	if err := models.SetSetting(e.db, settingMaxLoginAttempts, "3"); err != nil {
+		t.Fatal(err)
+	}
+	wrong := url.Values{"email": {"admin@t"}, "password": {"wrong"}}
+	locked := func(addr string) bool {
+		return strings.Contains(e.postForm(t, "/login", addr, wrong).Body.String(), "Too many failed")
+	}
+	for i := 1; i <= 3; i++ {
+		if locked("203.0.113.9:4444") {
+			t.Fatalf("locked after only %d failure(s); the limit is 3", i-1)
+		}
+	}
+	if !locked("203.0.113.9:4444") {
+		t.Fatal("the 4th attempt from the same address was not locked out")
+	}
+	// Another address is unaffected — the lockout is per client, not global.
+	if locked("203.0.113.10:4444") {
+		t.Fatal("a different client address was locked out too")
+	}
+	// Even the right password is refused while locked out.
+	good := url.Values{"email": {"admin@t"}, "password": {"password-123"}}
+	if !strings.Contains(e.postForm(t, "/login", "203.0.113.9:4444", good).Body.String(), "Too many failed") {
+		t.Fatal("the correct password was accepted during a lockout")
+	}
+}
+
+// Wrong second-factor codes were retried without limit on one pending token,
+// and a fresh password login reset nothing, so a known password bought
+// unlimited guesses at a 6-digit code.
+func TestSecurityTOTPGuessesAreLimited(t *testing.T) {
+	e := newSecEnv(t)
+	const secret = "JBSWY3DPEHPK3PXP"
+	if err := models.SetUserTOTP(e.db, e.ids["admin"], secret, true); err != nil {
+		t.Fatal(err)
+	}
+	login := func() string {
+		rec := e.postForm(t, "/login", "203.0.113.50:1", url.Values{"email": {"admin@t"}, "password": {"password-123"}})
+		if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/login/totp?t=") {
+			return "" // refused
+		}
+		return strings.TrimPrefix(rec.Header().Get("Location"), "/login/totp?t=")
+	}
+	guess := func(tok, code string) string {
+		return e.postForm(t, "/login/totp", "203.0.113.50:1", url.Values{"token": {tok}, "code": {code}}).Body.String()
+	}
+
+	// One token allows a handful of guesses, then dies.
+	tok := login()
+	if tok == "" {
+		t.Fatal("first-factor login should hand out a TOTP step")
+	}
+	for i := 1; i < maxTOTPAttemptsPerToken; i++ {
+		if body := guess(tok, "000000"); !strings.Contains(body, "Invalid code") {
+			t.Fatalf("guess %d: want 'Invalid code', got %q", i, excerpt(body, "code"))
+		}
+	}
+	if body := guess(tok, "000000"); !strings.Contains(body, "Too many incorrect codes") {
+		t.Fatalf("guess %d should exhaust the token, got %q", maxTOTPAttemptsPerToken, excerpt(body, "Too many"))
+	}
+	if body := guess(tok, "000000"); !strings.Contains(body, "Session expired") {
+		t.Fatal("an exhausted token must not be usable again")
+	}
+
+	// A fresh password login does not reset the budget: after enough failures
+	// the account itself is locked out of the second-factor step.
+	for round := 0; round < 3 && login() != ""; round++ {
+		t2 := login()
+		for i := 0; t2 != "" && i < maxTOTPAttemptsPerToken; i++ {
+			guess(t2, "000000")
+		}
+	}
+	if login() != "" {
+		t.Fatal("an account with many failed second-factor codes can still start a new TOTP step")
+	}
+}
+
+// --- sessions after a credential change ----------------------------------
+
+// A stolen session used to survive the password reset meant to evict it.
+func TestSecurityPasswordChangeSignsOtherSessionsOut(t *testing.T) {
+	e := newSecEnv(t)
+	// A second device for alice.
+	otherTok, _, err := auth.CreateSession(e.db, e.ids["alice"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive := func(tok string) bool {
+		u, _ := auth.UserFromSession(e.db, tok)
+		return u != nil
+	}
+	if !alive(otherTok) || !alive(e.tokens["alice"]) {
+		t.Fatal("setup: both of alice's sessions should be valid")
+	}
+
+	// Self-service change from the browser holding e.tokens["alice"].
+	rec := e.do(t, "alice", http.MethodPost, "/profile", url.Values{
+		"action": {"change_password"}, "current_password": {"password-123"},
+		"new_password": {"brand-new-pass-1"}, "confirm_password": {"brand-new-pass-1"},
+	})
+	if rec.Code != http.StatusFound {
+		t.Fatalf("profile change_password -> %d", rec.Code)
+	}
+	if alive(otherTok) {
+		t.Error("another device's session survived the password change")
+	}
+	if !alive(e.tokens["alice"]) {
+		t.Error("the browser that changed the password was signed out too")
+	}
+
+	// A reset/admin-initiated change (models.UpdateUserPassword) signs out everywhere.
+	h, _ := auth.HashPassword("another-pass-123")
+	if err := models.UpdateUserPassword(e.db, e.ids["alice"], h); err != nil {
+		t.Fatal(err)
+	}
+	if alive(e.tokens["alice"]) {
+		t.Error("a password reset left the account's session valid")
+	}
+	// Other accounts are untouched.
+	if !alive(e.tokens["bob"]) {
+		t.Error("an unrelated account was signed out")
+	}
+}
+
+// --- emailed links and first-run setup -----------------------------------
+
+// POST /forgot-password is unauthenticated, and the emailed link used to be
+// built from the request's Host header: a forged Host got a working reset token
+// mailed to the victim, pointing at the attacker.
+func TestSecurityEmailedLinksIgnoreTheRequestHostWhenConfigured(t *testing.T) {
+	e := newSecEnv(t)
+	req := func(host string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/forgot-password", nil)
+		r.Host = host
+		r.RemoteAddr = "203.0.113.200:1"
+		return r
+	}
+
+	// Configured via the environment: the Host header is irrelevant.
+	t.Setenv("CADDYUI_PUBLIC_URL", "https://caddyui.example.com/")
+	if got := e.s.publicBaseURL(req("evil.attacker.test")); got != "https://caddyui.example.com" {
+		t.Errorf("with CADDYUI_PUBLIC_URL set, base = %q, want https://caddyui.example.com", got)
+	}
+
+	// Not set: fall back to the configured OIDC redirect URL's origin.
+	t.Setenv("CADDYUI_PUBLIC_URL", "")
+	if err := models.SetSetting(e.db, settingOIDCRedirectURL, "https://sso.example.com/auth/oidc/callback"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.s.publicBaseURL(req("evil.attacker.test")); got != "https://sso.example.com" {
+		t.Errorf("with an OIDC redirect URL, base = %q, want https://sso.example.com", got)
+	}
+
+	// Nothing configured: the request is the only source (unchanged), but a
+	// forwarded scheme is trusted only from a trusted proxy.
+	if err := models.SetSetting(e.db, settingOIDCRedirectURL, ""); err != nil {
+		t.Fatal(err)
+	}
+	direct := req("ui.example.com")
+	direct.Header.Set("X-Forwarded-Proto", "https") // from a public peer: ignored
+	if got := e.s.publicBaseURL(direct); got != "http://ui.example.com" {
+		t.Errorf("untrusted X-Forwarded-Proto was honoured: %q", got)
+	}
+	viaProxy := req("ui.example.com")
+	viaProxy.RemoteAddr = "172.18.0.9:5555" // private peer = trusted proxy
+	viaProxy.Header.Set("X-Forwarded-Proto", "https")
+	if got := e.s.publicBaseURL(viaProxy); got != "https://ui.example.com" {
+		t.Errorf("proxied https request base = %q, want https://ui.example.com", got)
+	}
+
+	for in, want := range map[string]string{
+		"https://a.example.com:8443/some/path?x=1": "https://a.example.com:8443",
+		"http://a.example.com":                     "http://a.example.com",
+		"ftp://a.example.com":                      "",
+		"https://user:pw@a.example.com":            "",
+		"//a.example.com":                          "",
+		"not a url":                                "",
+		"":                                         "",
+	} {
+		if got := cleanBaseURL(in); got != want {
+			t.Errorf("cleanBaseURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func newEmptySetupServer(t *testing.T) *Server {
+	t.Helper()
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return newRenderingTestServer(t, conn)
+}
+
+func setupRequest(email, pw string) *http.Request {
+	return postForm0("/setup", url.Values{"email": {email}, "name": {"x"}, "password": {pw}, "password_confirm": {pw}})
+}
+
+func postForm0(path string, v url.Values) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(v.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return r
+}
+
+func TestSecuritySetupEnforcesPasswordMinimumServerSide(t *testing.T) {
+	s := newEmptySetupServer(t)
+	rec := httptest.NewRecorder()
+	s.postSetup(rec, setupRequest("admin@example.com", "short"))
+	if n, _ := models.CountUsers(s.DB); n != 0 {
+		t.Fatalf("a 5-character password created %d user(s); the minimum is 8", n)
+	}
+	if !strings.Contains(rec.Body.String(), "at least 8 characters") {
+		t.Errorf("the form should explain the minimum, got %q", excerpt(rec.Body.String(), "characters"))
+	}
+	rec = httptest.NewRecorder()
+	s.postSetup(rec, setupRequest("admin@example.com", "long-enough-pass"))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a valid setup -> %d, want 303", rec.Code)
+	}
+	if n, _ := models.CountUsers(s.DB); n != 1 {
+		t.Fatalf("users after a valid setup = %d, want 1", n)
+	}
+}
+
+// Two simultaneous first-run requests used to be able to both see zero users
+// and both create an admin.
+func TestSecuritySetupCreatesExactlyOneAdminUnderConcurrency(t *testing.T) {
+	s := newEmptySetupServer(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s.postSetup(httptest.NewRecorder(), setupRequest(fmt.Sprintf("admin%d@example.com", i), "long-enough-pass"))
+		}(i)
+	}
+	wg.Wait()
+	if n, _ := models.CountUsers(s.DB); n != 1 {
+		t.Fatalf("%d concurrent setups created %d admins, want exactly 1", 12, n)
+	}
+}

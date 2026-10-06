@@ -87,6 +87,14 @@ func CreateSessionWithTTL(db *sql.DB, userID int64, ttl time.Duration) (string, 
 	return tok, expires, nil
 }
 
+// DeleteOtherSessions removes every session of the user except the one
+// identified by the raw cookie token keep. Used when the signed-in user changes
+// their own password: other devices are signed out, this one stays.
+func DeleteOtherSessions(db *sql.DB, userID int64, keep string) error {
+	_, err := db.Exec(`DELETE FROM sessions WHERE user_id = ? AND token != ?`, userID, HashSessionToken(keep))
+	return err
+}
+
 // DeleteSession removes the session identified by the raw cookie token.
 func DeleteSession(db *sql.DB, token string) error {
 	_, err := db.Exec(`DELETE FROM sessions WHERE token = ?`, HashSessionToken(token))

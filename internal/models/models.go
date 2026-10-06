@@ -1501,8 +1501,16 @@ func UpdateUser(db *sql.DB, id int64, name, role string) error {
 	return err
 }
 
+// UpdateUserPassword sets a new password hash and signs the account out
+// everywhere: every session of the user is deleted. Previously a stolen session
+// survived the password reset that was meant to evict it (v2.57.1). Callers that
+// change a password for the signed-in user keep that one session with
+// auth.DeleteOtherSessions after re-creating it.
 func UpdateUserPassword(db *sql.DB, id int64, passwordHash string) error {
-	_, err := db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, passwordHash, id)
+	if _, err := db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, passwordHash, id); err != nil {
+		return err
+	}
+	_, err := db.Exec(`DELETE FROM sessions WHERE user_id=?`, id)
 	return err
 }
 
