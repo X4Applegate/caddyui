@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.59.1] - 2026-10-06 - Deleting the last resource now clears the live Caddy (#120)
+
+Reported by @tkkost right after v2.59.0: when deletion propagation removed the **last** host from a target, the resource disappeared from CaddyUI but its route stayed live in that Caddy.
+
+### Fixed
+
+- **The last proxy host, redirection or advanced route on a server was never removed from the live Caddy.** CaddyUI refuses to push a configuration when it holds no entries for a server (so a fresh or wiped database can never blank a live Caddy), and that guard also swallowed the sync after an explicit deletion — the database was empty, Caddy kept serving the old route. Reproduced on a real Caddy 2: after deleting the only host, a normal sync left both routes live. Deletions now sync with an explicit "empty is intended" switch, so the live config converges to the database. This applies to the target of a **propagated deletion** (v2.59.0) and equally to deleting the last resource by hand — the delete buttons, the bulk-delete actions and the REST API.
+- The guard itself is unchanged: ordinary syncs (startup sync, auto-sync, any save) still refuse to push when there are no entries, and a regression test keeps it that way.
+- The server form no longer says a target left empty keeps its last live routes.
+
+---
+
 ## [2.59.0] - 2026-10-06 - Opt-in deletion propagation to automatic deployment targets (#120)
 
 Requested by @tkkost as a follow-up to v2.57.0: let the source server act as the desired state for its **Automatic deployment targets**, deletions included.

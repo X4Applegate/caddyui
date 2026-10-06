@@ -159,7 +159,9 @@ func (s *Server) attemptFleetPendingDeletion(actor string, p models.FleetPending
 	if s.syncHoldFor(p.TargetServerID) != nil {
 		return fail(fmt.Errorf("syncing %s is held after failed post-apply checks", target.Name))
 	}
-	if err := s.syncCaddy(p.TargetServerID, forceTLS); err != nil {
+	// allowEmpty: if this was the target's last resource, the live Caddy must
+	// converge to the empty state too, not keep serving the deleted route.
+	if err := s.syncCaddyOpts(p.TargetServerID, forceTLS, true); err != nil {
 		return fail(err)
 	}
 	_ = models.DeleteFleetPendingDeletion(s.DB, p)

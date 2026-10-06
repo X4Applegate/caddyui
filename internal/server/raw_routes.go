@@ -626,7 +626,7 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_delete", fmt.Sprintf("raw:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
-	s.trySyncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddyAfterDelete(s.currentServerID(r), forceTLS)
 	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
@@ -888,6 +888,14 @@ func (s *Server) pruneActivityLog() {
 // the DB write succeeded but the live config never updated AND nothing
 // was logged. Now every silent caller funnels through this helper so the
 // failure at least lands in `docker logs caddyui`.
+// trySyncCaddyAfterDelete is trySyncCaddy for the delete handlers: removing the
+// last resource must clear it from the live Caddy too (v2.59.1, issue #120).
+func (s *Server) trySyncCaddyAfterDelete(serverID int64, forceTLS bool) {
+	if err := s.syncCaddyOpts(serverID, forceTLS, true); err != nil {
+		log.Printf("trySyncCaddyAfterDelete(server=%d, forceTLS=%v): %v", serverID, forceTLS, err)
+	}
+}
+
 func (s *Server) trySyncCaddy(serverID int64, forceTLS bool) {
 	if err := s.syncCaddy(serverID, forceTLS); err != nil {
 		log.Printf("trySyncCaddy(server=%d, forceTLS=%v): %v", serverID, forceTLS, err)
@@ -966,6 +974,16 @@ func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies
 // until the next successful sync, so a rejected change can no longer fail
 // silently in the log while the form says "saved".
 func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
+	return s.syncCaddyOpts(serverID, forceTLS, false)
+}
+
+// syncCaddyOpts is syncCaddy with one extra switch. allowEmpty (v2.59.1, issue
+// #120) lets a sync run when CaddyUI holds NO entries for the server: the
+// normal "refusing to push empty routes" guard exists so a fresh or wiped
+// database can never blank a live Caddy, but after an explicit deletion of the
+// last resource the empty state is the intended one and must reach Caddy, or
+// the deleted route would keep serving. Only deletion paths pass true.
+func (s *Server) syncCaddyOpts(serverID int64, forceTLS, allowEmpty bool) error {
 	// Security/stability (v2.57.1): syncCaddyInner points the shared s.Caddy
 	// field at ONE server's admin API for its whole duration. Two syncs for
 	// different servers running at once overwrote each other's client, and a
@@ -975,7 +993,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	// again, so this cannot deadlock.
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
-	err := s.syncCaddyInner(serverID, forceTLS)
+	err := s.syncCaddyInner(serverID, forceTLS, allowEmpty)
 	if err == nil {
 		s.clearSyncError(serverID)
 		return nil
@@ -990,7 +1008,7 @@ func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
 	return err
 }
 
-func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
+func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error {
 	// Load the target server so we can use its AdminURL for the Caddy client.
 	srv, err := models.GetCaddyServer(s.DB, serverID)
 	if err != nil {
@@ -1038,7 +1056,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	if err != nil {
 		return err
 	}
-	if len(proxies) == 0 && len(redirs) == 0 && len(raws) == 0 && len(certs) == 0 {
+	if !allowEmpty && len(proxies) == 0 && len(redirs) == 0 && len(raws) == 0 && len(certs) == 0 {
 		if metricsCfg.manages(serverID) {
 			return s.syncPrometheusMetricsOnly(serverID, metricsCfg)
 		}

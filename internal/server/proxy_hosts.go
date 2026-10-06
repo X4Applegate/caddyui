@@ -558,7 +558,7 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 		_ = models.LogActivity(s.DB, sid, cu.Email, "proxy_host_delete", "id", strconv.FormatInt(id, 10), true)
 	}
 	if deleted > 0 {
-		if err := s.syncCaddy(sid, false); err != nil {
+		if err := s.syncCaddyOpts(sid, false, true); err != nil {
 			log.Printf("bulk-delete: sync error: %v", err)
 		}
 	}
@@ -871,7 +871,7 @@ func (s *Server) bulkDeleteRawRoutes(w http.ResponseWriter, r *http.Request) {
 		_ = models.LogActivity(s.DB, sid, cu.Email, "raw_route_delete", "id", strconv.FormatInt(id, 10), true)
 	}
 	if deleted > 0 {
-		if err := s.syncCaddy(sid, false); err != nil {
+		if err := s.syncCaddyOpts(sid, false, true); err != nil {
 			log.Printf("bulk-delete raw: sync error: %v", err)
 		}
 	}
@@ -972,7 +972,7 @@ func (s *Server) bulkDeleteRedirectionHosts(w http.ResponseWriter, r *http.Reque
 		_ = models.LogActivity(s.DB, sid, cu.Email, "redirect_delete", "id", strconv.FormatInt(id, 10), true)
 	}
 	if deleted > 0 {
-		if err := s.syncCaddy(sid, false); err != nil {
+		if err := s.syncCaddyOpts(sid, false, true); err != nil {
 			log.Printf("bulk-delete redir: sync error: %v", err)
 		}
 	}
@@ -2247,7 +2247,7 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
-	s.trySyncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddyAfterDelete(s.currentServerID(r), forceTLS)
 	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	if old != nil {
 		payload, _ := json.Marshal(map[string]any{

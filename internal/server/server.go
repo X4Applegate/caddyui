@@ -3322,7 +3322,7 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redirect:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
-	s.trySyncCaddy(s.currentServerID(r), forceTLS)
+	s.trySyncCaddyAfterDelete(s.currentServerID(r), forceTLS)
 	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
 }

@@ -478,7 +478,7 @@ func (s *Server) apiV1DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.LogActivity(s.DB, ph.ServerID, s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), ph.Domains, true)
-	s.trySyncCaddy(ph.ServerID, false)
+	s.trySyncCaddyAfterDelete(ph.ServerID, false)
 	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
@@ -774,7 +774,7 @@ func (s *Server) apiV1DeleteRedirectionHost(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redir:%d", id), "", true)
-	s.trySyncCaddy(s.currentServerID(r), false)
+	s.trySyncCaddyAfterDelete(s.currentServerID(r), false)
 	s.propagateNotedDeletion(s.currentUserEmail(r), note)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
@@ -1002,7 +1002,7 @@ func (s *Server) apiV1DeleteRawRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "rawroute_delete", fmt.Sprintf("rr:%d", id), "", true)
-	s.trySyncCaddy(s.currentServerID(r), false)
+	s.trySyncCaddyAfterDelete(s.currentServerID(r), false)
 	s.propagateNotedDeletion(s.currentUserEmail(r), note)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }

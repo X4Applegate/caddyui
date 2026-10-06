@@ -159,7 +159,7 @@
         <input type="checkbox" name="propagate_deletions" value="1" {{if .Target.PropagateDeletions}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
         <span>
           <span class="text-sm text-ink-800 font-medium">Propagate deletions to automatic deployment targets</span>
-          <span class="block text-xs text-ink-500 mt-0.5">Off by default. When on, deleting a proxy host, redirection, advanced route or Layer4 proxy on this server (web UI or REST API) also deletes the copies it previously deployed to the servers ticked above — and nothing else: target-local resources, rows created independently on a target, and copies on one-off <strong>Also deploy to</strong> servers are never removed. If a target cannot be reached, the deletion stays pending and is retried every minute until that target's Caddy has converged. A target that ends up with no hosts at all keeps its last live routes (CaddyUI never pushes an empty config).</span>
+          <span class="block text-xs text-ink-500 mt-0.5">Off by default. When on, deleting a proxy host, redirection, advanced route or Layer4 proxy on this server (web UI or REST API) also deletes the copies it previously deployed to the servers ticked above — and nothing else: target-local resources, rows created independently on a target, and copies on one-off <strong>Also deploy to</strong> servers are never removed. If a target cannot be reached, the deletion stays pending and is retried every minute until that target's Caddy has converged. If a deletion leaves a target with nothing at all, that target's live Caddy is cleared too.</span>
         </span>
       </label>
     </div>
