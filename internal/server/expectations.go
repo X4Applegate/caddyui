@@ -346,6 +346,12 @@ func (s *Server) runProxyHostExpectationsHandler(w http.ResponseWriter, r *http.
 		http.NotFound(w, r)
 		return
 	}
+	// v2.57.1: running the checks makes CaddyUI send requests and stores the
+	// results, so it needs the same ownership gate as editing the host.
+	if !s.canManageOwned(s.currentUser(r), host.OwnerID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*expectationProbeTimeout)
 	defer cancel()
 	results := s.runHostExpectations(ctx, *host)

@@ -481,9 +481,9 @@ if ('serviceWorker' in navigator) {
         <div class="app-nav__group">
           <span class="app-nav__label">Configuration</span>
           {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" "Certificates" "Icon" "lock")}}
-          {{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}
-          {{template "navItem" (dict "Section" $sec "Active" "caddy_config" "Href" "/caddy-config" "Label" "Caddy Config" "Icon" "code")}}
-          {{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}{{end}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "caddy_config" "Href" "/caddy-config" "Label" "Caddy Config" "Icon" "code")}}{{end}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}{{end}}
           {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
         </div>
 

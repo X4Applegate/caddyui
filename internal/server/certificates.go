@@ -242,8 +242,11 @@ func (s *Server) getCertificateInspect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	cert, err := models.GetCertificate(s.DB, id)
-	if err != nil {
+	// v2.57.1: only certificates the current user may see in the list. This
+	// handler loaded the row by ID alone, so any account could read another
+	// tenant's certificate name, domains and file paths.
+	cert, err := s.visibleCertificate(r, id)
+	if err != nil || cert == nil {
 		http.NotFound(w, r)
 		return
 	}

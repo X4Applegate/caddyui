@@ -206,6 +206,10 @@ func (s *Server) getProxyHostHealth(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if !s.canManageOwned(s.currentUser(r), host.OwnerID) { // v2.57.1: same scope as the host list
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	checks, err := models.GetProxyHealthHistory(s.DB, id, 50)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -970,6 +974,13 @@ func (s *Server) toggleMaintenanceMode(w http.ResponseWriter, r *http.Request) {
 	ph, err := models.GetProxyHost(s.DB, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Security (v2.57.1): this handler flipped maintenance mode on any host by
+	// ID. Every other mutation handler (toggle, bulk, edit, delete) checks
+	// ownership; this one — and the bulk variant's single-host sibling — did not.
+	if !s.canManageOwned(s.currentUser(r), ph.OwnerID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	ph.MaintenanceMode = !ph.MaintenanceMode

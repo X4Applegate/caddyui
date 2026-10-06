@@ -538,11 +538,7 @@ func (s *Server) Routes() http.Handler {
 		// Read routes — open to both admin and viewer roles.
 		r.Get("/proxy-hosts", s.listProxyHosts)
 		r.Get("/redirection-hosts", s.listRedirectionHosts)
-		r.Get("/import", s.getImport)
 		r.Get("/caddyfile-import", s.getCaddyfileImport)
-		r.Get("/snapshots", s.listSnapshots)
-		r.Get("/snapshots/{id}/download", s.downloadSnapshot)
-		r.Get("/snapshots/{id}/diff", s.getSnapshotDiff)
 		r.Get("/activity", s.listActivityLog)
 		r.Get("/activity/export.csv", s.exportActivityCSV)
 		r.Get("/certificates", s.listCertificates)
@@ -557,7 +553,6 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/raw-routes", s.listRawRoutes)
 		r.Get("/docs", s.getDocs)
 		r.Get("/api/docs", s.getAPIDocs)
-		r.Get("/caddy-config", s.getCaddyConfig)
 
 		// Server picker — available to every authenticated role. The route
 		// only flips the caddyui_server cookie (a per-user preference) so
@@ -596,7 +591,6 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/api/raw-routes/validate", s.apiValidateRawRoute)
 
 		// Feature F: notifier status API (authenticated).
-		r.Get("/api/notifier-status", s.apiNotifierStatus)
 
 		// Phase 7: system stats API (authenticated, read-only).
 		r.Get("/api/system-stats", s.apiSystemStats)
@@ -716,14 +710,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/redirection-hosts/reorder", s.reorderRedirectionHosts)
 
 			r.Post("/caddy/reload", s.reloadCaddy)
-			r.Post("/import", s.postImport)
 			r.Post("/caddyfile-import", s.postCaddyfileImport)
-
-			r.Post("/snapshots", s.createManualSnapshot)
-			r.Post("/snapshots/upload", s.uploadSnapshot)
-			r.Post("/snapshots/auto", s.setAutoSnapshots)
-			r.Post("/snapshots/{id}/restore", s.restoreSnapshot)
-			r.Post("/snapshots/{id}/delete", s.deleteSnapshot)
 
 			// v2.7.2: certificate create + edit are writer-level, not admin-only.
 			// Each cert now carries owner_id (NULL = global/admin, >0 = private
@@ -744,8 +731,6 @@ func (s *Server) Routes() http.Handler {
 			// v2.11.10: bulk delete on /certificates — same ownership / in-use
 			// guards as the single-row deleteCertificate handler.
 			r.Post("/certificates/bulk-delete", s.bulkDeleteCertificates)
-			r.Get("/certificates/import/porkbun", s.importPorkbunCertificatePage)
-			r.Post("/certificates/import/porkbun", s.importPorkbunCertificate)
 
 			r.Get("/raw-routes/new", s.newRawRoute)
 			r.Post("/raw-routes", s.createRawRoute)
@@ -761,7 +746,6 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/raw-routes/reclassify", s.postReclassifyRawRoutes)
 
 			// Phase 7: database backup download.
-			r.Get("/backup", s.getBackup)
 		})
 
 		// TOTP setup — available to all authenticated users.
@@ -804,6 +788,32 @@ func (s *Server) Routes() http.Handler {
 		// User management and settings — admin-only (both read and write).
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAdmin)
+
+			// Security (v2.57.1): everything that exposes or replaces the live
+			// Caddy config, the database, or the stored credentials is
+			// admin-only. These used to sit in the read-for-any-role and
+			// requireWrite groups, so a viewer could read certificate private
+			// keys and DNS API tokens from /caddy-config and a customer-level
+			// user could download the whole database from /backup.
+			r.Get("/caddy-config", s.getCaddyConfig)
+			r.Get("/import", s.getImport)
+			r.Post("/import", s.postImport)
+			r.Get("/snapshots", s.listSnapshots)
+			r.Get("/snapshots/{id}/download", s.downloadSnapshot)
+			r.Get("/snapshots/{id}/diff", s.getSnapshotDiff)
+			r.Post("/snapshots", s.createManualSnapshot)
+			r.Post("/snapshots/upload", s.uploadSnapshot)
+			r.Post("/snapshots/auto", s.setAutoSnapshots)
+			r.Post("/snapshots/{id}/restore", s.restoreSnapshot)
+			r.Post("/snapshots/{id}/delete", s.deleteSnapshot)
+			r.Get("/backup", s.getBackup)
+			// The Porkbun import uses the admin's own Porkbun API keys and
+			// returns SSL bundles including the private key.
+			r.Get("/certificates/import/porkbun", s.importPorkbunCertificatePage)
+			r.Post("/certificates/import/porkbun", s.importPorkbunCertificate)
+			// Webhook / ntfy destinations are bearer secrets.
+			r.Get("/api/notifier-status", s.apiNotifierStatus)
+
 			r.Get("/users", s.listUsers)
 			r.Get("/users/new", s.newUser)
 			r.Post("/users", s.createUser)
@@ -1011,10 +1021,9 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		if err != nil {
 			// No session cookie — try bearer token before redirecting.
 			if u, tokenScopes := s.bearerTokenUser(r); u != nil {
-				// Enforce read-only scope: block mutating methods.
-				if tokenScopes == models.TokenScopeReadOnly &&
-					r.Method != http.MethodGet && r.Method != http.MethodHead {
-					http.Error(w, "token scope is read-only", http.StatusForbidden)
+				// Enforce the token's scope on EVERY route (v2.57.1).
+				if msg := apiTokenScopeDenial(tokenScopes, r); msg != "" {
+					http.Error(w, msg, http.StatusForbidden)
 					return
 				}
 				ctx := context.WithValue(r.Context(), auth.ContextUserKey, u)
@@ -1030,10 +1039,9 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			auth.ClearSessionCookie(w, r)
 			// Session invalid — try bearer token before redirecting.
 			if u, tokenScopes := s.bearerTokenUser(r); u != nil {
-				// Enforce read-only scope: block mutating methods.
-				if tokenScopes == models.TokenScopeReadOnly &&
-					r.Method != http.MethodGet && r.Method != http.MethodHead {
-					http.Error(w, "token scope is read-only", http.StatusForbidden)
+				// Enforce the token's scope on EVERY route (v2.57.1).
+				if msg := apiTokenScopeDenial(tokenScopes, r); msg != "" {
+					http.Error(w, msg, http.StatusForbidden)
 					return
 				}
 				ctx := context.WithValue(r.Context(), auth.ContextUserKey, u)
@@ -5708,6 +5716,36 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 
 // requireWrite blocks mutating requests for viewer-role users. Reads still
 // pass through, so viewers see the UI but can't change anything.
+// apiTokenScopeDenial returns why a bearer token with this scope may not make
+// request r, or "" when it may. It runs in requireAuth, so it covers every
+// route.
+//
+// Security (v2.57.1): scope used to be enforced only for read_only tokens here
+// and for proxy_write tokens inside the requireWrite route group. Routes that
+// live outside that group — creating API tokens, creating users, changing
+// settings — were therefore reachable with a proxy_write token: a leaked
+// CI token limited to proxy hosts could mint itself a full-scope token and an
+// admin account.
+func apiTokenScopeDenial(scope string, r *http.Request) string {
+	// API tokens never manage API tokens: minting or revoking one needs a
+	// signed-in browser session, so a leaked token cannot make itself permanent.
+	if r.URL.Path == "/api-tokens" || strings.HasPrefix(r.URL.Path, "/api-tokens/") {
+		return "API tokens cannot manage API tokens — sign in to the web UI"
+	}
+	mutating := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+	switch scope {
+	case models.TokenScopeReadOnly:
+		if mutating {
+			return "token scope is read-only"
+		}
+	case models.TokenScopeProxyWrite:
+		if mutating && !proxyWriteTokenCanWritePath(r.URL.Path) {
+			return "token scope allows proxy-host writes only"
+		}
+	}
+	return ""
+}
+
 func (s *Server) requireWrite(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch currentAPITokenScope(r) {
@@ -6632,6 +6670,14 @@ func (s *Server) exportProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Security (v2.57.1): the export carries the host's upstream basic-auth,
+	// API key and cookie secrets, so it needs the same ownership check as every
+	// other single-host handler. It had none — any signed-in account could
+	// export any tenant's host by ID.
+	if !s.canManageOwned(s.currentUser(r), ph.OwnerID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	// Strip runtime fields before export.
 	ph.ID = 0
 	ph.OwnerID = sql.NullInt64{}
@@ -6667,6 +6713,10 @@ func (s *Server) exportProxyHostCaddyfile(w http.ResponseWriter, r *http.Request
 	ph, err := models.GetProxyHost(s.DB, id)
 	if err != nil || ph == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if !s.canManageOwned(s.currentUser(r), ph.OwnerID) { // v2.57.1 — see exportProxyHost
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	body := caddy.RenderProxyHostCaddyfileWithCertificate(*ph, s.certificateForCaddyfile(ph.CertificateID))

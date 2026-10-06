@@ -245,10 +245,12 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
         <span>Paste Caddyfile</span>
       </a>
+      {{if eq .User.Role "admin"}}
       <a href="/import" class="inline-flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg bg-white border border-ink-200 hover:border-brand-300 hover:bg-brand-50/30 text-ink-700 font-medium transition">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span>Import live config</span>
       </a>
+      {{end}}
     </div>
     <a href="/docs#proxy-hosts" class="inline-block mt-5 text-xs text-ink-500 hover:text-brand-600 transition">Read the docs →</a>
   </div>

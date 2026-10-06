@@ -977,12 +977,25 @@ func (s *Server) apiV1ToggleRawRoute(w http.ResponseWriter, r *http.Request) {
 
 // --- REST JSON API v1: Certificates ---
 
-func certificateToAPIMap(c *models.Certificate) map[string]any {
+// apiCallerMaySeeSecrets reports whether this request may be shown stored
+// secrets such as certificate private keys: a signed-in browser session or a
+// full-scope token. read_only and proxy_write tokens are the kind of credential
+// that ends up in dashboards and CI logs, so they never receive key material
+// even when the user that owns them could read it.
+func apiCallerMaySeeSecrets(r *http.Request) bool {
+	switch currentAPITokenScope(r) {
+	case "", models.TokenScopeFull:
+		return true
+	}
+	return false
+}
+
+func certificateToAPIMap(c *models.Certificate, includeSecrets bool) map[string]any {
 	ownerID := int64(0)
 	if c.OwnerID.Valid {
 		ownerID = c.OwnerID.Int64
 	}
-	return map[string]any{
+	out := map[string]any{
 		"id":             c.ID,
 		"name":           c.Name,
 		"domains":        c.Domains,
@@ -998,6 +1011,16 @@ func certificateToAPIMap(c *models.Certificate) map[string]any {
 		"created_at":     c.CreatedAt,
 		"updated_at":     c.UpdatedAt,
 	}
+	// Security (v2.57.1): private keys and file paths are only for callers who
+	// may manage the row. The list endpoint used to return key_pem for every
+	// admin-owned (global) certificate to any role — including read-only
+	// tokens — because the single-row GET checked ownership and the list did not.
+	if !includeSecrets {
+		delete(out, "key_pem")
+		delete(out, "key_path")
+		delete(out, "cert_path")
+	}
+	return out
 }
 
 // GET /api/v1/certificates
@@ -1014,7 +1037,7 @@ func (s *Server) apiV1ListCertificates(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(certs))
 	for i := range certs {
-		out = append(out, certificateToAPIMap(&certs[i]))
+		out = append(out, certificateToAPIMap(&certs[i], s.canManageOwned(cu, certs[i].OwnerID) && apiCallerMaySeeSecrets(r)))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1035,7 +1058,7 @@ func (s *Server) apiV1GetCertificate(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	writeJSON(w, http.StatusOK, certificateToAPIMap(c))
+	writeJSON(w, http.StatusOK, certificateToAPIMap(c, apiCallerMaySeeSecrets(r))) // canManageOwned passed above
 }
 
 // POST /api/v1/certificates
@@ -1089,7 +1112,7 @@ func (s *Server) apiV1CreateCertificate(w http.ResponseWriter, r *http.Request) 
 		created = c
 		created.ID = newID
 	}
-	writeJSON(w, http.StatusCreated, certificateToAPIMap(created))
+	writeJSON(w, http.StatusCreated, certificateToAPIMap(created, apiCallerMaySeeSecrets(r)))
 }
 
 // PUT /api/v1/certificates/{id}
@@ -1159,7 +1182,7 @@ func (s *Server) apiV1UpdateCertificate(w http.ResponseWriter, r *http.Request) 
 	if updated == nil {
 		updated = existing
 	}
-	writeJSON(w, http.StatusOK, certificateToAPIMap(updated))
+	writeJSON(w, http.StatusOK, certificateToAPIMap(updated, apiCallerMaySeeSecrets(r)))
 }
 
 // DELETE /api/v1/certificates/{id}
