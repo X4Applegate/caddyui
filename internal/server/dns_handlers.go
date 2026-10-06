@@ -1024,7 +1024,9 @@ func (s *Server) rawRouteDeploying(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	fqdn := firstRawRouteHost(rr.JSONData)
-	if fqdn == "" {
+	// Issue #121: no host to probe, or a plain-HTTP route (explicit http://
+	// address) — there is no HTTPS certificate to wait for, so skip the page.
+	if fqdn == "" || rawRouteHTTPOnly(rr) {
 		http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 		return
 	}

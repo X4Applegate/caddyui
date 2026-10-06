@@ -85,8 +85,70 @@
         Pick a custom cert to bind to the hostnames in this route's <code class="font-mono bg-ink-100 px-1 rounded">match.host</code>,
         or leave Auto to let Caddy manage it. <a href="/certificates" class="text-brand-600 hover:text-brand-700">Manage certificates &rarr;</a>
       </p>
+      {{/* Issue #121: shown (and the picker + Force SSL disabled) while every
+           site address in the Caddyfile is an explicit http:// address. */}}
+      <p id="tls-http-only-note" class="hidden text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-2">
+        This route uses an explicit <code class="font-mono">http://</code> address, so it is served as plain HTTP: no certificate is used and CaddyUI won't wait for HTTPS. The certificate and Force&nbsp;SSL settings are ignored.
+      </p>
     </div>
   </details>
+  <script>
+  (function() {
+    // Mirrors caddy.CaddyfileHTTPOnly: true only when every top-level site
+    // address is explicitly http:// (or port :80). The server enforces the same
+    // rule on save, so this only keeps the form honest while you type.
+    function plainHTTP(a) {
+      a = a.toLowerCase();
+      if (a.indexOf('http://') === 0) return true;
+      if (a.indexOf('://') !== -1) return false;
+      var i = a.lastIndexOf(':');
+      return i >= 0 && a.slice(i + 1) === '80';
+    }
+    function caddyfileHTTPOnly(src) {
+      var depth = 0, head = '', sites = 0, inComment = false, inStr = false;
+      for (var i = 0; i < src.length; i++) {
+        var c = src.charAt(i);
+        if (inComment) { if (c === '\n') inComment = false; continue; }
+        if (inStr) {
+          if (c === '\\') { i++; continue; }
+          if (c === '"') inStr = false;
+          if (depth === 0) head += c;
+          continue;
+        }
+        if (c === '#') { inComment = true; continue; }
+        if (c === '"') { inStr = true; if (depth === 0) head += c; continue; }
+        if (c === '{') {
+          if (depth === 0) {
+            var h = head.trim(); head = '';
+            if (h && !(h.charAt(0) === '(' && h.charAt(h.length - 1) === ')')) {
+              var addrs = h.split(/[\s,]+/).filter(Boolean);
+              for (var k = 0; k < addrs.length; k++) { if (!plainHTTP(addrs[k])) return false; }
+              if (addrs.length) sites++;
+            }
+          }
+          depth++; continue;
+        }
+        if (c === '}') { if (depth > 0) depth--; continue; }
+        if (depth === 0) head += c;
+      }
+      return sites > 0;
+    }
+    function update() {
+      var cf = document.querySelector('textarea[name="caddyfile_src"]');
+      var httpOnly = !!(cf && cf.value.trim() && caddyfileHTTPOnly(cf.value));
+      var note = document.getElementById('tls-http-only-note');
+      var cert = document.querySelector('select[name="certificate_id"]');
+      var force = document.querySelector('input[name="ssl_forced"]');
+      if (note) note.classList.toggle('hidden', !httpOnly);
+      if (cert) cert.disabled = httpOnly;
+      if (force) { force.disabled = httpOnly; if (httpOnly) force.checked = false; }
+    }
+    var cf = document.querySelector('textarea[name="caddyfile_src"]');
+    if (cf) cf.addEventListener('input', update);
+    document.addEventListener('DOMContentLoaded', update);
+    update();
+  })();
+  </script>
 
   {{/* ── v2.5.6: Managed DNS (parity with proxy hosts) ─────────────────
        Same unified picker the proxy-host form uses, driving the same

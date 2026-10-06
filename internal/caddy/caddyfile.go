@@ -4,6 +4,7 @@ package caddy
 
 import (
 	"strings"
+	"unicode"
 )
 
 // SplitCaddyfileBlocks splits a Caddyfile into top-level blocks. Each returned
@@ -119,4 +120,64 @@ func ExtractSnippets(src string) []string {
 		}
 	}
 	return out
+}
+
+// CaddyfileHTTPOnly reports whether every site block in src addresses itself
+// with an explicit plain-HTTP address: an http:// scheme (http://127.0.0.1,
+// http://health.example.com) or the plain-HTTP port (:80, host:80). Snippet
+// definitions and the global-options block are ignored. It is false when src
+// has no site block at all, and false as soon as one address is https://, has
+// another scheme, or names no port or scheme — Caddy serves those over TLS by
+// default, so only a block that says "http" explicitly is HTTP-only.
+//
+// CaddyUI uses this for Advanced routes (issue #121): a route written as
+// `http://127.0.0.1 { ... }` is a deliberate plain-HTTP route, so it needs no
+// certificate, must not be force-redirected to HTTPS, and has nothing to wait
+// for on the "deploying" page.
+func CaddyfileHTTPOnly(src string) bool {
+	sites := 0
+	for _, block := range SplitCaddyfileBlocks(src) {
+		// A comment line above the address is part of the block's head text
+		// (SplitCaddyfileBlocks keeps comments), so drop them before reading
+		// the addresses.
+		head := stripCaddyfileComments(HeadOfBlock(block))
+		if head == "" || (strings.HasPrefix(head, "(") && strings.HasSuffix(head, ")")) {
+			continue
+		}
+		addrs := strings.FieldsFunc(head, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+		if len(addrs) == 0 {
+			continue
+		}
+		for _, addr := range addrs {
+			if !isPlainHTTPAddress(addr) {
+				return false
+			}
+		}
+		sites++
+	}
+	return sites > 0
+}
+
+func isPlainHTTPAddress(addr string) bool {
+	addr = strings.ToLower(addr)
+	if strings.HasPrefix(addr, "http://") {
+		return true
+	}
+	if strings.Contains(addr, "://") {
+		return false // https:// or some other scheme
+	}
+	i := strings.LastIndex(addr, ":")
+	return i >= 0 && addr[i+1:] == "80"
+}
+
+// stripCaddyfileComments removes "# ..." comments, line by line, from a
+// block head. Site addresses never contain '#'.
+func stripCaddyfileComments(head string) string {
+	lines := strings.Split(head, "\n")
+	for i, line := range lines {
+		if j := strings.IndexByte(line, '#'); j >= 0 {
+			lines[i] = line[:j]
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

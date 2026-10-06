@@ -111,13 +111,22 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 			}
 		}
 	}
+	forceSSL := r.FormValue("ssl_forced") == "on"
+	// Issue #121: an Advanced route written with explicit http:// site
+	// addresses is a deliberate plain-HTTP route. A certificate has nothing to
+	// bind to and a forced HTTPS redirect would contradict the address, so
+	// neither is kept — the form disables both controls for it.
+	if cfSrc != "" && caddy.CaddyfileHTTPOnly(cfSrc) {
+		certID = 0
+		forceSSL = false
+	}
 	return &models.RawRoute{
 		Label:               label,
 		JSONData:            body,
 		CaddyfileSrc:        cfSrc,
 		Enabled:             r.FormValue("enabled") == "on",
 		CertificateID:       certID,
-		ForceSSL:            r.FormValue("ssl_forced") == "on",
+		ForceSSL:            forceSSL,
 		BlockCommonExploits: r.FormValue("block_common_exploits") == "on",
 		NodeLocal:           r.FormValue("node_local") == "on", // v2.33.0
 		Listen:              listen,                            // v2.36.1 (issue #64)
@@ -127,6 +136,13 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 		DNSProfileID:        profileID,
 		DNSSkipRecord:       provider != "" && r.FormValue("dns_create_record") != "on",
 	}, ""
+}
+
+// rawRouteHTTPOnly reports whether rr was written with explicit http:// site
+// addresses (issue #121). Such a route is served as plain HTTP: it needs no
+// certificate, so there is nothing for the "deploying" page to wait on.
+func rawRouteHTTPOnly(rr *models.RawRoute) bool {
+	return rr != nil && rr.CaddyfileSrc != "" && caddy.CaddyfileHTTPOnly(rr.CaddyfileSrc)
 }
 
 // withAutoLoadedSnippets prepends the snippet definitions — "(name) { ... }" —
@@ -367,7 +383,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 	// v2.5.5: park the user on the deploying checklist when the route has
 	// a host matcher we can probe. Path-only / port-only routes have no
 	// fqdn to verify, so we skip the page and bounce to the list like before.
-	if firstRawRouteHost(rr.JSONData) != "" {
+	if firstRawRouteHost(rr.JSONData) != "" && !rawRouteHTTPOnly(rr) {
 		http.Redirect(w, r, fmt.Sprintf("/raw-routes/%d/deploying", id), http.StatusSeeOther)
 		return
 	}
@@ -555,7 +571,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	// host matcher or the backing service is the same "did it come back
 	// up on HTTPS?" question the create flow asks. Routes without a host
 	// matcher skip the page as in create.
-	if newFQDN != "" {
+	if newFQDN != "" && !rawRouteHTTPOnly(rr) { // issue #121: an http:// route has no certificate to wait for
 		http.Redirect(w, r, fmt.Sprintf("/raw-routes/%d/deploying", id), http.StatusSeeOther)
 		return
 	}
