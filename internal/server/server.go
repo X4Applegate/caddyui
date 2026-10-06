@@ -587,14 +587,14 @@ func (s *Server) Routes() http.Handler {
 
 		// Live upstream status — proxies Caddy's /reverse_proxy/upstreams response.
 		r.Get("/api/caddy-upstreams", s.apiCaddyUpstreams)
-		r.Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream)
+		r.With(s.requireWrite).Post("/api/proxy-hosts/test-upstream", s.apiTestUpstream) // v2.57.1: writers only
 		// v2.11.13: live Caddyfile/JSON preview — takes the in-progress
 		// proxy-host edit form and returns the route JSON Caddy would see.
-		r.Post("/api/proxy-hosts/preview", s.apiPreviewProxyHost)
+		r.With(s.requireWrite).Post("/api/proxy-hosts/preview", s.apiPreviewProxyHost) // v2.57.1: writers only
 		// v2.9.228: validate a raw-route's Caddyfile/JSON via /load?validate_only=true
 		// before saving the row. Lets the form catch syntax/schema errors at edit
 		// time instead of waiting for the next sync to surface them.
-		r.Post("/api/raw-routes/validate", s.apiValidateRawRoute)
+		r.With(s.requireWrite).Post("/api/raw-routes/validate", s.apiValidateRawRoute) // v2.57.1: writers only
 
 		// Feature F: notifier status API (authenticated).
 
@@ -3075,6 +3075,10 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if errMsg := s.validateRedirectionForUser(s.currentUser(r), rh); errMsg != "" { // v2.57.1
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
+	}
 	if errMsg := s.previewRedirectValidate(s.currentServerID(r), rh); errMsg != "" { // v2.42.1 (issue #74)
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
@@ -3170,6 +3174,10 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	// (the form has no hidden field for it — same as proxy hosts).
 	if old != nil {
 		rh.DNSRecordID = old.DNSRecordID
+	}
+	if errMsg := s.validateRedirectionForUser(s.currentUser(r), rh); errMsg != "" { // v2.57.1
+		s.renderRedirectionHostFormError(w, r, rh, errMsg)
+		return
 	}
 	if errMsg := s.previewRedirectValidate(s.currentServerID(r), rh); errMsg != "" { // v2.42.1 (issue #74)
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
@@ -4407,10 +4415,26 @@ func (s *Server) currentServerID(r *http.Request) int64 {
 // Credentials (if set on the server row) are threaded into the client so
 // admins can lock the admin API behind HTTP Basic Auth via a reverse proxy.
 func (s *Server) caddyForRequest(r *http.Request) *caddy.Client {
+	var cl *caddy.Client
 	if srv, err := models.GetCaddyServer(s.DB, s.currentServerID(r)); err == nil {
-		return caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
+		cl = caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
+	} else {
+		cl = s.Caddy
 	}
-	return s.Caddy
+	// v2.57.1: for a non-admin's request, refuse Caddyfile text that reads the
+	// Caddy server's environment or files BEFORE it is adapted (see
+	// Client.AdaptTextCheck). Copy first — s.Caddy is shared.
+	if cl != nil && !isAdminUser(s.currentUser(r)) {
+		cp := *cl
+		cp.AdaptTextCheck = func(text string) string {
+			if why := tenantTextViolation(text); why != "" {
+				return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+			}
+			return ""
+		}
+		return &cp
+	}
+	return cl
 }
 
 // caddyForServer returns a Caddy client for an explicit server ID.
@@ -4772,7 +4796,11 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		}
 		var advanced []any
 		var advancedOverrides map[string]any
-		if strings.TrimSpace(p.AdvancedConfig) != "" {
+		if strings.TrimSpace(p.AdvancedConfig) != "" && p.OwnerID.Valid && tenantTextViolation(p.AdvancedConfig) != "" {
+			// {$ENV} is substituted by Caddy while ADAPTING, so the value would
+			// already be baked into the handlers; refuse before adapting.
+			log.Printf("caddy sync: proxy id=%d advanced_config skipped, not allowed for a non-admin owner: %s", p.ID, tenantTextViolation(p.AdvancedConfig))
+		} else if strings.TrimSpace(p.AdvancedConfig) != "" {
 			h, overrides, err := s.adaptProxyAdvanced(p)
 			if err != nil {
 				// Don't fail the whole sync — log and push the route without advanced
@@ -4785,13 +4813,19 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		}
 		route := caddy.BuildProxyRoute(p, append(preHandlers, advanced...))
 		caddy.MergeReverseProxyOverrides(route, advancedOverrides)
-		routes = append(routes, route)
+		// v2.57.1: enforcement point for routes owned by a non-admin — see
+		// tenant_guard.go. Admin-owned routes pass through untouched.
+		if safe, ok := s.sanitizeTenantRoute(p.OwnerID, "proxy host "+p.Domains, route); ok {
+			routes = append(routes, safe)
+		}
 	}
 	for _, rd := range redirs {
 		if !rd.Enabled || len(rd.DomainList()) == 0 {
 			continue
 		}
-		routes = append(routes, caddy.BuildRedirectRoute(rd))
+		if safe, ok := s.sanitizeTenantRoute(rd.OwnerID, "redirection "+rd.Domains, caddy.BuildRedirectRoute(rd)); ok {
+			routes = append(routes, safe)
+		}
 	}
 	for _, rr := range raws {
 		if !rr.Enabled {
@@ -4802,7 +4836,7 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		if rr.Listen != "" {
 			continue
 		}
-		routes = append(routes, rawRouteEntries(rr)...)
+		routes = append(routes, s.tenantSafeRawEntries(rr)...)
 	}
 
 	// Append a catch-all 404 route when the admin has configured custom HTML.
@@ -5045,6 +5079,22 @@ func applyPlainHTTPServer(cfg map[string]any, routes []any) {
 // may hold a single route object or an array of routes; arrays are spread so
 // we never emit a nested array (which Caddy rejects). Shared by srv0 assembly
 // and by the per-port servers of v2.36.1 (issue #64).
+// tenantSafeRawEntries is rawRouteEntries with the non-admin enforcement of
+// tenant_guard.go applied to each entry (v2.57.1).
+func (s *Server) tenantSafeRawEntries(rr models.RawRoute) []any {
+	entries := rawRouteEntries(rr)
+	if !rr.OwnerID.Valid {
+		return entries
+	}
+	out := make([]any, 0, len(entries))
+	for _, e := range entries {
+		if safe, ok := s.sanitizeTenantRoute(rr.OwnerID, "advanced route "+rr.Label, e); ok {
+			out = append(out, safe)
+		}
+	}
+	return out
+}
+
 func rawRouteEntries(rr models.RawRoute) []any {
 	var decoded any
 	if err := json.Unmarshal([]byte(rr.JSONData), &decoded); err != nil {
@@ -5108,7 +5158,7 @@ func (s *Server) buildRawListenServers(raws []models.RawRoute) map[string]map[st
 			g = &group{addrs: addrs}
 			groups[name] = g
 		}
-		g.routes = append(g.routes, rawRouteEntries(rr)...)
+		g.routes = append(g.routes, s.tenantSafeRawEntries(rr)...)
 	}
 	out := make(map[string]map[string]any, len(groups))
 	for name, g := range groups {

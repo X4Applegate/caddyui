@@ -328,6 +328,10 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
+	if errMsg := s.validateRawRouteForUser(s.currentUser(r), rr); errMsg != "" { // v2.57.1 — see tenant_guard.go
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
 	s.applyRawDNSFormSelection(rr)
 	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
@@ -482,6 +486,10 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rr.ID = id
+	if errMsg := s.validateRawRouteForUser(s.currentUser(r), rr); errMsg != "" { // v2.57.1 — see tenant_guard.go
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
 	s.applyRawDNSFormSelection(rr)
 	// v2.7.8: zone/hostname match — same as create path. Routes with no host
 	// matcher skip the check (rawRouteHosts returns nil → validator returns "").

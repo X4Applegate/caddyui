@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/models"
 )
 
@@ -70,6 +71,17 @@ func hostFromUpstream(raw string) string {
 // adminHost, when non-empty, is the configured Caddy admin endpoint host and is
 // blocked outright (covers a remote admin endpoint that isn't loopback).
 func upstreamHostBlockedForNonAdmin(host, adminHost string) bool {
+	set := map[string]bool{}
+	if adminHost != "" {
+		set[strings.ToLower(adminHost)] = true
+	}
+	return upstreamHostBlockedForNonAdminSet(host, set)
+}
+
+// upstreamHostBlockedForNonAdminSet is upstreamHostBlockedForNonAdmin against a
+// SET of admin endpoint hosts (the primary Caddy plus every registered fleet
+// node), so a tenant cannot aim at another node's admin API.
+func upstreamHostBlockedForNonAdminSet(host string, adminHosts map[string]bool) bool {
 	h := strings.ToLower(hostFromUpstream(host))
 	if h == "" {
 		return false
@@ -78,11 +90,11 @@ func upstreamHostBlockedForNonAdmin(host, adminHost string) bool {
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return true
 	}
-	if adminHost != "" && h == strings.ToLower(adminHost) {
+	if adminHosts[h] {
 		return true
 	}
 	if ip := net.ParseIP(h); ip != nil {
-		return ipBlockedForNonAdmin(ip)
+		return ipBlockedForNonAdmin(ip) || extraBlockedIP(ip)
 	}
 	// Hostname: best-effort resolve and block if ANY address is internal.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -92,7 +104,7 @@ func upstreamHostBlockedForNonAdmin(host, adminHost string) bool {
 		return false // unresolvable → don't block on an IP basis
 	}
 	for _, a := range addrs {
-		if ipBlockedForNonAdmin(a.IP) {
+		if ipBlockedForNonAdmin(a.IP) || extraBlockedIP(a.IP) {
 			return true
 		}
 	}
@@ -120,10 +132,7 @@ func (s *Server) validateProxyUpstreamsForUser(cu *models.User, p *models.ProxyH
 	if cu != nil && cu.Role == models.RoleAdmin {
 		return ""
 	}
-	var adminHost string
-	if s != nil && s.Caddy != nil {
-		adminHost = adminHostFromURL(s.Caddy.AdminURL)
-	}
+	adminHosts := s.adminHostSet()
 	candidates := make([]string, 0, 4)
 	candidates = append(candidates, p.ForwardHost)
 	candidates = append(candidates, p.ExtraUpstreamList()...)
@@ -134,9 +143,27 @@ func (s *Server) validateProxyUpstreamsForUser(cu *models.User, p *models.ProxyH
 		if strings.TrimSpace(c) == "" {
 			continue
 		}
-		if upstreamHostBlockedForNonAdmin(c, adminHost) {
-			return fmt.Sprintf("Upstream %q is not allowed: non-admin accounts cannot point a proxy at loopback, link-local, or internal management addresses (e.g. the Caddy admin API or cloud metadata). Ask an administrator if this upstream is legitimate.", strings.TrimSpace(c))
+		if why := dialBlockedForTenant(c, adminHosts); why != "" {
+			return fmt.Sprintf("Upstream %q is not allowed: %s. Ask an administrator if this upstream is legitimate.", strings.TrimSpace(c), why)
 		}
+	}
+	if why := tenantTextViolation(p.AdvancedConfig); why != "" {
+		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+	}
+	// v2.57.1: also inspect the route CaddyUI would generate for this host, so
+	// fields that become upstreams or handlers indirectly — additional upstream
+	// rules, forward-proxy and forward-auth URLs, custom headers, advanced
+	// config — are held to the same rules.
+	if msg := s.validateTenantRoute(caddy.BuildProxyRoute(*p, nil)); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+// validateTenantRoute is tenantRouteViolation phrased for a form error.
+func (s *Server) validateTenantRoute(route any) string {
+	if why := s.tenantRouteViolation(route); why != "" {
+		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
 	return ""
 }

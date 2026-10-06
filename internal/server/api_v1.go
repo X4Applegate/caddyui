@@ -622,6 +622,10 @@ func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Reque
 	if !cu.IsAdmin {
 		ownerID = cu.ID
 	}
+	if msg := s.validateRedirectionForUser(cu, rh); msg != "" { // v2.57.1
+		writeJSONError(w, http.StatusBadRequest, msg)
+		return
+	}
 	newID, err := models.CreateRedirectionHost(s.DB, serverID, ownerID, rh)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -690,6 +694,10 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 	}
 	if inp.Notes != "" {
 		existing.Notes = inp.Notes
+	}
+	if msg := s.validateRedirectionForUser(s.currentUser(r), existing); msg != "" { // v2.57.1
+		writeJSONError(w, http.StatusBadRequest, msg)
+		return
 	}
 	if err := models.UpdateRedirectionHost(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -850,6 +858,10 @@ func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 	if !cu.IsAdmin {
 		ownerID = cu.ID
 	}
+	if msg := s.validateRawRouteForUser(cu, rr); msg != "" { // v2.57.1
+		writeJSONError(w, http.StatusBadRequest, msg)
+		return
+	}
 	newID, err := models.CreateRawRoute(s.DB, serverID, ownerID, rr)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -908,6 +920,10 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 	existing.BlockCommonExploits = inp.BlockCommonExploits
 	if inp.CertificateID != 0 {
 		existing.CertificateID = inp.CertificateID
+	}
+	if msg := s.validateRawRouteForUser(s.currentUser(r), existing); msg != "" { // v2.57.1
+		writeJSONError(w, http.StatusBadRequest, msg)
+		return
 	}
 	if err := models.UpdateRawRoute(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())

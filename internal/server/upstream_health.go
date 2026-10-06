@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1150,7 +1151,14 @@ func (s *Server) apiUpstreamHealth(w http.ResponseWriter, r *http.Request) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	// v2.57.1: never follow redirects on the direct upstream probe. A tenant's
+	// public upstream could answer 302 -> http://127.0.0.1:2019/ or the cloud
+	// metadata address and CaddyUI would fetch it, defeating the save-time
+	// upstream guard. A redirect is a healthy answer; the target is irrelevant.
+	client := &http.Client{
+		Timeout:       3 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 
 	for i, h := range hosts {
 		results[i] = upstreamHealthResult{ID: h.ID, Domains: h.Domains}
@@ -1357,6 +1365,23 @@ func (s *Server) apiTestUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	if scheme != "https" {
 		scheme = "http"
+	}
+	// v2.57.1: this endpoint makes CaddyUI itself connect to host:port and
+	// reports status, latency and the error text, which makes it a port scanner
+	// for whoever can call it. Non-admins get the same upstream rules as a proxy
+	// host (no loopback / link-local / metadata / any Caddy admin API), and the
+	// host and port must be plain — they are spliced into a URL.
+	if !isAdminUser(s.currentUser(r)) {
+		if strings.ContainsAny(host, "/?#@\\ ") || strings.ContainsAny(port, "/?#@\\ ") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid host or port"})
+			return
+		}
+		if why := dialBlockedForTenant(net.JoinHostPort(host, port), s.adminHostSet()); why != "" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Not allowed for a non-admin account: " + why})
+			return
+		}
 	}
 	targetURL := fmt.Sprintf("%s://%s:%s/", scheme, host, port)
 	client := &http.Client{

@@ -624,3 +624,14 @@ func TestSecuritySetupCreatesExactlyOneAdminUnderConcurrency(t *testing.T) {
 		t.Fatalf("%d concurrent setups created %d admins, want exactly 1", 12, n)
 	}
 }
+
+// attachSession adds a fixture account's session cookie (and CSRF header for
+// writes) to a hand-built request.
+func (e *secEnv) attachSession(req *http.Request, who string) {
+	req.RemoteAddr = "172.18.0.9:5555"
+	tok := e.tokens[who]
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: tok})
+	if req.Method != http.MethodGet {
+		req.Header.Set("X-CSRF-Token", e.s.csrfTokenFor(tok))
+	}
+}

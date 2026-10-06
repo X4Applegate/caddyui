@@ -42,6 +42,12 @@ type Client struct {
 	// effective URL sent to the HTTP transport is rewritten to http://unix.
 	socketPath string
 	HTTP       *http.Client
+	// AdaptTextCheck, when set, is run on every Caddyfile sent to Adapt. A
+	// non-empty return refuses the request before Caddy sees it. CaddyUI sets
+	// it on the client used for a non-admin's request, because Caddy
+	// substitutes {$ENV} while adapting and its errors echo parsed text — so the
+	// text has to be refused BEFORE adapting, not inspected afterwards.
+	AdaptTextCheck func(caddyfile string) string
 }
 
 // New returns a Client configured to talk to adminURL. Pass empty strings for
@@ -279,6 +285,11 @@ type AdaptResult struct {
 // Adapt sends Caddyfile source to Caddy's /adapt endpoint and returns the JSON config
 // Caddy would run if that Caddyfile were loaded. Does NOT modify the live config.
 func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
+	if c.AdaptTextCheck != nil {
+		if msg := c.AdaptTextCheck(caddyfile); msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+	}
 	req, err := http.NewRequest(http.MethodPost, c.AdminURL+"/adapt", strings.NewReader(caddyfile))
 	if err != nil {
 		return nil, err
