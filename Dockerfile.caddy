@@ -1,7 +1,7 @@
 # Cross-compile on the builder's native platform (no QEMU): xcaddy honours
 # GOOS/GOARCH, and the alpine final stage only COPYs the finished binary, so
 # `--platform linux/amd64,linux/arm64` works from one Dockerfile.
-FROM --platform=$BUILDPLATFORM caddy:2.11.4-builder AS builder
+FROM --platform=$BUILDPLATFORM caddy:2.11.7-builder AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
@@ -17,5 +17,5 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/mholt/caddy-ratelimit \
     --with github.com/mholt/caddy-l4
 
-FROM caddy:2.11.4-alpine
+FROM caddy:2.11.7-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
