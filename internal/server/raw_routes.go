@@ -360,7 +360,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 	// rr.ID must be set so upsertFleetRawRoute can key the fleet mapping off
 	// the source row. RawRoute carries no ServerID field — the source server
 	// is passed separately, as in the proxy/redirect cross-deploy paths.
-	if deployTo := parseDeployTo(r); len(deployTo) > 0 {
+	if deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r)); len(deployTo) > 0 {
 		rr.ID = id
 		s.crossDeployRawRoute(s.currentUserEmail(r), s.currentServerID(r), rr, deployTo)
 	}
@@ -548,7 +548,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_update", fmt.Sprintf("raw:%d", id), rr.Label, true)
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	// v2.27.0 (issue #38): re-deploy the edited route to any selected targets.
-	if deployTo := parseDeployTo(r); len(deployTo) > 0 {
+	if deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r)); len(deployTo) > 0 {
 		s.crossDeployRawRoute(s.currentUserEmail(r), s.currentServerID(r), rr, deployTo)
 	}
 	// v2.5.5: show the deploying checklist on edits too — changing the

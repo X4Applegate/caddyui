@@ -2363,6 +2363,15 @@ func migrate(db *sql.DB) error {
 		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN layer4_caddyfile TEXT NOT NULL DEFAULT ''`)
 	}
 
+	// v2.57.0 (issue #120): persistent default deployment targets — the
+	// comma-separated IDs of the fleet servers every proxy host, redirection
+	// and advanced route saved on this server is automatically mirrored to.
+	// Empty on every existing row, so nothing deploys anywhere new until an
+	// operator picks targets on the server edit form.
+	if !columnExists2(db, "caddy_servers", "default_deploy_targets") {
+		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN default_deploy_targets TEXT NOT NULL DEFAULT ''`)
+	}
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {

@@ -1354,7 +1354,45 @@ func marshalExtraUpstreams(r *http.Request) string {
 // otherManagedServers returns all managed Caddy servers except the one currently
 // selected in the request cookie. Used to populate the cross-deploy checkbox list.
 func (s *Server) otherManagedServers(r *http.Request) []models.CaddyServer {
-	return s.otherManagedServersExcept(s.currentServerID(r))
+	current := s.currentServerID(r)
+	out := s.otherManagedServersExcept(current)
+	// v2.57.0 (issue #120): flag the selected server's persistent default
+	// deploy targets so every resource form can show them as always-on.
+	if src, err := models.GetCaddyServer(s.DB, current); err == nil {
+		defaults := src.DefaultDeployTargetSet()
+		for i := range out {
+			out[i].IsDefaultDeployTarget = defaults[out[i].ID]
+		}
+	}
+	return out
+}
+
+// effectiveDeployTargets is the set of servers a web-UI save on sourceServerID
+// mirrors to: the form's one-off "Also deploy to" picks plus the source
+// server's persistent DefaultDeployTargets (v2.57.0, issue #120), so a fleet
+// whose edge nodes are always fed from one source Caddy never has to re-tick
+// the same boxes on every create and edit. A server is never its own target,
+// and each target appears once.
+//
+// Node-local resources are still never deployed — the cross-deploy functions
+// refuse them — so marking a resource node-local is how one opts a single
+// resource out of the defaults.
+func (s *Server) effectiveDeployTargets(sourceServerID int64, formTargets []int64) []int64 {
+	out := make([]int64, 0, len(formTargets))
+	seen := map[int64]bool{sourceServerID: true}
+	add := func(ids []int64) {
+		for _, id := range ids {
+			if id > 0 && !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	add(formTargets)
+	if src, err := models.GetCaddyServer(s.DB, sourceServerID); err == nil {
+		add(src.DefaultDeployTargetIDs())
+	}
+	return out
 }
 
 // otherManagedServersExcept returns all managed Caddy servers except excludeID.
@@ -1882,7 +1920,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	// Parse extra upstreams (Feature D).
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
-	deployTo := parseDeployTo(r)
+	deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r))
 	cu := s.currentUser(r)
 	// SSRF guard (GHSA-r4wm-rgc5-q834): block non-admins from pointing the
 	// upstream (host, extra upstreams, or Host override) at loopback/link-local/
@@ -2059,7 +2097,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, msg)
 		return
 	}
-	deployTo := parseDeployTo(r)
+	deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r))
 	old, _ := models.GetProxyHost(s.DB, id)
 
 	// Unified DNS lifecycle. A record needs replacing when:

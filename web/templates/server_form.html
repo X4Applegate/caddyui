@@ -100,6 +100,30 @@
     {{end}}
   </div>
 
+  {{/* ── v2.57.0 (issue #120): persistent default deployment targets. Field is
+       "default_deploy_targets", deliberately NOT "deploy_to" — that name is the
+       layer4 "Also copy to" picker above. ── */}}
+  {{if .OtherServers}}
+  <div class="p-6 space-y-3 border-t border-ink-100" data-default-deploy-targets>
+    <div>
+      <div class="text-sm font-medium text-ink-800">Automatic deployment targets <span class="text-ink-400 font-normal text-xs">(optional — use this server as a configuration source)</span></div>
+      <p class="text-xs text-ink-500 mt-1.5">Every proxy host, redirection and advanced route you create or edit <em>on this server</em> in the web UI is automatically deployed to the servers ticked here too — no need to tick <strong>Also deploy to</strong> on each save. Those forms show these servers as <em>default</em>; the per-resource picker stays available for one-off extra targets. To keep a single resource off every other server, mark it <strong>node-local</strong>.</p>
+      <p class="text-xs text-ink-500 mt-1.5"><strong>What this does not do:</strong> deleting a resource here does not delete its copies on the targets; quick enable/disable toggles, bulk actions, Caddyfile import and the REST API do not deploy; resources that already exist are deployed the next time they are saved. For a one-time bulk copy use <strong>Sync from current</strong> on the target server. Certificates keep their own per-certificate targets.</p>
+      <p class="text-xs text-ink-500 mt-1.5">Deploying happens as part of the save, so a target that cannot be reached can delay it by up to ~10 seconds (the failure is recorded in the Activity Log). Set targets on the source only — a server that already deploys to this one can't be chosen, so two servers can never point at each other.</p>
+    </div>
+    <div class="space-y-2">
+      {{range .OtherServers}}
+      <label class="flex items-center gap-2.5 cursor-pointer select-none">
+        <input type="checkbox" name="default_deploy_targets" value="{{.ID}}" {{if index $.Target.DefaultDeployTargetSet .ID}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+        {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
+        <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+      </label>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
   {{/* ── Optional Basic Auth for the admin endpoint ── */}}
   <div class="p-6 space-y-4">
     <div>

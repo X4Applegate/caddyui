@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -146,6 +147,9 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		IngestTarget:    strings.TrimSpace(r.FormValue("ingest_target")),    // v2.37.0
 		DataDir:         strings.TrimSpace(r.FormValue("data_dir")),         // v2.42.0
 		Layer4Caddyfile: strings.TrimSpace(r.FormValue("layer4_caddyfile")), // v2.56.0 (issue #113)
+		// v2.57.0 (issue #120): persistent default deploy targets. Not
+		// "deploy_to" — on this form that is the layer4 "Also copy to" picker.
+		DefaultDeployTargets: s.parseDefaultDeployTargets(r, 0),
 	}
 	renderErr := func(msg string) {
 		s.render(w, r, "server_form.html", map[string]any{
@@ -234,6 +238,7 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 	existing.IngestTarget = strings.TrimSpace(r.FormValue("ingest_target"))       // v2.37.0
 	existing.DataDir = strings.TrimSpace(r.FormValue("data_dir"))                 // v2.42.0
 	existing.Layer4Caddyfile = strings.TrimSpace(r.FormValue("layer4_caddyfile")) // v2.56.0 (issue #113)
+	existing.DefaultDeployTargets = s.parseDefaultDeployTargets(r, id)            // v2.57.0 (issue #120)
 	// Password: if the form submitted a blank value AND the user didn't explicitly
 	// check the "clear password" box, keep the existing one. Protects against
 	// masked-field UX where the password isn't re-typed on every edit.
@@ -275,6 +280,15 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// v2.57.0 (issue #120): two servers that each deploy to the other would
+	// overwrite one another's copies on every save — refuse the loop outright
+	// instead of leaving it to a warning in the form text.
+	for _, targetID := range existing.DefaultDeployTargetIDs() {
+		if t, err := models.GetCaddyServer(s.DB, targetID); err == nil && t.DefaultDeployTargetSet()[id] {
+			renderErr(fmt.Sprintf("%s already deploys to this server automatically. Pointing two servers at each other would make each save overwrite the other — remove %s from %s's targets, or untick it here.", t.Name, existing.Name, t.Name))
+			return
+		}
+	}
 	if err := models.UpdateCaddyServer(s.DB, existing); err != nil {
 		renderErr(err.Error())
 		return
@@ -294,6 +308,31 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 		s.crossDeployLayer4Caddyfile(s.currentUserEmail(r), id, existing.Layer4Caddyfile, deployTo)
 	}
 	http.Redirect(w, r, "/servers", http.StatusSeeOther)
+}
+
+// parseDefaultDeployTargets reads the server form's "default_deploy_targets"
+// checkboxes (v2.57.0, issue #120) and returns them as the stored
+// comma-separated ID list. Only existing managed servers other than selfID
+// survive, so a forged or stale ID can neither point a server at itself nor at
+// a monitoring-only or deleted server. IDs are stored ascending so re-saving an
+// unchanged form never rewrites the column.
+func (s *Server) parseDefaultDeployTargets(r *http.Request, selfID int64) string {
+	allowed := map[int64]bool{}
+	for _, srv := range s.otherManagedServersExcept(selfID) {
+		allowed[srv.ID] = true
+	}
+	var ids []int64
+	seen := map[int64]bool{}
+	for _, v := range r.Form["default_deploy_targets"] {
+		id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil || !allowed[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return models.JoinServerIDs(ids)
 }
 
 // crossDeployLayer4Caddyfile copies the source server's pasted layer4

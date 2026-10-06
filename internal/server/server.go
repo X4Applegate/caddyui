@@ -2991,7 +2991,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
-	deployTo := parseDeployTo(r)
+	deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r))
 	cu := s.currentUser(r)
 	var rhOwnerID int64
 	if cu != nil && cu.Role != models.RoleAdmin {
@@ -3094,7 +3094,7 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
-	deployTo := parseDeployTo(r)
+	deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r))
 	old, _ := models.GetRedirectionHost(s.DB, id)
 	// v2.12.2: preserve existing record IDs across UPDATE so delete-on-change
 	// still has them. parseRedirectionHostForm doesn't carry DNSRecordID

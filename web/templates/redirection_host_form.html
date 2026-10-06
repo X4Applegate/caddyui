@@ -350,8 +350,8 @@
     <div class="space-y-2">
       {{range .OtherServers}}
       <label class="flex items-center gap-2.5 cursor-pointer select-none">
-        <input type="checkbox" name="deploy_to" value="{{.ID}}" class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+        <input type="checkbox" name="deploy_to" value="{{.ID}}" {{if .IsDefaultDeployTarget}}checked disabled{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>{{if .IsDefaultDeployTarget}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5 shrink-0" title="A default deployment target of this server — always deployed to. Change it under Caddy Fleet → edit this server.">default</span>{{end}}
         {{if eq .Status "online"}}<span class="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>{{else if eq .Status "offline"}}<span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>{{else}}<span class="w-2 h-2 rounded-full bg-ink-300 shrink-0"></span>{{end}}
         <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
       </label>
