@@ -19,7 +19,7 @@ A modern, self-hosted web UI for [Caddy](https://caddyserver.com/) — manage pr
 docker pull applegater/caddyui:latest
 ```
 
-Current Docker images target `linux/amd64` and include SBOM/provenance attestations. The CaddyUI container runs non-root (UID 10001). Native Linux release archives remain available for both `amd64` and `arm64`.
+Docker images (`applegater/caddyui` and the companion `applegater/caddyui-caddy`) are multi-arch — `linux/amd64` and `linux/arm64` — so `docker pull` picks the right one for x86-64 servers and arm64 hosts (Raspberry Pi, Ampere, Graviton, Apple Silicon) automatically. They include SBOM/provenance attestations. The CaddyUI container runs non-root (UID 10001). Native Linux release archives are also available for both `amd64` and `arm64`.
 
 Docker remains the recommended install path, but tagged releases also include
 native Linux binary archives for `amd64` and `arm64` hosts. See the

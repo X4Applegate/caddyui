@@ -1,5 +1,10 @@
-FROM caddy:2.11.4-builder AS builder
-RUN xcaddy build \
+# Cross-compile on the builder's native platform (no QEMU): xcaddy honours
+# GOOS/GOARCH, and the alpine final stage only COPYs the finished binary, so
+# `--platform linux/amd64,linux/arm64` works from one Dockerfile.
+FROM --platform=$BUILDPLATFORM caddy:2.11.4-builder AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/caddy-dns/cloudflare \
     --with github.com/caddy-dns/porkbun \
     --with github.com/caddy-dns/namecheap \

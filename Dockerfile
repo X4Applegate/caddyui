@@ -1,4 +1,7 @@
-FROM golang:1.27-alpine AS build
+# Run the build stage on the builder's native platform and cross-compile for
+# the target: no QEMU emulation, and the scratch final stage has no RUN steps,
+# so one Dockerfile produces both linux/amd64 and linux/arm64 images.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
 # Install ca-certificates and tzdata in the build stage so they can be
 # copied into the scratch final image.
@@ -41,16 +44,17 @@ COPY . .
 # beats a home server. If you move CaddyUI to a low-latency VPS, the
 # trade-off flips and re-enabling becomes worthwhile — see git history
 # (commit 7751ee3) for the original config.
-# Note: BuildKit's docker-container driver (the multi-arch builder)
-# has a bug where some web/static/ files don't make it into Go's
-# embed.FS resolution. Reproduces with `docker buildx build --builder
-# multiplatform` (buildkit v0.29.0) but NOT with the default docker
-# driver. For now, build single-arch with the default builder until
-# the bug is upstream-fixed. Multi-arch retag is on hold.
+# Multi-arch: build with `docker buildx build --platform linux/amd64,linux/arm64`.
+# The embedded web/static assets are verified by `go test ./web/` below, so a
+# builder that silently drops files from the build context fails the build
+# instead of shipping a UI that 404s (issue #37).
 
 ARG VERSION=dev
+ARG TARGETOS=linux
+ARG TARGETARCH
 RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build \
+    go test ./web/ && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -ldflags="-s -w -X main.Version=${VERSION}" \
       -o /out/caddyui ./cmd/caddyui
 
