@@ -1,0 +1,76 @@
+{{define "title"}}Layer4 proxies · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-4 sm:gap-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Layer4 proxies</h1>
+    <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+      Forward raw <strong>TCP</strong> or <strong>UDP</strong> traffic — a database, SSH, DNS, a game server — from a port on this server to an upstream, the Layer4 equivalent of a proxy host.
+      CaddyUI generates the <code class="font-mono text-xs bg-ink-100 px-1 rounded">caddy-l4</code> configuration for you. Needs a Caddy build with the <code class="font-mono text-xs bg-ink-100 px-1 rounded">caddy-l4</code> module, such as the <code class="font-mono text-xs bg-ink-100 px-1 rounded">applegater/caddyui-caddy</code> image.
+    </p>
+  </div>
+  <div class="flex gap-2 w-full sm:w-auto sm:shrink-0 flex-wrap sm:flex-nowrap">
+    <a href="/servers/{{.ServerID}}/edit#layer4-raw" class="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 text-sm font-medium px-4 py-2 rounded-lg transition" title="SNI routing, matchers, complex routes, listener wrappers">
+      Raw Layer4 app{{if .HasRaw}} <span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">in use</span>{{end}}
+    </a>
+    <a href="/layer4-proxies/new" class="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">
+      New Layer4 proxy
+    </a>
+  </div>
+</div>
+
+{{if .Flash}}
+<div data-toast="success" class="mb-6 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl px-4 py-3 text-sm">{{.Flash}}</div>
+{{end}}
+
+{{if .Rows}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-xs uppercase tracking-wider text-ink-500 border-b border-ink-100">
+        <th class="px-4 py-3 font-medium">Name</th>
+        <th class="px-4 py-3 font-medium">Protocol</th>
+        <th class="px-4 py-3 font-medium">Listen</th>
+        <th class="px-4 py-3 font-medium">Upstream</th>
+        <th class="px-4 py-3 font-medium">Status</th>
+        <th class="px-4 py-3 font-medium text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-ink-100">
+      {{range .Rows}}
+      <tr>
+        <td class="px-4 py-3">
+          <div class="font-medium text-ink-900">{{.Name}}</div>
+          {{if .NodeLocal}}<span class="text-[10px] uppercase tracking-wide rounded bg-amber-50 text-amber-800 px-1.5 py-0.5">node-local</span>{{end}}
+          {{if .Notes}}<div class="text-xs text-ink-500 mt-0.5">{{.Notes}}</div>{{end}}
+        </td>
+        <td class="px-4 py-3"><span class="font-mono text-xs uppercase">{{.Protocol}}</span></td>
+        <td class="px-4 py-3 font-mono text-xs">{{.ListenDisplay}}</td>
+        <td class="px-4 py-3 font-mono text-xs">{{.UpstreamDisplay}}</td>
+        <td class="px-4 py-3">
+          <form method="post" action="/layer4-proxies/{{.ID}}/toggle">
+            <button type="submit" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium {{if .Enabled}}bg-green-50 text-green-700 hover:bg-green-100{{else}}bg-ink-100 text-ink-600 hover:bg-ink-200{{end}} transition">
+              <span class="w-1.5 h-1.5 rounded-full {{if .Enabled}}bg-green-500{{else}}bg-ink-400{{end}}"></span>{{if .Enabled}}Enabled{{else}}Disabled{{end}}
+            </button>
+          </form>
+        </td>
+        <td class="px-4 py-3">
+          <div class="flex justify-end gap-3">
+            <a href="/layer4-proxies/{{.ID}}/edit" class="text-brand-600 hover:text-brand-800 font-medium">Edit</a>
+            <form method="post" action="/layer4-proxies/{{.ID}}/delete" onsubmit="return confirm('Delete this Layer4 proxy? Copies on other servers are not removed.')">
+              <button type="submit" class="text-red-600 hover:text-red-800 font-medium">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-10 text-center">
+  <div class="text-ink-800 font-medium">No Layer4 proxies yet</div>
+  <p class="text-sm text-ink-500 mt-1 max-w-xl mx-auto">Add one to forward a TCP or UDP port — for example <span class="font-mono">:5432</span> to <span class="font-mono">10.0.0.5:5432</span>.</p>
+  <a href="/layer4-proxies/new" class="inline-flex items-center gap-1.5 mt-5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">New Layer4 proxy</a>
+</div>
+{{end}}
+{{end}}

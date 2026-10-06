@@ -27,6 +27,9 @@ type fleetSyncSummary struct {
 	RedirectsCreated    int
 	RedirectsUpdated    int
 	RawRoutesCreated    int
+	Layer4Created       int // v2.58.0 (issue #122)
+	Layer4Updated       int
+	Layer4Skipped       int // node-local
 	RawRoutesUpdated    int
 	// v2.33.0: resources deliberately left behind because they are marked
 	// node-local. Counted and reported rather than silently dropped — an
@@ -43,7 +46,8 @@ func (s fleetSyncSummary) Changed() int {
 	return s.CertificatesCreated + s.CertificatesUpdated +
 		s.ProxiesCreated + s.ProxiesUpdated +
 		s.RedirectsCreated + s.RedirectsUpdated +
-		s.RawRoutesCreated + s.RawRoutesUpdated
+		s.RawRoutesCreated + s.RawRoutesUpdated +
+		s.Layer4Created + s.Layer4Updated
 }
 
 func (s fleetSyncSummary) String() string {
@@ -54,6 +58,12 @@ func (s fleetSyncSummary) String() string {
 		s.RawRoutesCreated, s.RawRoutesUpdated,
 		s.CertificatesCreated, s.CertificatesUpdated,
 	)
+	if s.Layer4Created > 0 || s.Layer4Updated > 0 || s.Layer4Skipped > 0 {
+		out += fmt.Sprintf("; layer4 proxies: %d added, %d updated", s.Layer4Created, s.Layer4Updated)
+		if s.Layer4Skipped > 0 {
+			out += fmt.Sprintf(", %d skipped as node-local", s.Layer4Skipped)
+		}
+	}
 	if s.ProxiesSkipped > 0 || s.RawRoutesSkipped > 0 {
 		out += fmt.Sprintf("; skipped as node-local: %d proxies, %d advanced routes",
 			s.ProxiesSkipped, s.RawRoutesSkipped)
@@ -727,6 +737,28 @@ func (s *Server) syncFleetConfiguration(actor string, sourceServerID, targetServ
 			summary.RawRoutesCreated++
 		} else if result.Changed {
 			summary.RawRoutesUpdated++
+		}
+	}
+
+	// v2.58.0 (issue #122): Layer4 proxies travel with the rest.
+	layer4Proxies, err := models.ListLayer4Proxies(s.DB, sourceServerID)
+	if err != nil {
+		syncErrors = append(syncErrors, fmt.Errorf("list source layer4 proxies: %w", err))
+	}
+	for _, l4 := range layer4Proxies {
+		if l4.NodeLocal {
+			summary.Layer4Skipped++
+			continue
+		}
+		result, err := s.upsertFleetLayer4Proxy(sourceServerID, targetServerID, l4)
+		if err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("layer4 proxy %q: %w", l4.Name, err))
+			continue
+		}
+		if result.Created {
+			summary.Layer4Created++
+		} else if result.Changed {
+			summary.Layer4Updated++
 		}
 	}
 

@@ -12,6 +12,7 @@ const (
 	FleetResourceRedirect    = "redirect"
 	FleetResourceRawRoute    = "raw_route"
 	FleetResourceCertificate = "certificate"
+	FleetResourceLayer4      = "layer4_proxy" // v2.58.0 (issue #122)
 )
 
 // FleetDeploymentTarget returns the target-side row previously paired with a
@@ -85,6 +86,8 @@ func FleetDeploymentTargetExists(db *sql.DB, resourceKind string, resourceID, ta
 		table = "raw_routes"
 	case FleetResourceCertificate:
 		table = "certificates"
+	case FleetResourceLayer4:
+		table = "layer4_proxies"
 	default:
 		return false, fmt.Errorf("unknown fleet resource kind %q", resourceKind)
 	}

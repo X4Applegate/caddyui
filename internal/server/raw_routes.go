@@ -924,8 +924,10 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 // apps.layer4 is a standalone top-level app independent of apps.http.servers
 // — like Prometheus metrics above — so it should work on a route-less server
 // without forcing the administrator to create a dummy host first.
-func (s *Server) syncLayer4Only(serverID int64, layer4Caddyfile string) error {
-	layer4App, err := buildLayer4App(s.Caddy, layer4Caddyfile)
+func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies []models.Layer4Proxy) error {
+	// v2.58.0 (issue #122): the raw Caddyfile block plus the managed Layer4
+	// proxy rows.
+	layer4App, err := layer4AppFor(s.Caddy, srv, proxies)
 	if err != nil {
 		return fmt.Errorf("layer4 Caddyfile: %w", err)
 	}
@@ -1027,6 +1029,10 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	if err != nil {
 		return err
 	}
+	layer4Proxies, err := models.ListLayer4Proxies(s.DB, serverID)
+	if err != nil {
+		return err
+	}
 	if len(proxies) == 0 && len(redirs) == 0 && len(raws) == 0 && len(certs) == 0 {
 		if metricsCfg.manages(serverID) {
 			return s.syncPrometheusMetricsOnly(serverID, metricsCfg)
@@ -1038,8 +1044,11 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 		// and layer4 configured, the metrics-only branch above takes priority and
 		// layer4 is skipped this sync — an edge case of an edge case; it starts
 		// applying as soon as any proxy/redirect/raw-route/certificate exists.)
-		if strings.TrimSpace(srv.Layer4Caddyfile) != "" {
-			return s.syncLayer4Only(serverID, srv.Layer4Caddyfile)
+		// v2.58.0 (issue #122): Layer4 proxy rows count too, and so does having
+		// had managed layer4 servers before — removing the LAST proxy on an
+		// otherwise empty server must still clear them from Caddy.
+		if strings.TrimSpace(srv.Layer4Caddyfile) != "" || len(layer4Proxies) > 0 || hasManagedLayer4Live(s.Caddy) {
+			return s.syncLayer4Only(serverID, srv, layer4Proxies)
 		}
 		log.Printf("caddy sync skipped: no entries in DB for server %d (refusing to push empty routes)", serverID)
 		return nil
@@ -1109,7 +1118,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS bool) error {
 	// this server's own admin API before fetching/mutating its config, so a
 	// typo'd block (or a build missing caddy-l4) fails the sync up front with
 	// a clear error instead of after other subtrees have already been written.
-	layer4App, err := buildLayer4App(s.Caddy, srv.Layer4Caddyfile)
+	layer4App, err := layer4AppFor(s.Caddy, srv, layer4Proxies)
 	if err != nil {
 		return fmt.Errorf("layer4 Caddyfile for %s: %w", srv.Name, err)
 	}

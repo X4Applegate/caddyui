@@ -116,6 +116,22 @@ CREATE TABLE IF NOT EXISTS caddy_servers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS layer4_proxies (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    server_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    protocol VARCHAR(8) NOT NULL DEFAULT 'tcp',
+    listen_addr VARCHAR(255) NOT NULL DEFAULT '',
+    listen_port INT NOT NULL,
+    upstream_host VARCHAR(255) NOT NULL,
+    upstream_port INT NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    node_local TINYINT(1) NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL,
+    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS fleet_deployments (
     source_server_id BIGINT NOT NULL,
     resource_kind VARCHAR(32) NOT NULL,

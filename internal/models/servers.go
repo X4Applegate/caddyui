@@ -280,6 +280,9 @@ func DeleteCaddyServer(db *sql.DB, id int64) error {
 	if err := removeDefaultDeployTarget(db, id); err != nil {
 		return err
 	}
+	if _, err := db.Exec(`DELETE FROM layer4_proxies WHERE server_id=?`, id); err != nil {
+		return err
+	}
 	_, err := db.Exec(`DELETE FROM caddy_servers WHERE id=?`, id)
 	return err
 }

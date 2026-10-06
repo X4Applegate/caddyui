@@ -263,7 +263,7 @@ func newLayer4FakeAdmin(t *testing.T, baseConfig string) (*httptest.Server, *lay
 			f.putCalls++
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "{}")
-		case r.Method == http.MethodDelete && r.URL.Path == "/apps/layer4":
+		case r.Method == http.MethodDelete && r.URL.Path == "/config/apps/layer4":
 			f.deleteCalls++
 			w.WriteHeader(http.StatusOK)
 		default:

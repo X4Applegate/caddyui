@@ -829,6 +829,16 @@ func (s *Server) Routes() http.Handler {
 			// keys and DNS API tokens from /caddy-config and a customer-level
 			// user could download the whole database from /backup.
 			r.Get("/caddy-config", s.getCaddyConfig)
+			// v2.58.0 (issue #122): Layer4 (TCP/UDP) proxies. Admin-only — a
+			// layer4 listener opens a port on the host and forwards to anything
+			// the host can reach.
+			r.Get("/layer4-proxies", s.listLayer4Proxies)
+			r.Get("/layer4-proxies/new", s.newLayer4Proxy)
+			r.Post("/layer4-proxies", s.createLayer4Proxy)
+			r.Get("/layer4-proxies/{id}/edit", s.editLayer4Proxy)
+			r.Post("/layer4-proxies/{id}", s.updateLayer4Proxy)
+			r.Post("/layer4-proxies/{id}/toggle", s.toggleLayer4Proxy)
+			r.Post("/layer4-proxies/{id}/delete", s.deleteLayer4Proxy)
 			r.Get("/import", s.getImport)
 			r.Post("/import", s.postImport)
 			r.Get("/snapshots", s.listSnapshots)

@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.58.0] - 2026-10-06 - Layer4 Proxies: a dedicated section for TCP/UDP proxies (#122)
+
+Suggested and thoroughly tested by @tkkost. Until now Layer4 meant pasting a raw `layer4 { ... }` block into a server's edit form. Layer4 proxies are now first-class resources, managed like Proxy Hosts.
+
+### Added
+
+- **Layer4 Proxies** (new sidebar entry, admin-only). Each proxy has a **name**, **protocol** (TCP or UDP), **listen address** (optional) and **port**, **upstream host** and **port**, an **enabled** switch, a **node-local** switch and notes. CaddyUI generates the `caddy-l4` configuration (`apps.layer4.servers.caddyui_l4_<id>`) and pushes it to the server selected in the top bar; per-proxy create, edit, enable/disable and delete. A Caddy that lacks the `caddy-l4` module rejects the config at validation time, so a proxy it cannot run is never saved — use `applegater/caddyui-caddy`, which includes the module.
+- **Fleet behaviour like Proxy Hosts.** A saved proxy (and a quick enable/disable) is mirrored to the source server's **Automatic deployment targets** plus any one-off **Also deploy to** picks. A **node-local** proxy never leaves its server. Copies are idempotent and tracked in the same mapping table as hosts; a target that already has a proxy on the same protocol and listen socket adopts it instead of duplicating. **Sync from current** now carries Layer4 proxies too. As with hosts, **deleting a proxy does not delete its copies** on other servers.
+- Safety checks: ports 80, 443 and 2019 are refused (they belong to Caddy), the same protocol + socket cannot be used twice on a server, hostnames are validated, and `{env.}` / `{file.}` style placeholders are not accepted as upstreams. TCP and UDP can share a port number.
+
+### Compatibility
+
+- The raw **Layer4 app** Caddyfile editor is unchanged and stays under **Caddy Fleet → edit server** (the new page links to it as the Advanced / raw mode). Both feed the same `apps.layer4`: CaddyUI merges the managed `caddyui_l4_*` servers into whatever the raw block produces, so existing raw configurations keep working untouched.
+- Removing the last proxy (or disabling every one) on a server clears the generated servers from Caddy on the next sync.
+- New table `layer4_proxies` (created automatically on SQLite and MariaDB); deleting a server also deletes its proxies.
+
+### Fixed
+
+- The test fixture for the Caddy admin API matched the layer4 `DELETE` on the wrong path, so clearing `apps.layer4` was never exercised; the real path is now covered.
+
+---
+
 ## [2.57.1] - 2026-10-06 - Security hardening release, Caddy 2.11.7, and #121
 
 A full security audit — independent reviews of authentication and authorization, of injection / SSRF / file access, and of secrets and data exposure, plus a manual review of the paths that turn user input into Caddy config — found a number of access-control and isolation gaps. **None was externally reported**; each was reproduced against the real router before being fixed, and every fix ships with a regression test that fails on the previous code. Most of them need a signed-in account below admin, so a single-operator install with no extra users is much less exposed than a multi-user one — but anyone running **user** or **view** accounts should upgrade. Admin behaviour is unchanged.

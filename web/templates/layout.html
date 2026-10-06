@@ -468,6 +468,7 @@ if ('serviceWorker' in navigator) {
           {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" "Proxy Hosts" "Icon" "proxy")}}
           {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" "Redirections" "Icon" "redirect")}}
           {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" "Advanced Routes" "Icon" "code")}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "layer4" "Href" "/layer4-proxies" "Label" "Layer4 Proxies" "Icon" "proxy")}}{{end}}
         </div>
 
         <div class="app-nav__group">

@@ -125,6 +125,24 @@ CREATE TABLE IF NOT EXISTS caddy_servers (
 -- Tracks one-way Caddy Fleet deployments so repeating "Also deploy to" or a
 -- full configuration sync updates the same target row instead of inserting a
 -- duplicate. Resource rows remain independently editable on each server.
+-- v2.58.0 (issue #122): first-class Layer4 (TCP/UDP) proxies. Each row is one
+-- listen -> upstream forward; CaddyUI generates the caddy-l4 server for it.
+CREATE TABLE IF NOT EXISTS layer4_proxies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    protocol TEXT NOT NULL DEFAULT 'tcp',
+    listen_addr TEXT NOT NULL DEFAULT '',
+    listen_port INTEGER NOT NULL,
+    upstream_host TEXT NOT NULL,
+    upstream_port INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    node_local INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS fleet_deployments (
     source_server_id INTEGER NOT NULL,
     resource_kind VARCHAR(32) NOT NULL,

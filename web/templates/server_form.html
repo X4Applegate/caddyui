@@ -74,7 +74,7 @@
   </div>
 
   {{/* ── v2.56.0 (issue #113): layer4 app Caddyfile block ── */}}
-  <div class="p-6 space-y-4 border-t border-ink-100" data-layer4-field>
+  <div id="layer4-raw" class="p-6 space-y-4 border-t border-ink-100" data-layer4-field>
     <div>
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Layer4 app <span class="text-ink-400 font-normal text-xs">(optional — TCP/UDP routing via github.com/mholt/caddy-l4)</span></label>
       <textarea name="layer4_caddyfile" rows="10" spellcheck="false" placeholder="layer4 {&#10;    :8443 {&#10;        route {&#10;            proxy 127.0.0.1:9000&#10;        }&#10;    }&#10;}"
@@ -107,7 +107,7 @@
   <div class="p-6 space-y-3 border-t border-ink-100" data-default-deploy-targets>
     <div>
       <div class="text-sm font-medium text-ink-800">Automatic deployment targets <span class="text-ink-400 font-normal text-xs">(optional — use this server as a configuration source)</span></div>
-      <p class="text-xs text-ink-500 mt-1.5">Every proxy host, redirection and advanced route you create or edit <em>on this server</em> in the web UI is automatically deployed to the servers ticked here too — no need to tick <strong>Also deploy to</strong> on each save. Those forms show these servers as <em>default</em>; the per-resource picker stays available for one-off extra targets. To keep a single resource off every other server, mark it <strong>node-local</strong>.</p>
+      <p class="text-xs text-ink-500 mt-1.5">Every proxy host, redirection, advanced route and Layer4 proxy you create or edit <em>on this server</em> in the web UI is automatically deployed to the servers ticked here too — no need to tick <strong>Also deploy to</strong> on each save. Those forms show these servers as <em>default</em>; the per-resource picker stays available for one-off extra targets. To keep a single resource off every other server, mark it <strong>node-local</strong>.</p>
       <p class="text-xs text-ink-500 mt-1.5"><strong>What this does not do:</strong> deleting a resource here does not delete its copies on the targets; quick enable/disable toggles, bulk actions, Caddyfile import and the REST API do not deploy; resources that already exist are deployed the next time they are saved. For a one-time bulk copy use <strong>Sync from current</strong> on the target server. Certificates keep their own per-certificate targets.</p>
       <p class="text-xs text-ink-500 mt-1.5">Deploying happens as part of the save, so a target that cannot be reached can delay it by up to ~10 seconds (the failure is recorded in the Activity Log). Set targets on the source only — a server that already deploys to this one can't be chosen, so two servers can never point at each other.</p>
     </div>

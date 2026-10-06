@@ -1,0 +1,92 @@
+{{define "title"}}{{if .Row.ID}}Edit{{else}}New{{end}} Layer4 proxy · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <a href="/layer4-proxies" class="text-xs text-ink-500 hover:text-ink-900 transition inline-flex items-center gap-1">&larr; Back to Layer4 proxies</a>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Row.ID}}Edit Layer4 proxy{{else}}New Layer4 proxy{{end}}</h1>
+  <p class="text-sm text-ink-500 mt-1 max-w-2xl">Forward a TCP or UDP port on this server to an upstream. For SNI routing, matchers or other advanced <code class="font-mono text-xs bg-ink-100 px-1 rounded">caddy-l4</code> configuration, use the <a href="/servers/{{.ServerID}}/edit#layer4-raw" class="text-brand-600 hover:text-brand-700">raw Layer4 app</a>.</p>
+</div>
+
+{{if .Error}}
+<div data-toast="error" class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm max-w-3xl">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Row.ID}}/layer4-proxies/{{.Row.ID}}{{else}}/layer4-proxies{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5 max-w-3xl">
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
+    <input name="name" value="{{.Row.Name}}" required maxlength="100" placeholder="e.g. Postgres, SSH to nas, DNS"
+      class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Protocol</label>
+      <select name="protocol" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+        <option value="tcp" {{if ne .Row.Protocol "udp"}}selected{{end}}>TCP</option>
+        <option value="udp" {{if eq .Row.Protocol "udp"}}selected{{end}}>UDP</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Listen address <span class="text-ink-400 font-normal text-xs">(optional)</span></label>
+      <input name="listen_addr" value="{{.Row.ListenAddr}}" placeholder="all interfaces"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Listen port</label>
+      <input name="listen_port" type="number" min="1" max="65535" required value="{{if .Row.ListenPort}}{{.Row.ListenPort}}{{end}}" placeholder="5432"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div class="sm:col-span-2">
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Upstream host</label>
+      <input name="upstream_host" value="{{.Row.UpstreamHost}}" required placeholder="10.0.0.5 or db.internal"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Upstream port</label>
+      <input name="upstream_port" type="number" min="1" max="65535" required value="{{if .Row.UpstreamPort}}{{.Row.UpstreamPort}}{{end}}" placeholder="5432"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+  </div>
+  <p class="text-xs text-ink-500 -mt-2">Ports 80, 443 and 2019 are reserved for HTTP(S) and the Caddy admin API. Remember to open the listen port in your firewall.</p>
+
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">Notes <span class="text-ink-400 font-normal text-xs">(optional)</span></label>
+    <input name="notes" value="{{.Row.Notes}}" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+  </div>
+
+  <div class="space-y-2.5">
+    <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Row.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled (send to Caddy on sync)</label>
+    {{if .OtherServers}}
+    <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer">
+      <input type="checkbox" name="node_local" {{if .Row.NodeLocal}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span>Node-local — never deploy this proxy to other servers
+        <span class="block text-xs text-ink-500">Use it when the upstream only means something on this node. Automatic deployment targets and “Also deploy to” skip it.</span></span>
+    </label>
+    {{end}}
+  </div>
+
+  {{if .OtherServers}}
+  <div class="pt-4 border-t border-ink-100">
+    <div class="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">Also deploy to</div>
+    <p class="text-xs text-ink-400 mb-3">Push a copy of this proxy to other servers. Servers marked <em>default</em> are this server's automatic deployment targets and are always included.</p>
+    <div class="space-y-2">
+      {{range .OtherServers}}
+      <label class="flex items-center gap-2.5 cursor-pointer select-none">
+        <input type="checkbox" name="deploy_to" value="{{.ID}}" {{if .IsDefaultDeployTarget}}checked disabled{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span class="text-sm text-ink-700 font-medium">{{.Name}}</span>
+        {{if .IsDefaultDeployTarget}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5 shrink-0" title="A default deployment target of this server — always deployed to.">default</span>{{end}}
+        <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
+      </label>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  <div class="flex items-center gap-3 pt-4 border-t border-ink-100">
+    <button type="submit" class="bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-5 py-2 rounded-lg shadow-sm transition">{{if .Row.ID}}Save changes{{else}}Create{{end}}</button>
+    <a href="/layer4-proxies" class="text-sm text-ink-600 hover:text-ink-900">Cancel</a>
+  </div>
+</form>
+{{end}}
