@@ -59,10 +59,9 @@ jobs:
     outputs:
       ref: ${{ steps.p.outputs.ref }}
       version: ${{ steps.p.outputs.version }}
+      kind: ${{ steps.p.outputs.kind }}
       push: ${{ steps.p.outputs.push }}
       caddy: ${{ steps.p.outputs.caddy }}
-      tags_ui: ${{ steps.p.outputs.tags_ui }}
-      tags_caddy: ${{ steps.p.outputs.tags_caddy }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -121,24 +120,18 @@ jobs:
             fi
           fi
 
-          tags() { # tags <repo>
-            case "$kind" in
-              stable) printf '%s:%s\n%s:stable\n%s:latest\n' "$1" "$version" "$1" "$1" ;;
-              pre|older) printf '%s:%s\n' "$1" "$version" ;;
-            esac
-          }
-
+          # Only the version and release kind cross to the build jobs — never the
+          # image names. GitHub silently DROPS any job output that contains the
+          # value of a secret, and "applegater" is the DOCKERHUB_USERNAME secret,
+          # so a tag list like applegater/caddyui:v1.2.3 would arrive empty
+          # ("tag is needed when pushing to registry"). Each build job builds its
+          # own tags from these two values instead.
           {
             echo "ref=${INPUT_VERSION:-$GITHUB_REF}"
             echo "version=$version"
+            echo "kind=$kind"
             echo "push=$push"
             echo "caddy=$caddy"
-            echo "tags_ui<<EOF"
-            tags applegater/caddyui
-            echo "EOF"
-            echo "tags_caddy<<EOF"
-            tags applegater/caddyui-caddy
-            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
           echo "version=$version kind=$kind push=$push caddy=$caddy"
@@ -165,6 +158,24 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Work out image tags
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          KIND: ${{ needs.plan.outputs.kind }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=applegater/caddyui
+          {
+            echo "TAGS<<EOF"
+            echo "$repo:$VERSION"
+            if [ "$KIND" = stable ]; then
+              echo "$repo:stable"
+              echo "$repo:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Build (and push) linux/amd64 + linux/arm64
         uses: docker/build-push-action@v7
         with:
@@ -173,15 +184,13 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ needs.plan.outputs.version }}
-          tags: ${{ needs.plan.outputs.tags_ui }}
+          tags: ${{ env.TAGS }}
           push: ${{ needs.plan.outputs.push == 'true' }}
           provenance: mode=max
           sbom: true
 
       - name: Verify every pushed tag is one multi-arch image
         if: needs.plan.outputs.push == 'true'
-        env:
-          TAGS: ${{ needs.plan.outputs.tags_ui }}
         shell: bash
         run: |
           set -euo pipefail
@@ -219,21 +228,37 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Work out image tags
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          KIND: ${{ needs.plan.outputs.kind }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=applegater/caddyui-caddy
+          {
+            echo "TAGS<<EOF"
+            echo "$repo:$VERSION"
+            if [ "$KIND" = stable ]; then
+              echo "$repo:stable"
+              echo "$repo:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Build (and push) linux/amd64 + linux/arm64
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.caddy
           platforms: linux/amd64,linux/arm64
-          tags: ${{ needs.plan.outputs.tags_caddy }}
+          tags: ${{ env.TAGS }}
           push: ${{ needs.plan.outputs.push == 'true' }}
           provenance: mode=max
           sbom: true
 
       - name: Verify every pushed tag is one multi-arch image
         if: needs.plan.outputs.push == 'true'
-        env:
-          TAGS: ${{ needs.plan.outputs.tags_caddy }}
         shell: bash
         run: |
           set -euo pipefail
