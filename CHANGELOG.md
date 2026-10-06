@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.59.2] - 2026-10-06 - Code-scanning clean-up (no behaviour change)
+
+### Security
+
+- Two CodeQL `go/clear-text-logging` alerts (high) are closed. Two log lines — the import path skipping a proxy host the non-admin upstream guard refuses, and the sync-time tenant route guard skipping a non-admin-owned route — included a reason string that is derived from a generated route, and CodeQL traced a proxy host's API-key value into it. The reasons only ever contained handler names, upstream addresses or placeholder text, never the stored key, so nothing was leaked; but they no longer appear in the log. The log now says the route was refused and names the resource; the full reason is still shown as a form error when the owner saves the resource. No behaviour change.
+
+---
+
 ## [2.59.1] - 2026-10-06 - Deleting the last resource now clears the live Caddy (#120)
 
 Reported by @tkkost right after v2.59.0: when deletion propagation removed the **last** host from a target, the resource disappeared from CaddyUI but its route stayed live in that Caddy.

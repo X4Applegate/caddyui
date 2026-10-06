@@ -334,7 +334,10 @@ func (s *Server) sanitizeTenantRoute(owner sql.NullInt64, what string, route any
 		log.Printf("caddy sync: %s: neutralised {env.…}/{file.…} placeholders in a non-admin-owned route", what)
 	}
 	if why := s.tenantRouteViolation(route); why != "" {
-		log.Printf("caddy sync: %s: route skipped, not allowed for a non-admin owner: %s", what, why)
+		// why is derived from the route, which carries header and API-key
+		// values, so it is not written to the log; the owner sees the full
+		// reason as a form error when saving the resource.
+		log.Printf("caddy sync: %s: route skipped, not allowed for a non-admin owner", what)
 		return nil, false
 	}
 	return route, true

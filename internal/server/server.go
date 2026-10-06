@@ -3473,7 +3473,9 @@ func (s *Server) postImport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if msg := s.validateProxyUpstreamsForUser(cu, &p); msg != "" {
-			log.Printf("import: skipped proxy host %q: %s", p.Domains, msg)
+			// The reason (msg) is derived from a route that carries header and
+			// API-key values, so it is deliberately not written to the log.
+			log.Printf("import: skipped proxy host %q: refused by the non-admin upstream guard", p.Domains)
 			continue
 		}
 		if _, err := models.CreateProxyHost(s.DB, s.currentServerID(r), 0, &p); err == nil {
