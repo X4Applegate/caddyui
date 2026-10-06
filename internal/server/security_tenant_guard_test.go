@@ -409,3 +409,27 @@ func TestNonAdminProxyHostDomainsAndMonitorsCannotAimProbesAtInternalAddresses(t
 		t.Errorf("the admin's custom POST health check was refused: %d", rec.Code)
 	}
 }
+
+// A handler nested inside an Advanced-config block is invisible to the
+// top-level directive scan; the save-time check now looks at what the text
+// adapted to, so a non-admin is told why instead of having the route skipped.
+func TestNonAdminAdvancedConfigIsCheckedAfterAdapting(t *testing.T) {
+	e := newSecEnv(t)
+	// Make the fake Caddy adapt the Advanced config into a file_server handler,
+	// the way a nested `handle { root * / ; file_server browse }` would.
+	e.mu.Lock()
+	e.adaptResponse = `{"result":{"apps":{"http":{"servers":{"srv0":{"routes":[{"handle":[{"handler":"subroute","routes":[{"handle":[{"handler":"file_server","root":"/","browse":{}}]}]}]}]}}}}}}`
+	e.mu.Unlock()
+
+	form := url.Values{"domains": {"adv.example.test"}, "forward_scheme": {"http"}, "forward_host": {"10.0.0.5"}, "forward_port": {"8080"},
+		"enabled": {"on"}, "advanced_config": {"handle {\n\troot * /\n\tfile_server browse\n}"}}
+	if rec := e.do(t, "alice", http.MethodPost, "/proxy-hosts", form); rec.Code == http.StatusSeeOther {
+		t.Error("a non-admin saved Advanced config that adapts to a file_server")
+	} else if !strings.Contains(rec.Body.String(), "file_server") {
+		t.Errorf("the user should be told which handler is not allowed: %s", excerpt(rec.Body.String(), "Not allowed"))
+	}
+	form.Set("domains", "adv2.example.test")
+	if rec := e.do(t, "admin", http.MethodPost, "/proxy-hosts", form); rec.Code != http.StatusSeeOther {
+		t.Errorf("the admin's Advanced config was refused: %d", rec.Code)
+	}
+}

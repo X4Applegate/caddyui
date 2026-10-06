@@ -23,8 +23,13 @@ const (
 
 type ctxKey string
 
+// bcryptCost is the work factor for NEW password hashes. SECURITY.md has always
+// promised 12; the code used bcrypt.DefaultCost (10) until v2.57.1. Existing
+// hashes keep verifying — the cost is stored inside each hash.
+const bcryptCost = 12
+
 func HashPassword(pw string) (string, error) {
-	h, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	h, err := bcrypt.GenerateFromPassword([]byte(pw), bcryptCost)
 	return string(h), err
 }
 

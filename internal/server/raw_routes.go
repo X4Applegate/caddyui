@@ -1309,8 +1309,19 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if errMsg := validateProxyAdvancedDirectives(normalizeProxyAdvancedConfig(p.AdvancedConfig)); errMsg != "" {
 		return errMsg
 	}
-	if _, _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p); err != nil {
+	handlers, _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p)
+	if err != nil {
 		return friendlyAdvancedRejection(err) // v2.42.2
+	}
+	// v2.57.1: for a non-admin's request (the client carries AdaptTextCheck),
+	// inspect what the text adapted to as well — a handler nested inside a block
+	// (file_server, an upstream aimed at the admin API, ...) is invisible to the
+	// top-level directive scan above. The sync-time guard would skip such a
+	// route silently; this gives the user the reason instead.
+	if caddyCl != nil && caddyCl.AdaptTextCheck != nil {
+		if msg := s.validateTenantRoute(map[string]any{"handle": handlers}); msg != "" {
+			return msg
+		}
 	}
 	return ""
 }

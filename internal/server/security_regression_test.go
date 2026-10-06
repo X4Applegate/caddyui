@@ -48,6 +48,8 @@ type secEnv struct {
 	tokens map[string]string
 	mu     sync.Mutex
 	reqs   []string // "METHOD path :: body" seen by the fake Caddy admin API
+	// adaptResponse, when set, is what the fake Caddy returns from /adapt.
+	adaptResponse string
 }
 
 func newSecEnv(t *testing.T) *secEnv {
@@ -71,7 +73,13 @@ func newSecEnv(t *testing.T) *secEnv {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/config"):
 			fmt.Fprintf(w, `{"apps":{"tls":{"certificates":{"load_pem":[{"certificate":"CERT","key":"%s"}]},"automation":{"policies":[{"issuers":[{"module":"acme","challenges":{"dns":{"provider":{"name":"cloudflare","api_token":"%s"}}}}]}]}},"http":{"servers":{"srv0":{"routes":[]}}}}}`, secKeyMaterial, secDNSToken)
 		case r.URL.Path == "/adapt":
-			fmt.Fprint(w, `{"result":{"apps":{"http":{"servers":{"srv0":{"routes":[]}}}}}}`)
+			e.mu.Lock()
+			resp := e.adaptResponse
+			e.mu.Unlock()
+			if resp == "" {
+				resp = `{"result":{"apps":{"http":{"servers":{"srv0":{"routes":[]}}}}}}`
+			}
+			fmt.Fprint(w, resp)
 		default:
 			fmt.Fprint(w, `{}`)
 		}
