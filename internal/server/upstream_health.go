@@ -1336,9 +1336,33 @@ func (s *Server) apiCaddyUpstreams(w http.ResponseWriter, r *http.Request) {
 	}
 	cl := caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	upstreams, err := cl.GetUpstreamHealth(ctx)
+	cu := s.currentUser(r)
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"upstreams": nil, "error": err.Error()})
+		msg := err.Error()
+		if !isAdminUser(cu) {
+			msg = "could not reach Caddy" // the error text repeats the node's admin URL
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"upstreams": nil, "error": msg})
 		return
+	}
+	// v2.57.1: Caddy reports EVERY upstream on the server. A non-admin sees only
+	// the upstreams of the hosts they can see in the host list.
+	if !isAdminUser(cu) && cu != nil {
+		hosts, _ := models.ListProxyHosts(s.DB, sid, cu.ID, false, s.groupPeerIDs(r))
+		allowed := map[string]bool{}
+		for _, h := range hosts {
+			allowed[fmt.Sprintf("%s:%d", h.ForwardHost, h.ForwardPort)] = true
+			for _, extra := range h.ExtraUpstreamList() {
+				allowed[extra] = true
+			}
+		}
+		visible := upstreams[:0:0]
+		for _, u := range upstreams {
+			if allowed[u.Address] {
+				visible = append(visible, u)
+			}
+		}
+		upstreams = visible
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"upstreams": upstreams})
 }

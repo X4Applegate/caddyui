@@ -623,20 +623,23 @@
 </div>
 
 <script>
+// v2.57.1: upstream addresses are tenant-controlled (a host's ForwardHost) —
+// escape them before they go into innerHTML.
+function escHTML(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 function fetchUpstreams() {
   fetch('/api/caddy-upstreams')
     .then(r => r.json())
     .then(data => {
       const el = document.getElementById('upstream-health-list');
       if (!el) return;
-      if (data.error) { el.innerHTML = '<span class="text-red-500">'+data.error+'</span>'; return; }
+      if (data.error) { el.innerHTML = '<span class="text-red-500">'+escHTML(data.error)+'</span>'; return; }
       const ups = data.upstreams;
       if (!ups || ups.length === 0) { el.textContent = 'No active upstreams reported by Caddy.'; return; }
       el.innerHTML = '<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">' +
         ups.map(u => `<div class="flex items-center gap-2 px-3 py-2 rounded-lg ${u.healthy ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'}">
           <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 ${u.healthy ? 'bg-green-500' : 'bg-red-500'}"></span>
-          <span class="font-mono truncate ${u.healthy ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}">${u.address}</span>
-          <span class="ml-auto text-gray-400">${u.num_requests} req${u.num_requests !== 1 ? 's' : ''}</span>
+          <span class="font-mono truncate ${u.healthy ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}">${escHTML(u.address)}</span>
+          <span class="ml-auto text-gray-400">${escHTML(u.num_requests)} req${u.num_requests !== 1 ? 's' : ''}</span>
         </div>`).join('') + '</div>';
     })
     .catch(e => {

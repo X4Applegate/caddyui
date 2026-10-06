@@ -135,6 +135,9 @@ func (s *Server) validateProxyUpstreamsForUser(cu *models.User, p *models.ProxyH
 	if msg := s.certificateRefusal(cu, p.CertificateID); msg != "" { // v2.57.1
 		return msg
 	}
+	if msg := s.tenantProbeViolation(p); msg != "" { // v2.57.1
+		return msg
+	}
 	adminHosts := s.adminHostSet()
 	candidates := make([]string, 0, 4)
 	candidates = append(candidates, p.ForwardHost)

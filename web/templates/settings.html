@@ -1533,6 +1533,9 @@ function testCrowdSec(serverID, btn) {
 }
 
 (function() {
+  // v2.57.1: every value below comes from the server and some of it from
+  // tenants (certificate names, upstream addresses) — escape before innerHTML.
+  function escHTML(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
   if (document.getElementById('notifier-status')) fetch('/api/notifier-status')
     .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(d) {
@@ -1541,15 +1544,15 @@ function testCrowdSec(serverID, btn) {
       var certCheck  = d.last_check    ? new Date(d.last_check).toLocaleString()    : 'Never';
       var upCheck    = d.upstream_check ? new Date(d.upstream_check).toLocaleString() : 'Never';
       var certList   = (d.last_notified || []).map(function(n) {
-        return '<span class="font-mono">' + n.domain + '</span> (' + n.days_left + 'd left)';
+        return '<span class="font-mono">' + escHTML(n.domain) + '</span> (' + escHTML(n.days_left) + 'd left)';
       }).join(', ') || '<span class="text-ink-400">None</span>';
 
       var upAlerts = (d.upstream_alerts || []).slice(-10).reverse();
       var upHtml = upAlerts.length ? upAlerts.map(function(a) {
         var cls = a.event === 'down' ? 'text-red-600' : 'text-brand-700';
-        return '<span class="font-mono">' + a.upstream + '</span> '
-          + '<span class="' + cls + '">' + a.event + '</span>'
-          + ' on ' + a.server
+        return '<span class="font-mono">' + escHTML(a.upstream) + '</span> '
+          + '<span class="' + cls + '">' + escHTML(a.event) + '</span>'
+          + ' on ' + escHTML(a.server)
           + ' <span class="text-ink-400">(' + new Date(a.alerted_at).toLocaleString() + ')</span>';
       }).join('<br>') : '<span class="text-ink-400">None</span>';
 

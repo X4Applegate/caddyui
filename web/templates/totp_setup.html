@@ -43,8 +43,10 @@
         <span class="font-medium text-ink-800">Backup codes</span>
         <span class="ml-2 text-ink-500">{{.BackupCodeCount}} remaining</span>
       </div>
-      <form method="post" action="/totp/regenerate-backup-codes"
+      <form method="post" action="/totp/regenerate-backup-codes" class="flex items-center gap-2"
             onsubmit="return confirm('Regenerate backup codes? Your existing codes will be invalidated.')">
+        <input type="password" name="current_password" required autocomplete="current-password" placeholder="Current password"
+               class="w-40 rounded-lg border border-ink-200 px-2 py-1 text-xs bg-white focus:border-brand-500 focus:outline-none" />
         <button type="submit" class="text-xs text-brand-600 hover:text-brand-800 font-medium transition">Regenerate</button>
       </form>
     </div>
@@ -55,10 +57,14 @@
       <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>Enabled</span>
       <span class="text-sm text-ink-600">2FA is active on your account.</span>
     </div>
-    <form method="post" action="/totp/setup" onsubmit="return confirm('Disable two-factor authentication?')">
+    {{if .Error}}<div data-toast="error" class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg mb-3">{{.Error}}</div>{{end}}
+    <form method="post" action="/totp/setup" onsubmit="return confirm('Disable two-factor authentication?')" class="flex flex-wrap items-center gap-2">
       <input type="hidden" name="action" value="disable">
+      <input type="password" name="current_password" required autocomplete="current-password" placeholder="Current password"
+             class="w-48 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none" />
       <button class="inline-flex items-center gap-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 text-sm font-medium px-4 py-2 rounded-lg transition">Disable 2FA</button>
     </form>
+    <p class="text-xs text-ink-400 mt-2">Disabling two-factor authentication or regenerating backup codes asks for your current password, so a stolen browser session cannot remove your second factor.</p>
   </div>
   {{else}}
   {{if .Error}}<div data-toast="error" class="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg mb-4">{{.Error}}</div>{{end}}

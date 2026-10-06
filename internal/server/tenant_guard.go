@@ -400,3 +400,39 @@ func (s *Server) certificateRefusal(cu *models.User, certID int64) string {
 	}
 	return ""
 }
+
+// tenantHostnameRe is what a non-admin may use as a proxy host DOMAIN: plain DNS
+// labels with an optional leading "*." — no port, path, userinfo or
+// placeholder. CaddyUI's own probes (health monitor, app monitor, post-sync
+// expectations, certificate probe) build their URLs from the first domain, so
+// "10.8.0.2:2019" as a domain turned the probes into requests to an arbitrary
+// internal address.
+var tenantHostnameRe = regexp.MustCompile(`(?i)^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// tenantMonitorPathRe limits a custom health-check path to URL path characters.
+var tenantMonitorPathRe = regexp.MustCompile(`^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$`)
+
+// tenantProbeViolation checks the fields of a proxy host that CaddyUI's own
+// probes turn into outbound requests, for a non-admin owner.
+func (s *Server) tenantProbeViolation(p *models.ProxyHost) string {
+	adminHosts := s.adminHostSet()
+	for _, d := range p.DomainList() {
+		if !tenantHostnameRe.MatchString(d) {
+			return fmt.Sprintf("Domain %q is not a plain hostname — ports, paths and special characters are not allowed for non-admin accounts.", d)
+		}
+		if why := dialBlockedForTenant(strings.TrimPrefix(d, "*."), adminHosts); why != "" {
+			return fmt.Sprintf("Domain %q is not allowed: %s.", d, why)
+		}
+	}
+	if p.MonitorMode == "custom" {
+		switch strings.ToUpper(strings.TrimSpace(p.MonitorMethod)) {
+		case "", "GET", "HEAD":
+		default:
+			return "Custom health checks are limited to GET and HEAD for non-admin accounts."
+		}
+		if path := strings.TrimSpace(p.MonitorPath); path != "" && !tenantMonitorPathRe.MatchString(path) {
+			return "The health-check path contains characters that are not allowed."
+		}
+	}
+	return ""
+}

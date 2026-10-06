@@ -38,16 +38,22 @@ func (s *Server) apiV1ListServers(w http.ResponseWriter, r *http.Request) {
 		if srv.LastContactAt.Valid {
 			lastContactAt = srv.LastContactAt.Time.UTC()
 		}
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"id":              srv.ID,
 			"name":            srv.Name,
-			"admin_url":       srv.AdminURL,
 			"type":            srv.Type,
 			"status":          srv.Status,
 			"version":         srv.Version,
 			"tags":            srv.TagList(),
 			"last_contact_at": lastContactAt,
-		})
+		}
+		// v2.57.1: a node's admin URL is the address of its admin API. Handing
+		// every node's to any account gave a tenant the exact targets for an
+		// upstream-guard bypass attempt (and SECURITY.md says it is not exposed).
+		if isAdminUser(cu) {
+			entry["admin_url"] = srv.AdminURL
+		}
+		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

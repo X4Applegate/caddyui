@@ -88,7 +88,12 @@ func hostMatchClause(host string) (string, []any) {
 		return "", nil
 	}
 	if len(host) > 2 && host[0] == '*' && host[1] == '.' {
-		return " AND host LIKE ?", []any{"%" + host[1:]}
+		// v2.57.1: % and _ are LIKE wildcards, and a host name is user input —
+		// "*.%" would have matched every host and leaked other tenants' traffic.
+		// '!' is the escape character because ESCAPE '\\' means different things
+		// to SQLite and MariaDB.
+		escaped := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(host[1:])
+		return " AND host LIKE ? ESCAPE '!'", []any{"%" + escaped}
 	}
 	return " AND host = ?", []any{host}
 }

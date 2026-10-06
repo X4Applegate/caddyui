@@ -1468,10 +1468,10 @@ func (s *Server) exportAnalyticsCSV(w http.ResponseWriter, r *http.Request) {
 	for _, e := range rows {
 		_ = cw.Write([]string{
 			e.TS.UTC().Format(time.RFC3339),
-			strconv.FormatInt(e.ServerID, 10), e.ServerName,
-			e.Host, e.Path, e.Method,
+			strconv.FormatInt(e.ServerID, 10), csvSafe(e.ServerName),
+			csvSafe(e.Host), csvSafe(e.Path), csvSafe(e.Method),
 			strconv.Itoa(e.Status),
-			e.ClientIP, e.UserAgent,
+			csvSafe(e.ClientIP), csvSafe(e.UserAgent),
 			strconv.FormatInt(e.DurationMs, 10),
 			strconv.FormatInt(e.BytesOut, 10),
 		})

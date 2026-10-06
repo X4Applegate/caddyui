@@ -466,11 +466,37 @@ func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 	return pages, nil
 }
 
+// safeLogFormatter is chi's request logger minus the query string. The default
+// logger writes the full request URI, and several flows carry a bearer secret in
+// the query: ?token= (password reset, invitations), ?created= (a freshly created
+// API token), ?t= (a pending second-factor token), the OIDC ?code=&state=. Anyone
+// who can read the container logs, Portainer or a log shipper would otherwise be
+// handed a working credential (v2.57.1). The request line is %q-quoted so
+// control characters in a path cannot forge log lines.
+type safeLogFormatter struct{}
+
+func (safeLogFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	line := fmt.Sprintf("%s %s://%s%s %s", r.Method, scheme, r.Host, r.URL.Path, r.Proto)
+	return &safeLogEntry{prefix: fmt.Sprintf("%q from %s - ", line, r.RemoteAddr)}
+}
+
+type safeLogEntry struct{ prefix string }
+
+func (e *safeLogEntry) Write(status, bytes int, _ http.Header, elapsed time.Duration, _ interface{}) {
+	log.Printf("%s%d %dB in %s", e.prefix, status, bytes, elapsed)
+}
+
+func (e *safeLogEntry) Panic(v interface{}, stack []byte) { middleware.PrintPrettyStack(v) }
+
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(s.adminIPGate)
 	r.Use(s.securityHeaders)
-	r.Use(middleware.Logger)
+	r.Use(middleware.RequestLogger(safeLogFormatter{})) // v2.57.1: path only — see safeLogFormatter
 	r.Use(middleware.Recoverer)
 
 	staticSub, err := fs.Sub(s.Static, ".")
@@ -579,7 +605,7 @@ func (s *Server) Routes() http.Handler {
 		// instance. /api/ai/status reports whether AI is enabled so the
 		// frontend can hide the floating button when not configured.
 		r.Get("/api/ai/status", s.apiAIStatus)
-		r.Post("/api/ai/chat", s.apiAIChat)
+		r.With(s.requireWrite).Post("/api/ai/chat", s.apiAIChat) // v2.57.1: spends the admin's LLM key — not for read-only accounts
 
 		// v2.12.27: per-user color-theme persistence so the picker in
 		// Settings follows the account across devices instead of being
@@ -2373,7 +2399,12 @@ func (s *Server) getTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pageError := ""
+	if r.URL.Query().Get("error") == "password" {
+		pageError = "Enter your current password to change two-factor settings."
+	}
 	s.render(w, r, "totp_setup.html", map[string]any{
+		"Error":           pageError,
 		"User":            u,
 		"Secret":          key.Secret(),
 		"OTPAuth":         key.URL(),
@@ -2387,12 +2418,32 @@ func (s *Server) getTOTPSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 // postTOTPSetup enables or disables TOTP for the current user.
+// reauthenticated reports whether password is the signed-in user's current
+// password. Used before changing the second factor, so a stolen session alone
+// cannot remove it (v2.57.1).
+func (s *Server) reauthenticated(u *models.User, password string) bool {
+	if u == nil || password == "" {
+		return false
+	}
+	full, err := models.GetUserByID(s.DB, u.ID)
+	if err != nil || full == nil {
+		return false
+	}
+	return auth.CheckPassword(full.PasswordHash, password)
+}
+
 func (s *Server) postTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 	_ = r.ParseForm()
 	action := r.FormValue("action")
 
 	if action == "disable" {
+		// v2.57.1: re-authenticate. A stolen session could otherwise strip the
+		// account's second factor with one click.
+		if !s.reauthenticated(u, r.FormValue("current_password")) {
+			http.Redirect(w, r, "/totp/setup?error=password", http.StatusSeeOther)
+			return
+		}
 		if err := models.SetUserTOTP(s.DB, u.ID, "", false); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -2437,6 +2488,10 @@ func (s *Server) postRegenerateBackupCodes(w http.ResponseWriter, r *http.Reques
 	cu := s.currentUser(r)
 	if cu == nil || !cu.TOTPEnabled {
 		http.Redirect(w, r, "/totp/setup", http.StatusSeeOther)
+		return
+	}
+	if !s.reauthenticated(cu, r.FormValue("current_password")) { // v2.57.1 — see postTOTPSetup
+		http.Redirect(w, r, "/totp/setup?error=password", http.StatusSeeOther)
 		return
 	}
 	codes, err := models.GenerateBackupCodes(10)
@@ -2803,6 +2858,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	// landing on the dashboard see at a glance what just changed.
 	var recentEdits []models.Activity
 	if all, err := models.ListActivity(s.DB, sid, 60); err == nil {
+		all = s.activityVisibleTo(s.currentUser(r), all) // v2.57.1
 		for _, a := range all {
 			if !a.Success {
 				continue
@@ -4713,6 +4769,27 @@ func (s *Server) getAPIDocs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// activityVisibleTo scopes activity-log entries to what the user may see: an
+// admin sees all of them; anyone else sees only their own actions. The log
+// records every account's edits (other tenants' domains), failed logins with the
+// submitted email, and the admin's sign-in IP addresses — none of which a
+// customer or read-only account should read (v2.57.1).
+func (s *Server) activityVisibleTo(u *models.User, entries []models.Activity) []models.Activity {
+	if isAdminUser(u) {
+		return entries
+	}
+	if u == nil {
+		return nil
+	}
+	out := entries[:0:0]
+	for _, a := range entries {
+		if strings.EqualFold(a.Actor, u.Email) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	actionFilter := strings.TrimSpace(r.URL.Query().Get("action"))
@@ -4721,6 +4798,7 @@ func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	entries = s.activityVisibleTo(s.currentUser(r), entries) // v2.57.1
 	if actionFilter != "" {
 		filtered := entries[:0]
 		for _, a := range entries {
@@ -4739,6 +4817,19 @@ func (s *Server) listActivityLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// csvSafe neutralises spreadsheet formula injection in an exported cell: a
+// value that starts with = + - @ (or a tab / carriage return, which Excel also
+// treats as a formula lead-in) is prefixed with an apostrophe so it opens as
+// text. Values come from places anyone can write — an unauthenticated failed
+// login records the submitted email as the actor, and a visitor controls the
+// path and User-Agent of every request (v2.57.1).
+func csvSafe(v string) string {
+	if v != "" && strings.ContainsRune("=+-@\t\r", rune(v[0])) {
+		return "'" + v
+	}
+	return v
+}
+
 func (s *Server) exportActivityCSV(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
 	if cu == nil {
@@ -4752,6 +4843,7 @@ func (s *Server) exportActivityCSV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	entries = s.activityVisibleTo(cu, entries) // v2.57.1
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="activity.csv"`)
 	cw := csv.NewWriter(w)
@@ -4763,10 +4855,10 @@ func (s *Server) exportActivityCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = cw.Write([]string{
 			strconv.FormatInt(a.ID, 10),
-			a.Actor,
-			a.Action,
-			a.Target,
-			a.Detail,
+			csvSafe(a.Actor),
+			csvSafe(a.Action),
+			csvSafe(a.Target),
+			csvSafe(a.Detail),
 			succ,
 			a.CreatedAt.Format(time.RFC3339),
 		})
@@ -7112,6 +7204,59 @@ func (s *Server) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // getLiveTraffic renders the live traffic feed page.
+// liveTrafficEvents is models.RecentAccessEvents scoped to what the user may
+// see: an admin sees everything; anyone else sees only the events of the hosts
+// they can see in the host list — the same rule /analytics applies. Live
+// traffic and its event stream used to show every host's requests (path, client
+// IP, status) to every role (v2.57.1).
+func (s *Server) liveTrafficEvents(u *models.User, since int64, limit int, serverID int64) ([]models.AccessEvent, error) {
+	if isAdminUser(u) {
+		return models.RecentAccessEvents(s.DB, since, limit, serverID)
+	}
+	allowed, err := s.scopedHostsForAnalytics(u, serverID)
+	if err != nil {
+		return nil, err
+	}
+	if len(allowed) == 0 {
+		return nil, nil
+	}
+	// Filtering happens after the query, so read a wider window than the
+	// caller's limit and cut back down.
+	events, err := models.RecentAccessEvents(s.DB, since, limit*20, serverID)
+	if err != nil {
+		return nil, err
+	}
+	out := events[:0:0]
+	for _, e := range events {
+		if eventHostAllowed(e.Host, allowed) {
+			out = append(out, e)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// eventHostAllowed reports whether host is one of the allowed hosts; a leading
+// "*." entry matches any host under that suffix, as hostMatchClause does.
+func eventHostAllowed(host string, allowed []string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, a := range allowed {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" {
+			continue
+		}
+		if a == host {
+			return true
+		}
+		if len(a) > 2 && strings.HasPrefix(a, "*.") && strings.HasSuffix(host, a[1:]) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) getLiveTraffic(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 	serverID := s.currentServerID(r)
@@ -7124,7 +7269,7 @@ func (s *Server) getLiveTraffic(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Seed with last 50 events for initial load.
-	events, err := models.RecentAccessEvents(s.DB, 0, 50, serverID)
+	events, err := s.liveTrafficEvents(u, 0, 50, serverID)
 	if err != nil {
 		log.Printf("live-traffic: query: %v", err)
 	}
@@ -7169,7 +7314,7 @@ func (s *Server) liveTrafficStream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			events, err := models.RecentAccessEvents(s.DB, cursor, 100, serverID)
+			events, err := s.liveTrafficEvents(s.currentUser(r), cursor, 100, serverID)
 			if err != nil {
 				log.Printf("live-traffic SSE: %v", err)
 				continue

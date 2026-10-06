@@ -11,11 +11,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -615,13 +617,13 @@ func sendNtfyMessage(db *sql.DB, ntfyURL, title, body string) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("sendNtfy: POST %s: %v", ntfyURL, err)
+		log.Printf("sendNtfy: POST %s: %v", logSafeURL(ntfyURL), unwrapURLError(err))
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		log.Printf("sendNtfy: %s returned %d: %s", ntfyURL, resp.StatusCode, strings.TrimSpace(string(raw)))
+		log.Printf("sendNtfy: %s returned %d: %s", logSafeURL(ntfyURL), resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 }
 
@@ -643,7 +645,7 @@ func sendWebhookPayload(db *sql.DB, webhookURL string, payload []byte) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("sendWebhook: POST %s: %v", webhookURL, err)
+		log.Printf("sendWebhook: POST %s: %v", logSafeURL(webhookURL), unwrapURLError(err))
 		return
 	}
 	_ = resp.Body.Close()
@@ -965,4 +967,25 @@ func fetchLatestDockerTagFrom(ctx context.Context, client *http.Client, initialU
 		return "", fmt.Errorf("no semver tags found")
 	}
 	return best, nil
+}
+
+// logSafeURL reduces a URL to scheme://host for logging. Webhook and ntfy URLs
+// are bearer secrets (a Slack or Discord webhook URL IS the credential), and
+// net/http errors repeat the full URL, so neither may be logged verbatim.
+func logSafeURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "(unparseable URL)"
+	}
+	return u.Scheme + "://" + u.Host + "/…"
+}
+
+// unwrapURLError drops the request URL that *url.Error carries, keeping only the
+// underlying failure (dial error, timeout, ...).
+func unwrapURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }

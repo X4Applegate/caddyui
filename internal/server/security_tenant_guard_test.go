@@ -351,3 +351,61 @@ func ownerNull(id int64) (n sql.NullInt64) {
 }
 
 var _ = strconv.Itoa
+
+// CaddyUI's own probes (health monitor, app monitor, post-sync expectations,
+// certificate probe) build URLs from a host's first domain and a custom monitor
+// path/method. A customer could set the domain to "10.8.0.2:2019" with a custom
+// POST check and have CaddyUI send that request to the internal address every
+// minute.
+func TestNonAdminProxyHostDomainsAndMonitorsCannotAimProbesAtInternalAddresses(t *testing.T) {
+	e := newSecEnv(t)
+	n := 0
+	form := func(mod func(url.Values)) url.Values {
+		n++
+		f := url.Values{"domains": {"probe" + strconv.Itoa(n) + ".example.test"}, "forward_scheme": {"http"},
+			"forward_host": {"10.0.0.5"}, "forward_port": {"8080"}, "enabled": {"on"}}
+		mod(f)
+		return f
+	}
+	refused := map[string]func(url.Values){
+		"domain with a port":             func(f url.Values) { f.Set("domains", "10.8.0.2:2019") },
+		"domain with a path":             func(f url.Values) { f.Set("domains", "x.example.test/admin") },
+		"loopback IP as the domain":      func(f url.Values) { f.Set("domains", "127.0.0.1") },
+		"metadata IP as the domain":      func(f url.Values) { f.Set("domains", "169.254.169.254") },
+		"placeholder in the domain":      func(f url.Values) { f.Set("domains", "{env.X}.example.test") },
+		"custom POST health check":       func(f url.Values) { f.Set("monitor_mode", "custom"); f.Set("monitor_method", "POST") },
+		"custom DELETE health check":     func(f url.Values) { f.Set("monitor_mode", "custom"); f.Set("monitor_method", "DELETE") },
+		"health-check path with a space": func(f url.Values) { f.Set("monitor_mode", "custom"); f.Set("monitor_path", "/a b") },
+	}
+	for name, mod := range refused {
+		if rec := e.do(t, "alice", http.MethodPost, "/proxy-hosts", form(mod)); rec.Code == http.StatusSeeOther {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	if hosts, _ := models.ListProxyHosts(e.db, 1, 0, true, nil); len(hosts) != 0 {
+		t.Fatalf("%d host(s) were stored by the refused requests", len(hosts))
+	}
+	allowed := map[string]func(url.Values){
+		"plain host":    func(f url.Values) {},
+		"wildcard host": func(f url.Values) { f.Set("domains", "*.wild.example.test") },
+		"custom GET check": func(f url.Values) {
+			f.Set("monitor_mode", "custom")
+			f.Set("monitor_method", "GET")
+			f.Set("monitor_path", "/healthz?x=1")
+		},
+		"custom HEAD check":     func(f url.Values) { f.Set("monitor_mode", "custom"); f.Set("monitor_method", "HEAD") },
+		"single-label hostname": func(f url.Values) { f.Set("domains", "intranet") },
+	}
+	for name, mod := range allowed {
+		if rec := e.do(t, "alice", http.MethodPost, "/proxy-hosts", form(mod)); rec.Code != http.StatusSeeOther {
+			t.Errorf("%s was refused: %d %s", name, rec.Code, excerpt(rec.Body.String(), "Not allowed"))
+		}
+	}
+	// The admin keeps full flexibility, including a custom POST check.
+	if rec := e.do(t, "admin", http.MethodPost, "/proxy-hosts", form(func(f url.Values) {
+		f.Set("monitor_mode", "custom")
+		f.Set("monitor_method", "POST")
+	})); rec.Code != http.StatusSeeOther {
+		t.Errorf("the admin's custom POST health check was refused: %d", rec.Code)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -161,7 +162,7 @@ Fix by:
 	}
 
 	go func() {
-		log.Printf("caddyui listening on %s (db_driver=%s caddy=%s caddyfile=%s)", listen, dbDriver, caddyAdmin, caddyfilePath)
+		log.Printf("caddyui listening on %s (db_driver=%s caddy=%s caddyfile=%s)", listen, dbDriver, redactedURL(caddyAdmin), caddyfilePath)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}
@@ -268,4 +269,13 @@ func initialSync(srv *server.Server, cli *caddy.Client) {
 	// syncCaddy prints "caddy sync skipped: …" on its own when it bails
 	// (empty DB, external server). Don't print a second, contradictory
 	// "pushed DB state" line after that.
+}
+
+// redactedURL hides any password embedded in a URL (CADDY_ADMIN_URL may carry
+// userinfo) before it is logged.
+func redactedURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Redacted()
+	}
+	return "(unparseable URL)"
 }

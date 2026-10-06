@@ -3,12 +3,14 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -898,5 +900,225 @@ func TestSecurityNonAdminCannotReferenceAnotherTenantsCertificate(t *testing.T) 
 	// A shared (global) certificate remains selectable.
 	if rec := e.do(t, "alice", http.MethodPost, "/proxy-hosts", host(globalCert, "a2.example.test")); rec.Code != http.StatusSeeOther {
 		t.Errorf("a global certificate was refused: %d %s", rec.Code, excerpt(rec.Body.String(), "not found"))
+	}
+}
+
+// An unauthenticated failed login records the submitted email as the actor, and
+// a visitor controls the path and User-Agent of every request, so exported cells
+// can begin with a spreadsheet formula.
+func TestSecurityCSVExportsNeutraliseFormulaInjection(t *testing.T) {
+	cases := map[string]string{
+		"=HYPERLINK(\"http://evil\",\"x\")": "'=HYPERLINK(\"http://evil\",\"x\")",
+		"+1+1":                              "'+1+1",
+		"-2":                                "'-2",
+		"@SUM(A1)":                          "'@SUM(A1)",
+		"\t=cmd":                            "'\t=cmd",
+		"\r=cmd":                            "'\r=cmd",
+		"plain text":                        "plain text",
+		"admin@example.com":                 "admin@example.com",
+		"":                                  "",
+		"a=b":                               "a=b",
+	}
+	for in, want := range cases {
+		if got := csvSafe(in); got != want {
+			t.Errorf("csvSafe(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// End to end through the activity export.
+	e := newSecEnv(t)
+	_ = models.LogActivity(e.db, 0, `=HYPERLINK("http://evil","click")`, "login_fail", "ip:203.0.113.9", "invalid credentials", false)
+	rec := e.do(t, "admin", http.MethodGet, "/activity/export.csv", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export -> %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), `,=HYPERLINK`) || !strings.Contains(rec.Body.String(), `'=HYPERLINK`) {
+		t.Errorf("the exported actor still starts with a formula:\n%s", rec.Body.String())
+	}
+}
+
+// Several flows carry a bearer secret in the query string (?token= for reset
+// and invite links, ?created= for a new API token, ?t= for a pending 2FA step,
+// the OIDC ?code=). The default request logger wrote the full URI, handing a
+// working credential to anyone who can read the logs.
+func TestSecurityRequestLogNeverContainsTheQueryString(t *testing.T) {
+	e := newSecEnv(t)
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	for _, uri := range []string{
+		"/reset-password?token=RESETSECRET123",
+		"/api-tokens?created=cadu_APITOKENSECRET456",
+		"/login/totp?t=PENDINGSECRET789",
+		"/auth/oidc/callback?code=OIDCCODESECRET&state=STATESECRET",
+	} {
+		e.h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, uri, nil))
+	}
+	out := buf.String()
+	for _, secret := range []string{"RESETSECRET123", "APITOKENSECRET456", "PENDINGSECRET789", "OIDCCODESECRET", "STATESECRET", "token=", "?code="} {
+		if strings.Contains(out, secret) {
+			t.Errorf("the request log contains %q:\n%s", secret, out)
+		}
+	}
+	if !strings.Contains(out, "/reset-password") || !strings.Contains(out, "/login/totp") {
+		t.Errorf("the request log should still record the path:\n%s", out)
+	}
+	// A path with control characters cannot forge a log line.
+	buf.Reset()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.URL.Path = "/x\nFAKE LOG LINE - 200 0B"
+	e.h.ServeHTTP(httptest.NewRecorder(), req)
+	if strings.Count(buf.String(), "\n") != 1 {
+		t.Errorf("a newline in the path split the log entry:\n%q", buf.String())
+	}
+}
+
+func TestLogSafeURLHidesWebhookSecrets(t *testing.T) {
+	got := logSafeURL("https://hooks.slack.com/services/T000/B000/SECRETSECRET")
+	if strings.Contains(got, "SECRETSECRET") || !strings.Contains(got, "hooks.slack.com") {
+		t.Errorf("logSafeURL leaked the secret path: %q", got)
+	}
+	_, err := http.Get("http://127.0.0.1:1/services/SECRETSECRET")
+	if err == nil {
+		t.Skip("unexpectedly reachable")
+	}
+	if strings.Contains(unwrapURLError(err).Error(), "SECRETSECRET") {
+		t.Errorf("unwrapURLError still carries the URL: %v", unwrapURLError(err))
+	}
+}
+
+// --- cross-tenant visibility ----------------------------------------------
+
+// Live traffic, the activity log, the dashboard's "recently edited" widget and
+// the server API showed every tenant's data to every role.
+func TestSecurityLowPrivilegeRolesOnlySeeTheirOwnTrafficAndActivity(t *testing.T) {
+	e := newSecEnv(t)
+	bobHost, err := models.CreateProxyHost(e.db, 1, e.ids["bob"], &models.ProxyHost{
+		Domains: "bob.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.5", ForwardPort: 8080, Enabled: true})
+	_ = bobHost
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.CreateProxyHost(e.db, 1, e.ids["alice"], &models.ProxyHost{
+		Domains: "alice.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.6", ForwardPort: 8080, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(host, ip string) {
+		_, err := e.db.Exec(`INSERT INTO access_events (ts, server_id, server_name, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out)
+			VALUES (strftime('%s','now'), 1, 'primary', ?, '/p', 'GET', 200, ?, 'ua', 1, 1)`, host, ip)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("bob.example.test", "198.51.100.77")
+	insert("alice.example.test", "198.51.100.88")
+	_ = models.LogActivity(e.db, 1, "bob@t", "proxy_update", "proxy:1", "bob.example.test", true)
+	_ = models.LogActivity(e.db, 1, "alice@t", "proxy_update", "proxy:2", "alice.example.test", true)
+	_ = models.LogActivity(e.db, 0, "admin@t", "login_success", "ip:192.0.2.1", "ua", true)
+
+	body := func(who, path string) string { return e.do(t, who, http.MethodGet, path, nil).Body.String() }
+
+	// Live traffic: alice sees her host's traffic, never bob's.
+	live := body("alice", "/live-traffic")
+	if strings.Contains(live, "198.51.100.77") || strings.Contains(live, "bob.example.test") {
+		t.Error("alice's live traffic shows bob's host")
+	}
+	if !strings.Contains(live, "198.51.100.88") {
+		t.Error("alice's live traffic is missing her own host's request")
+	}
+	if v := body("viewer", "/live-traffic"); strings.Contains(v, "198.51.100.77") || strings.Contains(v, "198.51.100.88") {
+		t.Error("a viewer with no hosts sees traffic")
+	}
+	if a := body("admin", "/live-traffic"); !strings.Contains(a, "198.51.100.77") || !strings.Contains(a, "198.51.100.88") {
+		t.Error("the admin must still see all traffic")
+	}
+
+	// Activity log and its CSV export.
+	for _, path := range []string{"/activity", "/activity/export.csv"} {
+		got := body("alice", path)
+		if strings.Contains(got, "bob.example.test") || strings.Contains(got, "192.0.2.1") {
+			t.Errorf("alice's %s shows other accounts' activity", path)
+		}
+		if !strings.Contains(got, "alice.example.test") {
+			t.Errorf("alice's %s is missing her own activity", path)
+		}
+		if adm := body("admin", path); !strings.Contains(adm, "bob.example.test") || !strings.Contains(adm, "192.0.2.1") {
+			t.Errorf("the admin's %s must show everything", path)
+		}
+	}
+
+	// The server API no longer hands every node's admin URL to every role.
+	if got := body("alice", "/api/v1/servers"); strings.Contains(got, "admin_url") || strings.Contains(got, "127.0.0.1") {
+		t.Errorf("a non-admin received a node's admin URL: %s", got)
+	}
+	if got := body("admin", "/api/v1/servers"); !strings.Contains(got, "admin_url") {
+		t.Error("the admin must still see admin URLs")
+	}
+}
+
+// A host name is user input, and % and _ are LIKE wildcards: a wildcard host of
+// "*.%" matched every host and exposed other tenants' traffic.
+func TestSecurityHostWildcardMatchingEscapesLikeMetacharacters(t *testing.T) {
+	e := newSecEnv(t)
+	for _, h := range []string{"a.example.test", "b.other.test"} {
+		_, err := e.db.Exec(`INSERT INTO access_events (ts, server_id, server_name, host, path, method, status, client_ip, user_agent, duration_ms, bytes_out)
+			VALUES (strftime('%s','now'), 1, 'p', ?, '/', 'GET', 200, '1.1.1.1', 'ua', 1, 1)`, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(host string) int {
+		t.Helper()
+		totals, err := models.AccessTotalsSince(e.db, time.Now().Add(-time.Hour), host, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return totals.Views
+	}
+	if n := count("*.example.test"); n != 1 {
+		t.Errorf("*.example.test matched %d host(s), want 1", n)
+	}
+	for _, evil := range []string{"*.%", "*._", "*.%.test", "*.ex_mple.test"} {
+		if n := count(evil); n != 0 {
+			t.Errorf("%q matched %d host(s) — a LIKE metacharacter was treated as a wildcard", evil, n)
+		}
+	}
+}
+
+// A stolen session used to be enough to remove an account's second factor.
+func TestSecurityChangingTwoFactorNeedsTheCurrentPassword(t *testing.T) {
+	e := newSecEnv(t)
+	if err := models.SetUserTOTP(e.db, e.ids["alice"], "JBSWY3DPEHPK3PXP", true); err != nil {
+		t.Fatal(err)
+	}
+	enabled := func() bool {
+		u, _ := models.GetUserByID(e.db, e.ids["alice"])
+		return u != nil && u.TOTPEnabled
+	}
+	for label, form := range map[string]url.Values{
+		"no password":    {"action": {"disable"}},
+		"wrong password": {"action": {"disable"}, "current_password": {"nope"}},
+	} {
+		rec := e.do(t, "alice", http.MethodPost, "/totp/setup", form)
+		if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "error=password") {
+			t.Errorf("%s: %d %q, want a redirect with error=password", label, rec.Code, rec.Header().Get("Location"))
+		}
+		if !enabled() {
+			t.Fatalf("%s: 2FA was disabled", label)
+		}
+	}
+	// Backup codes cannot be regenerated without it either.
+	before, _ := models.GetUserByID(e.db, e.ids["alice"])
+	rec := e.do(t, "alice", http.MethodPost, "/totp/regenerate-backup-codes", url.Values{})
+	after, _ := models.GetUserByID(e.db, e.ids["alice"])
+	if !strings.Contains(rec.Header().Get("Location"), "error=password") || before.BackupCodes != after.BackupCodes {
+		t.Errorf("backup codes were regenerated without the password: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	// With the password it works.
+	rec = e.do(t, "alice", http.MethodPost, "/totp/setup", url.Values{"action": {"disable"}, "current_password": {"password-123"}})
+	if rec.Code != http.StatusSeeOther || enabled() {
+		t.Errorf("disabling with the right password: %d, still enabled=%v", rec.Code, enabled())
 	}
 }
