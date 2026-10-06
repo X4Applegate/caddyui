@@ -276,6 +276,17 @@ func (s *Server) apiV1CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 	if cu.IsAdmin {
 		ownerID = 0
 	}
+	// v2.57.1: the UI refuses a domain another host or redirect already holds
+	// on this server; this path did not. Caddy keeps the first matching route
+	// and the newest row sorts first, so a duplicate silently hijacked the
+	// existing host's traffic.
+	if conflict, err := models.DomainsConflict(s.DB, serverID, ph.DomainList(), 0, 0); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
+		return
+	}
 	newID, err := models.CreateProxyHost(s.DB, serverID, ownerID, ph)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -413,6 +424,13 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	// non-admin can't edit an existing host to target an internal address.
 	if msg := s.validateProxyUpstreamsForUser(cu, existing); msg != "" {
 		writeJSONError(w, http.StatusForbidden, msg)
+		return
+	}
+	if conflict, err := models.DomainsConflict(s.DB, existing.ServerID, existing.DomainList(), existing.ID, 0); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
 		return
 	}
 	if err := models.UpdateProxyHost(s.DB, existing); err != nil {
@@ -626,6 +644,13 @@ func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if conflict, err := models.DomainsConflict(s.DB, serverID, rh.DomainList(), 0, 0); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
+		return
+	}
 	newID, err := models.CreateRedirectionHost(s.DB, serverID, ownerID, rh)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -697,6 +722,13 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 	}
 	if msg := s.validateRedirectionForUser(s.currentUser(r), existing); msg != "" { // v2.57.1
 		writeJSONError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), existing.DomainList(), 0, existing.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not validate domains: "+err.Error())
+		return
+	} else if conflict != "" {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
 		return
 	}
 	if err := models.UpdateRedirectionHost(s.DB, existing); err != nil {

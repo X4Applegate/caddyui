@@ -132,6 +132,9 @@ func (s *Server) validateProxyUpstreamsForUser(cu *models.User, p *models.ProxyH
 	if cu != nil && cu.Role == models.RoleAdmin {
 		return ""
 	}
+	if msg := s.certificateRefusal(cu, p.CertificateID); msg != "" { // v2.57.1
+		return msg
+	}
 	adminHosts := s.adminHostSet()
 	candidates := make([]string, 0, 4)
 	candidates = append(candidates, p.ForwardHost)

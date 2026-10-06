@@ -537,6 +537,19 @@ func (s *Server) parseCertificateForm(r *http.Request) (*models.Certificate, str
 			return nil, "Certificate path and Key path are required when source is 'path'"
 		}
 	} else {
+		// Security (v2.57.1): export writes the certificate and its private key
+		// to a directory of the requester's choosing, and source push makes
+		// CaddyUI read a domain's key out of Caddy's storage and copy it to
+		// other servers. Both act with CaddyUI's authority over the host, not
+		// the requester's own resources, so they are admin-only.
+		if !isAdminUser(s.currentUser(r)) {
+			if strings.TrimSpace(r.FormValue("export_dir")) != "" {
+				return nil, "Exporting a certificate to a directory is admin-only"
+			}
+			if r.FormValue("fleet_distribution_mode") == models.CertFleetDistributionSourcePush {
+				return nil, "Pushing a certificate to other servers is admin-only"
+			}
+		}
 		c.DNSProvider, c.DNSProfileID = s.normalizeDNSFormSelection(
 			r.FormValue("dns_provider"), r.FormValue("dns_profile_id"))
 		if c.DNSProvider == "" {
@@ -573,6 +586,17 @@ func (s *Server) parseCertificateForm(r *http.Request) (*models.Certificate, str
 		}
 	}
 	return c, ""
+}
+
+// certificateDeployTargets is the "Also configure on" selection for a
+// certificate. Copying a certificate definition to other servers acts with the
+// admin's DNS credentials and creates global rows there, so a non-admin's
+// selection is ignored (v2.57.1).
+func (s *Server) certificateDeployTargets(r *http.Request) []int64 {
+	if !isAdminUser(s.currentUser(r)) {
+		return nil
+	}
+	return parseDeployTo(r)
 }
 
 // joinFleetPushTargets formats target CaddyServer IDs as the comma-separated
@@ -651,7 +675,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
 	s.exportCertificateSoon(s.currentServerID(r), *c)
-	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
+	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, s.certificateDeployTargets(r))
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 
@@ -763,7 +787,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
 	s.exportCertificateSoon(s.currentServerID(r), *c)
-	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, parseDeployTo(r))
+	s.crossDeployCertificate(s.currentUserEmail(r), s.currentServerID(r), *c, s.certificateDeployTargets(r))
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
 

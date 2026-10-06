@@ -355,6 +355,9 @@ func (s *Server) validateRedirectionForUser(cu *models.User, rh *models.Redirect
 	if isAdminUser(cu) || rh == nil {
 		return ""
 	}
+	if msg := s.certificateRefusal(cu, rh.CertificateID); msg != "" {
+		return msg
+	}
 	return s.validateTenantRoute(caddy.BuildRedirectRoute(*rh))
 }
 
@@ -365,6 +368,9 @@ func (s *Server) validateRawRouteForUser(cu *models.User, rr *models.RawRoute) s
 	if isAdminUser(cu) || rr == nil {
 		return ""
 	}
+	if msg := s.certificateRefusal(cu, rr.CertificateID); msg != "" {
+		return msg
+	}
 	if why := tenantTextViolation(rr.CaddyfileSrc); why != "" {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
@@ -372,6 +378,25 @@ func (s *Server) validateRawRouteForUser(cu *models.User, rr *models.RawRoute) s
 		if msg := s.validateTenantRoute(entry); msg != "" {
 			return msg
 		}
+	}
+	return ""
+}
+
+// certificateRefusal returns an error message when a NON-admin references a
+// certificate they may not use: another tenant's private certificate. Global
+// (admin-owned) certificates are shared on purpose and stay selectable. The
+// forms only offer visible certificates, but the ID arrives as a plain number,
+// so it has to be checked on the server (v2.57.1).
+func (s *Server) certificateRefusal(cu *models.User, certID int64) string {
+	if certID == 0 || isAdminUser(cu) || s == nil || s.DB == nil {
+		return ""
+	}
+	cert, err := models.GetCertificate(s.DB, certID)
+	if err != nil || cert == nil {
+		return "Certificate not found."
+	}
+	if cert.OwnerID.Valid && !s.canManageOwned(cu, cert.OwnerID) {
+		return "Certificate not found."
 	}
 	return ""
 }

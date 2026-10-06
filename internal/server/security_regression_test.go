@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -633,5 +635,268 @@ func (e *secEnv) attachSession(req *http.Request, who string) {
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: tok})
 	if req.Method != http.MethodGet {
 		req.Header.Set("X-CSRF-Token", e.s.csrfTokenFor(tok))
+	}
+}
+
+// --- sync serialization ---------------------------------------------------
+
+// syncCaddy points the shared s.Caddy at one server for its whole duration, so
+// concurrent syncs of different servers crossed over: a reproduction pushed one
+// server's routes (with their certificate keys and basic-auth hashes) to
+// another server in most iterations.
+func TestSecurityConcurrentSyncsNeverPushOneServersRoutesToAnother(t *testing.T) {
+	e := newSecEnv(t)
+	var mu sync.Mutex
+	crossA, crossB := 0, 0
+	mk := func(other string, cross *int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			if r.Method != http.MethodGet && strings.Contains(string(b), other) {
+				mu.Lock()
+				*cross++
+				mu.Unlock()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/config") {
+				fmt.Fprint(w, `{"apps":{"http":{"servers":{"srv0":{"listen":[":443"],"routes":[]}}}}}`)
+				return
+			}
+			fmt.Fprint(w, `{}`)
+		}))
+	}
+	A := mk("b-only.example.test", &crossA)
+	B := mk("a-only.example.test", &crossB)
+	defer A.Close()
+	defer B.Close()
+	if _, err := e.db.Exec(`UPDATE caddy_servers SET admin_url=? WHERE id=1`, A.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.CreateCaddyServer(e.db, &models.CaddyServer{Name: "edge", AdminURL: B.URL, Type: models.CaddyServerTypeManaged}); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []struct {
+		server int64
+		domain string
+	}{{1, "a-only.example.test"}, {2, "b-only.example.test"}} {
+		if _, err := models.CreateProxyHost(e.db, h.server, 0, &models.ProxyHost{Domains: h.domain, ForwardScheme: "http", ForwardHost: "10.0.0.1", ForwardPort: 80, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = e.s.syncCaddy(1, false) }()
+		go func() { defer wg.Done(); _ = e.s.syncCaddy(2, false) }()
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if crossA != 0 || crossB != 0 {
+		t.Fatalf("cross-server config pushes: B's routes reached server A %d times, A's routes reached server B %d times (want 0/0)", crossA, crossB)
+	}
+}
+
+// --- fleet copies --------------------------------------------------------
+
+// A copy of a customer's host used to adopt ANY target row with the same
+// domains, overwrite it and reset its owner: one customer could take over
+// another's host on a second server just by saving a host with that domain and
+// ticking "Also deploy to".
+func TestSecurityFleetCopyOfATenantHostNeverAdoptsAnotherOwnersRow(t *testing.T) {
+	e := newSecEnv(t)
+	var adminURL string
+	_ = e.db.QueryRow(`SELECT admin_url FROM caddy_servers WHERE id=1`).Scan(&adminURL)
+	if _, err := models.CreateCaddyServer(e.db, &models.CaddyServer{Name: "edge", AdminURL: adminURL, Type: models.CaddyServerTypeManaged}); err != nil {
+		t.Fatal(err)
+	}
+	victim, err := models.CreateProxyHost(e.db, 2, e.ids["bob"], &models.ProxyHost{
+		Domains: "victim.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.5", ForwardPort: 8080, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminHost, err := models.CreateProxyHost(e.db, 2, 0, &models.ProxyHost{
+		Domains: "admin-site.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.6", ForwardPort: 9090, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, domain := range []string{"victim.example.test", "admin-site.example.test"} {
+		e.do(t, "alice", http.MethodPost, "/proxy-hosts", url.Values{
+			"domains": {domain}, "forward_scheme": {"http"}, "forward_host": {"203.0.113.99"},
+			"forward_port": {"80"}, "enabled": {"on"}, "deploy_to": {"2"}})
+	}
+
+	check := func(id int64, wantHost string, wantOwner sql.NullInt64) {
+		t.Helper()
+		var fh string
+		var owner sql.NullInt64
+		if err := e.db.QueryRow(`SELECT forward_host, owner_id FROM proxy_hosts WHERE id=?`, id).Scan(&fh, &owner); err != nil {
+			t.Fatal(err)
+		}
+		if fh != wantHost || owner != wantOwner {
+			t.Errorf("host %d on the target is now forward_host=%q owner=%v, want %q owner=%v — another account's row was overwritten", id, fh, owner, wantHost, wantOwner)
+		}
+	}
+	check(victim, "10.0.0.5", sql.NullInt64{Int64: e.ids["bob"], Valid: true})
+	check(adminHost, "10.0.0.6", sql.NullInt64{})
+
+	// An admin-owned source keeps today's behaviour: it adopts and updates the
+	// same-domain row on the target.
+	srcID, err := models.CreateProxyHost(e.db, 1, 0, &models.ProxyHost{
+		Domains: "admin-site.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.77", ForwardPort: 9090, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, _ := models.GetProxyHost(e.db, srcID)
+	e.s.crossDeployProxyHost("admin@t", 1, src, []int64{2})
+	check(adminHost, "10.0.0.77", sql.NullInt64{})
+}
+
+// Certificate export writes a private key to a directory of the requester's
+// choosing and source push copies a domain's key out of Caddy's storage to
+// other servers; both act with CaddyUI's authority, so they are admin-only.
+func TestSecurityCertificateExportAndFleetPushAreAdminOnly(t *testing.T) {
+	e := newSecEnv(t)
+	managed := func(extra url.Values) url.Values {
+		f := url.Values{"name": {"wild"}, "domains": {"*.victim.example.test"}, "source": {"managed"},
+			"dns_provider": {"cloudflare"}}
+		for k, v := range extra {
+			f[k] = v
+		}
+		return f
+	}
+	for label, extra := range map[string]url.Values{
+		"export to a directory": {"export_dir": {"/data"}, "export_cert_file": {"c.pem"}, "export_key_file": {"caddyui.db"}},
+		"source push":           {"fleet_distribution_mode": {models.CertFleetDistributionSourcePush}, "deploy_to": {"2"}},
+	} {
+		rec := e.do(t, "alice", http.MethodPost, "/certificates", managed(extra))
+		if rec.Code == http.StatusSeeOther || !strings.Contains(rec.Body.String(), "admin-only") {
+			t.Errorf("alice: %s -> %d, want a refusal saying it is admin-only (got %q)", label, rec.Code, excerpt(rec.Body.String(), "admin"))
+		}
+	}
+	if rows, _ := models.ListCertificates(e.db, 1); len(rows) != 0 {
+		t.Errorf("%d certificate(s) were stored by the refused requests", len(rows))
+	}
+	// Copying a certificate to other servers is ignored for a non-admin.
+	r := httptest.NewRequest(http.MethodPost, "/certificates", strings.NewReader(url.Values{"deploy_to": {"2"}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	_ = r.ParseForm()
+	if got := e.s.certificateDeployTargets(r); len(got) != 0 {
+		t.Errorf("a non-admin's certificate deploy targets = %v, want none", got)
+	}
+}
+
+// --- hostname hijack and imports -----------------------------------------
+
+func (e *secEnv) json(t *testing.T, who, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(method, path, strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	e.attachSession(req, who)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	return rec
+}
+
+// The UI refuses a domain another host or redirect already holds; the REST API
+// did not. Caddy keeps the first matching route and the newest row sorts first,
+// so a duplicate silently took over the existing host's traffic.
+func TestSecurityRESTAPIRefusesDuplicateDomains(t *testing.T) {
+	e := newSecEnv(t)
+	e.bobHost(t) // bob.example.test
+
+	dup := map[string]any{"domains": "bob.example.test", "forward_scheme": "http", "forward_host": "203.0.113.9", "forward_port": 80, "enabled": true}
+	if rec := e.json(t, "alice", http.MethodPost, "/api/v1/proxy-hosts", dup); rec.Code != http.StatusConflict {
+		t.Errorf("duplicate proxy host via REST -> %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if rec := e.json(t, "alice", http.MethodPost, "/api/v1/redirection-hosts", map[string]any{
+		"domains": "bob.example.test", "forward_domain": "evil.example.test", "enabled": true}); rec.Code != http.StatusConflict {
+		t.Errorf("duplicate redirection via REST -> %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	// A different domain is fine, and editing one's own host onto a taken
+	// domain is refused.
+	ok := map[string]any{"domains": "alice.example.test", "forward_scheme": "http", "forward_host": "203.0.113.9", "forward_port": 80, "enabled": true}
+	rec := e.json(t, "alice", http.MethodPost, "/api/v1/proxy-hosts", ok)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("a unique domain via REST -> %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	rec = e.json(t, "alice", http.MethodPut, fmt.Sprintf("/api/v1/proxy-hosts/%d", created.ID), map[string]any{"domains": "bob.example.test"})
+	if rec.Code != http.StatusConflict {
+		t.Errorf("editing onto a taken domain via REST -> %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func multipartUpload(t *testing.T, field, content string) (*strings.Reader, string) {
+	t.Helper()
+	const boundary = "----secboundary"
+	body := "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + field + "\"; filename=\"host.json\"\r\nContent-Type: application/json\r\n\r\n" + content + "\r\n--" + boundary + "--\r\n"
+	return strings.NewReader(body), "multipart/form-data; boundary=" + boundary
+}
+
+// An imported file is attacker-controlled. A DNS record ID in it made a later
+// delete of the host delete THAT record at the DNS provider using the admin's
+// credentials; a duplicate domain hijacked another host.
+func TestSecurityProxyHostImportDropsRuntimeStateAndRefusesDuplicates(t *testing.T) {
+	e := newSecEnv(t)
+	e.bobHost(t)
+	upload := func(who, content string) *httptest.ResponseRecorder {
+		body, ct := multipartUpload(t, "config_file", content)
+		req := httptest.NewRequest(http.MethodPost, "/proxy-hosts/import", body)
+		req.Header.Set("Content-Type", ct)
+		e.attachSession(req, who)
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := upload("alice", `{"Domains":"bob.example.test","ForwardScheme":"http","ForwardHost":"203.0.113.9","ForwardPort":80}`); rec.Code != http.StatusConflict {
+		t.Errorf("importing a host onto a taken domain -> %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	rec := upload("alice", `{"Domains":"imp.example.test","ForwardScheme":"http","ForwardHost":"203.0.113.9","ForwardPort":80,
+		"DNSProvider":"cloudflare","DNSZoneID":"zone-of-someone-else","DNSRecordID":"record-to-delete","CFDNSRecordID":"cf-rec","CFZoneID":"cf-zone","CertificateID":777}`)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a clean import -> %d: %s", rec.Code, rec.Body.String())
+	}
+	var prov, zone, rec1, cf, cert, skip = "", "", "", "", int64(0), 0
+	if err := e.db.QueryRow(`SELECT COALESCE(dns_provider,''), COALESCE(dns_zone_id,''), COALESCE(dns_record_id,''), COALESCE(cf_dns_record_id,''), COALESCE(certificate_id,0), COALESCE(dns_skip_record,0) FROM proxy_hosts WHERE domains='imp.example.test'`).
+		Scan(&prov, &zone, &rec1, &cf, &cert, &skip); err != nil {
+		t.Fatal(err)
+	}
+	if prov != "" || zone != "" || rec1 != "" || cf != "" || cert != 0 {
+		t.Errorf("uploaded DNS/certificate state survived the import: provider=%q zone=%q record=%q cf=%q cert=%d", prov, zone, rec1, cf, cert)
+	}
+}
+
+// A certificate ID arrives as a plain number; the forms only offer visible
+// certificates, but nothing checked that on the server.
+func TestSecurityNonAdminCannotReferenceAnotherTenantsCertificate(t *testing.T) {
+	e := newSecEnv(t)
+	bobCert, err := models.CreateCertificate(e.db, 1, e.ids["bob"], &models.Certificate{
+		Name: "bob-private", Domains: "bob.example.test", Source: models.CertSourcePEM, CertPEM: "c", KeyPEM: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalCert, err := models.CreateCertificate(e.db, 1, 0, &models.Certificate{
+		Name: "wildcard", Domains: "*.example.test", Source: models.CertSourcePEM, CertPEM: "c", KeyPEM: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := func(cert int64, domain string) url.Values {
+		return url.Values{"domains": {domain}, "forward_scheme": {"http"}, "forward_host": {"10.0.0.5"}, "forward_port": {"80"},
+			"enabled": {"on"}, "certificate_id": {strconv.FormatInt(cert, 10)}}
+	}
+	if rec := e.do(t, "alice", http.MethodPost, "/proxy-hosts", host(bobCert, "a1.example.test")); rec.Code == http.StatusSeeOther {
+		t.Error("alice bound another tenant's private certificate to her host")
+	}
+	// A shared (global) certificate remains selectable.
+	if rec := e.do(t, "alice", http.MethodPost, "/proxy-hosts", host(globalCert, "a2.example.test")); rec.Code != http.StatusSeeOther {
+		t.Errorf("a global certificate was refused: %d %s", rec.Code, excerpt(rec.Body.String(), "not found"))
 	}
 }

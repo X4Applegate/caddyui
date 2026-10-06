@@ -60,6 +60,7 @@ type Server struct {
 	DBPath      string
 	pendingTOTP sync.Map   // token → userID (int64), auto-deleted after 5 min
 	setupMu     sync.Mutex // serializes first-run setup (see postSetup)
+	syncMu      sync.Mutex // serializes syncCaddy: it swaps the shared s.Caddy client
 	// pendingTOTPAttempts counts wrong second-factor codes per pending token
 	// (token → *int32) so one password check cannot buy unlimited guesses.
 	pendingTOTPAttempts sync.Map
@@ -6973,6 +6974,15 @@ func (s *Server) importProxyHost(w http.ResponseWriter, r *http.Request) {
 	// Force safe defaults.
 	ph.ID = 0
 	ph.Enabled = false
+	// v2.57.1: the file is attacker-controlled. Runtime/DNS state belongs to
+	// the rows CaddyUI creates itself — an uploaded DNS record ID made a later
+	// delete of this host delete THAT record at the provider with the admin's
+	// credentials — and a certificate ID must not point at another tenant's.
+	ph.DNSProvider, ph.DNSProfileID, ph.DNSZoneID, ph.DNSZoneName, ph.DNSRecordID = "", "", "", "", ""
+	ph.DNSSkipRecord = true
+	ph.CFDNSRecordID, ph.CFZoneID, ph.PBDNSRecordID, ph.PBDomain = "", "", "", ""
+	ph.CertificateID = 0
+	ph.OwnerID, ph.OwnerEmail = sql.NullInt64{}, ""
 	cu := s.currentUser(r)
 	var ownerID int64
 	if cu != nil {
@@ -6985,6 +6995,13 @@ func (s *Server) importProxyHost(w http.ResponseWriter, r *http.Request) {
 	// already enforce.
 	if msg := s.validateProxyUpstreamsForUser(cu, &ph); msg != "" {
 		http.Error(w, msg, http.StatusForbidden)
+		return
+	}
+	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), ph.DomainList(), 0, 0); err != nil {
+		http.Error(w, "could not validate domains: "+err.Error(), http.StatusInternalServerError)
+		return
+	} else if conflict != "" {
+		http.Error(w, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict), http.StatusConflict)
 		return
 	}
 	newID, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph)

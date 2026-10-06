@@ -959,6 +959,15 @@ func (s *Server) syncLayer4Only(serverID int64, layer4Caddyfile string) error {
 // until the next successful sync, so a rejected change can no longer fail
 // silently in the log while the form says "saved".
 func (s *Server) syncCaddy(serverID int64, forceTLS bool) error {
+	// Security/stability (v2.57.1): syncCaddyInner points the shared s.Caddy
+	// field at ONE server's admin API for its whole duration. Two syncs for
+	// different servers running at once overwrote each other's client, and a
+	// reproduction pushed server B's routes — with their certificate keys and
+	// basic-auth hashes — to server A (91 of 120 syncs in a stress run). Syncs
+	// are therefore serialized. Nothing reachable from a sync calls syncCaddy
+	// again, so this cannot deadlock.
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
 	err := s.syncCaddyInner(serverID, forceTLS)
 	if err == nil {
 		s.clearSyncError(serverID)

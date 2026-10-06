@@ -161,6 +161,14 @@ func preserveProxyTargetPolicy(copy *models.ProxyHost, existing *models.ProxyHos
 }
 
 func (s *Server) upsertFleetProxyHost(sourceServerID, targetServerID int64, source models.ProxyHost, ownerID int64) (fleetUpsertResult, error) {
+	// v2.57.1: the owner decides whether this copy may adopt an existing target
+	// row, and callers pass a FORM-PARSED source whose OwnerID is not populated
+	// (the owner is given to the insert separately). Always read it from the row.
+	if source.ID > 0 {
+		if cur, err := models.GetProxyHost(s.DB, source.ID); err == nil && cur != nil {
+			source.OwnerID = cur.OwnerID
+		}
+	}
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceProxy, source.ID, targetServerID)
 	if err != nil {
 		return fleetUpsertResult{}, err
@@ -177,7 +185,12 @@ func (s *Server) upsertFleetProxyHost(sourceServerID, targetServerID int64, sour
 			return fleetUpsertResult{}, err
 		}
 		for i := range targets {
-			if sameDomainSet(targets[i].DomainList(), source.DomainList()) {
+			// Security (v2.57.1): a copy of a TENANT-owned source row may only
+			// update the target row this source already created (the mapping
+			// above). Adopting an unrelated row that merely has the same
+			// domains let one customer overwrite another's host — or an
+			// admin's — on the target, and reset its owner.
+			if !source.OwnerID.Valid && sameDomainSet(targets[i].DomainList(), source.DomainList()) {
 				existing = &targets[i]
 				targetID = targets[i].ID
 				break
@@ -248,6 +261,11 @@ func preserveRedirectTargetPolicy(copy *models.RedirectionHost, existing *models
 }
 
 func (s *Server) upsertFleetRedirectionHost(sourceServerID, targetServerID int64, source models.RedirectionHost, ownerID int64) (fleetUpsertResult, error) {
+	if source.ID > 0 { // v2.57.1: owner from the row, not the caller's form-parsed copy — see upsertFleetProxyHost
+		if cur, err := models.GetRedirectionHost(s.DB, source.ID); err == nil && cur != nil {
+			source.OwnerID = cur.OwnerID
+		}
+	}
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceRedirect, source.ID, targetServerID)
 	if err != nil {
 		return fleetUpsertResult{}, err
@@ -264,7 +282,12 @@ func (s *Server) upsertFleetRedirectionHost(sourceServerID, targetServerID int64
 			return fleetUpsertResult{}, err
 		}
 		for i := range targets {
-			if sameDomainSet(targets[i].DomainList(), source.DomainList()) {
+			// Security (v2.57.1): a copy of a TENANT-owned source row may only
+			// update the target row this source already created (the mapping
+			// above). Adopting an unrelated row that merely has the same
+			// domains let one customer overwrite another's host — or an
+			// admin's — on the target, and reset its owner.
+			if !source.OwnerID.Valid && sameDomainSet(targets[i].DomainList(), source.DomainList()) {
 				existing = &targets[i]
 				targetID = targets[i].ID
 				break
@@ -343,6 +366,11 @@ func preserveRawRouteTargetPolicy(copy *models.RawRoute, existing *models.RawRou
 }
 
 func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, source models.RawRoute, ownerID int64) (fleetUpsertResult, error) {
+	if source.ID > 0 { // v2.57.1: owner from the row, not the caller's form-parsed copy — see upsertFleetProxyHost
+		if cur, err := models.GetRawRoute(s.DB, source.ID); err == nil && cur != nil {
+			source.OwnerID = cur.OwnerID
+		}
+	}
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceRawRoute, source.ID, targetServerID)
 	if err != nil {
 		return fleetUpsertResult{}, err
@@ -359,7 +387,7 @@ func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, sourc
 			return fleetUpsertResult{}, err
 		}
 		for i := range targets {
-			if rawRouteIdentityMatches(targets[i], source) {
+			if !source.OwnerID.Valid && rawRouteIdentityMatches(targets[i], source) { // v2.57.1: see upsertFleetProxyHost
 				existing = &targets[i]
 				targetID = targets[i].ID
 				break
@@ -536,6 +564,11 @@ func fleetCertificateMatches(target, source models.Certificate) bool {
 // nothing is created or overwritten on the target, and the next certificate
 // lifecycle reconciler pass simply tries again.
 func (s *Server) upsertFleetCertificate(sourceServerID, targetServerID int64, source models.Certificate, ownerID int64) (result fleetUpsertResult, byPath bool, err error) {
+	if source.ID > 0 { // v2.57.1: owner from the row, not the caller's form-parsed copy — see upsertFleetProxyHost
+		if cur, err := models.GetCertificate(s.DB, source.ID); err == nil && cur != nil {
+			source.OwnerID = cur.OwnerID
+		}
+	}
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceCertificate, source.ID, targetServerID)
 	if err != nil {
 		return fleetUpsertResult{}, false, err
@@ -552,7 +585,7 @@ func (s *Server) upsertFleetCertificate(sourceServerID, targetServerID int64, so
 			return fleetUpsertResult{}, false, err
 		}
 		for i := range targets {
-			if fleetCertificateMatches(targets[i], source) && (existing == nil || targets[i].Name == source.Name) {
+			if !source.OwnerID.Valid && fleetCertificateMatches(targets[i], source) && (existing == nil || targets[i].Name == source.Name) { // v2.57.1
 				existing = &targets[i]
 				targetID = targets[i].ID
 			}
