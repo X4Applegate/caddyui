@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.56.3] - 2026-10-05 - Multi-arch Docker images (linux/amd64 + linux/arm64)
+
+### Changed
+
+- **`applegater/caddyui` and `applegater/caddyui-caddy` are now published as multi-arch images** ([issue #115](https://github.com/X4Applegate/caddyui/issues/115) follow-up): every tag (`:vX.Y.Z`, `:stable`, `:latest`) is now a manifest list covering `linux/amd64` and `linux/arm64`, so `docker pull` on an arm64 host (Raspberry Pi, Ampere, Graviton, Apple Silicon) no longer fails with `no matching manifest for linux/arm64`. Previously only the GitHub release archives had an arm64 build; the Docker images were amd64-only, which blocked arm64 edge nodes in a fleet from running the container at all. The `Dockerfile` and `Dockerfile.caddy` now build on the builder's native platform and cross-compile for the target (`GOOS`/`GOARCH`), so no QEMU emulation is involved and one `docker buildx build --platform linux/amd64,linux/arm64` produces both. The CaddyUI `Dockerfile` now also runs `go test ./web/` before compiling, so a builder that drops embedded `web/static/` assets fails the image build instead of shipping a UI that 404s on its font and stylesheet (issue #37). The old note that multi-arch builds were blocked by a BuildKit embed bug no longer reproduces and has been removed. No change to application behavior; amd64 users are unaffected.
+
+---
+
 ## [2.56.2] - 2026-10-05 - Security: closed 4 more SSRF-guard gaps and 2 clone-IDOR gaps
 
 ### Security
