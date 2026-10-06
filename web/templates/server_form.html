@@ -16,6 +16,39 @@
 <div data-toast="error" class="mb-6 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">{{.Error}}</div>
 {{end}}
 
+{{if .Flash}}
+<div data-toast="success" class="mb-6 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm">{{.Flash}}</div>
+{{end}}
+
+{{if .PendingDeletions}}
+{{/* ── v2.59.0 (issue #120): deletions waiting for a target to converge ── */}}
+<div class="ui-panel mb-6 p-6 space-y-3" data-pending-deletions>
+  <div class="flex items-center justify-between gap-3">
+    <div>
+      <div class="text-sm font-medium text-ink-800">Pending deletions on targets</div>
+      <p class="text-xs text-ink-500 mt-1">Deleted here, not yet removed from these targets. They are retried every minute.</p>
+    </div>
+    <form method="post" action="/servers/{{.Target.ID}}/pending-deletions/retry"><button class="ui-button">Retry now</button></form>
+  </div>
+  <ul class="divide-y divide-ink-100 text-sm">
+    {{range .PendingDeletions}}
+    <li class="py-2 flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="text-ink-800">{{.ResourceKind}} <span class="font-mono">{{.Label}}</span> → <strong>{{if .TargetName}}{{.TargetName}}{{else}}server {{.TargetServerID}}{{end}}</strong></div>
+        <div class="text-xs text-ink-500">{{.Attempts}} attempt(s){{if .LastError}} · last error: {{.LastError}}{{end}}</div>
+      </div>
+      <form method="post" action="/servers/{{$.Target.ID}}/pending-deletions/discard" onsubmit="return confirm('Forget this pending deletion? The copy on the target, if it still exists, will stay.')">
+        <input type="hidden" name="kind" value="{{.ResourceKind}}" />
+        <input type="hidden" name="source_resource_id" value="{{.SourceResourceID}}" />
+        <input type="hidden" name="target_server_id" value="{{.TargetServerID}}" />
+        <button class="ui-button ui-button--quiet text-red-600">Discard</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+</div>
+{{end}}
+
 <div class="server-form-layout">
   <aside class="ui-panel server-form-guide">
     <div class="server-form-guide__eyebrow">Connection workflow</div>
@@ -108,7 +141,7 @@
     <div>
       <div class="text-sm font-medium text-ink-800">Automatic deployment targets <span class="text-ink-400 font-normal text-xs">(optional — use this server as a configuration source)</span></div>
       <p class="text-xs text-ink-500 mt-1.5">Every proxy host, redirection, advanced route and Layer4 proxy you create or edit <em>on this server</em> in the web UI is automatically deployed to the servers ticked here too — no need to tick <strong>Also deploy to</strong> on each save. Those forms show these servers as <em>default</em>; the per-resource picker stays available for one-off extra targets. To keep a single resource off every other server, mark it <strong>node-local</strong>.</p>
-      <p class="text-xs text-ink-500 mt-1.5"><strong>What this does not do:</strong> deleting a resource here does not delete its copies on the targets; quick enable/disable toggles, bulk actions, Caddyfile import and the REST API do not deploy; resources that already exist are deployed the next time they are saved. For a one-time bulk copy use <strong>Sync from current</strong> on the target server. Certificates keep their own per-certificate targets.</p>
+      <p class="text-xs text-ink-500 mt-1.5"><strong>What this does not do:</strong> quick enable/disable toggles on hosts, bulk actions, Caddyfile import and the REST API do not deploy; resources that already exist are deployed the next time they are saved. For a one-time bulk copy use <strong>Sync from current</strong> on the target server. Certificates keep their own per-certificate targets. Deleting a resource here leaves its copies in place unless you tick <strong>Propagate deletions</strong> below.</p>
       <p class="text-xs text-ink-500 mt-1.5">Deploying happens as part of the save, so a target that cannot be reached can delay it by up to ~10 seconds (the failure is recorded in the Activity Log). Set targets on the source only — a server that already deploys to this one can't be chosen, so two servers can never point at each other.</p>
     </div>
     <div class="space-y-2">
@@ -120,6 +153,15 @@
         <span class="text-xs text-ink-400 font-mono truncate">{{.AdminURL}}</span>
       </label>
       {{end}}
+    </div>
+    <div class="pt-3 mt-1 border-t border-ink-100" data-propagate-deletions>
+      <label class="flex items-start gap-2.5 cursor-pointer select-none">
+        <input type="checkbox" name="propagate_deletions" value="1" {{if .Target.PropagateDeletions}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+        <span>
+          <span class="text-sm text-ink-800 font-medium">Propagate deletions to automatic deployment targets</span>
+          <span class="block text-xs text-ink-500 mt-0.5">Off by default. When on, deleting a proxy host, redirection, advanced route or Layer4 proxy on this server (web UI or REST API) also deletes the copies it previously deployed to the servers ticked above — and nothing else: target-local resources, rows created independently on a target, and copies on one-off <strong>Also deploy to</strong> servers are never removed. If a target cannot be reached, the deletion stays pending and is retried every minute until that target's Caddy has converged. A target that ends up with no hosts at all keeps its last live routes (CaddyUI never pushes an empty config).</span>
+        </span>
+      </label>
     </div>
   </div>
   {{end}}
@@ -195,5 +237,6 @@
     <a href="/servers" class="ui-button ui-button--quiet">Cancel</a>
   </div>
 </form>
+
 </div>
 {{end}}

@@ -535,6 +535,7 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 	}
 	sid := s.currentServerID(r)
 	deleted := 0
+	var notes []fleetDeletionNote // v2.59.0 (issue #120)
 	for _, raw := range ids {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
@@ -547,17 +548,22 @@ func (s *Server) bulkDeleteProxyHosts(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
+		note := s.noteFleetDeletion(models.FleetResourceProxy, id, "")
 		if err := models.DeleteProxyHost(s.DB, id); err != nil {
 			log.Printf("bulk-delete proxy host %d: %v", id, err)
 			continue
 		}
 		deleted++
+		notes = append(notes, note)
 		_ = models.LogActivity(s.DB, sid, cu.Email, "proxy_host_delete", "id", strconv.FormatInt(id, 10), true)
 	}
 	if deleted > 0 {
 		if err := s.syncCaddy(sid, false); err != nil {
 			log.Printf("bulk-delete: sync error: %v", err)
 		}
+	}
+	for _, n := range notes {
+		s.propagateNotedDeletion(cu.Email, n)
 	}
 	http.Redirect(w, r, "/proxy-hosts", http.StatusSeeOther)
 }
@@ -843,6 +849,7 @@ func (s *Server) bulkDeleteRawRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	sid := s.currentServerID(r)
 	deleted := 0
+	var notes []fleetDeletionNote // v2.59.0 (issue #120)
 	for _, raw := range ids {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
@@ -854,17 +861,22 @@ func (s *Server) bulkDeleteRawRoutes(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
+		note := s.noteFleetDeletion(models.FleetResourceRawRoute, id, "")
 		if err := models.DeleteRawRoute(s.DB, id); err != nil {
 			log.Printf("bulk-delete raw route %d: %v", id, err)
 			continue
 		}
 		deleted++
+		notes = append(notes, note)
 		_ = models.LogActivity(s.DB, sid, cu.Email, "raw_route_delete", "id", strconv.FormatInt(id, 10), true)
 	}
 	if deleted > 0 {
 		if err := s.syncCaddy(sid, false); err != nil {
 			log.Printf("bulk-delete raw: sync error: %v", err)
 		}
+	}
+	for _, n := range notes {
+		s.propagateNotedDeletion(cu.Email, n)
 	}
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
@@ -938,6 +950,7 @@ func (s *Server) bulkDeleteRedirectionHosts(w http.ResponseWriter, r *http.Reque
 	}
 	sid := s.currentServerID(r)
 	deleted := 0
+	var notes []fleetDeletionNote // v2.59.0 (issue #120)
 	for _, raw := range ids {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
@@ -949,17 +962,22 @@ func (s *Server) bulkDeleteRedirectionHosts(w http.ResponseWriter, r *http.Reque
 				continue
 			}
 		}
+		note := s.noteFleetDeletion(models.FleetResourceRedirect, id, "")
 		if err := models.DeleteRedirectionHost(s.DB, id); err != nil {
 			log.Printf("bulk-delete redirection %d: %v", id, err)
 			continue
 		}
 		deleted++
+		notes = append(notes, note)
 		_ = models.LogActivity(s.DB, sid, cu.Email, "redirect_delete", "id", strconv.FormatInt(id, 10), true)
 	}
 	if deleted > 0 {
 		if err := s.syncCaddy(sid, false); err != nil {
 			log.Printf("bulk-delete redir: sync error: %v", err)
 		}
+	}
+	for _, n := range notes {
+		s.propagateNotedDeletion(cu.Email, n)
 	}
 	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
 }
@@ -2214,6 +2232,10 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	note := s.noteFleetDeletion(models.FleetResourceProxy, id, "")
+	if old != nil {
+		note.label = old.Domains
+	}
 	// Unified DNS: delete any managed record before removing the host.
 	// No-op when the host has no DNS-managed record.
 	if old != nil && old.DNSRecordID != "" {
@@ -2226,6 +2248,7 @@ func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
+	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	if old != nil {
 		payload, _ := json.Marshal(map[string]any{
 			"event":   "proxy_host_deleted",

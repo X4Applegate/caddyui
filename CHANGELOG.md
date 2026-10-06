@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.59.0] - 2026-10-06 - Opt-in deletion propagation to automatic deployment targets (#120)
+
+Requested by @tkkost as a follow-up to v2.57.0: let the source server act as the desired state for its **Automatic deployment targets**, deletions included.
+
+### Added
+
+- **Propagate deletions to automatic deployment targets** — a checkbox in the *Automatic deployment targets* section of a Caddy Fleet entry (**off by default**; nothing changes until an administrator ticks it). When on, deleting a **proxy host**, **redirection**, **advanced route** or **Layer4 proxy** on that server deletes the paired copies CaddyUI previously deployed from it to its automatic targets. This covers the single-delete button, the bulk-delete actions and the REST API.
+- **It deletes only what it deployed.** Target-local resources, rows created independently on a target (that were never paired), copies on one-off **Also deploy to** servers that are not automatic targets, and a target row that another source resource is still paired with are all left alone. The deletion removes the copy from the target the same way deleting it there by hand would (including its managed DNS record) and then re-syncs that target's Caddy.
+- **Unreachable targets converge later.** If a target's Caddy can't be reached (or its sync is held), the deletion is kept as a *pending deletion* — the pairing is not forgotten — and retried every minute in the background until the target has converged. Pending deletions are listed on the source server's edit page with the attempt count and last error, **Retry now**, and **Discard** (admin-only; for a target that is gone for good). They are also recorded in the Activity Log.
+- New table `fleet_pending_deletions` and column `caddy_servers.propagate_deletions` (created automatically on SQLite and MariaDB); deleting a server drops its pending entries.
+
+### Changed
+
+- Deleting a source resource now always forgets that resource's pairings (previously they lingered, so a reused row ID could inherit one), whether or not propagation is on. The Layer4 delete confirmation only says "copies were not removed" when propagation is off.
+
+### Notes
+
+- A copy that was *adopted* by an earlier deployment (a target row with the same identity that the deployment then overwrote) counts as paired and is deleted too.
+- Certificates keep their own per-certificate targets and are not part of this.
+- As with any CaddyUI sync, a target left with **no** hosts at all is not pushed an empty config, so its last live routes stay until something else is configured there.
+
+---
+
 ## [2.58.0] - 2026-10-06 - Layer4 Proxies: a dedicated section for TCP/UDP proxies (#122)
 
 Suggested and thoroughly tested by @tkkost. Until now Layer4 meant pasting a raw `layer4 { ... }` block into a server's edit form. Layer4 proxies are now first-class resources, managed like Proxy Hosts.

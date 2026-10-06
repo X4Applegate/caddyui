@@ -472,12 +472,14 @@ func (s *Server) apiV1DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 	if ph.DNSRecordID != "" {
 		s.dnsDeleteRecord(ph.DNSProvider, ph.DNSProfileID, ph.DNSZoneID, ph.DNSZoneName, ph.DNSRecordID)
 	}
+	note := s.noteFleetDeletion(models.FleetResourceProxy, id, ph.Domains)
 	if err := models.DeleteProxyHost(s.DB, id); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = models.LogActivity(s.DB, ph.ServerID, s.currentUserEmail(r), "proxy_delete", fmt.Sprintf("proxy:%d", id), ph.Domains, true)
 	s.trySyncCaddy(ph.ServerID, false)
+	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 
@@ -766,12 +768,14 @@ func (s *Server) apiV1DeleteRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
+	note := s.noteFleetDeletion(models.FleetResourceRedirect, id, existing.Domains)
 	if err := models.DeleteRedirectionHost(s.DB, id); err != nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redir:%d", id), "", true)
 	s.trySyncCaddy(s.currentServerID(r), false)
+	s.propagateNotedDeletion(s.currentUserEmail(r), note)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 
@@ -992,12 +996,14 @@ func (s *Server) apiV1DeleteRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
+	note := s.noteFleetDeletion(models.FleetResourceRawRoute, id, existing.Label)
 	if err := models.DeleteRawRoute(s.DB, id); err != nil {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "rawroute_delete", fmt.Sprintf("rr:%d", id), "", true)
 	s.trySyncCaddy(s.currentServerID(r), false)
+	s.propagateNotedDeletion(s.currentUserEmail(r), note)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 

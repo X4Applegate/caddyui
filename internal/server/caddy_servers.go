@@ -150,6 +150,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		// v2.57.0 (issue #120): persistent default deploy targets. Not
 		// "deploy_to" — on this form that is the layer4 "Also copy to" picker.
 		DefaultDeployTargets: s.parseDefaultDeployTargets(r, 0),
+		PropagateDeletions:   r.FormValue("propagate_deletions") != "", // v2.59.0 (issue #120)
 	}
 	renderErr := func(msg string) {
 		s.render(w, r, "server_form.html", map[string]any{
@@ -212,11 +213,14 @@ func (s *Server) editServerPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	pending, _ := models.ListFleetPendingDeletions(s.DB, id) // v2.59.0 (issue #120)
 	s.render(w, r, "server_form.html", map[string]any{
-		"User":         s.currentUser(r),
-		"Target":       c,
-		"Section":      "servers",
-		"OtherServers": s.otherManagedServersExcept(id), // v2.56.0 (issue #113)
+		"User":             s.currentUser(r),
+		"Target":           c,
+		"Section":          "servers",
+		"OtherServers":     s.otherManagedServersExcept(id), // v2.56.0 (issue #113)
+		"PendingDeletions": pending,
+		"Flash":            r.URL.Query().Get("flash"),
 	})
 }
 
@@ -239,6 +243,7 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 	existing.DataDir = strings.TrimSpace(r.FormValue("data_dir"))                 // v2.42.0
 	existing.Layer4Caddyfile = strings.TrimSpace(r.FormValue("layer4_caddyfile")) // v2.56.0 (issue #113)
 	existing.DefaultDeployTargets = s.parseDefaultDeployTargets(r, id)            // v2.57.0 (issue #120)
+	existing.PropagateDeletions = r.FormValue("propagate_deletions") != ""        // v2.59.0 (issue #120)
 	// Password: if the form submitted a blank value AND the user didn't explicitly
 	// check the "clear password" box, keep the existing one. Protects against
 	// masked-field UX where the password isn't re-typed on every edit.

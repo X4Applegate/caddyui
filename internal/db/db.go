@@ -154,6 +154,23 @@ CREATE TABLE IF NOT EXISTS fleet_deployments (
     PRIMARY KEY (source_server_id, resource_kind, source_resource_id, target_server_id)
 );
 
+-- v2.59.0 (issue #120): deletions of paired fleet copies that still have to
+-- finish (the target's Caddy could not be reached yet). One row per source
+-- resource and target; removed as soon as the target's Caddy has converged.
+CREATE TABLE IF NOT EXISTS fleet_pending_deletions (
+    source_server_id INTEGER NOT NULL,
+    resource_kind VARCHAR(32) NOT NULL,
+    source_resource_id INTEGER NOT NULL,
+    target_server_id INTEGER NOT NULL,
+    target_resource_id INTEGER NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    last_attempt_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_server_id, resource_kind, source_resource_id, target_server_id)
+);
+
 -- v2.7.0: raw visitor-analytics events. One row per request handled by any
 -- Caddy server shipping its JSON access log to the ingest TCP listener.
 -- Retention defaults to 30 days (pruned by a background goroutine); the
@@ -2388,6 +2405,13 @@ func migrate(db *sql.DB) error {
 	// operator picks targets on the server edit form.
 	if !columnExists2(db, "caddy_servers", "default_deploy_targets") {
 		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN default_deploy_targets TEXT NOT NULL DEFAULT ''`)
+	}
+
+	// v2.59.0 (issue #120): opt-in per source server — deleting a proxy host,
+	// redirection, advanced route or Layer4 proxy also deletes its paired
+	// copies on the automatic deployment targets. Off on every existing row.
+	if !columnExists2(db, "caddy_servers", "propagate_deletions") {
+		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN propagate_deletions INTEGER NOT NULL DEFAULT 0`)
 	}
 
 	// One loud summary rather than leaving the operator to spot individual

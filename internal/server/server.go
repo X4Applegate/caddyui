@@ -168,6 +168,7 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	}
 	go s.runHealthChecker()
 	go s.runAutoSyncLoop()
+	go s.runFleetDeletionReconciler() // v2.59.0 (issue #120)
 	go s.runMaintenanceWindowLoop()
 	go s.runActivityLogCleanup()
 	go s.runAccessDailyAggregator()
@@ -888,6 +889,8 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/servers/{id}/sync-hold/clear", s.clearSyncHoldHandler)   // v2.38.0
 			r.Post("/servers/{id}/sync-error/clear", s.clearSyncErrorHandler) // v2.42.1
 			r.Post("/servers/{id}/delete", s.deleteServer)
+			r.Post("/servers/{id}/pending-deletions/retry", s.retryFleetPendingDeletions)    // v2.59.0 (issue #120)
+			r.Post("/servers/{id}/pending-deletions/discard", s.discardFleetPendingDeletion) // v2.59.0 (issue #120)
 			r.Get("/server-logs", s.getServerLogs)
 			r.Get("/api/server-logs/status", s.serverLogStatus)
 			r.Get("/api/server-logs/stream", s.serverLogStream)
@@ -3305,6 +3308,10 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	note := s.noteFleetDeletion(models.FleetResourceRedirect, id, "")
+	if old != nil {
+		note.label = old.Domains
+	}
 	if err := models.DeleteRedirectionHost(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -3316,6 +3323,7 @@ func (s *Server) deleteRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_delete", fmt.Sprintf("redirect:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
+	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	http.Redirect(w, r, "/redirection-hosts", http.StatusSeeOther)
 }
 

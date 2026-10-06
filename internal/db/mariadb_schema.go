@@ -143,6 +143,20 @@ CREATE TABLE IF NOT EXISTS fleet_deployments (
     PRIMARY KEY (source_server_id, resource_kind, source_resource_id, target_server_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS fleet_pending_deletions (
+    source_server_id BIGINT NOT NULL,
+    resource_kind VARCHAR(32) NOT NULL,
+    source_resource_id BIGINT NOT NULL,
+    target_server_id BIGINT NOT NULL,
+    target_resource_id BIGINT NOT NULL,
+    label TEXT NOT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL,
+    last_attempt_at TIMESTAMP NULL DEFAULT NULL,
+    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_server_id, resource_kind, source_resource_id, target_server_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS access_events (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     ts BIGINT NOT NULL,

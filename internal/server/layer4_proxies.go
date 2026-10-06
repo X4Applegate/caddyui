@@ -341,14 +341,21 @@ func (s *Server) deleteLayer4Proxy(w http.ResponseWriter, r *http.Request) {
 	if p == nil {
 		return
 	}
+	note := s.noteFleetDeletion(models.FleetResourceLayer4, p.ID, p.Name)
 	if err := models.DeleteLayer4Proxy(s.DB, p.ID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	_ = models.LogActivity(s.DB, p.ServerID, s.currentUserEmail(r), "layer4_delete", fmt.Sprintf("layer4:%d", p.ID), p.Name+" "+p.ListenKey(), true)
 	s.trySyncCaddy(p.ServerID, false)
-	// Deletions are deliberately not propagated to other servers.
-	http.Redirect(w, r, "/layer4-proxies?flash="+urlQueryEscape("Deleted "+p.Name+". Copies on other servers were not removed."), http.StatusSeeOther)
+	// Copies on other servers are removed only when the source server has
+	// "Propagate deletions" enabled (v2.59.0, issue #120).
+	s.propagateNotedDeletion(s.currentUserEmail(r), note)
+	msg := "Deleted " + p.Name + "."
+	if src, _ := models.GetCaddyServer(s.DB, p.ServerID); src == nil || !src.PropagateDeletions {
+		msg += " Copies on other servers were not removed."
+	}
+	http.Redirect(w, r, "/layer4-proxies?flash="+urlQueryEscape(msg), http.StatusSeeOther)
 }
 
 func urlQueryEscape(v string) string {

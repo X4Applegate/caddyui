@@ -616,6 +616,10 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	if old != nil && old.DNSRecordID != "" {
 		s.dnsDeleteRecord(old.DNSProvider, old.DNSProfileID, old.DNSZoneID, old.DNSZoneName, old.DNSRecordID)
 	}
+	note := s.noteFleetDeletion(models.FleetResourceRawRoute, id, "")
+	if old != nil {
+		note.label = old.Label
+	}
 	if err := models.DeleteRawRoute(s.DB, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -623,6 +627,7 @@ func (s *Server) deleteRawRoute(w http.ResponseWriter, r *http.Request) {
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_delete", fmt.Sprintf("raw:%d", id), "", true)
 	forceTLS := old != nil && old.CertificateID != 0
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
+	s.propagateNotedDeletion(s.currentUserEmail(r), note) // v2.59.0 (issue #120)
 	http.Redirect(w, r, "/raw-routes", http.StatusSeeOther)
 }
 
