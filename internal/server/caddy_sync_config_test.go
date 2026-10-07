@@ -29,8 +29,8 @@ func TestHTTPRoutesReplaceUnsupportedSkipRedirectsWithoutPortConflict(t *testing
 	}
 
 	routes := s.buildHTTPRoutes(proxies, nil, nil)
-	if len(routes) != 2 {
-		t.Fatalf("HTTP routes = %d, want open route plus forced redirect", len(routes))
+	if len(routes) != 3 { // v2.59.4: open route, forced redirect, 404 fallback
+		t.Fatalf("HTTP routes = %d, want open route plus forced redirect plus the fallback", len(routes))
 	}
 
 	cfg := map[string]any{
@@ -83,8 +83,8 @@ func TestHTTPRoutesIncludeRawRouteForceSSLBehavior(t *testing.T) {
 	}
 
 	routes := s.buildHTTPRoutes(nil, nil, raws)
-	if len(routes) != 2 {
-		t.Fatalf("HTTP routes = %d, want open raw route plus forced redirect", len(routes))
+	if len(routes) != 3 { // v2.59.4: open raw route, forced redirect, 404 fallback
+		t.Fatalf("HTTP routes = %d, want open raw route plus forced redirect plus the fallback", len(routes))
 	}
 	redirect := routes[1].(map[string]any)
 	match := redirect["match"].([]any)[0].(map[string]any)

@@ -310,6 +310,7 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 		return ""
 	}
 	previewRoutes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs)...)
+	previewRoutes = s.withFallbackRoute(previewRoutes) // v2.59.4 (issue #123)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	// issue #100: mirror the global blocklist prepend so preview validation
 	// matches what sync would push.
@@ -1124,6 +1125,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	accessLogCfg := loadFleetAccessLogConfig(s.DB)
 	crowdSecCfg := loadCrowdSecConfig(s.DB)
 	routes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs)...)
+	routes = s.withFallbackRoute(routes) // v2.59.4 (issue #123)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	routes = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
 	httpRoutes = protectRoutesWithCrowdSec(httpRoutes, crowdSecCfg, serverID)

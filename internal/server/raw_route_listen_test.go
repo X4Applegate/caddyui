@@ -140,8 +140,8 @@ func TestRawListenServersAreGroupedByPortAndKeptOffSrv0(t *testing.T) {
 	if !reflect.DeepEqual(match["host"], []any{"app.example.com"}) {
 		t.Errorf("srv0 kept the wrong route: %#v", merged[0])
 	}
-	if httpRoutes := s.buildHTTPRoutes(nil, nil, raws); len(httpRoutes) != 1 {
-		t.Errorf(":80 routes = %d, want only the default-placement route (own-listener routes never go on :80)", len(httpRoutes))
+	if httpRoutes := s.buildHTTPRoutes(nil, nil, raws); len(httpRoutes) != 2 { // v2.59.4: the route plus the 404 fallback
+		t.Errorf(":80 routes = %d, want only the default-placement route plus the fallback (own-listener routes never go on :80)", len(httpRoutes))
 	}
 }
 

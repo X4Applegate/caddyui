@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.59.4] - 2026-10-07 - Unknown hosts get a 404 instead of an empty 200 (#123)
+
+Reported by @tkkost: a request for a hostname that matches no Proxy Host, Redirection or Advanced Route got an empty `200 OK` over HTTP, while hosts under a managed wildcard certificate got a 404 over HTTPS.
+
+### Fixed
+
+- **Requests that match no host now always get `404 Not Found`, on both the HTTP (`:80`) and HTTPS (`:443`) server.** CaddyUI only generated a fallback route when custom 404 page HTML had been saved in Settings; otherwise Caddy's default for "no route matched" — an empty 200 — applied (reproduced on a real Caddy 2.11: unknown host → `200`, `Content-Length: 0`, on both listeners; the HTTPS 404 reported came from the managed-certificate route, which exists only on `:443` for the wildcard's own hosts). The fallback is now generated whenever the server has routes: the custom HTML when configured (unchanged: status 404), otherwise Caddy's error handler, which shows CaddyUI's branded 404 page on HTTPS and a plain empty 404 on `:80`.
+- The fallback is always the **last** route. On `:80` it sits after the HTTPS-redirect route, so a Force-SSL host is still redirected rather than answered with the 404 — checked on a real Caddy together with an unknown host and a normal proxied host.
+- A server with no routes at all is left alone as before: no fallback is added and CaddyUI does not take over an empty listener.
+
+### Notes
+
+- This is a visible behaviour change: anything that relied on `http://<server-ip>/` or an unknown hostname answering `200` (an uptime check pointed at the bare IP, for example) now sees `404`. Point such checks at a real host, or add a host for them.
+- A configurable fallback status code and a generalised "custom fallback page" are tracked separately for the next feature release.
+
+---
+
 ## [2.59.3] - 2026-10-07 - HTTP-only Advanced routes stay off HTTPS, and failed delete calls fixed (#121)
 
 Reported by @tkkost: an Advanced Route written as `http://127.0.0.1 { respond /health "OK" 200 }` was also generated on the HTTPS listener, so Caddy served it over HTTPS and issued an internal certificate for `127.0.0.1`, which then showed up as a "Direct certificate" in the certificates view.

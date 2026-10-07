@@ -4888,6 +4888,43 @@ func (s *Server) exportActivityCSV(w http.ResponseWriter, r *http.Request) {
 
 // --- build helpers ---
 
+// fallbackRoute is the route that answers a request no proxy host, redirection
+// or Advanced route matched. v2.59.4 (issue #123): without one Caddy answers an
+// unknown hostname with an EMPTY 200 OK, and CaddyUI generated one only when the
+// admin had saved custom 404 HTML, so by default an unknown host got 200 on both
+// listeners. It is now always a real 404 — the admin's HTML when configured,
+// otherwise Caddy's error handler (which renders CaddyUI's branded 404 page on
+// the HTTPS server, where the error routes live).
+func (s *Server) fallbackRoute() map[string]any {
+	if html, _ := models.GetSetting(s.DB, settingCatchAll404HTML); strings.TrimSpace(html) != "" {
+		return map[string]any{
+			"handle": []any{map[string]any{
+				"handler":     "static_response",
+				"status_code": 404,
+				"headers": map[string]any{
+					"Content-Type": []any{"text/html; charset=utf-8"},
+				},
+				"body": html,
+			}},
+			"terminal": true,
+		}
+	}
+	return map[string]any{
+		"handle":   []any{map[string]any{"handler": "error", "status_code": 404}},
+		"terminal": true,
+	}
+}
+
+// withFallbackRoute appends the fallback as the LAST route. A server that has no
+// routes at all is left alone: CaddyUI then owns nothing on that listener, and
+// an empty list must keep meaning "do not take over".
+func (s *Server) withFallbackRoute(routes []any) []any {
+	if len(routes) == 0 {
+		return routes
+	}
+	return append(routes, s.fallbackRoute())
+}
+
 func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute) []any {
 	routes := []any{}
 	for _, p := range proxies {
@@ -4950,23 +4987,6 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 			continue
 		}
 		routes = append(routes, s.tenantSafeRawEntries(rr)...)
-	}
-
-	// Append a catch-all 404 route when the admin has configured custom HTML.
-	// This appears last so it only fires for requests that didn't match any
-	// proxy/redirect/raw route above.
-	if html, _ := models.GetSetting(s.DB, settingCatchAll404HTML); strings.TrimSpace(html) != "" {
-		routes = append(routes, map[string]any{
-			"handle": []any{map[string]any{
-				"handler":     "static_response",
-				"status_code": 404,
-				"headers": map[string]any{
-					"Content-Type": []any{"text/html; charset=utf-8"},
-				},
-				"body": html,
-			}},
-			"terminal": true,
-		})
 	}
 
 	// Global maintenance mode: prepend a catch-all 503 before all routes so
@@ -5519,17 +5539,11 @@ func (s *Server) buildHTTPRoutes(proxies []models.ProxyHost, redirs []models.Red
 	}
 	routes := s.buildMergedRoutes(httpProxies, httpRedirs, httpRaws)
 	if redirect := buildHTTPSRedirectRoute(forcedDomains); redirect != nil {
-		// Keep a configured catch-all 404 last. Global maintenance, when on,
-		// remains first because buildMergedRoutes prepends it.
-		if html, _ := models.GetSetting(s.DB, settingCatchAll404HTML); strings.TrimSpace(html) != "" && len(routes) > 0 {
-			routes = append(routes, nil)
-			copy(routes[len(routes)-1:], routes[len(routes)-2:])
-			routes[len(routes)-2] = redirect
-		} else {
-			routes = append(routes, redirect)
-		}
+		routes = append(routes, redirect)
 	}
-	return routes
+	// The fallback goes after the HTTPS redirect, so a forced-SSL host is
+	// redirected rather than answered with the fallback 404 (issue #123).
+	return s.withFallbackRoute(routes)
 }
 
 func buildHTTPSRedirectRoute(domains []string) map[string]any {

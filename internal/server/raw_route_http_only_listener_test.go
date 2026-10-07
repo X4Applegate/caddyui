@@ -62,7 +62,7 @@ func TestHTTPOnlyRouteIsOnPlainHTTPServerButNotOnHTTPS(t *testing.T) {
 		t.Errorf("an http:// route appears on the HTTPS server: %v", httpsRoutes)
 	}
 	httpRoutes := s.buildHTTPRoutes(nil, nil, raws)
-	if len(httpRoutes) != 1 {
+	if len(httpRoutes) != 2 { // v2.59.4: the route plus the 404 fallback
 		t.Fatalf("the http:// route is missing from the :80 server: %v", httpRoutes)
 	}
 }
@@ -75,7 +75,7 @@ func TestHTTPOnlyRouteWithForceSSLLeftOnIsStillServedOnPlainHTTP(t *testing.T) {
 	plain := rawRow("httponly", httpOnlySrc, httpOnlyJSON)
 	plain.ForceSSL = true
 	httpRoutes := s.buildHTTPRoutes(nil, nil, []models.RawRoute{plain})
-	if len(httpRoutes) != 1 {
+	if len(httpRoutes) != 2 { // v2.59.4: the route plus the 404 fallback
 		t.Fatalf("routes = %v", httpRoutes)
 	}
 	if m, _ := httpRoutes[0].(map[string]any); m != nil {
