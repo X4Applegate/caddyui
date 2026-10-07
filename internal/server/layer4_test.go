@@ -232,6 +232,7 @@ type layer4FakeAdmin struct {
 	putBody        string
 	putCalls       int
 	deleteCalls    int
+	writes         []string // every non-GET request: "METHOD /path body" (v2.59.3)
 	fetchLayer4Hit int
 }
 
@@ -241,6 +242,11 @@ func newLayer4FakeAdmin(t *testing.T, baseConfig string) (*httptest.Server, *lay
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if r.Method != http.MethodGet {
+			raw, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(strings.NewReader(string(raw)))
+			f.writes = append(f.writes, r.Method+" "+r.URL.Path+" "+string(raw))
+		}
 		switch {
 		case r.Method == http.MethodGet && (r.URL.Path == "/config/" || r.URL.Path == "/config"):
 			w.Header().Set("Content-Type", "application/json")

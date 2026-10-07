@@ -5509,7 +5509,9 @@ func (s *Server) buildHTTPRoutes(proxies []models.ProxyHost, redirs []models.Red
 		if rr.Listen != "" { // v2.36.1 (issue #64): served by its own listener, never on :80
 			continue
 		}
-		if !rr.ForceSSL {
+		// v2.59.3 (issue #121): a route written with explicit http:// addresses
+		// is never redirected to HTTPS, even if an older save left Force SSL on.
+		if !rr.ForceSSL || rawRouteHTTPOnly(&rr) {
 			httpRaws = append(httpRaws, rr)
 		} else {
 			forcedDomains = append(forcedDomains, rawRouteHosts(rr)...)

@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.59.3] - 2026-10-07 - HTTP-only Advanced routes stay off HTTPS, and failed delete calls fixed (#121)
+
+Reported by @tkkost: an Advanced Route written as `http://127.0.0.1 { respond /health "OK" 200 }` was also generated on the HTTPS listener, so Caddy served it over HTTPS and issued an internal certificate for `127.0.0.1`, which then showed up as a "Direct certificate" in the certificates view.
+
+### Fixed
+
+- **A route written with explicit `http://` addresses is now generated only on the plain `:80` server.** v2.58 stopped such a route from asking for a certificate or forcing HTTPS on save, but CaddyUI still copied it onto `:443` (every non-forced Advanced Route goes on both listeners). The HTTPS side — its routes, certificate skip list and DNS-01 certificate policies — now leaves them out, so the route is not reachable over HTTPS and Caddy no longer issues a certificate for its host. This is applied when the config is built, so existing routes are corrected by the next sync (a restart with sync-on-start, or any save) with no migration. Verified on a real Caddy: the route appears on `caddyui_http` only and no TLS policy mentions the host.
+- An `http://` route that an older save left with **Force SSL** on is no longer turned into a redirect to HTTPS on `:80`; it is served as written.
+- **Three delete calls to Caddy's admin API were sent to `/config/config/...`**, which real Caddy answers with HTTP 500 ("invalid traversal path"). They were the removal of CaddyUI's `:80` server when no `:80` routes remain, the removal of a stale Advanced-route server that has its own port, and clearing the HTTP/3 restriction when it is switched off. Depending on the call that failed a sync or was silently skipped. Fixed once, in the client, which now accepts the path with or without the leading `/config`.
+
+### Notes
+
+- If one Advanced Route's Caddyfile mixes `http://` and `https://` (or plain) site addresses it is not treated as HTTP-only and stays on both listeners; put the `http://` sites in their own route.
+- A certificate Caddy already issued for such a host stays in Caddy's storage (and in the certificates view) until it is removed or expires; no new ones are requested.
+
+---
+
 ## [2.59.2] - 2026-10-06 - Code-scanning clean-up (no behaviour change)
 
 ### Security

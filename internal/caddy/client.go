@@ -218,7 +218,14 @@ func (c *Client) PatchPath(path string, val any) error {
 
 // DeletePath removes the config key at the given path from the live Caddy config.
 // No-op (returns nil) if the path does not exist (404).
+//
+// path may be given with or without the leading "/config" (v2.59.3): three
+// callers passed the full "/config/apps/..." form, which became
+// "/config/config/apps/..." and was answered with HTTP 500 "invalid traversal
+// path", so clearing the :80 server, removing a stale own-port server and
+// re-enabling HTTP/3 all failed.
 func (c *Client) DeletePath(path string) error {
+	path = "/" + strings.TrimPrefix(strings.TrimPrefix(path, "/config/"), "/")
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, c.AdminURL+"/config"+path, nil)
 	if err != nil {
 		return err

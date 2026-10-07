@@ -145,6 +145,25 @@ func rawRouteHTTPOnly(rr *models.RawRoute) bool {
 	return rr != nil && rr.CaddyfileSrc != "" && caddy.CaddyfileHTTPOnly(rr.CaddyfileSrc)
 }
 
+// httpsRawRoutes returns the Advanced routes that belong on the HTTPS listener
+// (srv0, :443) — every enabled route except those written with explicit
+// http:// site addresses (v2.59.3, issue #121). The #121 fix only dropped the
+// certificate and Force SSL for such a route on save; the route itself was
+// still generated on :443, where Caddy served it over HTTPS and issued an
+// internal certificate for its host. Routes with their own listener are
+// unaffected (they never share srv0), and the list for the plain :80 server is
+// built from the full set, so an http:// route still reaches :80.
+func httpsRawRoutes(raws []models.RawRoute) []models.RawRoute {
+	out := make([]models.RawRoute, 0, len(raws))
+	for i := range raws {
+		if raws[i].Listen == "" && rawRouteHTTPOnly(&raws[i]) {
+			continue
+		}
+		out = append(out, raws[i])
+	}
+	return out
+}
+
 // withAutoLoadedSnippets prepends the snippet definitions — "(name) { ... }" —
 // found in the mounted Caddyfile (CADDYFILE_PATH) to src, so `import <name>`
 // resolves without the user pasting the definition. Only the snippet blocks
@@ -290,7 +309,7 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	if err != nil {
 		return ""
 	}
-	previewRoutes := append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...)
+	previewRoutes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs)...)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	// issue #100: mirror the global blocklist prepend so preview validation
 	// matches what sync would push.
@@ -305,11 +324,11 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	applyRawListenServers(proposed, s.buildRawListenServers(raws)) // v2.36.1 (issue #64)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
-	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, raws, certs))
+	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, httpsRawRoutes(raws), certs))
 	removeUnsupportedSkipRedirects(proposed)
 	applyDisableAutomaticHTTPSRedirects(proposed, len(httpRoutes) > 0)
 	applySkipAccessLogs(proposed, buildSkipAccessLogs(proxies))
-	previewPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
+	previewPolicies := s.buildDNSAutomationPolicies(proxies, redirs, httpsRawRoutes(raws), certs)
 	previewPolicies = append(previewPolicies, buildInternalTLSAutomationPolicies(proxies)...) // v2.46.0
 	applyAutomationPolicies(proposed, previewPolicies)
 	// Mirror syncCaddy: preview-validation must match the config we'd push
@@ -1104,7 +1123,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 
 	accessLogCfg := loadFleetAccessLogConfig(s.DB)
 	crowdSecCfg := loadCrowdSecConfig(s.DB)
-	routes := append(s.buildMergedRoutes(proxies, redirs, raws), buildManagedCertificateRoutes(certs)...)
+	routes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs)...)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	routes = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
 	httpRoutes = protectRoutesWithCrowdSec(httpRoutes, crowdSecCfg, serverID)
@@ -1126,7 +1145,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 		rawListenServers[name] = srv
 	}
 	loadPEM, loadFiles := buildCertLoaders(certs)
-	skipList := buildSkipCertificates(proxies, redirs, raws, certs)
+	skipList := buildSkipCertificates(proxies, redirs, httpsRawRoutes(raws), certs)
 	skipAccessLogs := buildSkipAccessLogs(proxies)
 	// v2.9.0: per-SNI TLS minimum-version connection policies. nil when no
 	// host has a min version configured — writeTLSConnectionPoliciesSubtree
@@ -1134,7 +1153,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	tlsConnPolicies := caddy.BuildTLSConnectionPolicies(proxies)
 	// DNS-01 issuance policies plus (v2.46.0) internal-CA issuance policies,
 	// pushed together into apps.tls.automation.
-	tlsAutomationPolicies := s.buildDNSAutomationPolicies(proxies, redirs, raws, certs)
+	tlsAutomationPolicies := s.buildDNSAutomationPolicies(proxies, redirs, httpsRawRoutes(raws), certs)
 	tlsAutomationPolicies = append(tlsAutomationPolicies, buildInternalTLSAutomationPolicies(proxies)...)
 
 	// v2.56.0 (issue #113): adapt the optional layer4 Caddyfile block through
