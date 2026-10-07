@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.59.5] - 2026-10-07 - Forward Auth works now: `unknown module: http.handlers.forward_auth` (#124, #125)
+
+Reported by @kernaxis while asking for reusable middleware profiles (#124, duplicated as #125): saving a Proxy Host with a Forward Auth URL failed with `unknown module: http.handlers.forward_auth`.
+
+### Fixed
+
+- **Forward Auth never worked.** `forward_auth` is a Caddyfile *directive*, not a JSON handler module, and CaddyUI has emitted `{"handler":"forward_auth"}` since v2.9.27, so Caddy rejected the whole config for any host that used it. CaddyUI now generates exactly what the directive expands to (checked against Caddy's own `/adapt` output): a `reverse_proxy` to the auth service that rewrites the method and URI, passes `X-Forwarded-Method` / `X-Forwarded-Uri` and the original `Host`, and — on a 2xx answer only — copies the configured response headers onto the request that continues to the real upstream. A non-2xx answer (401/403/redirect to a login page) is relayed to the client by reverse_proxy's own behaviour.
+- **Copied headers cannot be spoofed.** Each copied header is deleted from the incoming request before the auth service's value is applied, and is only set when the auth service actually sent it, so a client can never supply `X-Authentik-Username` (or any other copied header) itself.
+- The existing options now do what their labels say: *Forward Auth Method*, *Copy auth headers*, *Headers prefix* (applied to the header name placed on the upstream request) and *Skip paths*.
+- The Forward Auth URL is validated when you save: it must be `http://` or `https://` with a host (for example `http://authentik:9000/outpost.goauthentik.io/auth/caddy`). If a stored URL is ever unusable, the host answers `503` instead of being served without authentication (fail-closed).
+- Because the auth service is now a real upstream, a non-admin account can no longer point Forward Auth at an address the upstream guard blocks (loopback, link-local/metadata, the Caddy admin API).
+- Verified end to end on a real Caddy 2.11 with a fake auth service: no cookie → `401` with the auth service's body; valid cookie → `200` and the upstream receives the copied header; a client-supplied copy of the header without valid auth → `401`; a skipped path reaches the upstream without an auth call; a prefix renames the copied header.
+
+### Notes
+
+- Upgrading fixes existing hosts on the next sync (restart with sync-on-start, or any save).
+- Reusable Forward Auth / middleware profiles (#124) are a feature request and are tracked for the next feature release.
+
+---
+
 ## [2.59.4] - 2026-10-07 - Unknown hosts get a 404 instead of an empty 200 (#123)
 
 Reported by @tkkost: a request for a hostname that matches no Proxy Host, Redirection or Advanced Route got an empty `200 OK` over HTTP, while hosts under a managed wildcard certificate got a 404 over HTTPS.

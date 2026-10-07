@@ -1901,6 +1901,10 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
+	if errMsg := validateForwardAuthURL(p.ForwardAuthURL); errMsg != "" { // v2.59.5 (issues #124/#125)
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	if errMsg := s.validateProxyAdvanced(s.caddyForRequest(r), p); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
@@ -2075,6 +2079,10 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	p.ID = id
 	s.applyDNSFormSelection(p)
 	if errMsg := validateSSLFlags(p.SSLEnabled, p.SSLForced, p.CertificateID); errMsg != "" {
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
+	if errMsg := validateForwardAuthURL(p.ForwardAuthURL); errMsg != "" { // v2.59.5 (issues #124/#125)
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}

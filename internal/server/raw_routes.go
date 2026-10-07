@@ -1327,6 +1327,21 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	return nil
 }
 
+// validateForwardAuthURL rejects a forward auth URL CaddyUI cannot turn into an
+// auth subrequest (v2.59.5): it must be http:// or https:// with a host, e.g.
+// http://authentik:9000/outpost.goauthentik.io/auth/caddy. Blank = forward auth off.
+func validateForwardAuthURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return "Forward auth URL must be http:// or https:// followed by the auth service host, e.g. http://authentik:9000/outpost.goauthentik.io/auth/caddy"
+	}
+	return ""
+}
+
 // validateProxyAdvanced runs AdvancedConfig through Caddy's /adapt at save time
 // so the user gets a form error instead of a silent sync failure later. Returns
 // "" when empty or valid; otherwise a user-facing message.

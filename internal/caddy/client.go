@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -3684,30 +3685,7 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	// directly (typically 401/403). On 2xx, configured headers are copied to
 	// the upstream request and the proxy continues normally.
 	if p.ForwardAuthURL != "" {
-		faHandler := map[string]any{
-			"handler": "forward_auth",
-			"uri":     p.ForwardAuthURL,
-		}
-		// v2.9.52: forward_auth_method — HTTP method for the auth subrequest (default GET).
-		if p.ForwardAuthMethod != "" && p.ForwardAuthMethod != "GET" {
-			faHandler["method"] = strings.ToUpper(p.ForwardAuthMethod)
-		}
-		// v2.9.54: forward_auth_headers_prefix — prefix applied to all copied headers.
-		if p.ForwardAuthHeadersPrefix != "" {
-			faHandler["headers_prefix"] = p.ForwardAuthHeadersPrefix
-		}
-		if p.ForwardAuthCopyHeaders != "" {
-			var hdrs []any
-			for _, h := range strings.Split(p.ForwardAuthCopyHeaders, ",") {
-				h = strings.TrimSpace(h)
-				if h != "" {
-					hdrs = append(hdrs, h)
-				}
-			}
-			if len(hdrs) > 0 {
-				faHandler["copy_headers"] = hdrs
-			}
-		}
+		faHandler := buildForwardAuthHandler(p)
 		// v2.9.184: forward_auth_skip_paths — wrap forward_auth in a subroute that skips
 		// listed path prefixes, so health/metrics/etc. bypass the auth subrequest.
 		if p.ForwardAuthSkipPaths != "" {
@@ -4505,4 +4483,91 @@ func parseHeaderReplaceRules(raw string) map[string][]any {
 		})
 	}
 	return out
+}
+
+// buildForwardAuthHandler returns the Caddy JSON for a proxy host's forward
+// auth (v2.59.5, issues #124/#125). "forward_auth" is a Caddyfile DIRECTIVE, not
+// a JSON handler module — CaddyUI used to emit {"handler":"forward_auth"} and
+// Caddy rejected the whole config with "unknown module:
+// http.handlers.forward_auth", so forward auth has never worked since v2.9.27.
+// This is exactly what the directive expands to (checked against Caddy's own
+// /adapt output): a reverse_proxy to the auth service that rewrites the method
+// and URI, tells it the original method/URI, and — on a 2xx answer only — copies
+// the chosen response headers onto the request that continues to the real
+// upstream. A non-2xx answer is relayed to the client by reverse_proxy's default.
+// Each copied header is deleted from the incoming request first, so a client can
+// never supply one itself.
+//
+// An unusable URL fails CLOSED: the host answers 503 instead of silently
+// serving without authentication.
+func buildForwardAuthHandler(p models.ProxyHost) map[string]any {
+	u, err := url.Parse(strings.TrimSpace(p.ForwardAuthURL))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return map[string]any{
+			"handler":     "static_response",
+			"status_code": 503,
+			"body":        "Forward auth is misconfigured for this host.",
+		}
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	uri := u.EscapedPath()
+	if uri == "" {
+		uri = "/"
+	}
+	if u.RawQuery != "" {
+		uri += "?" + u.RawQuery
+	}
+	method := strings.ToUpper(strings.TrimSpace(p.ForwardAuthMethod))
+	if method == "" {
+		method = "GET"
+	}
+
+	var copyRoutes []any
+	copyRoutes = append(copyRoutes, map[string]any{"handle": []any{map[string]any{"handler": "vars"}}})
+	for _, h := range strings.Split(p.ForwardAuthCopyHeaders, ",") {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		dest := p.ForwardAuthHeadersPrefix + h
+		src := "{http.reverse_proxy.header." + h + "}"
+		copyRoutes = append(copyRoutes,
+			map[string]any{"handle": []any{map[string]any{
+				"handler": "headers",
+				"request": map[string]any{"delete": []any{dest}},
+			}}},
+			map[string]any{
+				"handle": []any{map[string]any{
+					"handler": "headers",
+					"request": map[string]any{"set": map[string]any{dest: []any{src}}},
+				}},
+				"match": []any{map[string]any{"not": []any{map[string]any{
+					"vars": map[string]any{src: []any{""}},
+				}}}},
+			})
+	}
+
+	handler := map[string]any{
+		"handler":   "reverse_proxy",
+		"upstreams": []any{map[string]any{"dial": net.JoinHostPort(u.Hostname(), port)}},
+		"rewrite":   map[string]any{"method": method, "uri": uri},
+		"headers": map[string]any{"request": map[string]any{"set": map[string]any{
+			"X-Forwarded-Method": []any{"{http.request.method}"},
+			"X-Forwarded-Uri":    []any{"{http.request.uri}"},
+		}}},
+		"handle_response": []any{map[string]any{
+			"match":  map[string]any{"status_code": []any{2}},
+			"routes": copyRoutes,
+		}},
+	}
+	if u.Scheme == "https" {
+		handler["transport"] = map[string]any{"protocol": "http", "tls": map[string]any{}}
+	}
+	return handler
 }
