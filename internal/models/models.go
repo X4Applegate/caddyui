@@ -3552,6 +3552,10 @@ func ToggleRawRoute(db *sql.DB, id int64) (bool, error) {
 
 func DeleteProxyHost(db *sql.DB, id int64) error {
 	_, err := db.Exec(`DELETE FROM proxy_hosts WHERE id = ?`, id)
+	if err == nil {
+		// v2.60.0 (issue #124): a deleted host leaves no profile attachment behind.
+		_, err = db.Exec(`DELETE FROM proxy_host_profiles WHERE proxy_host_id = ?`, id)
+	}
 	return err
 }
 

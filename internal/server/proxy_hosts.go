@@ -1879,7 +1879,7 @@ func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 	// operators can opt into the full several-hundred-field editor explicitly;
 	// edit routes remain advanced so existing configuration is never hidden.
 	guided := r.URL.Query().Get("mode") != "advanced"
-	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.withProfileViewData(s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         &models.ProxyHost{Enabled: true, SSLEnabled: true, SSLForced: true, HTTP2Support: true, ForwardScheme: "http"},
 		"Certificates": certs,
@@ -1887,7 +1887,7 @@ func (s *Server) newProxyHost(w http.ResponseWriter, r *http.Request) {
 		"OtherServers": s.otherManagedServers(r),
 		"Guided":       guided,
 		"Section":      "proxy",
-	}))
+	}), 0))
 }
 
 func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
@@ -1989,6 +1989,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	p.ID = id
 	p.ServerID = s.currentServerID(r)
+	_ = models.SetProxyHostProfile(s.DB, id, s.hostProfileFromForm(r)) // v2.60.0 (issue #124)
 	if err := models.UpdateProxyHostDNSProfile(s.DB, id, p.DNSProfileID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2049,14 +2050,14 @@ func (s *Server) editProxyHost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	certs, _ := s.certListForRequest(r)
-	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
+	s.render(w, r, "proxy_host_form.html", s.withProfileViewData(s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
 		"Users":        s.adminUserList(r),
 		"OtherServers": s.otherManagedServers(r),
 		"Section":      "proxy",
-	}))
+	}), models.ProxyHostProfileID(s.DB, p.ID)))
 }
 
 func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
@@ -2181,6 +2182,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = models.SetProxyHostProfile(s.DB, p.ID, s.hostProfileFromForm(r)) // v2.60.0 (issue #124)
 	if err := models.UpdateProxyHostDNSProfile(s.DB, p.ID, p.DNSProfileID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2314,5 +2316,6 @@ func (s *Server) cloneProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = models.UpdateProxyHostDNSProfile(s.DB, newID, clone.DNSProfileID)
+	_ = models.SetProxyHostProfile(s.DB, newID, models.ProxyHostProfileID(s.DB, src.ID)) // v2.60.0 (issue #124)
 	http.Redirect(w, r, fmt.Sprintf("/proxy-hosts/%d/edit", newID), http.StatusSeeOther)
 }

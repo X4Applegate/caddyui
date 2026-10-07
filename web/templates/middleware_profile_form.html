@@ -1,0 +1,98 @@
+{{define "title"}}{{if .Row.ID}}Edit{{else}}New{{end}} middleware profile · CaddyUI{{end}}
+{{define "content"}}
+<div class="mb-8">
+  <a href="/middleware-profiles" class="text-xs text-ink-500 hover:text-ink-900 transition inline-flex items-center gap-1">&larr; Back to middleware profiles</a>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900 mt-2">{{if .Row.ID}}Edit middleware profile{{else}}New middleware profile{{end}}</h1>
+  <p class="text-sm text-ink-500 mt-1 max-w-2xl">Everything below is optional. On a host, a value set on the host itself wins over the profile; empty host fields inherit it. Saving re-syncs every server that has a host using this profile.</p>
+</div>
+
+{{if .Error}}
+<div data-toast="error" class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm max-w-3xl">{{.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Row.ID}}/middleware-profiles/{{.Row.ID}}{{else}}/middleware-profiles{{end}}" class="bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-7 max-w-3xl">
+  <div class="space-y-4">
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Name</label>
+      <input name="name" value="{{.Row.Name}}" required maxlength="80" placeholder="e.g. Internal SSO"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Description <span class="text-ink-400 font-normal text-xs">(optional)</span></label>
+      <input name="description" value="{{.Row.Description}}" maxlength="200" placeholder="Shown next to the name in the host picker"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+  </div>
+
+  <fieldset class="space-y-3 border-t border-ink-100 pt-5">
+    <legend class="text-sm font-semibold text-ink-900">Security headers</legend>
+    <label class="flex items-start gap-2.5 cursor-pointer text-sm text-ink-700">
+      <input type="checkbox" name="security_headers" {{if .Row.SecurityHeaders}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span>Add the standard security headers (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy)</span>
+    </label>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div><label class="block text-xs text-ink-600 mb-1">X-Frame-Options <span class="text-ink-400">(default SAMEORIGIN)</span></label>
+        <input name="x_frame_options" value="{{.Row.XFrameOptions}}" placeholder="DENY" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" /></div>
+      <div><label class="block text-xs text-ink-600 mb-1">Referrer-Policy</label>
+        <input name="referrer_policy" value="{{.Row.ReferrerPolicy}}" placeholder="strict-origin-when-cross-origin" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" /></div>
+      <div><label class="block text-xs text-ink-600 mb-1">Permissions-Policy</label>
+        <input name="permissions_policy" value="{{.Row.PermissionsPolicy}}" placeholder="camera=(), microphone=()" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" /></div>
+      <div><label class="block text-xs text-ink-600 mb-1">Content-Security-Policy</label>
+        <input name="csp_header" value="{{.Row.CSPHeader}}" placeholder="default-src 'self'" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" /></div>
+    </div>
+  </fieldset>
+
+  <fieldset class="space-y-3 border-t border-ink-100 pt-5">
+    <legend class="text-sm font-semibold text-ink-900">Forward auth</legend>
+    <p class="text-xs text-ink-500">Delegate authentication to an external service (Authentik, Authelia, …) before proxying. A 2xx answer lets the request through and copies the listed headers to the upstream; anything else is shown to the visitor. A host with its own forward auth URL keeps its own settings.</p>
+    <div>
+      <label class="block text-xs text-ink-600 mb-1">Auth URL</label>
+      <input name="forward_auth_url" value="{{.Row.ForwardAuthURL}}" placeholder="http://authentik:9000/outpost.goauthentik.io/auth/caddy" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" />
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div><label class="block text-xs text-ink-600 mb-1">Method</label>
+        <select name="forward_auth_method" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+          <option value="" {{if eq .Row.ForwardAuthMethod ""}}selected{{end}}>GET (default)</option>
+          <option value="POST" {{if eq .Row.ForwardAuthMethod "POST"}}selected{{end}}>POST</option>
+          <option value="HEAD" {{if eq .Row.ForwardAuthMethod "HEAD"}}selected{{end}}>HEAD</option>
+        </select></div>
+      <div><label class="block text-xs text-ink-600 mb-1">Headers prefix <span class="text-ink-400">(optional)</span></label>
+        <input name="forward_auth_headers_prefix" value="{{.Row.ForwardAuthHeadersPrefix}}" placeholder="X-Auth-" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" /></div>
+    </div>
+    <div>
+      <label class="block text-xs text-ink-600 mb-1">Copy headers <span class="text-ink-400">(comma-separated, from the auth response)</span></label>
+      <input name="forward_auth_copy_headers" value="{{.Row.ForwardAuthCopyHeaders}}" placeholder="X-Authentik-Username, X-Authentik-Groups" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" />
+    </div>
+    <div>
+      <label class="block text-xs text-ink-600 mb-1">Skip paths <span class="text-ink-400">(comma-separated prefixes that bypass auth)</span></label>
+      <input name="forward_auth_skip_paths" value="{{.Row.ForwardAuthSkipPaths}}" placeholder="/health, /metrics" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none" />
+    </div>
+  </fieldset>
+
+  <fieldset class="space-y-3 border-t border-ink-100 pt-5">
+    <legend class="text-sm font-semibold text-ink-900">IP restrictions</legend>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div><label class="block text-xs text-ink-600 mb-1">Allowlist <span class="text-ink-400">(only these may connect; empty = everyone)</span></label>
+        <textarea name="access_list" rows="3" placeholder="10.0.0.0/8, 192.168.0.0/16" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none">{{.Row.AccessList}}</textarea></div>
+      <div><label class="block text-xs text-ink-600 mb-1">Blocklist <span class="text-ink-400">(answered with 403)</span></label>
+        <textarea name="ip_blocklist" rows="3" placeholder="203.0.113.0/24" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:outline-none">{{.Row.IPBlocklist}}</textarea></div>
+    </div>
+  </fieldset>
+
+  <fieldset class="space-y-3 border-t border-ink-100 pt-5">
+    <legend class="text-sm font-semibold text-ink-900">Extra headers</legend>
+    <p class="text-xs text-ink-500">JSON objects of header name to value. A header set on the host with the same name wins.</p>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div><label class="block text-xs text-ink-600 mb-1">Request headers <span class="text-ink-400">(sent to the upstream)</span></label>
+        <textarea name="custom_req_headers" rows="4" placeholder='{"X-Env": "prod"}' class="w-full rounded-lg border border-ink-200 px-3 py-2 text-xs font-mono bg-white focus:border-brand-500 focus:outline-none">{{.Row.CustomReqHeaders}}</textarea></div>
+      <div><label class="block text-xs text-ink-600 mb-1">Response headers <span class="text-ink-400">(sent to the visitor)</span></label>
+        <textarea name="custom_resp_headers" rows="4" placeholder='{"X-Robots-Tag": "noindex"}' class="w-full rounded-lg border border-ink-200 px-3 py-2 text-xs font-mono bg-white focus:border-brand-500 focus:outline-none">{{.Row.CustomRespHeaders}}</textarea></div>
+    </div>
+  </fieldset>
+
+  <div class="flex items-center gap-3 pt-2 border-t border-ink-100">
+    <button type="submit" class="bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-5 py-2 rounded-lg shadow-sm transition mt-4">{{if .Row.ID}}Save changes{{else}}Create profile{{end}}</button>
+    <a href="/middleware-profiles" class="text-sm text-ink-600 hover:text-ink-900 mt-4">Cancel</a>
+  </div>
+</form>
+{{end}}

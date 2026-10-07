@@ -407,6 +407,17 @@ document.addEventListener('DOMContentLoaded', function() {
   {{/* v2.11.7: Path matching + metadata bundled into one collapsed section.
        Most users won't touch path prefix / strip query / tags / notes on
        routine hosts; the badge tells them how many fields are configured. */}}
+  {{/* v2.60.0 (issue #124): reusable middleware profile. Always visible (not inside a
+       collapsed section) because it replaces fields spread across several of them. */}}
+  <div id="ph-profile" data-workflow-section="policy" class="pt-4 border-t border-ink-100" data-middleware-profile>
+    <label for="middleware_profile_id" class="block text-sm font-medium text-ink-800 mb-1">Middleware profile <span class="text-ink-400 font-normal text-xs">(optional)</span></label>
+    <select id="middleware_profile_id" name="middleware_profile_id" class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+      <option value="0">None</option>
+      {{range .Profiles}}<option value="{{.ID}}" {{if eq .ID $.SelectedProfileID}}selected{{end}}>{{.Name}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}
+    </select>
+    <p class="text-xs text-ink-500 mt-1.5 max-w-2xl">A shared bundle of security headers, forward auth, IP restrictions and extra headers, maintained once under <strong>Middleware Profiles</strong>. A value you set on this host itself wins over the profile; fields left empty here inherit it, and header lists merge by name.{{if not .Profiles}} No profiles exist yet.{{end}}</p>
+  </div>
+
   <details id="ph-security" class="pt-4 border-t border-ink-100"{{if or .Host.CompressionEnabled .Host.SecurityHeadersEnabled .Host.TLSMinVersion .Host.MaintenanceMode .Host.MaxRequestBodyMB .Host.StickySessions .Host.CORSEnabled .Host.HealthCheckURI .Host.KeepaliveConns .Host.DisableAccessLog .Host.AddRequestID .Host.BlockedAgents .Host.ForceHTTP1 .Host.ProxyProtocol .Host.H2CEnabled .Host.FlushImmediate .Host.BufferResponses .Host.APIKeyHeader .Host.APIKeyValue .Host.BlockEmptyUserAgent .Host.MaxConnDurationSec .Host.DecompressResponse .Host.StripReqHeaders .Host.UpstreamPathPrefix .Host.CompressionLevel .Host.CompressionPreferGzip}} open{{end}}>
     <summary class="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-500 hover:text-ink-700 font-medium transition">
       Security &amp; Performance <span class="font-normal normal-case">(compression, headers, TLS)</span>

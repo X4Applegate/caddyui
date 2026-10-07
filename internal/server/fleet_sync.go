@@ -238,6 +238,16 @@ func (s *Server) upsertFleetProxyHost(sourceServerID, targetServerID int64, sour
 	if err != nil {
 		return fleetUpsertResult{}, err
 	}
+	// v2.60.0 (issue #124): the copy uses the same middleware profile (profiles
+	// are global), so a profile change on the source reaches the target too. A
+	// different attachment counts as a change, so the target is re-synced.
+	wantProfile := models.ProxyHostProfileID(s.DB, source.ID)
+	if models.ProxyHostProfileID(s.DB, targetID) != wantProfile {
+		if err := models.SetProxyHostProfile(s.DB, targetID, wantProfile); err != nil {
+			return fleetUpsertResult{}, err
+		}
+		changed = true
+	}
 	if err := models.SaveFleetDeployment(s.DB, sourceServerID, models.FleetResourceProxy, source.ID, targetServerID, targetID); err != nil {
 		return fleetUpsertResult{}, err
 	}

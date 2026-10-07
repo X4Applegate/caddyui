@@ -301,6 +301,7 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 // forms as well as Advanced routes.
 func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
 	caddyCl := s.caddyForServer(serverID)
+	proxies = s.applyMiddlewareProfiles(proxies) // v2.60.0 (issue #124)
 	current, _, err := caddyCl.FetchConfig()
 	if err != nil {
 		return ""
@@ -309,7 +310,7 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	if err != nil {
 		return ""
 	}
-	previewRoutes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs)...)
+	previewRoutes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs, s.fallbackRoute()["handle"].([]any))...)
 	previewRoutes = s.withFallbackRoute(previewRoutes) // v2.59.4 (issue #123)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	// issue #100: mirror the global blocklist prepend so preview validation
@@ -1060,6 +1061,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	if err != nil {
 		return err
 	}
+	proxies = s.applyMiddlewareProfiles(proxies) // v2.60.0 (issue #124)
 	redirs, err := models.ListRedirectionHosts(s.DB, serverID, 0, true, nil)
 	if err != nil {
 		return err
@@ -1124,7 +1126,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 
 	accessLogCfg := loadFleetAccessLogConfig(s.DB)
 	crowdSecCfg := loadCrowdSecConfig(s.DB)
-	routes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs)...)
+	routes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs, s.fallbackRoute()["handle"].([]any))...)
 	routes = s.withFallbackRoute(routes) // v2.59.4 (issue #123)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	routes = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
@@ -1448,7 +1450,11 @@ func scanTopLevelDirective(src string, banned []string) string {
 
 func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request, p *models.ProxyHost, errMsg string) {
 	certs, _ := s.certListForRequest(r)
-	s.render(w, r, "proxy_host_form.html", s.applyDNSViewData(s.currentServerID(r), map[string]any{
+	selectedProfile, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("middleware_profile_id")), 10, 64)
+	if r.Method != http.MethodPost && p != nil {
+		selectedProfile = models.ProxyHostProfileID(s.DB, p.ID)
+	}
+	s.render(w, r, "proxy_host_form.html", s.withProfileViewData(s.applyDNSViewData(s.currentServerID(r), map[string]any{
 		"User":         s.currentUser(r),
 		"Host":         p,
 		"Certificates": certs,
@@ -1457,7 +1463,7 @@ func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request
 		"Error":        errMsg,
 		"Guided":       r.FormValue("guided") == "1",
 		"Section":      "proxy",
-	}))
+	}), selectedProfile))
 }
 
 // adaptProxyAdvanced converts a proxy host's per-host AdvancedConfig (a Caddyfile

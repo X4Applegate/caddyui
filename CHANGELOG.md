@@ -5,6 +5,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.60.0] - 2026-10-07 - Middleware profiles (#124) and a configurable fallback status (#123)
+
+Two features requested by @kernaxis (#124, also filed as #125) and @tkkost (#123).
+
+### Added
+
+- **Middleware profiles** — a new admin-only **Middleware Profiles** page. A profile bundles HTTP policy that many hosts share:
+  - **Security headers** — the standard bundle (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy) plus X-Frame-Options, Referrer-Policy, Permissions-Policy and Content-Security-Policy values.
+  - **Forward auth** — auth URL, method, copied response headers, header prefix and skip paths (works with the v2.59.5 generator).
+  - **IP restrictions** — an allowlist and a blocklist (IP addresses or CIDR ranges, IPv6 included).
+  - **Extra headers** — request and response header maps.
+  Pick a profile on a proxy host (the **Middleware profile** selector; step 3 of the guided publish flow, always visible in the advanced editor). **A value set on the host itself wins** over the profile; empty host fields inherit it; forward auth is taken as one unit (a host with its own auth URL keeps only its own settings); the two header maps merge by name with the host winning. The profile is applied when the Caddy config is built — **the host row is never rewritten**, so detaching a profile restores exactly what the host had.
+- **Editing a profile re-syncs every server that has a host using it**, so a change reaches Caddy without re-saving each host. Profiles are global to the controller, so hosts on different fleet servers share one definition; a host deployed to a fleet target carries its profile with it, and changing or removing it on the source updates the copy.
+- A profile that is still attached to hosts **cannot be deleted** (the page says how many); deleting a host releases it. Cloning a host keeps its profile. Profile names are unique; entries are validated on save (URLs, CIDRs, header names and values).
+- **Configurable fallback status** — **Settings → General → Fallback status code** (`400`–`599`, default `404`, blank = default). It is answered for a request that matches no proxy host, redirection or Advanced Route, on the HTTP **and** HTTPS servers and on the managed wildcard-certificate route, so every kind of unknown host behaves the same. *Custom 404 page HTML* is renamed **Custom fallback page HTML** and is sent with the chosen status (the stored setting is unchanged, so existing pages keep working).
+
+### Notes
+
+- Profiles are managed by administrators; any account that can edit a host can attach one. For a non-admin's host, the normal upstream guard still applies to the resulting route (for example a profile's forward-auth upstream may not point at a blocked address).
+- Not part of this first version: WAF / Coraza (needs a Caddy module that the published image does not include), and setting a profile through the REST API (UI only).
+- New tables `middleware_profiles` and `proxy_host_profiles` (created automatically on SQLite and MariaDB); nothing changes for a host until you attach a profile.
+
+---
+
 ## [2.59.5] - 2026-10-07 - Forward Auth works now: `unknown module: http.handlers.forward_auth` (#124, #125)
 
 Reported by @kernaxis while asking for reusable middleware profiles (#124, duplicated as #125): saving a Proxy Host with a Forward Auth URL failed with `unknown module: http.handlers.forward_auth`.

@@ -1,0 +1,70 @@
+{{define "title"}}Middleware profiles · CaddyUI{{end}}
+{{define "content"}}
+<div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-4 sm:gap-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Middleware profiles</h1>
+    <p class="text-sm text-ink-500 mt-1 max-w-2xl">
+      Reusable bundles of HTTP policy — <strong>security headers</strong>, <strong>forward auth</strong> (for example Authentik or Authelia), <strong>IP restrictions</strong> and <strong>extra headers</strong> — configured once and picked on any number of proxy hosts. Editing a profile re-syncs every server that has a host using it. A value set on a host itself wins; empty host fields inherit the profile.
+    </p>
+  </div>
+  <div class="flex gap-2 w-full sm:w-auto sm:shrink-0">
+    <a href="/middleware-profiles/new" class="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">New profile</a>
+  </div>
+</div>
+
+{{if .Flash}}
+<div data-toast="success" class="mb-6 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl px-4 py-3 text-sm">{{.Flash}}</div>
+{{end}}
+{{if .FlashError}}
+<div data-toast="error" class="mb-6 bg-red-50 border border-red-200 text-red-800 rounded-xl px-4 py-3 text-sm">{{.FlashError}}</div>
+{{end}}
+
+{{if .Rows}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-xs uppercase tracking-wider text-ink-500 border-b border-ink-100">
+        <th class="px-4 py-3 font-medium">Name</th>
+        <th class="px-4 py-3 font-medium">Includes</th>
+        <th class="px-4 py-3 font-medium">Hosts</th>
+        <th class="px-4 py-3 font-medium text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-ink-100">
+      {{range .Rows}}
+      <tr>
+        <td class="px-4 py-3">
+          <div class="font-medium text-ink-900">{{.Name}}</div>
+          {{if .Description}}<div class="text-xs text-ink-500 mt-0.5">{{.Description}}</div>{{end}}
+        </td>
+        <td class="px-4 py-3">
+          <div class="flex flex-wrap gap-1.5">
+            {{if .SecurityHeaders}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">security headers</span>{{end}}
+            {{if .ForwardAuthURL}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">forward auth</span>{{end}}
+            {{if .AccessList}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">allowlist</span>{{end}}
+            {{if .IPBlocklist}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">blocklist</span>{{end}}
+            {{if or .CustomReqHeaders .CustomRespHeaders}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">headers</span>{{end}}
+          </div>
+        </td>
+        <td class="px-4 py-3 text-ink-700">{{.HostCount}}</td>
+        <td class="px-4 py-3">
+          <div class="flex justify-end gap-3">
+            <a href="/middleware-profiles/{{.ID}}/edit" class="text-brand-600 hover:text-brand-800 font-medium">Edit</a>
+            <form method="post" action="/middleware-profiles/{{.ID}}/delete" onsubmit="return confirm('Delete this profile? It can only be deleted when no host uses it.')">
+              <button type="submit" class="text-red-600 hover:text-red-800 font-medium">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<div class="bg-white border border-ink-200 rounded-xl shadow-card p-10 text-center">
+  <div class="text-ink-800 font-medium">No middleware profiles yet</div>
+  <p class="text-sm text-ink-500 mt-1 max-w-xl mx-auto">Create one — for example an <em>Internal SSO</em> profile with security headers and your Authentik forward-auth endpoint — then pick it on each proxy host.</p>
+  <a href="/middleware-profiles/new" class="inline-flex items-center gap-1.5 mt-5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition">New profile</a>
+</div>
+{{end}}
+{{end}}

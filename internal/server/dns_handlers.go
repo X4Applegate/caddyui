@@ -1522,6 +1522,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// v2.12.0: configurable session duration + global catch-all 404
 		"SessionDays":          mustGetSetting(s.DB, settingSessionDays),
 		"CatchAll404HTML":      mustGetSetting(s.DB, settingCatchAll404HTML),
+		"FallbackStatus":       s.fallbackStatusCode(), // v2.60.0 (issue #123)
 		"GlobalMaintenance":    mustGetSetting(s.DB, settingGlobalMaintenance),
 		"AutoSyncHours":        mustGetSetting(s.DB, settingAutoSyncHours),
 		"ActivityLogDays":      mustGetSetting(s.DB, settingActivityLogDays),
@@ -1882,6 +1883,18 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if key := strings.TrimSpace(r.FormValue("crowdsec_api_key")); key != "" {
 			kv[settingCrowdSecAPIKey] = key
+		}
+	}
+	// v2.60.0 (issue #123): fallback status for unmatched requests, 4xx/5xx only.
+	if _, present := r.Form["fallback_status_code"]; present || r.PostForm.Has("fallback_status_code") {
+		raw := strings.TrimSpace(r.FormValue("fallback_status_code"))
+		if raw == "" {
+			kv[settingFallbackStatus] = ""
+		} else if n, ok := parseFallbackStatus(raw); ok {
+			kv[settingFallbackStatus] = strconv.Itoa(n)
+		} else {
+			http.Error(w, "Fallback status code must be a number from 400 to 599", http.StatusBadRequest)
+			return
 		}
 	}
 	if sessionDays := strings.TrimSpace(r.FormValue("session_duration_days")); sessionDays != "" {

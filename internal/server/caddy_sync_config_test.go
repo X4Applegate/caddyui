@@ -281,7 +281,7 @@ func TestManagedCertificateRoutesTriggerAutomaticHTTPS(t *testing.T) {
 		{ID: 1, Source: models.CertSourcePEM, Domains: "*.ignored.example.com"},
 		{ID: 2, Source: models.CertSourceManaged, Domains: "*.example.com, *.sub.example.com"},
 	}
-	routes := buildManagedCertificateRoutes(certs)
+	routes := buildManagedCertificateRoutes(certs, nil)
 	if len(routes) != 1 {
 		t.Fatalf("routes = %d, want 1 managed-certificate route", len(routes))
 	}

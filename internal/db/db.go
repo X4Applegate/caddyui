@@ -154,6 +154,37 @@ CREATE TABLE IF NOT EXISTS fleet_deployments (
     PRIMARY KEY (source_server_id, resource_kind, source_resource_id, target_server_id)
 );
 
+-- v2.60.0 (issue #124): reusable middleware profiles. Global (one controller
+-- database), so a profile attached to hosts on several fleet servers is the same
+-- row everywhere. A host's profile lives in proxy_host_profiles so the many
+-- proxy_hosts queries need no new column.
+CREATE TABLE IF NOT EXISTS middleware_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name VARCHAR(191) NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    security_headers INTEGER NOT NULL DEFAULT 0,
+    x_frame_options TEXT NOT NULL DEFAULT '',
+    referrer_policy TEXT NOT NULL DEFAULT '',
+    permissions_policy TEXT NOT NULL DEFAULT '',
+    csp_header TEXT NOT NULL DEFAULT '',
+    forward_auth_url TEXT NOT NULL DEFAULT '',
+    forward_auth_method TEXT NOT NULL DEFAULT '',
+    forward_auth_copy_headers TEXT NOT NULL DEFAULT '',
+    forward_auth_headers_prefix TEXT NOT NULL DEFAULT '',
+    forward_auth_skip_paths TEXT NOT NULL DEFAULT '',
+    access_list TEXT NOT NULL DEFAULT '',
+    ip_blocklist TEXT NOT NULL DEFAULT '',
+    custom_req_headers TEXT NOT NULL DEFAULT '',
+    custom_resp_headers TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS proxy_host_profiles (
+    proxy_host_id INTEGER PRIMARY KEY,
+    profile_id INTEGER NOT NULL
+);
+
 -- v2.59.0 (issue #120): deletions of paired fleet copies that still have to
 -- finish (the target's Caddy could not be reached yet). One row per source
 -- resource and target; removed as soon as the target's Caddy has converged.

@@ -76,11 +76,17 @@
         placeholder="https://example.com/favicon.ico"
         class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
     </div>
+    <div class="flex items-center gap-3 py-3 border-b border-ink-100">
+      <label class="text-sm text-ink-700 w-32 shrink-0">Fallback status code</label>
+      <input type="number" name="fallback_status_code" min="400" max="599" value="{{.FallbackStatus}}" placeholder="404"
+        class="w-28 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
+      <p class="text-xs text-ink-400">Answered for a request that matches no proxy host, redirection or Advanced route — on HTTP and HTTPS alike (default <code class="bg-ink-100 px-1 rounded">404</code>; any <code class="bg-ink-100 px-1 rounded">400</code>–<code class="bg-ink-100 px-1 rounded">599</code>, e.g. <code class="bg-ink-100 px-1 rounded">403</code>, <code class="bg-ink-100 px-1 rounded">418</code>, <code class="bg-ink-100 px-1 rounded">421</code>). Applied on next sync.</p>
+    </div>
     <div>
-      <label class="block text-xs font-medium text-ink-700 mb-1">Custom 404 page HTML <span class="text-ink-400 font-normal">(optional — shown for requests matching no proxy or redirect)</span></label>
+      <label class="block text-xs font-medium text-ink-700 mb-1">Custom fallback page HTML <span class="text-ink-400 font-normal">(optional — shown with the fallback status for requests matching no proxy, redirect or Advanced route)</span></label>
       <textarea name="catch_all_404_html" rows="4" placeholder="&lt;!DOCTYPE html&gt;&lt;html&gt;…"
         class="w-full font-mono text-xs rounded-lg border border-ink-200 px-3 py-2 bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.CatchAll404HTML}}</textarea>
-      <p class="text-xs text-ink-400 mt-1">Leave blank to use Caddy's default. Applied on next sync.</p>
+      <p class="text-xs text-ink-400 mt-1">Leave blank to use Caddy's default error response (CaddyUI's branded page on HTTPS for 404). Applied on next sync.</p>
     </div>
     {{/* Global maintenance mode */}}
     <div class="pt-4 border-t border-ink-100">

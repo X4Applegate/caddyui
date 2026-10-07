@@ -833,6 +833,12 @@ func (s *Server) Routes() http.Handler {
 			// v2.58.0 (issue #122): Layer4 (TCP/UDP) proxies. Admin-only — a
 			// layer4 listener opens a port on the host and forwards to anything
 			// the host can reach.
+			r.Get("/middleware-profiles", s.listMiddlewareProfiles) // v2.60.0 (issue #124)
+			r.Get("/middleware-profiles/new", s.newMiddlewareProfile)
+			r.Post("/middleware-profiles", s.createMiddlewareProfile)
+			r.Get("/middleware-profiles/{id}/edit", s.editMiddlewareProfile)
+			r.Post("/middleware-profiles/{id}", s.updateMiddlewareProfile)
+			r.Post("/middleware-profiles/{id}/delete", s.deleteMiddlewareProfile)
 			r.Get("/layer4-proxies", s.listLayer4Proxies)
 			r.Get("/layer4-proxies/new", s.newLayer4Proxy)
 			r.Post("/layer4-proxies", s.createLayer4Proxy)
@@ -4196,7 +4202,10 @@ func buildInternalTLSAutomationPolicies(proxies []models.ProxyHost) []map[string
 // These 404 fallbacks are appended after real routes, so an actual proxy or
 // redirect for the same hostname wins while otherwise-unhandled wildcard
 // traffic fails closed.
-func buildManagedCertificateRoutes(certs []models.Certificate) []any {
+func buildManagedCertificateRoutes(certs []models.Certificate, fallbackHandle []any) []any {
+	if len(fallbackHandle) == 0 {
+		fallbackHandle = []any{map[string]any{"handler": "static_response", "status_code": 404}}
+	}
 	var routes []any
 	for _, cert := range certs {
 		if cert.Source != models.CertSourceManaged {
@@ -4216,11 +4225,8 @@ func buildManagedCertificateRoutes(certs []models.Certificate) []any {
 			continue
 		}
 		routes = append(routes, map[string]any{
-			"match": []any{map[string]any{"host": hostValues}},
-			"handle": []any{map[string]any{
-				"handler":     "static_response",
-				"status_code": 404,
-			}},
+			"match":    []any{map[string]any{"host": hostValues}},
+			"handle":   fallbackHandle, // same answer as any other unknown host (issue #123)
 			"terminal": true,
 		})
 	}
@@ -4386,6 +4392,35 @@ const settingSessionDays = "session_duration_days"
 // appended last in the merged Caddy config so it fires only when no
 // proxy/redirect/raw route matched.
 const settingCatchAll404HTML = "catch_all_404_html"
+
+// settingFallbackStatus is the HTTP status answered for a request that matches
+// no proxy host, redirection or Advanced route (v2.60.0, issue #123). Empty =
+// 404. Applies to the HTTP and HTTPS servers alike, and to the managed
+// wildcard-certificate route, so every kind of unknown host behaves the same.
+const settingFallbackStatus = "fallback_status_code"
+
+// defaultFallbackStatus is used when nothing is configured or the stored value
+// is not a usable 4xx/5xx code.
+const defaultFallbackStatus = 404
+
+// parseFallbackStatus accepts an error status in the 4xx/5xx range. ok is false
+// for anything else (including blank, which callers treat as "use the default").
+func parseFallbackStatus(raw string) (code int, ok bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 400 || n > 599 {
+		return 0, false
+	}
+	return n, true
+}
+
+// fallbackStatusCode is the configured fallback status, or 404.
+func (s *Server) fallbackStatusCode() int {
+	raw, _ := models.GetSetting(s.DB, settingFallbackStatus)
+	if n, ok := parseFallbackStatus(raw); ok {
+		return n
+	}
+	return defaultFallbackStatus
+}
 
 // settingGlobalMaintenance puts ALL proxy hosts into maintenance mode when "1".
 // A catch-all 503 route is prepended to the Caddy routes list so every request
@@ -4889,18 +4924,19 @@ func (s *Server) exportActivityCSV(w http.ResponseWriter, r *http.Request) {
 // --- build helpers ---
 
 // fallbackRoute is the route that answers a request no proxy host, redirection
-// or Advanced route matched. v2.59.4 (issue #123): without one Caddy answers an
+// or Advanced route matched. The status is configurable (v2.60.0, issue #123). v2.59.4 (issue #123): without one Caddy answers an
 // unknown hostname with an EMPTY 200 OK, and CaddyUI generated one only when the
 // admin had saved custom 404 HTML, so by default an unknown host got 200 on both
 // listeners. It is now always a real 404 — the admin's HTML when configured,
 // otherwise Caddy's error handler (which renders CaddyUI's branded 404 page on
 // the HTTPS server, where the error routes live).
 func (s *Server) fallbackRoute() map[string]any {
+	status := s.fallbackStatusCode()
 	if html, _ := models.GetSetting(s.DB, settingCatchAll404HTML); strings.TrimSpace(html) != "" {
 		return map[string]any{
 			"handle": []any{map[string]any{
 				"handler":     "static_response",
-				"status_code": 404,
+				"status_code": status,
 				"headers": map[string]any{
 					"Content-Type": []any{"text/html; charset=utf-8"},
 				},
@@ -4910,7 +4946,7 @@ func (s *Server) fallbackRoute() map[string]any {
 		}
 	}
 	return map[string]any{
-		"handle":   []any{map[string]any{"handler": "error", "status_code": 404}},
+		"handle":   []any{map[string]any{"handler": "error", "status_code": status}},
 		"terminal": true,
 	}
 }
