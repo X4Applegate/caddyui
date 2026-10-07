@@ -74,6 +74,8 @@ The container will print a clear error message at startup if the directory isn't
 
 ## 🆕 What's new (v2.53 – v2.57)
 
+- **v2.61.0 — Coraza WAF, and Layer4 on a shared port.** Middleware profiles can switch on the Coraza web application firewall (detect or block, OWASP Core Rule Set) — it needs the new `applegater/caddyui-caddy` image, which now includes the module. A Layer4 proxy can also share port 443/80 (SSH or RDP for one hostname next to normal HTTPS) through a caddy-l4 listener wrapper.
+- **v2.60.0 — middleware profiles** (security headers, forward auth, IP restrictions, extra headers, configured once and picked on many hosts) and a **configurable fallback status** for unmatched requests. **v2.59.x — Forward Auth now works, unknown hosts answer 404, opt-in deletion propagation.**
 - **v2.57.1 — security hardening release.** The live Caddy config, database backup, snapshots and Import from Caddy are admin-only; non-admin routes can no longer read Caddy's environment or files through `{env.…}` / `{file.…}` placeholders; API token scopes are enforced everywhere; the login lockout works. **Upgrade if you run user or viewer accounts.** Bundled Caddy is now 2.11.7. Set `CADDYUI_PUBLIC_URL` if you use password reset or invitations.
 - **v2.57.0 — automatic deployment targets.** Pick the servers a Caddy Fleet entry always feeds, so every proxy host, redirection and advanced route saved on it is deployed to them without re-ticking **Also deploy to**.
 - **v2.56.x — layer4 (TCP/UDP) routing** via `caddy-l4`, and **multi-arch images** (`linux/amd64` + `linux/arm64`) for both `applegater/caddyui` and `applegater/caddyui-caddy`.

@@ -43,6 +43,7 @@
             {{if .ForwardAuthURL}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">forward auth</span>{{end}}
             {{if .AccessList}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">allowlist</span>{{end}}
             {{if .IPBlocklist}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">blocklist</span>{{end}}
+            {{if .WAFMode}}<span class="text-[10px] uppercase tracking-wide rounded {{if eq .WAFMode "block"}}bg-red-50 text-red-700{{else}}bg-amber-50 text-amber-800{{end}} px-1.5 py-0.5">WAF {{.WAFMode}}</span>{{end}}
             {{if or .CustomReqHeaders .CustomRespHeaders}}<span class="text-[10px] uppercase tracking-wide rounded bg-brand-50 text-brand-700 px-1.5 py-0.5">headers</span>{{end}}
           </div>
         </td>

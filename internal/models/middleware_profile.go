@@ -38,11 +38,35 @@ type MiddlewareProfile struct {
 	CustomReqHeaders  string // JSON {"Name":"value"}
 	CustomRespHeaders string // JSON {"Name":"value"}
 
+	// Coraza WAF (v2.61.0). Needs a Caddy built with coraza-caddy
+	// (applegater/caddyui-caddy from v2.61.0).
+	WAFMode       string // "" (off) | "detect" | "block"
+	WAFCRS        bool   // load the OWASP Core Rule Set
+	WAFParanoia   int    // 1-4 (0 is treated as 1)
+	WAFDirectives string // extra SecLang appended after the engine line
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
 	// HostCount is view state filled by ListMiddlewareProfiles.
 	HostCount int
+}
+
+// WAF modes of a middleware profile (v2.61.0).
+const (
+	WAFModeOff    = ""
+	WAFModeDetect = "detect" // Coraza logs what it would block, nothing is blocked
+	WAFModeBlock  = "block"  // Coraza blocks requests that score as attacks
+)
+
+// WAFSettings is a profile's Coraza WAF choice carried to the route builder. It
+// is applied to a COPY of a host at config-build time (never stored on the host
+// row), so detaching the profile removes the WAF again.
+type WAFSettings struct {
+	Mode       string // WAFModeDetect or WAFModeBlock
+	CRS        bool   // load the embedded OWASP Core Rule Set
+	Paranoia   int    // CRS blocking paranoia level 1-4
+	Directives string // extra SecLang appended after the engine line
 }
 
 // ErrProfileInUse is returned by DeleteMiddlewareProfile while hosts use it.
@@ -51,14 +75,16 @@ var ErrProfileInUse = errors.New("middleware profile is still attached to proxy 
 const middlewareProfileCols = `id, name, COALESCE(description,''), COALESCE(security_headers,0), COALESCE(x_frame_options,''), COALESCE(referrer_policy,''),
 	COALESCE(permissions_policy,''), COALESCE(csp_header,''), COALESCE(forward_auth_url,''), COALESCE(forward_auth_method,''),
 	COALESCE(forward_auth_copy_headers,''), COALESCE(forward_auth_headers_prefix,''), COALESCE(forward_auth_skip_paths,''),
-	COALESCE(access_list,''), COALESCE(ip_blocklist,''), COALESCE(custom_req_headers,''), COALESCE(custom_resp_headers,''), created_at, updated_at`
+	COALESCE(access_list,''), COALESCE(ip_blocklist,''), COALESCE(custom_req_headers,''), COALESCE(custom_resp_headers,''), created_at, updated_at,
+	COALESCE(waf_mode,''), COALESCE(waf_crs,0), COALESCE(waf_paranoia,0), COALESCE(waf_directives,'')`
 
 func scanMiddlewareProfile(sc interface{ Scan(...any) error }) (MiddlewareProfile, error) {
 	var p MiddlewareProfile
 	err := sc.Scan(&p.ID, &p.Name, &p.Description, &p.SecurityHeaders, &p.XFrameOptions, &p.ReferrerPolicy,
 		&p.PermissionsPolicy, &p.CSPHeader, &p.ForwardAuthURL, &p.ForwardAuthMethod,
 		&p.ForwardAuthCopyHeaders, &p.ForwardAuthHeadersPrefix, &p.ForwardAuthSkipPaths,
-		&p.AccessList, &p.IPBlocklist, &p.CustomReqHeaders, &p.CustomRespHeaders, &p.CreatedAt, &p.UpdatedAt)
+		&p.AccessList, &p.IPBlocklist, &p.CustomReqHeaders, &p.CustomRespHeaders, &p.CreatedAt, &p.UpdatedAt,
+		&p.WAFMode, &p.WAFCRS, &p.WAFParanoia, &p.WAFDirectives)
 	return p, err
 }
 
@@ -129,11 +155,12 @@ func CreateMiddlewareProfile(db *sql.DB, p *MiddlewareProfile) (int64, error) {
 	res, err := db.Exec(`INSERT INTO middleware_profiles
 		(name, description, security_headers, x_frame_options, referrer_policy, permissions_policy, csp_header,
 		 forward_auth_url, forward_auth_method, forward_auth_copy_headers, forward_auth_headers_prefix, forward_auth_skip_paths,
-		 access_list, ip_blocklist, custom_req_headers, custom_resp_headers)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 access_list, ip_blocklist, custom_req_headers, custom_resp_headers, waf_mode, waf_crs, waf_paranoia, waf_directives)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		strings.TrimSpace(p.Name), p.Description, p.SecurityHeaders, p.XFrameOptions, p.ReferrerPolicy, p.PermissionsPolicy, p.CSPHeader,
 		p.ForwardAuthURL, p.ForwardAuthMethod, p.ForwardAuthCopyHeaders, p.ForwardAuthHeadersPrefix, p.ForwardAuthSkipPaths,
-		p.AccessList, p.IPBlocklist, p.CustomReqHeaders, p.CustomRespHeaders)
+		p.AccessList, p.IPBlocklist, p.CustomReqHeaders, p.CustomRespHeaders,
+		p.WAFMode, p.WAFCRS, p.WAFParanoia, p.WAFDirectives)
 	if err != nil {
 		return 0, err
 	}
@@ -144,11 +171,11 @@ func UpdateMiddlewareProfile(db *sql.DB, p *MiddlewareProfile) error {
 	_, err := db.Exec(`UPDATE middleware_profiles SET name=?, description=?, security_headers=?, x_frame_options=?, referrer_policy=?,
 		permissions_policy=?, csp_header=?, forward_auth_url=?, forward_auth_method=?, forward_auth_copy_headers=?,
 		forward_auth_headers_prefix=?, forward_auth_skip_paths=?, access_list=?, ip_blocklist=?, custom_req_headers=?,
-		custom_resp_headers=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		custom_resp_headers=?, waf_mode=?, waf_crs=?, waf_paranoia=?, waf_directives=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		strings.TrimSpace(p.Name), p.Description, p.SecurityHeaders, p.XFrameOptions, p.ReferrerPolicy,
 		p.PermissionsPolicy, p.CSPHeader, p.ForwardAuthURL, p.ForwardAuthMethod, p.ForwardAuthCopyHeaders,
 		p.ForwardAuthHeadersPrefix, p.ForwardAuthSkipPaths, p.AccessList, p.IPBlocklist, p.CustomReqHeaders,
-		p.CustomRespHeaders, p.ID)
+		p.CustomRespHeaders, p.WAFMode, p.WAFCRS, p.WAFParanoia, p.WAFDirectives, p.ID)
 	return err
 }
 

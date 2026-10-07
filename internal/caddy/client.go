@@ -195,9 +195,15 @@ func (c *Client) GetUpstreamHealth(ctx context.Context) ([]UpstreamStatus, error
 	return result, nil
 }
 
-// Validate POSTs the given config to /load?validate_only=true. Caddy runs the full
-// provisioning pipeline but does NOT apply the config. Returns nil if valid,
-// or an error with Caddy's diagnostic message if not.
+// Validate POSTs the given config to /load?validate_only=true and returns nil if
+// Caddy accepts it, or an error with Caddy's diagnostic message if not.
+//
+// CAUTION: Caddy does not implement validate_only — it is ignored, so a config
+// Caddy ACCEPTS is also APPLIED (confirmed on Caddy 2.11.7; apiValidateRawRoute
+// documents the same finding). A rejected config changes nothing. Callers that
+// build the config from the database plus one pending change therefore apply that
+// change early; never send a partial or throwaway config here, and use /adapt
+// when you only need to ask whether a module exists (see HasWAFModule).
 func (c *Client) Validate(cfg map[string]any) error {
 	return c.send(http.MethodPost, "/load?validate_only=true", cfg)
 }
@@ -1150,6 +1156,11 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 	}
 
 	handlers := []any{}
+	// v2.61.0: Coraza WAF from the host's middleware profile. First in the chain,
+	// so an attack is refused before authentication, rewrites or the upstream.
+	if p.WAF != nil && (p.WAF.Mode == models.WAFModeBlock || p.WAF.Mode == models.WAFModeDetect) {
+		handlers = append(handlers, BuildWAFHandler(p.WAF))
+	}
 	// v2.9.34: www redirect — inject a subroute that redirects between the
 	// www and bare forms of each domain before any other handler fires.
 	if p.WWWRedirect != "" {
@@ -4570,4 +4581,58 @@ func buildForwardAuthHandler(p models.ProxyHost) map[string]any {
 		handler["transport"] = map[string]any{"protocol": "http", "tls": map[string]any{}}
 	}
 	return handler
+}
+
+// BuildWAFDirectives renders the SecLang for a profile's WAF choice: Coraza's
+// recommended base, optionally the OWASP Core Rule Set at the chosen paranoia
+// level, the engine mode, then the operator's own directives — last, so they can
+// tune or override what came before (SecRuleRemoveById and the like).
+func BuildWAFDirectives(w *models.WAFSettings) string {
+	var b strings.Builder
+	b.WriteString("Include @coraza.conf-recommended\n")
+	if w.CRS {
+		b.WriteString("Include @crs-setup.conf.example\n")
+		if w.Paranoia > 1 {
+			fmt.Fprintf(&b, "SecAction \"id:900000,phase:1,pass,t:none,nolog,setvar:tx.blocking_paranoia_level=%d\"\n", w.Paranoia)
+		}
+		b.WriteString("Include @owasp_crs/*.conf\n")
+	}
+	if w.Mode == models.WAFModeBlock {
+		b.WriteString("SecRuleEngine On\n")
+	} else {
+		b.WriteString("SecRuleEngine DetectionOnly\n")
+	}
+	if extra := strings.TrimSpace(w.Directives); extra != "" {
+		b.WriteString(extra)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// BuildWAFHandler is the coraza-caddy handler (module http.handlers.waf).
+func BuildWAFHandler(w *models.WAFSettings) map[string]any {
+	return map[string]any{
+		"handler":        "waf",
+		"load_owasp_crs": w.CRS,
+		"directives":     BuildWAFDirectives(w),
+	}
+}
+
+// wafProbeCaddyfile adapts only when the Coraza module is compiled in.
+const wafProbeCaddyfile = "{\n\torder coraza_waf first\n}\n:65530 {\n\tcoraza_waf {\n\t\tdirectives `SecRuleEngine Off`\n\t}\n}\n"
+
+// HasWAFModule reports whether this Caddy has the Coraza WAF module. It uses
+// /adapt, which never applies anything (a /load probe would reconfigure the live
+// server — Caddy ignores validate_only). known is false when Caddy could not be
+// asked, in which case callers should not block on it.
+func (c *Client) HasWAFModule() (present, known bool) {
+	_, err := c.Adapt(wafProbeCaddyfile)
+	if err == nil {
+		return true, true
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "not a registered directive") || strings.Contains(msg, "unrecognized directive") || strings.Contains(msg, "unrecognized global option") {
+		return false, true
+	}
+	return false, false
 }

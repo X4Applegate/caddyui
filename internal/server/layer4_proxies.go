@@ -30,7 +30,7 @@ const layer4ServerPrefix = "caddyui_l4_"
 func buildManagedLayer4Servers(proxies []models.Layer4Proxy) map[string]any {
 	out := map[string]any{}
 	for _, p := range proxies {
-		if !p.Enabled {
+		if !p.Enabled || p.IsShared() { // shared proxies ride an HTTP server's listener wrapper
 			continue
 		}
 		listen := p.Protocol + "/" + p.ListenDisplay()
@@ -114,14 +114,21 @@ func validateLayer4Proxy(p *models.Layer4Proxy) string {
 	p.Protocol = models.NormalizeLayer4Protocol(p.Protocol)
 	p.ListenAddr = strings.Trim(strings.TrimSpace(p.ListenAddr), "[]")
 	p.UpstreamHost = strings.Trim(strings.TrimSpace(p.UpstreamHost), "[]")
-	if p.ListenAddr != "" && net.ParseIP(p.ListenAddr) == nil {
-		return "Listen address must be empty (all interfaces) or an IP address."
-	}
-	if p.ListenPort < 1 || p.ListenPort > 65535 {
-		return "Listen port must be between 1 and 65535."
-	}
-	if why, bad := reservedLayer4Ports[p.ListenPort]; bad {
-		return fmt.Sprintf("Port %d is used by %s — pick another listen port.", p.ListenPort, why)
+	if p.Mode == models.Layer4ModeShared {
+		if msg := validateLayer4Shared(p); msg != "" {
+			return msg
+		}
+	} else {
+		p.Mode, p.WrapServer, p.MatchKind, p.MatchHosts, p.TerminateTLS = "", "", "", "", false
+		if p.ListenAddr != "" && net.ParseIP(p.ListenAddr) == nil {
+			return "Listen address must be empty (all interfaces) or an IP address."
+		}
+		if p.ListenPort < 1 || p.ListenPort > 65535 {
+			return "Listen port must be between 1 and 65535."
+		}
+		if why, bad := reservedLayer4Ports[p.ListenPort]; bad {
+			return fmt.Sprintf("Port %d is used by %s — pick another listen port, or switch to sharing that port below.", p.ListenPort, why)
+		}
 	}
 	if p.UpstreamHost == "" {
 		return "Upstream host is required."
@@ -151,6 +158,12 @@ func parseLayer4Form(r *http.Request) *models.Layer4Proxy {
 		Enabled:      r.FormValue("enabled") == "on",
 		NodeLocal:    r.FormValue("node_local") == "on",
 		Notes:        strings.TrimSpace(r.FormValue("notes")),
+		// v2.61.0 (issue #126): shared-port mode.
+		Mode:         strings.TrimSpace(r.FormValue("mode")),
+		WrapServer:   strings.TrimSpace(r.FormValue("wrap_server")),
+		MatchKind:    strings.TrimSpace(r.FormValue("match_kind")),
+		MatchHosts:   strings.TrimSpace(r.FormValue("match_hosts")),
+		TerminateTLS: r.FormValue("terminate_tls") == "on",
 	}
 }
 
@@ -188,6 +201,7 @@ func (s *Server) previewLayer4Validate(serverID int64, p *models.Layer4Proxy) st
 		return ""
 	}
 	applyLayer4App(proposed, app)
+	s.applyLayer4ListenerWrappers(proposed, serverID, proxies) // v2.61.0 (issue #126)
 	if err := cl.Validate(proposed); err != nil {
 		return "Caddy rejected this layer4 proxy: " + err.Error() + " (Layer4 needs a Caddy build with the caddy-l4 module, such as applegater/caddyui-caddy.)"
 	}

@@ -56,6 +56,13 @@ func applyProfileToHost(p *models.ProxyHost, prof *models.MiddlewareProfile) {
 		p.ForwardAuthHeadersPrefix = prof.ForwardAuthHeadersPrefix
 		p.ForwardAuthSkipPaths = prof.ForwardAuthSkipPaths
 	}
+	if prof.WAFMode == models.WAFModeDetect || prof.WAFMode == models.WAFModeBlock {
+		paranoia := prof.WAFParanoia
+		if paranoia < 1 {
+			paranoia = 1
+		}
+		p.WAF = &models.WAFSettings{Mode: prof.WAFMode, CRS: prof.WAFCRS, Paranoia: paranoia, Directives: prof.WAFDirectives}
+	}
 	p.CustomReqHeaders = mergeHeaderJSON(prof.CustomReqHeaders, p.CustomReqHeaders)
 	p.CustomRespHeaders = mergeHeaderJSON(prof.CustomRespHeaders, p.CustomRespHeaders)
 }
@@ -159,6 +166,19 @@ func validateMiddlewareProfile(p *models.MiddlewareProfile) string {
 	if bad := validCIDRList(p.IPBlocklist); bad != "" {
 		return fmt.Sprintf("Blocklist entry %q is not an IP address or CIDR range.", bad)
 	}
+	switch p.WAFMode {
+	case models.WAFModeOff, models.WAFModeDetect, models.WAFModeBlock:
+	default:
+		return "WAF mode must be Off, Detection only or Block."
+	}
+	if p.WAFMode != models.WAFModeOff {
+		if p.WAFParanoia < 1 || p.WAFParanoia > 4 {
+			return "WAF paranoia level must be between 1 and 4."
+		}
+	}
+	if len(p.WAFDirectives) > 8192 || strings.ContainsRune(p.WAFDirectives, 0) {
+		return "Custom WAF directives must be plain text up to 8 KB."
+	}
 	for label, raw := range map[string]string{"Request headers": p.CustomReqHeaders, "Response headers": p.CustomRespHeaders} {
 		if strings.TrimSpace(raw) == "" {
 			continue
@@ -192,6 +212,11 @@ func parseMiddlewareProfileForm(r *http.Request) *models.MiddlewareProfile {
 		ForwardAuthSkipPaths: t("forward_auth_skip_paths"),
 		AccessList:           t("access_list"), IPBlocklist: t("ip_blocklist"),
 		CustomReqHeaders: t("custom_req_headers"), CustomRespHeaders: t("custom_resp_headers"),
+		WAFMode: t("waf_mode"), WAFCRS: r.FormValue("waf_crs") == "on", WAFDirectives: strings.TrimSpace(r.FormValue("waf_directives")),
+	}
+	p.WAFParanoia, _ = strconv.Atoi(t("waf_paranoia"))
+	if p.WAFMode == models.WAFModeOff {
+		p.WAFCRS, p.WAFParanoia, p.WAFDirectives = false, 0, ""
 	}
 	if p.ForwardAuthMethod == "GET" {
 		p.ForwardAuthMethod = ""
@@ -220,7 +245,7 @@ func (s *Server) renderMiddlewareProfileForm(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) newMiddlewareProfile(w http.ResponseWriter, r *http.Request) {
-	s.renderMiddlewareProfileForm(w, r, &models.MiddlewareProfile{SecurityHeaders: true}, "")
+	s.renderMiddlewareProfileForm(w, r, &models.MiddlewareProfile{SecurityHeaders: true, WAFCRS: true, WAFParanoia: 1}, "")
 }
 
 func (s *Server) middlewareProfileFromURL(w http.ResponseWriter, r *http.Request) *models.MiddlewareProfile {
@@ -256,6 +281,12 @@ func (s *Server) createMiddlewareProfile(w http.ResponseWriter, r *http.Request)
 		s.renderMiddlewareProfileForm(w, r, p, fmt.Sprintf("A profile named %q already exists.", p.Name))
 		return
 	}
+	if p.WAFMode != models.WAFModeOff {
+		if msg := s.wafPreflight([]int64{s.currentServerID(r)}); msg != "" {
+			s.renderMiddlewareProfileForm(w, r, p, msg)
+			return
+		}
+	}
 	id, err := models.CreateMiddlewareProfile(s.DB, p)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -282,6 +313,13 @@ func (s *Server) updateMiddlewareProfile(w http.ResponseWriter, r *http.Request)
 	} else if taken {
 		s.renderMiddlewareProfileForm(w, r, p, fmt.Sprintf("Another profile is already named %q.", p.Name))
 		return
+	}
+	if p.WAFMode != models.WAFModeOff {
+		servers, _ := models.ServersUsingProfile(s.DB, p.ID)
+		if msg := s.wafPreflight(append(servers, s.currentServerID(r))); msg != "" {
+			s.renderMiddlewareProfileForm(w, r, p, msg)
+			return
+		}
 	}
 	if err := models.UpdateMiddlewareProfile(s.DB, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -348,4 +386,44 @@ func (s *Server) withProfileViewData(data map[string]any, selected int64) map[st
 	data["Profiles"] = profiles
 	data["SelectedProfileID"] = selected
 	return data
+}
+
+// wafPreflight refuses a WAF that a Caddy cannot run. Without it the whole
+// config for that server would be rejected ("unknown module: http.handlers.waf")
+// and no host on it could be synced until the image is updated. servers whose
+// Caddy cannot be asked are not blocked on.
+func (s *Server) wafPreflight(serverIDs []int64) string {
+	var missing []string
+	seen := map[int64]bool{}
+	for _, id := range serverIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		srv, err := models.GetCaddyServer(s.DB, id)
+		if err != nil || srv == nil || srv.Type == models.CaddyServerTypeExternal {
+			continue
+		}
+		if present, known := s.caddyForServer(id).HasWAFModule(); known && !present {
+			missing = append(missing, srv.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "The Caddy on " + strings.Join(missing, ", ") + " has no Coraza WAF module (http.handlers.waf). Update it to an image that includes it — applegater/caddyui-caddy v2.61.0 or newer — before turning the WAF on."
+}
+
+// profileWAFOn reports whether the profile with this ID has a WAF enabled.
+func (s *Server) profileWAFOn(profileID int64) bool {
+	prof, _ := models.GetMiddlewareProfile(s.DB, profileID)
+	return prof != nil && (prof.WAFMode == models.WAFModeDetect || prof.WAFMode == models.WAFModeBlock)
+}
+
+// friendlyCaddyError adds the fix to the one Caddy rejection people will meet.
+func friendlyCaddyError(msg string) string {
+	if strings.Contains(msg, "unknown module: http.handlers.waf") {
+		return msg + " — this Caddy has no Coraza WAF module; update to applegater/caddyui-caddy v2.61.0 or newer, or detach the WAF middleware profile from the hosts on this server."
+	}
+	return msg
 }

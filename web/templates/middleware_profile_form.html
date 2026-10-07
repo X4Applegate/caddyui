@@ -90,6 +90,34 @@
     </div>
   </fieldset>
 
+  <fieldset class="space-y-3 border-t border-ink-100 pt-5">
+    <legend class="text-sm font-semibold text-ink-900">Web application firewall <span class="text-ink-400 font-normal text-xs">(Coraza)</span></legend>
+    <p class="text-xs text-ink-500 max-w-2xl">Inspects requests with <a href="https://coraza.io" class="text-brand-600 hover:text-brand-700" target="_blank" rel="noopener">Coraza</a> and the OWASP Core Rule Set (SQL injection, XSS, path traversal, scanners…) before they reach the upstream. <strong>Start with Detection only</strong>: it logs what it <em>would</em> block (visible under Server Logs) without blocking anything, so you can see false positives before switching to Block. Needs a Caddy built with the Coraza module — <span class="font-mono">applegater/caddyui-caddy</span> v2.61.0 or newer; CaddyUI checks this before saving.</p>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div><label class="block text-xs text-ink-600 mb-1">Mode</label>
+        <select name="waf_mode" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+          <option value="" {{if eq .Row.WAFMode ""}}selected{{end}}>Off</option>
+          <option value="detect" {{if eq .Row.WAFMode "detect"}}selected{{end}}>Detection only (log, never block)</option>
+          <option value="block" {{if eq .Row.WAFMode "block"}}selected{{end}}>Block (answer 403)</option>
+        </select></div>
+      <div><label class="block text-xs text-ink-600 mb-1">Paranoia level <span class="text-ink-400">(higher = stricter, more false positives)</span></label>
+        <select name="waf_paranoia" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+          <option value="1" {{if or (eq .Row.WAFParanoia 1) (eq .Row.WAFParanoia 0)}}selected{{end}}>1 (recommended)</option>
+          <option value="2" {{if eq .Row.WAFParanoia 2}}selected{{end}}>2</option>
+          <option value="3" {{if eq .Row.WAFParanoia 3}}selected{{end}}>3</option>
+          <option value="4" {{if eq .Row.WAFParanoia 4}}selected{{end}}>4 (strictest)</option>
+        </select></div>
+    </div>
+    <label class="flex items-start gap-2.5 cursor-pointer text-sm text-ink-700">
+      <input type="checkbox" name="waf_crs" {{if .Row.WAFCRS}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span>Load the OWASP Core Rule Set <span class="block text-xs text-ink-500">Recommended. Without it only Coraza's base configuration and your own directives apply.</span></span>
+    </label>
+    <div>
+      <label class="block text-xs text-ink-600 mb-1">Custom directives <span class="text-ink-400">(optional SecLang, applied last — for example <span class="font-mono">SecRuleRemoveById 942100</span> to silence one rule)</span></label>
+      <textarea name="waf_directives" rows="4" placeholder="SecRuleRemoveById 942100" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-xs font-mono bg-white focus:border-brand-500 focus:outline-none">{{.Row.WAFDirectives}}</textarea>
+    </div>
+  </fieldset>
+
   <div class="flex items-center gap-3 pt-2 border-t border-ink-100">
     <button type="submit" class="bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-5 py-2 rounded-lg shadow-sm transition mt-4">{{if .Row.ID}}Save changes{{else}}Create profile{{end}}</button>
     <a href="/middleware-profiles" class="text-sm text-ink-600 hover:text-ink-900 mt-4">Cancel</a>

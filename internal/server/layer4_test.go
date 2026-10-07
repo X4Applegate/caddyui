@@ -233,6 +233,7 @@ type layer4FakeAdmin struct {
 	putCalls       int
 	deleteCalls    int
 	writes         []string // every non-GET request: "METHOD /path body" (v2.59.3)
+	wrappersBody   string   // GET .../listener_wrappers response; "" = null (v2.61.0)
 	fetchLayer4Hit int
 }
 
@@ -259,6 +260,13 @@ func newLayer4FakeAdmin(t *testing.T, baseConfig string) (*httptest.Server, *lay
 			f.loadCalls++
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "{}")
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/listener_wrappers"):
+			w.Header().Set("Content-Type", "application/json")
+			if f.wrappersBody == "" {
+				_, _ = io.WriteString(w, "null")
+			} else {
+				_, _ = io.WriteString(w, f.wrappersBody)
+			}
 		case r.Method == http.MethodGet && r.URL.Path == "/config/apps/layer4":
 			f.fetchLayer4Hit++
 			w.Header().Set("Content-Type", "application/json")

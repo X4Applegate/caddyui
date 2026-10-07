@@ -26,21 +26,113 @@ type Layer4Proxy struct {
 	Notes        string
 	CreatedAt    sql.NullTime
 	UpdatedAt    sql.NullTime
+
+	// Shared-port mode (v2.61.0, issue #126). Instead of its own listener, the
+	// proxy becomes a route of a caddy-l4 LISTENER WRAPPER on one of CaddyUI's
+	// HTTP servers, so it can share a port that is already bound — for example
+	// SSH for ssh.example.com on :443 next to normal HTTPS. Mode "" (or
+	// "listener") keeps the dedicated-listener behaviour of v2.58.0.
+	Mode         string // "" | "listener" | "shared"
+	WrapServer   string // shared only: "https" (srv0, :443) or "http" (:80)
+	MatchKind    string // shared only: tls_sni | http_host | ssh | rdp | postgres
+	MatchHosts   string // shared only: comma-separated hostnames for tls_sni / http_host
+	TerminateTLS bool   // shared tls_sni only: Caddy terminates TLS, the upstream gets plain TCP
 }
 
 const (
 	Layer4ProtocolTCP = "tcp"
 	Layer4ProtocolUDP = "udp"
+
+	Layer4ModeListener = "listener"
+	Layer4ModeShared   = "shared"
+
+	Layer4WrapHTTPS = "https"
+	Layer4WrapHTTP  = "http"
+
+	Layer4MatchTLSSNI   = "tls_sni"
+	Layer4MatchHTTPHost = "http_host"
+	Layer4MatchSSH      = "ssh"
+	Layer4MatchRDP      = "rdp"
+	Layer4MatchPostgres = "postgres"
 )
 
-const layer4Cols = `id, server_id, name, protocol, listen_addr, listen_port, upstream_host, upstream_port, enabled, node_local, notes, created_at, updated_at`
+// IsShared reports whether the proxy shares an HTTP server's listener.
+func (p Layer4Proxy) IsShared() bool { return p.Mode == Layer4ModeShared }
+
+// MatchHostList returns MatchHosts as a clean, lower-cased list.
+func (p Layer4Proxy) MatchHostList() []string {
+	var out []string
+	for _, h := range strings.FieldsFunc(p.MatchHosts, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' || r == '\r' }) {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// WrapPort is the port a shared proxy rides on.
+func (p Layer4Proxy) WrapPort() int {
+	if p.WrapServer == Layer4WrapHTTP {
+		return 80
+	}
+	return 443
+}
+
+// MatchDisplay describes what a shared proxy matches, for lists and logs.
+func (p Layer4Proxy) MatchDisplay() string {
+	switch p.MatchKind {
+	case Layer4MatchTLSSNI:
+		return "TLS SNI " + strings.Join(p.MatchHostList(), ", ")
+	case Layer4MatchHTTPHost:
+		return "HTTP host " + strings.Join(p.MatchHostList(), ", ")
+	case Layer4MatchSSH:
+		return "SSH"
+	case Layer4MatchRDP:
+		return "RDP"
+	case Layer4MatchPostgres:
+		return "PostgreSQL"
+	}
+	return p.MatchKind
+}
+
+// ConflictsWith reports whether two proxies on one server would fight over the
+// same traffic: the same socket for dedicated listeners; for shared proxies the
+// same wrapped server and protocol matcher (and, for host matchers, a common
+// hostname).
+func (p Layer4Proxy) ConflictsWith(o Layer4Proxy) bool {
+	if p.IsShared() != o.IsShared() {
+		return false
+	}
+	if !p.IsShared() {
+		return p.ListenKey() == o.ListenKey()
+	}
+	if p.WrapServer != o.WrapServer || p.MatchKind != o.MatchKind {
+		return false
+	}
+	if p.MatchKind != Layer4MatchTLSSNI && p.MatchKind != Layer4MatchHTTPHost {
+		return true
+	}
+	seen := map[string]bool{}
+	for _, h := range p.MatchHostList() {
+		seen[h] = true
+	}
+	for _, h := range o.MatchHostList() {
+		if seen[h] {
+			return true
+		}
+	}
+	return false
+}
+
+const layer4Cols = `id, server_id, name, protocol, listen_addr, listen_port, upstream_host, upstream_port, enabled, node_local, notes, created_at, updated_at, COALESCE(mode,''), COALESCE(wrap_server,''), COALESCE(match_kind,''), COALESCE(match_hosts,''), COALESCE(terminate_tls,0)`
 
 func scanLayer4Proxy(row interface{ Scan(dest ...any) error }) (Layer4Proxy, error) {
 	var p Layer4Proxy
-	var enabled, nodeLocal int
+	var enabled, nodeLocal, terminate int
 	err := row.Scan(&p.ID, &p.ServerID, &p.Name, &p.Protocol, &p.ListenAddr, &p.ListenPort,
-		&p.UpstreamHost, &p.UpstreamPort, &enabled, &nodeLocal, &p.Notes, &p.CreatedAt, &p.UpdatedAt)
-	p.Enabled, p.NodeLocal = enabled != 0, nodeLocal != 0
+		&p.UpstreamHost, &p.UpstreamPort, &enabled, &nodeLocal, &p.Notes, &p.CreatedAt, &p.UpdatedAt,
+		&p.Mode, &p.WrapServer, &p.MatchKind, &p.MatchHosts, &terminate)
+	p.Enabled, p.NodeLocal, p.TerminateTLS = enabled != 0, nodeLocal != 0, terminate != 0
 	return p, err
 }
 
@@ -54,7 +146,12 @@ func NormalizeLayer4Protocol(v string) string {
 
 // ListenDisplay is the listen side as an operator reads it: ":5432",
 // "127.0.0.1:5432", "[::1]:5432".
-func (p Layer4Proxy) ListenDisplay() string { return joinHostPort(p.ListenAddr, p.ListenPort) }
+func (p Layer4Proxy) ListenDisplay() string {
+	if p.IsShared() {
+		return fmt.Sprintf(":%d (shared)", p.WrapPort())
+	}
+	return joinHostPort(p.ListenAddr, p.ListenPort)
+}
 
 // UpstreamDisplay is the upstream side as host:port.
 func (p Layer4Proxy) UpstreamDisplay() string { return joinHostPort(p.UpstreamHost, p.UpstreamPort) }
@@ -62,6 +159,9 @@ func (p Layer4Proxy) UpstreamDisplay() string { return joinHostPort(p.UpstreamHo
 // ListenKey identifies the socket this proxy occupies on its server: two proxies
 // of the same protocol on the same address and port cannot coexist.
 func (p Layer4Proxy) ListenKey() string {
+	if p.IsShared() {
+		return fmt.Sprintf("shared/%s/%s/%s", p.WrapServer, p.MatchKind, strings.Join(p.MatchHostList(), ","))
+	}
 	return fmt.Sprintf("%s/%s", p.Protocol, p.ListenDisplay())
 }
 
@@ -105,10 +205,12 @@ func b2i(b bool) int {
 }
 
 func CreateLayer4Proxy(db *sql.DB, serverID int64, p *Layer4Proxy) (int64, error) {
-	res, err := db.Exec(`INSERT INTO layer4_proxies (server_id, name, protocol, listen_addr, listen_port, upstream_host, upstream_port, enabled, node_local, notes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	res, err := db.Exec(`INSERT INTO layer4_proxies (server_id, name, protocol, listen_addr, listen_port, upstream_host, upstream_port, enabled, node_local, notes,
+		mode, wrap_server, match_kind, match_hosts, terminate_tls)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serverID, strings.TrimSpace(p.Name), NormalizeLayer4Protocol(p.Protocol), strings.TrimSpace(p.ListenAddr), p.ListenPort,
-		strings.TrimSpace(p.UpstreamHost), p.UpstreamPort, b2i(p.Enabled), b2i(p.NodeLocal), p.Notes)
+		strings.TrimSpace(p.UpstreamHost), p.UpstreamPort, b2i(p.Enabled), b2i(p.NodeLocal), p.Notes,
+		p.Mode, p.WrapServer, p.MatchKind, p.MatchHosts, b2i(p.TerminateTLS))
 	if err != nil {
 		return 0, err
 	}
@@ -117,9 +219,10 @@ func CreateLayer4Proxy(db *sql.DB, serverID int64, p *Layer4Proxy) (int64, error
 
 func UpdateLayer4Proxy(db *sql.DB, p *Layer4Proxy) error {
 	_, err := db.Exec(`UPDATE layer4_proxies SET name=?, protocol=?, listen_addr=?, listen_port=?, upstream_host=?, upstream_port=?,
-		enabled=?, node_local=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		enabled=?, node_local=?, notes=?, mode=?, wrap_server=?, match_kind=?, match_hosts=?, terminate_tls=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		strings.TrimSpace(p.Name), NormalizeLayer4Protocol(p.Protocol), strings.TrimSpace(p.ListenAddr), p.ListenPort,
-		strings.TrimSpace(p.UpstreamHost), p.UpstreamPort, b2i(p.Enabled), b2i(p.NodeLocal), p.Notes, p.ID)
+		strings.TrimSpace(p.UpstreamHost), p.UpstreamPort, b2i(p.Enabled), b2i(p.NodeLocal), p.Notes,
+		p.Mode, p.WrapServer, p.MatchKind, p.MatchHosts, b2i(p.TerminateTLS), p.ID)
 	return err
 }
 
@@ -148,7 +251,7 @@ func Layer4ListenConflict(db *sql.DB, serverID int64, p Layer4Proxy) (*Layer4Pro
 		return nil, err
 	}
 	for i := range rows {
-		if rows[i].ID != p.ID && rows[i].ListenKey() == p.ListenKey() {
+		if rows[i].ID != p.ID && p.ConflictsWith(rows[i]) {
 			return &rows[i], nil
 		}
 	}

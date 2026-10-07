@@ -44,7 +44,7 @@
           {{if .Notes}}<div class="text-xs text-ink-500 mt-0.5">{{.Notes}}</div>{{end}}
         </td>
         <td class="px-4 py-3"><span class="font-mono text-xs uppercase">{{.Protocol}}</span></td>
-        <td class="px-4 py-3 font-mono text-xs">{{.ListenDisplay}}</td>
+        <td class="px-4 py-3 font-mono text-xs">{{.ListenDisplay}}{{if .IsShared}}<div class="font-sans text-[11px] text-ink-500 mt-0.5">{{.MatchDisplay}}{{if .TerminateTLS}} · TLS terminated{{end}}</div>{{end}}</td>
         <td class="px-4 py-3 font-mono text-xs">{{.UpstreamDisplay}}</td>
         <td class="px-4 py-3">
           <form method="post" action="/layer4-proxies/{{.ID}}/toggle">

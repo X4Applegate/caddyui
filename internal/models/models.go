@@ -47,6 +47,10 @@ func (u *User) IsViewer() bool { return u != nil && u.Role == RoleView }
 func (u *User) CanWrite() bool { return u != nil && u.Role != RoleView }
 
 type ProxyHost struct {
+	// WAF (v2.61.0) is set ONLY on the per-sync copy of a host that has a
+	// middleware profile with a Coraza WAF; it is never read from or written to
+	// the database.
+	WAF                 *WAFSettings
 	ID                  int64
 	ServerID            int64 // v2.4.0: which caddy_servers row this host belongs to (for per-server public-IP lookup)
 	Domains             string

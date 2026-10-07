@@ -1905,6 +1905,12 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
+	if pid := s.hostProfileFromForm(r); pid != 0 && s.profileWAFOn(pid) { // v2.61.0: WAF needs the Coraza module
+		if errMsg := s.wafPreflight([]int64{s.currentServerID(r)}); errMsg != "" {
+			s.renderProxyHostFormError(w, r, p, errMsg)
+			return
+		}
+	}
 	if errMsg := s.validateProxyAdvanced(s.caddyForRequest(r), p); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
@@ -2086,6 +2092,12 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	if errMsg := validateForwardAuthURL(p.ForwardAuthURL); errMsg != "" { // v2.59.5 (issues #124/#125)
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
+	}
+	if pid := s.hostProfileFromForm(r); pid != 0 && s.profileWAFOn(pid) { // v2.61.0: WAF needs the Coraza module
+		if errMsg := s.wafPreflight([]int64{s.currentServerID(r)}); errMsg != "" {
+			s.renderProxyHostFormError(w, r, p, errMsg)
+			return
+		}
 	}
 	if errMsg := s.validateProxyAdvanced(s.caddyForRequest(r), p); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)

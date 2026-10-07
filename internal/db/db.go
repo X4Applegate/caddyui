@@ -2445,6 +2445,32 @@ func migrate(db *sql.DB) error {
 		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN propagate_deletions INTEGER NOT NULL DEFAULT 0`)
 	}
 
+	// v2.61.0 (issue #126): a Layer4 proxy can share an HTTP server's listener
+	// through a caddy-l4 listener wrapper instead of binding its own port.
+	for _, col := range []struct{ name, ddl string }{
+		{"mode", `ALTER TABLE layer4_proxies ADD COLUMN mode TEXT NOT NULL DEFAULT ''`},
+		{"wrap_server", `ALTER TABLE layer4_proxies ADD COLUMN wrap_server TEXT NOT NULL DEFAULT ''`},
+		{"match_kind", `ALTER TABLE layer4_proxies ADD COLUMN match_kind TEXT NOT NULL DEFAULT ''`},
+		{"match_hosts", `ALTER TABLE layer4_proxies ADD COLUMN match_hosts TEXT NOT NULL DEFAULT ''`},
+		{"terminate_tls", `ALTER TABLE layer4_proxies ADD COLUMN terminate_tls INTEGER NOT NULL DEFAULT 0`},
+	} {
+		if !columnExists2(db, "layer4_proxies", col.name) {
+			migrationStep(db, col.ddl)
+		}
+	}
+
+	// v2.61.0: Coraza WAF choice on middleware profiles.
+	for _, col := range []struct{ name, ddl string }{
+		{"waf_mode", `ALTER TABLE middleware_profiles ADD COLUMN waf_mode TEXT NOT NULL DEFAULT ''`},
+		{"waf_crs", `ALTER TABLE middleware_profiles ADD COLUMN waf_crs INTEGER NOT NULL DEFAULT 0`},
+		{"waf_paranoia", `ALTER TABLE middleware_profiles ADD COLUMN waf_paranoia INTEGER NOT NULL DEFAULT 0`},
+		{"waf_directives", `ALTER TABLE middleware_profiles ADD COLUMN waf_directives TEXT NOT NULL DEFAULT ''`},
+	} {
+		if !columnExists2(db, "middleware_profiles", col.name) {
+			migrationStep(db, col.ddl)
+		}
+	}
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {

@@ -338,7 +338,7 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	// fail with errors.routes rejection at sync time.
 	applyErrorPages(proposed)
 	if err := caddyCl.Validate(proposed); err != nil {
-		return "Caddy rejected the proposed config: " + err.Error()
+		return "Caddy rejected the proposed config: " + friendlyCaddyError(err.Error())
 	}
 	return ""
 }
@@ -974,6 +974,7 @@ func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies
 		return fmt.Errorf("clone config for layer4: %w", err)
 	}
 	applyLayer4App(proposed, layer4App)
+	s.applyLayer4ListenerWrappers(proposed, serverID, proxies) // v2.61.0 (issue #126)
 	if err := s.Caddy.Validate(proposed); err != nil {
 		return fmt.Errorf("caddy rejected layer4 config: %w", err)
 	}
@@ -985,6 +986,10 @@ func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies
 	if err := s.writeLayer4App(proposed); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_layer4_failed", "", err.Error(), false)
 		return fmt.Errorf("apply layer4 app: %w", err)
+	}
+	if err := s.writeLayer4ListenerWrappers(serverID, proxies); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_layer4_wrappers_failed", "", err.Error(), false)
+		return fmt.Errorf("apply layer4 listener wrappers: %w", err)
 	}
 	_ = models.LogActivity(s.DB, serverID, "system", "sync_layer4_applied", "", "layer4-only sync", true)
 	return nil
@@ -1196,6 +1201,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	applyPrometheusMetrics(proposed, metricsCfg, serverID)
 	applyCrowdSecApp(proposed, crowdSecCfg, serverID)
 	applyLayer4App(proposed, layer4App)
+	s.applyLayer4ListenerWrappers(proposed, serverID, layer4Proxies) // v2.61.0 (issue #126)
 	// v2.4.12: branded 404/502/503/504 pages with error ID + timestamp so
 	// users hitting a restart window see something nicer than Caddy's
 	// plaintext fallback and ops can correlate to access logs via {err.id}.
@@ -1204,7 +1210,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// Validate before touching anything. Caddy runs full provisioning.
 	if err := s.Caddy.Validate(proposed); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_validation_failed", "", err.Error(), false)
-		return fmt.Errorf("caddy rejected proposed config: %w", err)
+		return fmt.Errorf("caddy rejected proposed config: %s", friendlyCaddyError(err.Error()))
 	}
 
 	// Snapshot current state so we can roll back if anything goes wrong later.
@@ -1277,6 +1283,12 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	if err := s.writeRawListenServersSubtree(rawListenServers); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_listen_servers_failed", "", err.Error(), false)
 		return err
+	}
+	// v2.61.0 (issue #126): layer4 listener wrappers go on the HTTP servers, so
+	// they are written once those servers exist.
+	if err := s.writeLayer4ListenerWrappers(serverID, layer4Proxies); err != nil {
+		_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_layer4_wrappers_failed", "", err.Error(), false)
+		return fmt.Errorf("apply layer4 listener wrappers: %w", err)
 	}
 	if err := s.writeTLSConnectionPoliciesSubtree(tlsConnPolicies); err != nil {
 		// Non-fatal: log but don't abort — routes and certs are already applied.

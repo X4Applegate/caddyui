@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.61.0] - 2026-10-07 - Coraza WAF in middleware profiles, and Layer4 on a shared port (#126)
+
+### Added
+
+- **Coraza web application firewall in middleware profiles.** A profile can now enable [Coraza](https://coraza.io) with the OWASP Core Rule Set for every host that uses it: **Detection only** (logs what it would block — visible under Server Logs — and blocks nothing; the recommended first step) or **Block** (answers 403), a **paranoia level** from 1 to 4, a switch for the Core Rule Set itself, and **custom SecLang directives** applied last (for example `SecRuleRemoveById 942100` to silence one rule). The WAF runs first in the host's route, ahead of redirects, forward auth and the upstream, and is added when the config is built — the host row never stores it, and detaching the profile removes it. Verified on a real Coraza build of Caddy 2.11.7: SQL injection and XSS probes got `403` in Block mode, passed (and were logged) in Detection mode, and a host without the profile was untouched. Hosts that share a profile share one rule set (memory stayed flat from 1 to 10 hosts).
+- **`applegater/caddyui-caddy` now includes the Coraza module** (`github.com/corazawaf/coraza-caddy/v2` v2.6.x, `http.handlers.waf`) alongside the DNS providers, CrowdSec bouncer, rate limiting and `caddy-l4`. The image is about 5 MB larger. Existing installs keep working unchanged; **to use the WAF, pull the new image and recreate your Caddy** (the module only exists in the new build, so that is a brief restart of Caddy itself).
+- **A Caddy without the module is refused up front.** Saving a WAF profile, editing one that is in use, or attaching one to a host first asks every affected server's Caddy whether it has the module (through `/adapt`, which applies nothing) and names the ones that do not, instead of letting Caddy reject that server's entire config and block every later sync. If a rejection still happens, the error now says what to do.
+- **Layer4 on a shared port (#126).** A Layer4 proxy can ride a port that is already in use instead of binding its own — for example SSH for `ssh.example.com` over `:443` beside normal HTTPS. Pick *Share the HTTPS / HTTP port* on the Layer4 proxy form, then what to take: connections with given **TLS SNI** names (HTTPS port) or **HTTP hostnames** (HTTP port), or an **SSH**, **RDP** or **PostgreSQL** connection. CaddyUI writes a `caddy-l4` **listener wrapper** on the HTTPS (`srv0`) or HTTP (`caddyui_http`) server; everything that matches no shared proxy carries on to Caddy's normal TLS and HTTP handling. An SNI route can pass the TLS connection through to the upstream (default) or terminate TLS in Caddy and send plain TCP. TCP only — wrapping UDP is not offered. Shared proxies deploy to fleet targets, follow automatic deployment targets and the node-local switch like any other Layer4 proxy.
+
+### Changed
+
+- The wrapper is written in the order Caddy needs: any wrapper you configured yourself (PROXY protocol, for example) first, then CaddyUI's layer4 wrapper, then an explicit `tls` wrapper. Found on a real Caddy: with only the layer4 wrapper listed Caddy applies TLS *first*, so the matchers saw decrypted garbage. CaddyUI only ever replaces or removes the layer4 wrapper it wrote itself; a layer4 wrapper set any other way is left alone.
+- The Layer4 form's error for ports 80/443 now points at sharing.
+- `Client.Validate`'s documentation was wrong: Caddy ignores `validate_only`, so a config it accepts is also applied. The comment now says so; behaviour is unchanged.
+
+### Notes
+
+- Terminating TLS for a shared SNI route needs a certificate Caddy already holds for that hostname (a proxy host or managed certificate for the same name).
+- The `caddy-l4` wrapper makes Caddy log `tls is enabled, but listener wrapper returns a connection that doesn't implement connectionStater` once per connection; HTTPS and HTTP/2 were unaffected in testing.
+- Profiles cannot yet be set through the REST API.
+
+---
+
 ## [2.60.0] - 2026-10-07 - Middleware profiles (#124) and a configurable fallback status (#123)
 
 Two features requested by @kernaxis (#124, also filed as #125) and @tkkost (#123).

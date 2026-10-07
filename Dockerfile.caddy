@@ -15,7 +15,8 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/caddy-dns/gandi \
     --with github.com/hslatman/caddy-crowdsec-bouncer/http \
     --with github.com/mholt/caddy-ratelimit \
-    --with github.com/mholt/caddy-l4
+    --with github.com/mholt/caddy-l4 \
+    --with github.com/corazawaf/coraza-caddy/v2
 
 FROM caddy:2.11.7-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy

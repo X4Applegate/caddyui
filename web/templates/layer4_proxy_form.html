@@ -17,7 +17,50 @@
       class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
   </div>
 
-  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+  {{/* v2.61.0 (issue #126): dedicated listener, or share an HTTP port through a caddy-l4 listener wrapper */}}
+  <div>
+    <label class="block text-sm font-medium text-ink-800 mb-1.5">How should it listen?</label>
+    <select name="mode" id="l4-mode" class="w-full max-w-md rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+      <option value="" {{if ne .Row.Mode "shared"}}selected{{end}}>Its own port (dedicated listener)</option>
+      <option value="shared" {{if eq .Row.Mode "shared"}}selected{{end}}>Share the HTTPS / HTTP port with other traffic (listener wrapper)</option>
+    </select>
+    <p class="text-xs text-ink-500 mt-1.5 max-w-2xl">A dedicated listener cannot use a port Caddy already serves, such as 443. A <strong>shared</strong> proxy reads the first bytes of each connection on that port and takes only the ones that match — for example SSH for <span class="font-mono">ssh.example.com</span> — while normal HTTPS and everything else carries on as before. TCP only.</p>
+  </div>
+
+  <div id="l4-shared" class="space-y-4 rounded-lg border border-ink-200 bg-ink-50/50 p-4" {{if ne .Row.Mode "shared"}}hidden{{end}}>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Port to share</label>
+        <select name="wrap_server" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+          <option value="https" {{if ne .Row.WrapServer "http"}}selected{{end}}>HTTPS — 443</option>
+          <option value="http" {{if eq .Row.WrapServer "http"}}selected{{end}}>HTTP — 80</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Take connections that are…</label>
+        <select name="match_kind" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+          <option value="tls_sni" {{if or (eq .Row.MatchKind "tls_sni") (eq .Row.MatchKind "")}}selected{{end}}>TLS with these server names (SNI) — HTTPS port</option>
+          <option value="http_host" {{if eq .Row.MatchKind "http_host"}}selected{{end}}>HTTP requests for these hostnames — HTTP port</option>
+          <option value="ssh" {{if eq .Row.MatchKind "ssh"}}selected{{end}}>SSH</option>
+          <option value="rdp" {{if eq .Row.MatchKind "rdp"}}selected{{end}}>RDP (Remote Desktop)</option>
+          <option value="postgres" {{if eq .Row.MatchKind "postgres"}}selected{{end}}>PostgreSQL</option>
+        </select>
+      </div>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">Hostnames <span class="text-ink-400 font-normal text-xs">(for the SNI / HTTP host matchers; comma-separated, <span class="font-mono">*.example.com</span> allowed)</span></label>
+      <input name="match_hosts" value="{{.Row.MatchHosts}}" placeholder="ssh.example.com"
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+    </div>
+    <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer">
+      <input type="checkbox" name="terminate_tls" {{if .Row.TerminateTLS}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
+      <span>Terminate TLS in Caddy (SNI only)
+        <span class="block text-xs text-ink-500">Off (default) passes the TLS connection through untouched, so the upstream does its own TLS. On, Caddy answers with its certificate and sends plain TCP to the upstream. Caddy needs a certificate for that hostname — for example from a proxy host or managed certificate for the same name.</span></span>
+    </label>
+    <p class="text-xs text-ink-500">Needs a Caddy build with the <span class="font-mono">caddy-l4</span> module (<span class="font-mono">applegater/caddyui-caddy</span>). Connections that match no shared proxy go on to Caddy's normal TLS and HTTP handling, untouched. SSH clients send their banner immediately, so the SSH matcher adds no delay.</p>
+  </div>
+
+  <div id="l4-listener" class="grid grid-cols-1 sm:grid-cols-3 gap-4" {{if eq .Row.Mode "shared"}}hidden{{end}}>
     <div>
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Protocol</label>
       <select name="protocol" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
@@ -32,7 +75,7 @@
     </div>
     <div>
       <label class="block text-sm font-medium text-ink-800 mb-1.5">Listen port</label>
-      <input name="listen_port" type="number" min="1" max="65535" required value="{{if .Row.ListenPort}}{{.Row.ListenPort}}{{end}}" placeholder="5432"
+      <input name="listen_port" type="number" min="1" max="65535" value="{{if .Row.ListenPort}}{{.Row.ListenPort}}{{end}}" placeholder="5432"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
     </div>
   </div>
@@ -89,4 +132,17 @@
     <a href="/layer4-proxies" class="text-sm text-ink-600 hover:text-ink-900">Cancel</a>
   </div>
 </form>
+<script>
+(function () {
+  var mode = document.getElementById('l4-mode');
+  if (!mode) return;
+  function sync() {
+    var shared = mode.value === 'shared';
+    document.getElementById('l4-shared').hidden = !shared;
+    document.getElementById('l4-listener').hidden = shared;
+  }
+  mode.addEventListener('change', sync);
+  sync();
+})();
+</script>
 {{end}}

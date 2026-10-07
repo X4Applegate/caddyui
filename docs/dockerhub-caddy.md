@@ -19,7 +19,8 @@ A prebuilt **[Caddy](https://caddyserver.com/)** for use with **[CaddyUI](https:
 | [`caddy-dns`](https://github.com/caddy-dns) — Cloudflare, Porkbun, Namecheap, GoDaddy, DigitalOcean, Hetzner, Route 53, Gandi | ACME DNS-01 challenges and wildcard certificates, and CaddyUI's managed DNS |
 | [`caddy-crowdsec-bouncer`](https://github.com/hslatman/caddy-crowdsec-bouncer) (HTTP) | CrowdSec IP blocking |
 | [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) | CaddyUI's per-host rate limiting |
-| [`caddy-l4`](https://github.com/mholt/caddy-l4) | TCP/UDP routing (CaddyUI's layer4 app support) |
+| [`caddy-l4`](https://github.com/mholt/caddy-l4) | TCP/UDP routing, and sharing port 443/80 with other protocols (CaddyUI's Layer4 proxies) |
+| [`coraza-caddy`](https://github.com/corazawaf/coraza-caddy) | Coraza web application firewall with the OWASP Core Rule Set (CaddyUI's middleware profiles, **v2.61.0+**) |
 
 The base is the official `caddy:alpine` image; the current build ships **Caddy 2.11.7**.
 
