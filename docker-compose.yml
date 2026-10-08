@@ -30,10 +30,13 @@ services:
       # Cloudflare API token for DNS-01 challenges (wildcard certs).
       # Read by the Caddyfile `tls { dns cloudflare {env.CF_API_TOKEN} }`.
       CF_API_TOKEN: ${CF_API_TOKEN}
-    command: >-
-      mkdir -p /config/caddy;
-      [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json;
-      exec caddy run --config /config/caddy/autosave.json --resume --adapter json
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /config/caddy
+        [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json
+        exec caddy run --config /config/caddy/autosave.json --resume --adapter json
     networks:
       - caddyui
 

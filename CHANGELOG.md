@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.61.1] - 2026-10-08 - The Caddy `command` in the example compose files works now (#7)
+
+Reported again on #7 by @devacc337.
+
+### Fixed
+
+- **The example `command` for the Caddy container crashed it.** The snippet added for #7 (`command: >- mkdir -p /config/caddy; [ -f … ] || echo '{}' > …; exec caddy run …`) is not run through a shell, so Compose started `mkdir` on its own and the container exited immediately with code 0 — with `restart: unless-stopped`, a restart loop, and Caddy never started. (Reproduced with `docker compose` on a clean volume.) It is now `command: [/bin/sh, -c, "…"]`, which seeds an empty `{}` `autosave.json` on first boot and leaves an existing one alone, then resumes from it; the same container starts and resumes normally. Fixed in `docker-compose.yml`, the README (both copies), `DOCKERHUB.md` and `docs/dockerhub.md`.
+- **If you copied the old snippet** since it was published, replace the `command:` block of your `caddy` service with the new one and run `docker compose up -d --force-recreate caddy`. Setups that mount their own `autosave.json`, or that never used this snippet, are unaffected.
+- The README note now explains why the shell wrapper is needed. No application code changed.
+
+---
+
 ## [2.61.0] - 2026-10-07 - Coraza WAF in middleware profiles, and Layer4 on a shared port (#126)
 
 ### Added

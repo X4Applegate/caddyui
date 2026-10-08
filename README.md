@@ -329,10 +329,13 @@ services:
       - caddy_config:/config
     environment:
       CADDY_ADMIN: 0.0.0.0:2019
-    command: >-
-      mkdir -p /config/caddy;
-      [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json;
-      exec caddy run --config /config/caddy/autosave.json --resume --adapter json
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /config/caddy
+        [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json
+        exec caddy run --config /config/caddy/autosave.json --resume --adapter json
     networks:
       - caddyui
 
@@ -487,10 +490,13 @@ services:
     container_name: caddy
     restart: unless-stopped
     # --resume is required so admin-API pushes persist across Caddy restarts.
-    command: >-
-      mkdir -p /config/caddy;
-      [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json;
-      exec caddy run --config /config/caddy/autosave.json --resume --adapter json
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /config/caddy
+        [ -f /config/caddy/autosave.json ] || echo '{}' > /config/caddy/autosave.json
+        exec caddy run --config /config/caddy/autosave.json --resume --adapter json
     ports:
       # Bind the admin API to your private tunnel IP (WireGuard / Tailscale).
       # Do NOT expose :2019 on a public interface.
@@ -520,7 +526,10 @@ edge.
 >
 > **Fresh install:** On first boot no `autosave.json` exists yet, so Caddy would
 > crash-loop. The `command` above seeds an empty `{}` config on first start so
-> Caddy comes up cleanly without any extra steps.
+> Caddy comes up cleanly without any extra steps. It has to run through
+> `/bin/sh -c` as shown: a plain `command: mkdir -p …; exec caddy …` has no shell
+> to interpret the `;`, so only `mkdir` would run and the container would exit
+> straight away.
 
 ---
 
