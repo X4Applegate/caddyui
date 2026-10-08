@@ -73,6 +73,11 @@ services:
       # a writable directory the consuming service also mounts.
       # - caddy_data:/caddy-data:ro
       # - ./exports:/exports
+      # Caddy keeps that volume private to its own user (root, mode 0700), so
+      # for certificate export CaddyUI has to run as root too — uncomment
+      # `user: "0:0"` below (the data mount stays read-only). Without it export
+      # fails with "permission denied".
+    # user: "0:0"   # needed only for certificate export (see above)
     environment:
       CADDYUI_DB: /data/caddyui.db
       CADDYUI_LISTEN: :8080

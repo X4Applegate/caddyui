@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.61.2] - 2026-10-08 - Certificate export: a permission problem is reported as one (discussion #127)
+
+Reported by @devacc337: *Export failed — Caddy has not stored a certificate for \*.domain.com yet (looked in /caddy-data)*, with the certificate plainly present in the volume.
+
+### Fixed
+
+- **A permission error was reported as a missing certificate.** Caddy keeps its data directory private to the user it runs as — mode `0700`, owned by root in the official image — while the CaddyUI container runs as an unprivileged user (uid 10001), so it could not even list `caddy/certificates`. The lookup swallowed that "permission denied" and fell through to *"Caddy has not stored a certificate … yet"* (with `looked in /caddy-data` and no sign of the `certificates` directory — the tell-tale), sending people to look for a certificate that was sitting right there. Reproduced as uid 10001 against a root-only tree; the same lookup succeeds as root. The error now says what is wrong: *CaddyUI is not allowed to read Caddy's certificate storage (permission denied on …), CaddyUI runs as uid N — run the caddyui container as that user, with the official images `user: "0:0"`, the data volume can stay read-only.* A certificate that really is missing still reports as missing. The same lookup serves *Sync from current* for shared managed certificates, which gets the clearer message too.
+- **Export-directory write failures get the same treatment.** A permission error creating or writing the export directory (a fresh Docker volume is root-owned, and CaddyUI runs unprivileged) now says CaddyUI is not allowed to write there and how to fix it.
+
+### Docs
+
+- To use **Export to a directory**, run the `caddyui` service as root — `user: "0:0"` — so it can read Caddy's private data volume (mount it read-only) and write to a fresh export volume. Added to the example `docker-compose.yml` (commented, next to the export mounts), the Data directory help on Caddy Fleet → edit server, and the Documentation page.
+
+---
+
 ## [2.61.1] - 2026-10-08 - The Caddy `command` in the example compose files works now (#7)
 
 Reported again on #7 by @devacc337.

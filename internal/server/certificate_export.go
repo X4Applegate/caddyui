@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -83,6 +85,35 @@ func caddyStorageCertificateRoots(dataDir string) []string {
 	}
 }
 
+// Test seams: the real thing reads the filesystem as the CaddyUI user.
+var (
+	storageReadDir  = os.ReadDir
+	storageReadFile = readCertificateFile
+	storageStat     = os.Stat
+)
+
+// storagePermissionError explains the one failure operators actually hit:
+// Caddy keeps its data directory private to the user it runs as (mode 0700,
+// owned by root in the official image) and the CaddyUI container runs as an
+// unprivileged user, so it cannot even list the certificates directory. That used
+// to be swallowed and reported as "Caddy has not stored a certificate yet".
+func storagePermissionError(path string) error {
+	return fmt.Errorf("CaddyUI is not allowed to read Caddy's certificate storage (permission denied on %s). "+
+		"Caddy keeps its data directory private to the user it runs as (mode 0700, owned by root in the official image) "+
+		"and CaddyUI runs as uid %d. Run the caddyui container as that user — with the official images add `user: \"0:0\"` "+
+		"to the caddyui service (the data volume can stay mounted read-only) — then export again", path, os.Getuid())
+}
+
+// exportWriteError turns a permission failure on the export directory into
+// advice; anything else is returned as it was.
+func exportWriteError(err error, dir string) error {
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("CaddyUI is not allowed to write to %s (permission denied; CaddyUI runs as uid %d). "+
+			"Make that directory writable by that user — or run the caddyui container as root — then export again: %w", dir, os.Getuid(), err)
+	}
+	return err
+}
+
 type storageCertificate struct {
 	CertPath string
 	KeyPath  string
@@ -96,13 +127,20 @@ type storageCertificate struct {
 func findStorageCertificate(dataDir string, domains []string, roots []string) (*storageCertificate, error) {
 	var best *storageCertificate
 	var looked []string
+	denied := "" // first path CaddyUI was not allowed to read
+	deny := func(path string, err error) {
+		if denied == "" && errors.Is(err, fs.ErrPermission) {
+			denied = path
+		}
+	}
 	for _, root := range caddyStorageCertificateRoots(dataDir) {
 		root, err := safeAbsolutePath(root)
 		if err != nil {
 			continue
 		}
-		issuers, err := os.ReadDir(root)
+		issuers, err := storageReadDir(root)
 		if err != nil {
+			deny(root, err)
 			continue
 		}
 		looked = append(looked, root)
@@ -120,15 +158,17 @@ func findStorageCertificate(dataDir string, domains []string, roots []string) (*
 				}
 				crt := filepath.Join(root, issuer.Name(), name, name+".crt")
 				key := filepath.Join(root, issuer.Name(), name, name+".key")
-				raw, err := readCertificateFile(crt, roots)
+				raw, err := storageReadFile(crt, roots)
 				if err != nil {
+					deny(crt, err)
 					continue
 				}
 				leaf := parsePEMLeaf(string(raw))
 				if leaf == nil {
 					continue
 				}
-				if _, err := os.Stat(key); err != nil {
+				if _, err := storageStat(key); err != nil {
+					deny(key, err)
 					continue
 				}
 				if best == nil || leaf.NotAfter.After(best.Leaf.NotAfter) {
@@ -139,6 +179,9 @@ func findStorageCertificate(dataDir string, domains []string, roots []string) (*
 	}
 	if best != nil {
 		return best, nil
+	}
+	if denied != "" {
+		return nil, storagePermissionError(denied)
 	}
 	if len(looked) == 0 {
 		return nil, fmt.Errorf("no Caddy certificate storage found under %s — is the node's data volume mounted into the CaddyUI container at that path?", dataDir)
@@ -265,13 +308,13 @@ func (s *Server) exportCertificate(serverID int64, cert models.Certificate, forc
 		return fail(fmt.Errorf("read %s: %w", stored.KeyPath, err))
 	}
 	if err := os.MkdirAll(exportDir, 0o755); err != nil {
-		return fail(fmt.Errorf("create %s: %w", exportDir, err))
+		return fail(fmt.Errorf("create %s: %w", exportDir, exportWriteError(err, exportDir)))
 	}
 	if err := writeFileAtomic(certOut, certPEM, 0o644); err != nil {
-		return fail(fmt.Errorf("write %s: %w", certOut, err))
+		return fail(fmt.Errorf("write %s: %w", certOut, exportWriteError(err, exportDir)))
 	}
 	if err := writeFileAtomic(keyOut, keyPEM, 0o600); err != nil {
-		return fail(fmt.Errorf("write %s: %w", keyOut, err))
+		return fail(fmt.Errorf("write %s: %w", keyOut, exportWriteError(err, exportDir)))
 	}
 	now := time.Now().UTC()
 	notAfter := stored.Leaf.NotAfter.UTC()
