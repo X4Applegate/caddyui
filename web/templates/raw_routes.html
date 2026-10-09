@@ -1,8 +1,8 @@
-{{define "title"}}Advanced routes · CaddyUI{{end}}
+{{define "title"}}{{t $ "page.advanced_routes.title"}} · CaddyUI{{end}}
 {{define "content"}}
 <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-4 sm:gap-6">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Advanced routes</h1>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">{{t $ "page.advanced_routes.heading"}}</h1>
     <p class="text-sm text-ink-500 mt-1 max-w-2xl">
       For anything CaddyUI can't model as a simple proxy or redirect — per-path routing, multiple
       upstreams, file servers, custom handlers. Entries show their original Caddyfile when

@@ -5,7 +5,7 @@
      carries the right palette before first paint, no flash, no localStorage
      dance required. The bootstrap script below still falls back to
      localStorage for the logged-out / first-load case. */}}
-<html lang="en"{{if and .User .User.ColorTheme}} data-color-theme="{{.User.ColorTheme}}"{{end}}>
+<html lang="{{if .Lang}}{{.Lang}}{{else}}en{{end}}"{{if and .User .User.ColorTheme}} data-color-theme="{{.User.ColorTheme}}"{{end}}>
 <head>
   {{/* v2.11.0: tri-state theme — 'light' | 'dark' | 'auto' (default).
        The toggle button cycles auto → light → dark → auto. 'auto' tracks
@@ -41,6 +41,9 @@
        X-CSRF-Token header on same-origin mutating requests. Empty on
        anonymous pages, which have no session to protect. */}}
   {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}" />{{end}}
+  {{/* v2.62.0 (issue #128): translated strings for browser-side scripts. caddyuiT(key, {name: value})
+       falls back to the key itself if a string is missing. */}}
+  <script>window.CADDYUI_I18N = {{.I18NJS}} || {}; window.caddyuiT = function (key, vars) { var s = window.CADDYUI_I18N[key] || key; if (vars) { Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(String(vars[k])); }); } return s; };</script>
   <title>{{block "title" .}}{{if .SiteTitle}}{{.SiteTitle}}{{else}}CaddyUI{{end}}{{end}}</title>
   {{/* v2.12.48: meta description for SEO. Defaults to a generic
        CaddyUI summary; individual pages override via the "description"
@@ -458,51 +461,51 @@ if ('serviceWorker' in navigator) {
       <nav class="app-nav flex-1 overflow-y-auto text-sm" aria-label="Primary navigation">
         {{$sec := .Section}}
 	        <div class="app-nav__group">
-	          <span class="app-nav__label">Overview</span>
-	          {{template "navItem" (dict "Section" $sec "Active" "dashboard" "Href" "/" "Label" "Operations" "Icon" "dashboard")}}
-	          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "onboarding" "Href" "/onboarding" "Label" "Getting Started" "Icon" "guide")}}{{end}}
+	          <span class="app-nav__label">{{t $ "nav.section.overview"}}</span>
+	          {{template "navItem" (dict "Section" $sec "Active" "dashboard" "Href" "/" "Label" (t $ "nav.operations") "Icon" "dashboard")}}
+	          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "onboarding" "Href" "/onboarding" "Label" (t $ "nav.getting_started") "Icon" "guide")}}{{end}}
 	        </div>
 
         <div class="app-nav__group">
-          <span class="app-nav__label">Traffic</span>
-          {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" "Proxy Hosts" "Icon" "proxy")}}
-          {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" "Redirections" "Icon" "redirect")}}
-          {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" "Advanced Routes" "Icon" "code")}}
-          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "layer4" "Href" "/layer4-proxies" "Label" "Layer4 Proxies" "Icon" "proxy")}}{{end}}
-          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "middleware" "Href" "/middleware-profiles" "Label" "Middleware Profiles" "Icon" "proxy")}}{{end}}
+          <span class="app-nav__label">{{t $ "nav.section.traffic"}}</span>
+          {{template "navItem" (dict "Section" $sec "Active" "proxy" "Href" "/proxy-hosts" "Label" (t $ "nav.proxy_hosts") "Icon" "proxy")}}
+          {{template "navItem" (dict "Section" $sec "Active" "redirect" "Href" "/redirection-hosts" "Label" (t $ "nav.redirections") "Icon" "redirect")}}
+          {{template "navItem" (dict "Section" $sec "Active" "raw" "Href" "/raw-routes" "Label" (t $ "nav.advanced_routes") "Icon" "code")}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "layer4" "Href" "/layer4-proxies" "Label" (t $ "nav.layer4_proxies") "Icon" "proxy")}}{{end}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "middleware" "Href" "/middleware-profiles" "Label" (t $ "nav.middleware_profiles") "Icon" "proxy")}}{{end}}
         </div>
 
         <div class="app-nav__group">
-          <span class="app-nav__label">Observe</span>
-          {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" "Analytics" "Icon" "chart")}}
-          {{template "navItem" (dict "Section" $sec "Active" "live_traffic" "Href" "/live-traffic" "Label" "Live Traffic" "Icon" "lightning")}}
-          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "server_logs" "Href" "/server-logs" "Label" "Server Logs" "Icon" "pulse")}}{{end}}
-          {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" "Activity Log" "Icon" "pulse")}}
+          <span class="app-nav__label">{{t $ "nav.section.observe"}}</span>
+          {{template "navItem" (dict "Section" $sec "Active" "analytics" "Href" "/analytics" "Label" (t $ "nav.analytics") "Icon" "chart")}}
+          {{template "navItem" (dict "Section" $sec "Active" "live_traffic" "Href" "/live-traffic" "Label" (t $ "nav.live_traffic") "Icon" "lightning")}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "server_logs" "Href" "/server-logs" "Label" (t $ "nav.server_logs") "Icon" "pulse")}}{{end}}
+          {{template "navItem" (dict "Section" $sec "Active" "activity" "Href" "/activity" "Label" (t $ "nav.activity_log") "Icon" "pulse")}}
         </div>
 
         <div class="app-nav__group">
-          <span class="app-nav__label">Configuration</span>
-          {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" "Certificates" "Icon" "lock")}}
-          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" "Snapshots" "Icon" "camera")}}{{end}}
-          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "caddy_config" "Href" "/caddy-config" "Label" "Caddy Config" "Icon" "code")}}{{end}}
-          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" "Import from Caddy" "Icon" "download")}}{{end}}
-          {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" "Paste Caddyfile" "Icon" "clipboard")}}
+          <span class="app-nav__label">{{t $ "nav.section.configuration"}}</span>
+          {{template "navItem" (dict "Section" $sec "Active" "certs" "Href" "/certificates" "Label" (t $ "nav.certificates") "Icon" "lock")}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "snapshots" "Href" "/snapshots" "Label" (t $ "nav.snapshots") "Icon" "camera")}}{{end}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "caddy_config" "Href" "/caddy-config" "Label" (t $ "nav.caddy_config") "Icon" "code")}}{{end}}
+          {{if eq .User.Role "admin"}}{{template "navItem" (dict "Section" $sec "Active" "import" "Href" "/import" "Label" (t $ "nav.import_from_caddy") "Icon" "download")}}{{end}}
+          {{template "navItem" (dict "Section" $sec "Active" "paste" "Href" "/caddyfile-import" "Label" (t $ "nav.paste_caddyfile") "Icon" "clipboard")}}
         </div>
 
         <div class="app-nav__group">
-          <span class="app-nav__label">Developer</span>
-          {{template "navItem" (dict "Section" $sec "Active" "api_docs" "Href" "/api/docs" "Label" "API Reference" "Icon" "code")}}
-          {{template "navItem" (dict "Section" $sec "Active" "api_tokens" "Href" "/api-tokens" "Label" "API Tokens" "Icon" "key")}}
-          {{template "navItem" (dict "Section" $sec "Active" "docs" "Href" "/docs" "Label" "Documentation" "Icon" "book")}}
+          <span class="app-nav__label">{{t $ "nav.section.developer"}}</span>
+          {{template "navItem" (dict "Section" $sec "Active" "api_docs" "Href" "/api/docs" "Label" (t $ "nav.api_reference") "Icon" "code")}}
+          {{template "navItem" (dict "Section" $sec "Active" "api_tokens" "Href" "/api-tokens" "Label" (t $ "nav.api_tokens") "Icon" "key")}}
+          {{template "navItem" (dict "Section" $sec "Active" "docs" "Href" "/docs" "Label" (t $ "nav.documentation") "Icon" "book")}}
         </div>
 
         {{if eq .User.Role "admin"}}
         <div class="app-nav__group">
-          <span class="app-nav__label">Administration</span>
-          {{template "navItem" (dict "Section" $sec "Active" "servers" "Href" "/servers" "Label" "Caddy Fleet" "Icon" "server")}}
-          {{template "navItem" (dict "Section" $sec "Active" "users" "Href" "/users" "Label" "Users" "Icon" "users")}}
-          {{template "navItem" (dict "Section" $sec "Active" "groups" "Href" "/groups" "Label" "Groups" "Icon" "group")}}
-          {{template "navItem" (dict "Section" $sec "Active" "settings" "Href" "/settings" "Label" "Settings" "Icon" "settings")}}
+          <span class="app-nav__label">{{t $ "nav.section.administration"}}</span>
+          {{template "navItem" (dict "Section" $sec "Active" "servers" "Href" "/servers" "Label" (t $ "nav.caddy_fleet") "Icon" "server")}}
+          {{template "navItem" (dict "Section" $sec "Active" "users" "Href" "/users" "Label" (t $ "nav.users") "Icon" "users")}}
+          {{template "navItem" (dict "Section" $sec "Active" "groups" "Href" "/groups" "Label" (t $ "nav.groups") "Icon" "group")}}
+          {{template "navItem" (dict "Section" $sec "Active" "settings" "Href" "/settings" "Label" (t $ "nav.settings") "Icon" "settings")}}
         </div>
         {{end}}
       </nav>
@@ -577,7 +580,7 @@ if ('serviceWorker' in navigator) {
           </button>
           <div data-server-menu-panel class="hidden absolute left-0 top-full mt-2 w-72 rounded-xl bg-white/95 border border-ink-200 shadow-card-hover overflow-hidden z-30 dark:bg-slate-800/95 dark:border-slate-700 backdrop-blur-sm">
             <div class="px-3.5 py-2 border-b border-ink-100 dark:border-slate-700">
-              <div class="text-[10px] font-semibold uppercase tracking-wider text-ink-500">Switch server</div>
+              <div class="text-[10px] font-semibold uppercase tracking-wider text-ink-500">{{t $ "topbar.switch_server"}}</div>
             </div>
             <div class="max-h-80 overflow-y-auto">
               {{range .Servers}}
@@ -641,33 +644,33 @@ if ('serviceWorker' in navigator) {
                 aria-label="Open command palette"
                 aria-haspopup="dialog">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 shrink-0" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-	          <span class="truncate">Search resources and actions</span>
+	          <span class="truncate">{{t $ "topbar.search"}}</span>
 	          <kbd>⌘K</kbd>
 	        </button>
 	        {{if ne .User.Role "viewer"}}
 	        <details class="app-create-menu">
 	          <summary class="ui-button ui-button--primary" aria-label="Create a resource">
 	            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-	            <span class="hidden sm:inline">Create</span>
+	            <span class="hidden sm:inline">{{t $ "topbar.create"}}</span>
 	            <svg class="app-create-menu__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
 	          </summary>
 	          <div class="app-create-menu__panel">
-	            <div class="app-create-menu__label">Create resource</div>
+	            <div class="app-create-menu__label">{{t $ "topbar.create_menu"}}</div>
 	            <a href="/proxy-hosts/new">
 	              <span class="app-create-menu__icon app-create-menu__icon--action">{{template "icon" "proxy"}}</span>
-	              <span><strong>Publish a service</strong><small>Guided proxy-host workflow</small></span>
+	              <span><strong>{{t $ "create.publish_service"}}</strong><small>{{t $ "create.publish_service_hint"}}</small></span>
 	            </a>
 	            <a href="/redirection-hosts/new">
 	              <span class="app-create-menu__icon app-create-menu__icon--warning">{{template "icon" "redirect"}}</span>
-	              <span><strong>Create redirection</strong><small>Move traffic to another URL</small></span>
+	              <span><strong>{{t $ "create.redirection"}}</strong><small>{{t $ "create.redirection_hint"}}</small></span>
 	            </a>
 	            <a href="/certificates/new">
 	              <span class="app-create-menu__icon app-create-menu__icon--automation">{{template "icon" "lock"}}</span>
-	              <span><strong>Add certificate</strong><small>Managed ACME or custom PEM</small></span>
+	              <span><strong>{{t $ "create.certificate"}}</strong><small>{{t $ "create.certificate_hint"}}</small></span>
 	            </a>
 	            <a href="/raw-routes/new">
 	              <span class="app-create-menu__icon app-create-menu__icon--neutral">{{template "icon" "code"}}</span>
-	              <span><strong>Advanced route</strong><small>Build a custom Caddy route</small></span>
+	              <span><strong>{{t $ "create.advanced_route"}}</strong><small>{{t $ "create.advanced_route_hint"}}</small></span>
 	            </a>
 	          </div>
 	        </details>
@@ -703,17 +706,17 @@ if ('serviceWorker' in navigator) {
               </div>
               <a href="/profile" class="flex items-center gap-2.5 px-3.5 py-2 text-xs text-ink-700 hover:bg-ink-50 dark:hover:bg-slate-700/50 transition">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-ink-400"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                Profile settings
+                {{t $ "user_menu.profile"}}
               </a>
               <a href="/totp/setup" class="flex items-center gap-2.5 px-3.5 py-2 text-xs text-ink-700 hover:bg-ink-50 dark:hover:bg-slate-700/50 transition">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-ink-400"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                Two-factor auth
+                {{t $ "user_menu.two_factor"}}
               </a>
               <div class="border-t border-ink-100 dark:border-slate-700"></div>
               <form method="post" action="/logout">
                 <button type="submit" class="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 transition text-left">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                  Sign out
+                  {{t $ "user_menu.sign_out"}}
                 </button>
               </form>
             </div>
@@ -833,7 +836,7 @@ if ('serviceWorker' in navigator) {
     <div class="bg-white dark:bg-slate-800 border border-ink-200 dark:border-slate-700 rounded-xl shadow-card max-w-xl w-full overflow-hidden">
       <div class="flex items-center gap-3 px-4 py-3 border-b border-ink-100 dark:border-slate-700">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-ink-400 dark:text-slate-500 shrink-0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="cmd-input" type="text" placeholder="Search proxy hosts, redirects, certs, advanced routes…" class="flex-1 bg-transparent border-0 outline-none text-sm text-ink-900 dark:text-slate-100 placeholder-ink-400" autocomplete="off" spellcheck="false" />
+        <input id="cmd-input" type="text" placeholder="{{t $ "cmd.search_placeholder"}}" class="flex-1 bg-transparent border-0 outline-none text-sm text-ink-900 dark:text-slate-100 placeholder-ink-400" autocomplete="off" spellcheck="false" />
         <kbd class="font-mono text-[10px] bg-ink-100 dark:bg-slate-700 dark:text-slate-200 px-1.5 py-0.5 rounded border border-ink-200 dark:border-slate-600 text-ink-500 shrink-0">Esc</kbd>
       </div>
       <div id="cmd-results" class="max-h-[50vh] overflow-y-auto p-2"></div>

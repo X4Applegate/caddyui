@@ -4,5 +4,5 @@ package web
 
 import "embed"
 
-//go:embed all:templates all:static
+//go:embed all:templates all:static all:i18n
 var FS embed.FS

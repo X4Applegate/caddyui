@@ -35,6 +35,7 @@ type User struct {
 	TOTPEnabled  bool
 	BackupCodes  string // JSON array of SHA-256 hex hashes; empty means no backup codes set
 	ColorTheme   string // v2.12.27: "" = default | "orange" — synced across devices via DB
+	Locale       string // v2.62.0 (issue #128): "" = follow the browser, else a catalog code such as "zh-CN"
 }
 
 const (
@@ -1143,14 +1144,14 @@ func (r RedirectionHost) CustomRespHeaderMap() map[string]string {
 const userCols = `id, email, password_hash, COALESCE(name,''), is_admin,
     COALESCE(role, CASE WHEN is_admin=1 THEN 'admin' ELSE 'view' END), created_at,
     COALESCE(totp_secret,''), COALESCE(totp_enabled,0), COALESCE(totp_backup_codes,''),
-    COALESCE(color_theme,'')`
+    COALESCE(color_theme,''), COALESCE(locale,'')`
 
 func scanUser(s interface {
 	Scan(dest ...any) error
 }) (*User, error) {
 	u := &User{}
 	var isAdmin, totpEnabled int
-	if err := s.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &isAdmin, &u.Role, &u.CreatedAt, &u.TOTPSecret, &totpEnabled, &u.BackupCodes, &u.ColorTheme); err != nil {
+	if err := s.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &isAdmin, &u.Role, &u.CreatedAt, &u.TOTPSecret, &totpEnabled, &u.BackupCodes, &u.ColorTheme, &u.Locale); err != nil {
 		return nil, err
 	}
 	u.IsAdmin = isAdmin == 1
@@ -1163,6 +1164,13 @@ func scanUser(s interface {
 		}
 	}
 	return u, nil
+}
+
+// UpdateUserLocale stores the user's language ("" = follow the browser).
+// v2.62.0 (issue #128).
+func UpdateUserLocale(db *sql.DB, userID int64, locale string) error {
+	_, err := db.Exec(`UPDATE users SET locale = ? WHERE id = ?`, locale, userID)
+	return err
 }
 
 // UpdateUserColorTheme stores the user's preferred color theme so it

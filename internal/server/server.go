@@ -207,6 +207,7 @@ const healthFailThreshold = 3
 
 func parseTemplates(tplFS fs.FS) (map[string]*template.Template, error) {
 	funcs := template.FuncMap{
+		"t":     tFunc, // v2.62.0 (issue #128): {{t $ "key"}}
 		"join":  func(sep string, parts []string) string { return strings.Join(parts, sep) },
 		"upper": strings.ToUpper,
 		// dict builds a map from alternating key/value args so templates can pass
@@ -1197,6 +1198,18 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	}
 	// Always inject app version.
 	data["AppVersion"] = s.Version
+	// v2.62.0 (issue #128): the page's language and the strings the browser-side
+	// scripts may need (window.CADDYUI_I18N in layout.html).
+	if _, ok := data["Lang"]; !ok {
+		u, _ := data["User"].(*models.User)
+		if u == nil && r != nil {
+			u = s.currentUser(r)
+		}
+		data["Lang"] = s.requestLocale(r, u)
+	}
+	if _, ok := data["I18NJS"]; !ok {
+		data["I18NJS"] = translations().Subset(data["Lang"].(string), "js.")
+	}
 	// v2.29.0: CSRF token for every rendered page. CSRFField is the ready-made
 	// hidden input each POST form embeds; CSRFToken is the raw value, surfaced
 	// as a <meta> tag so the fetch wrapper in app.js can pick it up for JSON
@@ -7458,9 +7471,10 @@ func (s *Server) getProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "profile.html", map[string]any{
-		"User":  cu,
-		"Flash": r.URL.Query().Get("flash"),
-		"Error": r.URL.Query().Get("error"),
+		"User":    cu,
+		"Flash":   r.URL.Query().Get("flash"),
+		"Error":   r.URL.Query().Get("error"),
+		"Locales": translations().Locales(), // v2.62.0 (issue #128)
 	})
 }
 
@@ -7473,6 +7487,22 @@ func (s *Server) postProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	action := r.FormValue("action")
 	switch action {
+	case "update_locale": // v2.62.0 (issue #128)
+		loc := strings.TrimSpace(r.FormValue("locale"))
+		if loc != "" && !translations().Has(loc) {
+			http.Redirect(w, r, "/profile?error=Unknown+language", http.StatusFound)
+			return
+		}
+		if err := models.UpdateUserLocale(s.DB, cu.ID, loc); err != nil {
+			http.Redirect(w, r, "/profile?error=Failed+to+save+language", http.StatusFound)
+			return
+		}
+		lang := loc
+		if lang == "" {
+			lang = s.requestLocale(r, nil)
+		}
+		http.Redirect(w, r, "/profile?flash="+url.QueryEscape(translations().T(lang, "profile.language.saved")), http.StatusFound)
+		return
 	case "update_name":
 		name := strings.TrimSpace(r.FormValue("name"))
 		if name == "" {

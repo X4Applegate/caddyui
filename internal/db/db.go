@@ -2471,6 +2471,11 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v2.62.0 (issue #128): each user's interface language ("" = follow the browser).
+	if !columnExists2(db, "users", "locale") {
+		migrationStep(db, `ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT ''`)
+	}
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {

@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.62.0] - 2026-10-09 - Interface languages: the localization plumbing (#128)
+
+Requested by @chongfenglaosiji, who has offered to translate CaddyUI into Simplified Chinese.
+
+### Added
+
+- **CaddyUI can be shown in other languages.** Translations are flat JSON catalogs in `web/i18n/` — one per language, named by its code (`en.json`, `zh-CN.json`, …) and embedded in the binary — with stable dotted keys such as `nav.proxy_hosts`. **English is the source of truth and the fallback**: any key a translation lacks (or leaves empty) shows in English, so a partial translation never breaks a page, and a key missing everywhere shows as itself rather than blank. Texts can carry named placeholders like `{count}`.
+- **Each person chooses their own language** under **Profile → Language**, available to every role; the default is *Use my browser's language*. Otherwise the browser's `Accept-Language` decides (a related variant such as `zh-TW` or plain `zh` uses the closest available catalog), then **Settings → General → Default language**, then English. Only languages that have a catalog can be chosen. The page's `<html lang>` follows the choice.
+- **Templates and scripts share one catalog**: templates use `{{t $ "key"}}`, and keys starting with `js.` reach the browser as `window.CADDYUI_I18N` with a small `caddyuiT(key, vars)` helper.
+- **Guard rails, as tests:** every key a template or script uses must exist in `en.json`, and every translation may only use English's keys and must keep the same placeholders — so a typo or drift fails the build instead of showing a raw key.
+- **First strings on the catalog:** the navigation and its section titles, the top bar, the *Create* menu, the user menu, the command-palette search, the list-page titles for proxy hosts, redirections, advanced routes and certificates, and the new language settings. English output is unchanged. The rest of the interface moves onto keys over the next releases, the large proxy-host form last.
+- **[docs/TRANSLATING.md](docs/TRANSLATING.md)** explains the format and how to send a translation as a data-only pull request.
+
+### Notes
+
+- This release ships English only; the first translation (Simplified Chinese) is coming from the community. New column `users.locale` and setting `default_locale` are created automatically.
+
+---
+
 ## [2.61.3] - 2026-10-09 - Security: a wildcard host could bypass a specific host's IP allowlist (#129)
 
 Reported by @hieronymousch: after upgrading, sites with an IP allowlist accepted every client, and attaching a middleware profile made no difference.

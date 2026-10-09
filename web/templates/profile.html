@@ -36,6 +36,20 @@
     </form>
   </div>
 
+  {{/* v2.62.0 (issue #128): interface language */}}
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5" data-language-card>
+    <h2 class="text-sm font-semibold text-ink-800 mb-1">{{t $ "profile.language.heading"}}</h2>
+    <p class="text-xs text-ink-500 mb-4">{{t $ "profile.language.help"}}</p>
+    <form method="post" action="/profile" class="flex flex-wrap items-center gap-3">
+      <input type="hidden" name="action" value="update_locale">
+      <select name="locale" class="rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:outline-none">
+        <option value="" {{if not .User.Locale}}selected{{end}}>{{t $ "profile.language.browser"}}</option>
+        {{range .Locales}}<option value="{{.Code}}" lang="{{.Code}}" {{if eq .Code $.User.Locale}}selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">{{t $ "profile.language.save"}}</button>
+    </form>
+  </div>
+
   {{/* 2FA quick link */}}
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-5">
     <div class="flex items-center justify-between">

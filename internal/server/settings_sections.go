@@ -88,6 +88,7 @@ var settingsKeySection = map[string]string{
 	settingFaviconURL:                 "general",
 	settingCatchAll404HTML:            "general",
 	settingFallbackStatus:             "general", // v2.60.0 (issue #123)
+	settingDefaultLocale:              "general", // v2.62.0 (issue #128)
 	settingGlobalMaintenance:          "general",
 	settingAutoSyncHours:              "general",
 	settingActivityLogDays:            "general",

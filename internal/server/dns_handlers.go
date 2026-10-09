@@ -1522,7 +1522,9 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		// v2.12.0: configurable session duration + global catch-all 404
 		"SessionDays":          mustGetSetting(s.DB, settingSessionDays),
 		"CatchAll404HTML":      mustGetSetting(s.DB, settingCatchAll404HTML),
-		"FallbackStatus":       s.fallbackStatusCode(), // v2.60.0 (issue #123)
+		"FallbackStatus":       s.fallbackStatusCode(),                     // v2.60.0 (issue #123)
+		"DefaultLocale":        mustGetSetting(s.DB, settingDefaultLocale), // v2.62.0 (issue #128)
+		"Locales":              translations().Locales(),
 		"GlobalMaintenance":    mustGetSetting(s.DB, settingGlobalMaintenance),
 		"AutoSyncHours":        mustGetSetting(s.DB, settingAutoSyncHours),
 		"ActivityLogDays":      mustGetSetting(s.DB, settingActivityLogDays),
@@ -1896,6 +1898,15 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Fallback status code must be a number from 400 to 599", http.StatusBadRequest)
 			return
 		}
+	}
+	// v2.62.0 (issue #128): site default language; only known catalogs.
+	if _, present := r.Form["default_locale"]; present {
+		loc := strings.TrimSpace(r.FormValue("default_locale"))
+		if loc != "" && !translations().Has(loc) {
+			http.Error(w, "Unknown language", http.StatusBadRequest)
+			return
+		}
+		kv[settingDefaultLocale] = loc
 	}
 	if sessionDays := strings.TrimSpace(r.FormValue("session_duration_days")); sessionDays != "" {
 		kv[settingSessionDays] = sessionDays

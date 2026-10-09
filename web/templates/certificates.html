@@ -1,8 +1,8 @@
-{{define "title"}}Certificates · CaddyUI{{end}}
+{{define "title"}}{{t $ "page.certificates.title"}} · CaddyUI{{end}}
 {{define "content"}}
 <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-3">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Certificates</h1>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">{{t $ "page.certificates.heading"}}</h1>
     <p class="text-sm text-ink-500 mt-1">Upload a certificate or have Caddy obtain and renew one with ACME DNS-01.</p>
   </div>
   <div class="flex items-center gap-2 self-start shrink-0">

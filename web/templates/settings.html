@@ -76,6 +76,14 @@
         placeholder="https://example.com/favicon.ico"
         class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
     </div>
+    <div class="flex items-center gap-3 py-3 border-b border-ink-100" data-default-language>
+      <label class="text-sm text-ink-700 w-32 shrink-0">{{t $ "settings.default_language.label"}}</label>
+      <select name="default_locale" class="text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
+        <option value="" {{if not .DefaultLocale}}selected{{end}}>{{t $ "settings.default_language.auto"}}</option>
+        {{range .Locales}}<option value="{{.Code}}" {{if eq .Code $.DefaultLocale}}selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      <p class="text-xs text-ink-400">{{t $ "settings.default_language.help"}}</p>
+    </div>
     <div class="flex items-center gap-3 py-3 border-b border-ink-100">
       <label class="text-sm text-ink-700 w-32 shrink-0">Fallback status code</label>
       <input type="number" name="fallback_status_code" min="400" max="599" value="{{.FallbackStatus}}" placeholder="404"

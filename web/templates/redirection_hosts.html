@@ -1,8 +1,8 @@
-{{define "title"}}Redirections · CaddyUI{{end}}
+{{define "title"}}{{t $ "page.redirections.title"}} · CaddyUI{{end}}
 {{define "content"}}
 <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-8 gap-3">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Redirections</h1>
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">{{t $ "page.redirections.heading"}}</h1>
     <p class="text-sm text-ink-500 mt-1">Send visitors from one hostname to another with a 3xx redirect.</p>
   </div>
   <a href="/redirection-hosts/new" class="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium px-3 py-2 rounded-lg shadow-sm transition self-start shrink-0">
