@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.61.3] - 2026-10-09 - Security: a wildcard host could bypass a specific host's IP allowlist (#129)
+
+Reported by @hieronymousch: after upgrading, sites with an IP allowlist accepted every client, and attaching a middleware profile made no difference.
+
+### Security
+
+- **A wildcard proxy host could take over a more specific host's traffic, skipping its IP allowlist and every other protection on that host's route.** Caddy runs the first route that matches a request. CaddyUI emitted host routes in list order — manual sort order, then newest first — so a wildcard host such as `*.example.com` created *after* `app.example.com` came first, and requests for `app.example.com` were served by the wildcard's route. Everything configured on `app.example.com` itself was then skipped: its **IP allowlist**, Basic Auth, forward auth, the middleware profile attached to it and its WAF. Reproduced on a real Caddy: a client outside `app.example.com`'s allowlist got `200` instead of `403`.
+- **Fix:** host routes are now ordered by specificity, the way Caddy's own Caddyfile does it: exact hostnames before wildcards, more specific wildcards (`*.a.example.com`) before broader ones (`*.example.com`), and a path-scoped route before the same host's catch-all. A route that also carries a wildcard counts as a wildcard route. Applied to the HTTPS server, the plain-HTTP server (where a forced host's HTTPS redirect now always beats a wildcard host) and the managed wildcard-certificate routes. Only routes that match on hostnames move, and only among themselves: global maintenance, an Advanced route without a host matcher and the fallback keep their exact positions, and the manual order still decides between routes that are equally specific. After the fix the same request gets `403`, and other names still reach the wildcard host.
+- **Upgrade if you have both wildcard and specific proxy hosts**, especially when the specific ones rely on an IP allowlist, Basic Auth, forward auth or a WAF profile. The fix applies on the next sync (a restart with sync-on-start, or any save).
+
+---
+
 ## [2.61.2] - 2026-10-08 - Certificate export: a permission problem is reported as one (discussion #127)
 
 Reported by @devacc337: *Export failed — Caddy has not stored a certificate for \*.domain.com yet (looked in /caddy-data)*, with the certificate plainly present in the volume.

@@ -311,7 +311,8 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 		return ""
 	}
 	previewRoutes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs, s.fallbackRoute()["handle"].([]any))...)
-	previewRoutes = s.withFallbackRoute(previewRoutes) // v2.59.4 (issue #123)
+	previewRoutes = sortRoutesBySpecificity(previewRoutes) // v2.61.3 (issue #129): wildcard certificate routes after exact hosts
+	previewRoutes = s.withFallbackRoute(previewRoutes)     // v2.59.4 (issue #123)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	// issue #100: mirror the global blocklist prepend so preview validation
 	// matches what sync would push.
@@ -1132,7 +1133,8 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	accessLogCfg := loadFleetAccessLogConfig(s.DB)
 	crowdSecCfg := loadCrowdSecConfig(s.DB)
 	routes := append(s.buildMergedRoutes(proxies, redirs, httpsRawRoutes(raws)), buildManagedCertificateRoutes(certs, s.fallbackRoute()["handle"].([]any))...)
-	routes = s.withFallbackRoute(routes) // v2.59.4 (issue #123)
+	routes = sortRoutesBySpecificity(routes) // v2.61.3 (issue #129): wildcard certificate routes after exact hosts
+	routes = s.withFallbackRoute(routes)     // v2.59.4 (issue #123)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
 	routes = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
 	httpRoutes = protectRoutesWithCrowdSec(httpRoutes, crowdSecCfg, serverID)

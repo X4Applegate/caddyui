@@ -5025,6 +5025,10 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		routes = append(routes, s.tenantSafeRawEntries(rr)...)
 	}
 
+	// v2.61.3 (issue #129): exact hostnames before wildcards, so a wildcard host
+	// can never take over a more specific host's route (and skip its allowlist).
+	routes = sortRoutesBySpecificity(routes)
+
 	// Global maintenance mode: prepend a catch-all 503 before all routes so
 	// every incoming request receives the maintenance page regardless of which
 	// virtual host it targets. The route has no host matcher (catches all),
@@ -5577,6 +5581,9 @@ func (s *Server) buildHTTPRoutes(proxies []models.ProxyHost, redirs []models.Red
 	if redirect := buildHTTPSRedirectRoute(forcedDomains); redirect != nil {
 		routes = append(routes, redirect)
 	}
+	// The HTTPS redirect for forced hosts must also beat a wildcard host that
+	// is served on :80 (issue #129).
+	routes = sortRoutesBySpecificity(routes)
 	// The fallback goes after the HTTPS redirect, so a forced-SSL host is
 	// redirected rather than answered with the fallback 404 (issue #123).
 	return s.withFallbackRoute(routes)
