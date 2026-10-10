@@ -2,6 +2,13 @@
 
 CaddyUI's interface can be shown in other languages (since v2.62.0, issue #128). English is the source; every other language is a JSON file of translations. **Adding or updating a language is a data-only change — no Go, template or JavaScript edits.**
 
+## Available languages
+
+| Code | Language | Maintainer |
+|---|---|---|
+| `en` | English (source) | — |
+| `zh-CN` | 简体中文 (Simplified Chinese) | @chongfenglaosiji (since v2.62.1) |
+
 ## The catalog files
 
 Catalogs live in [`web/i18n/`](../web/i18n/), one file per language, named by its [BCP 47](https://www.rfc-editor.org/info/bcp47) code:

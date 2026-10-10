@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.62.1] - 2026-10-10 - Simplified Chinese (#130)
+
+### Added
+
+- **Simplified Chinese (`zh-CN`) interface translation**, contributed by @chongfenglaosiji (#130) — every key currently in the catalog: the navigation and its sections, the top bar and *Create* menu, the user menu, the command-palette search, the list-page titles and the language settings. Pick it under **Profile → Language**; browsers that ask for Chinese (`zh`, `zh-CN`, `zh-TW`, …) get it automatically. Parts of the interface not yet moved onto the catalog stay in English and will follow release by release. Thank you!
+
+---
+
 ## [2.62.0] - 2026-10-09 - Interface languages: the localization plumbing (#128)
 
 Requested by @chongfenglaosiji, who has offered to translate CaddyUI into Simplified Chinese.
