@@ -39,9 +39,9 @@ Each file is a flat JSON object of **key → text**:
 
 ## Choosing the language
 
-- Each person picks a language under **Profile → Language** (or *Use my browser's language*, the default).
-- Otherwise the browser's `Accept-Language` decides (`zh-TW` or `zh` will use `zh-CN` if that is the closest available).
-- Otherwise the **Settings → General → Default language**, otherwise English.
+- Each person can pick a language under **Profile → Language** — that always wins.
+- Otherwise, if an administrator set **Settings → General → Default language**, that applies.
+- Otherwise the browser's `Accept-Language` decides (`zh-TW` or `zh` will use `zh-CN` if that is the closest available), otherwise English.
 
 ## Checking your work
 

@@ -58,21 +58,26 @@ func tFunc(ctx any, key string, args ...any) string {
 }
 
 // requestLocale picks the language for a request: the signed-in user's own
-// choice, then the browser's Accept-Language, then the site default, then
-// English. Only languages with a catalog are ever returned.
+// choice, then the site default an administrator set, then the browser's
+// Accept-Language, then English. Only languages with a catalog are returned.
+//
+// v2.62.2: the site default used to come AFTER the browser, so for anyone whose
+// browser asks for English (which always exists) it never applied — choosing a
+// default language in Settings visibly did nothing. An explicit default now
+// wins over the browser; leaving it on "follow each browser" keeps the browser.
 func (s *Server) requestLocale(r *http.Request, u *models.User) string {
 	b := translations()
 	if u != nil && u.Locale != "" && b.Has(u.Locale) {
 		return u.Locale
 	}
-	if r != nil {
-		if l := b.Match(i18n.ParseAcceptLanguage(r.Header.Get("Accept-Language"))...); l != "" {
-			return l
-		}
-	}
 	if s != nil && s.DB != nil {
 		if d := mustGetSetting(s.DB, settingDefaultLocale); d != "" && b.Has(d) {
 			return d
+		}
+	}
+	if r != nil {
+		if l := b.Match(i18n.ParseAcceptLanguage(r.Header.Get("Accept-Language"))...); l != "" {
+			return l
 		}
 	}
 	return i18n.Default

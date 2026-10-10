@@ -53,7 +53,7 @@
   "profile.language.save": "Save language",
   "profile.language.saved": "Language saved.",
   "settings.default_language.auto": "Follow each browser (English otherwise)",
-  "settings.default_language.help": "Used for people who have not picked a language on their profile and whose browser asks for none that CaddyUI has. Applied immediately.",
+  "settings.default_language.help": "Shown to everyone who has not picked a language on their own profile. Choose “Follow each browser” to use each person's browser language instead. Applied immediately.",
   "settings.default_language.label": "Default language",
   "topbar.create": "Create",
   "topbar.create_menu": "Create resource",

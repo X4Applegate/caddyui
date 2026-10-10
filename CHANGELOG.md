@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.62.2] - 2026-10-10 - The default language setting now takes effect
+
+### Fixed
+
+- **Settings → General → Default language did nothing for most people.** The language was chosen as: your own profile choice, then the **browser's** language, then the site default — and since every English-language browser matches the English catalog, the site default was never reached. Choosing Simplified Chinese as the default visibly changed nothing. The order is now: your own **Profile → Language** choice, then the **site default** when an administrator has set one, then the browser, then English. Leaving the default on *Follow each browser* keeps the old browser-based behaviour. The setting's help text says so (in English and Chinese).
+
+---
+
 ## [2.62.1] - 2026-10-10 - Simplified Chinese (#130)
 
 ### Added

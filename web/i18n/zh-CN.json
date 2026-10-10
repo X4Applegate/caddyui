@@ -53,7 +53,7 @@
   "profile.language.save": "保存语言",
   "profile.language.saved": "语言已保存。",
   "settings.default_language.auto": "跟随各访问者的浏览器（否则用英文）",
-  "settings.default_language.help": "用于未在个人资料中选择语言、且浏览器请求的语言 CaddyUI 都没有的用户。立即生效。",
+  "settings.default_language.help": "向所有尚未在个人资料中选择语言的人显示。选择“跟随各访问者的浏览器”则改用每个人浏览器的语言。立即生效。",
   "settings.default_language.label": "默认语言",
   "topbar.create": "创建",
   "topbar.create_menu": "创建资源",

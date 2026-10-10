@@ -76,8 +76,22 @@ func TestEveryCatalogMatchesEnglishKeysAndPlaceholders(t *testing.T) {
 	}
 }
 
-func TestRequestLocalePrefersUserThenBrowserThenSiteDefault(t *testing.T) {
+func TestRequestLocalePrefersUserThenSiteDefaultThenBrowser(t *testing.T) {
 	s := newHTTPOnlyTestServer(t)
+	en, _ := fs.ReadFile(web.FS, "i18n/en.json")
+	b, err := i18n.Load(fstest.MapFS{
+		"i18n/en.json":    {Data: en},
+		"i18n/zh-CN.json": {Data: []byte(`{"_meta.name":"简体中文"}`)},
+		"i18n/de.json":    {Data: []byte(`{"_meta.name":"Deutsch"}`)},
+	}, "i18n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	translations()
+	orig := i18nBundle
+	i18nBundle = b
+	t.Cleanup(func() { i18nBundle = orig })
+
 	req := func(accept string) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		if accept != "" {
@@ -85,20 +99,29 @@ func TestRequestLocalePrefersUserThenBrowserThenSiteDefault(t *testing.T) {
 		}
 		return r
 	}
+	// No default set: the browser decides, else English.
+	if got := s.requestLocale(req("de-DE,de;q=0.9"), nil); got != "de" {
+		t.Errorf("browser de → %q", got)
+	}
 	if got := s.requestLocale(req("fr-FR"), nil); got != "en" {
-		t.Errorf("no match anywhere → %q, want en", got)
+		t.Errorf("nothing matches → %q, want en", got)
 	}
-	// The user's own (unknown) choice is ignored rather than breaking the page.
-	if got := s.requestLocale(req(""), &models.User{Locale: "xx-YY"}); got != "en" {
-		t.Errorf("unknown user locale → %q", got)
+	// An administrator's default beats the browser — even an English browser.
+	_ = models.SetSetting(s.DB, settingDefaultLocale, "zh-CN")
+	if got := s.requestLocale(req("en-US,en;q=0.9"), nil); got != "zh-CN" {
+		t.Errorf("site default zh-CN with an English browser → %q (the bug: the default never applied)", got)
 	}
-	if got := s.requestLocale(req("en-GB,en;q=0.9"), nil); got != "en" {
-		t.Errorf("en-GB → %q", got)
+	// …but a person's own choice beats the default.
+	if got := s.requestLocale(req("en-US"), &models.User{Locale: "de"}); got != "de" {
+		t.Errorf("own choice → %q", got)
 	}
-	// Site default applies only when neither the user nor the browser decides.
-	_ = models.SetSetting(s.DB, settingDefaultLocale, "en")
-	if got := s.requestLocale(req("fr"), nil); got != "en" {
-		t.Errorf("site default → %q", got)
+	// An unknown own choice or default is ignored rather than breaking the page.
+	if got := s.requestLocale(req(""), &models.User{Locale: "xx-YY"}); got != "zh-CN" {
+		t.Errorf("unknown own choice → %q, want the site default", got)
+	}
+	_ = models.SetSetting(s.DB, settingDefaultLocale, "klingon")
+	if got := s.requestLocale(req("de"), nil); got != "de" {
+		t.Errorf("unknown default → %q, want the browser's", got)
 	}
 }
 
