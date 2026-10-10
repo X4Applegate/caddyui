@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.63.1] - 2026-10-10 - Simplified Chinese covers the Dashboard, Profile and Settings › General (#131–#135)
+
+### Added
+
+- **The Simplified Chinese (`zh-CN`) translation now covers everything on the catalog**, contributed again by @chongfenglaosiji in five pull requests: Settings › General (#131), the Settings navigation, post-apply checks and colour themes (#132), the Dashboard (#133), Profile (#134), and the health-dot tooltips and shared status words (#135). Every one of the 313 keys is translated, so these pages are fully Chinese with no English left over. The *Follow each browser* option was also reworded slightly. Thank you!
+
+---
+
 ## [2.63.0] - 2026-10-10 - Dashboard, Profile and Settings › General can be translated (#128)
 
 ### Added
