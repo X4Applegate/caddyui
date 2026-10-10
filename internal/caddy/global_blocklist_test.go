@@ -15,7 +15,7 @@ func TestBuildGlobalBlocklistRoute(t *testing.T) {
 	// Newline-separated input (as the Settings textarea invites) must parse into
 	// distinct ranges, not one malformed CIDR (issue #100 review).
 	if nl := BuildGlobalBlocklistRoute("203.0.113.5/32\n198.51.100.0/24"); nl != nil {
-		r := nl["match"].([]any)[0].(map[string]any)["remote_ip"].(map[string]any)["ranges"].([]any)
+		r := nl["match"].([]any)[0].(map[string]any)["client_ip"].(map[string]any)["ranges"].([]any)
 		if len(r) != 2 || r[0] != "203.0.113.5/32" || r[1] != "198.51.100.0/24" {
 			t.Fatalf("newline ranges = %#v, want two distinct CIDRs", r)
 		}
@@ -31,7 +31,7 @@ func TestBuildGlobalBlocklistRoute(t *testing.T) {
 		t.Fatalf("route must be terminal, got %#v", route["terminal"])
 	}
 	match := route["match"].([]any)[0].(map[string]any)
-	ranges := match["remote_ip"].(map[string]any)["ranges"].([]any)
+	ranges := match["client_ip"].(map[string]any)["ranges"].([]any)
 	if len(ranges) != 2 || ranges[0] != "203.0.113.5/32" || ranges[1] != "198.51.100.0/24" {
 		t.Fatalf("ranges = %#v, want the two CIDRs in order", ranges)
 	}

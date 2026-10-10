@@ -3341,7 +3341,7 @@ document.addEventListener('DOMContentLoaded', function() {
       <div>
         <input name="access_list" value="{{.Host.AccessList}}" placeholder="192.168.1.0/24, 10.0.0.0/8"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-        <p class="text-xs text-ink-500 mt-1.5">Leave blank to allow all IPs. Only listed CIDRs will be forwarded; others get 403.</p>
+        <p class="text-xs text-ink-500 mt-1.5">Leave blank to allow all IPs. Only listed CIDRs will be forwarded; others get 403. Behind a load balancer or CDN, add it under <a href="/settings/security" class="text-brand-600 hover:underline">Settings › Security → Trusted proxy IPs/CIDRs</a> so the visitor's real address is checked, not the balancer's.</p>
       </div>
 
       {{/* IP Blocklist */}}

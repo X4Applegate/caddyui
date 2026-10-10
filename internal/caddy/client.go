@@ -3239,7 +3239,7 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 					"routes": []any{map[string]any{
 						"match": []any{map[string]any{
 							"not": []any{map[string]any{
-								"remote_ip": map[string]any{"ranges": allowedRanges},
+								"client_ip": map[string]any{"ranges": allowedRanges},
 							}},
 						}},
 						"handle":   []any{maintHandler},
@@ -4011,8 +4011,18 @@ func parseCIDRList(s string) []string {
 	return out
 }
 
+// v2.63.2 (issue #129): every CaddyUI IP check — host and redirect allowlists,
+// blocklists, block-private-IPs, the global blocklist and the maintenance
+// bypass list — matches Caddy's client_ip rather than remote_ip. Without
+// Settings › Security → Trusted proxy IPs/CIDRs the two are identical (the
+// address of the connection, so headers cannot spoof it); with trusted proxies
+// set, client_ip is the visitor's address taken from X-Forwarded-For (or the
+// configured client IP headers) — the only way an allowlist can work behind a
+// load balancer. remote_ip always saw the balancer, so allowlists either let
+// everyone in or nobody.
+
 // ipAllowlistSubroute returns a Caddy subroute handler that responds 403 to
-// any request whose remote IP is not in the given CIDR allowlist.
+// any request whose client IP is not in the given CIDR allowlist.
 func ipAllowlistSubroute(cidrList []string) map[string]any {
 	ranges := make([]any, len(cidrList))
 	for i, c := range cidrList {
@@ -4024,7 +4034,7 @@ func ipAllowlistSubroute(cidrList []string) map[string]any {
 			map[string]any{
 				"match": []any{map[string]any{
 					"not": []any{map[string]any{
-						"remote_ip": map[string]any{"ranges": ranges},
+						"client_ip": map[string]any{"ranges": ranges},
 					}},
 				}},
 				"handle":   []any{map[string]any{"handler": "static_response", "status_code": 403}},
@@ -4035,7 +4045,7 @@ func ipAllowlistSubroute(cidrList []string) map[string]any {
 }
 
 // ipBlocklistSubroute returns a Caddy subroute handler that responds 403 to
-// any request whose remote IP matches one of the listed CIDR ranges.
+// any request whose client IP matches one of the listed CIDR ranges.
 func ipBlocklistSubroute(cidrList []string) map[string]any {
 	ranges := make([]any, len(cidrList))
 	for i, c := range cidrList {
@@ -4046,7 +4056,7 @@ func ipBlocklistSubroute(cidrList []string) map[string]any {
 		"routes": []any{
 			map[string]any{
 				"match": []any{map[string]any{
-					"remote_ip": map[string]any{"ranges": ranges},
+					"client_ip": map[string]any{"ranges": ranges},
 				}},
 				"handle":   []any{map[string]any{"handler": "static_response", "status_code": 403}},
 				"terminal": true,
@@ -4069,7 +4079,7 @@ func BuildGlobalBlocklistRoute(raw string) map[string]any {
 		ranges[i] = c
 	}
 	return map[string]any{
-		"match":    []any{map[string]any{"remote_ip": map[string]any{"ranges": ranges}}},
+		"match":    []any{map[string]any{"client_ip": map[string]any{"ranges": ranges}}},
 		"handle":   []any{map[string]any{"handler": "static_response", "status_code": 403}},
 		"terminal": true,
 	}
@@ -4170,7 +4180,7 @@ func BuildRedirectRoute(r models.RedirectionHost) map[string]any {
 					map[string]any{
 						"match": []any{map[string]any{
 							"not": []any{map[string]any{
-								"remote_ip": map[string]any{"ranges": allowed},
+								"client_ip": map[string]any{"ranges": allowed},
 							}},
 						}},
 						"handle":   []any{map[string]any{"handler": "static_response", "status_code": 403}},

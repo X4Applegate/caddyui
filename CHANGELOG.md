@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.63.2] - 2026-10-10 - IP allowlists work behind a load balancer (#129)
+
+### Fixed
+
+- **IP allowlists and blocklists now honour Settings › Security → Trusted proxy IPs/CIDRs.** Every IP check CaddyUI generates matched Caddy's `remote_ip`, which is always the address of the machine that connects to Caddy. Behind a load balancer, reverse proxy or CDN, that is the balancer, never the visitor, so an allowlist either let everyone in (balancer inside the list) or locked everyone out (balancer outside it), whatever the trusted-proxy setting said. The checks now use Caddy's `client_ip`:
+  - **No trusted proxies configured:** `client_ip` is exactly the connection's address, so nothing changes and a forged `X-Forwarded-For` header is still ignored.
+  - **Trusted proxies configured:** the visitor's real address is taken from `X-Forwarded-For` (or the configured *Client IP headers*), but only on connections that come from a trusted proxy.
+  - This covers proxy-host and redirection allowlists, IP blocklists, *Block private IPs*, the global blocklist and the maintenance-mode bypass list. Verified on Caddy 2.11.7 through a load balancer: with the balancer trusted, an allowed visitor gets through, an outside visitor gets 403, and a forged header sent straight to Caddy is refused.
+- The allowlist and trusted-proxy fields explain this, including that anything listed as a trusted proxy can claim any client address.
+
+### Notes
+
+- **Behind a load balancer?** Add its address under **Settings › Security → Trusted proxy IPs/CIDRs**. If it forwards TCP/TLS without HTTP (passthrough), it cannot pass the visitor's address in a header, and IP allowlists cannot tell visitors apart.
+- `client_ip` needs **Caddy 2.7 or newer** (the `applegater/caddyui-caddy` image ships 2.11.7).
+
+---
+
 ## [2.63.1] - 2026-10-10 - Simplified Chinese covers the Dashboard, Profile and Settings › General (#131–#135)
 
 ### Added

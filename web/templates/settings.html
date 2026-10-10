@@ -895,7 +895,7 @@
     </div>
     <div class="py-4 border-b border-ink-100">
       <label class="block text-sm font-medium text-ink-900 mb-1.5">Trusted proxy IPs/CIDRs</label>
-      <p class="text-xs text-ink-500 mb-2">One per line or comma-separated. Used to extract real client IPs from X-Forwarded-For headers (e.g. Cloudflare, load balancers).</p>
+      <p class="text-xs text-ink-500 mb-2">One per line or comma-separated. Used to extract real client IPs from X-Forwarded-For headers (e.g. Cloudflare, load balancers). IP allowlists and blocklists then check that real address. Only list proxies you control: anything listed here can claim any client address.</p>
       <textarea name="trusted_proxies" rows="3"
         placeholder="103.21.244.0/22&#10;103.22.200.0/22&#10;10.0.0.0/8"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.TrustedProxies}}</textarea>
