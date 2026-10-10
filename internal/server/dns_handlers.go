@@ -1179,6 +1179,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	lang := s.requestLocale(r, s.currentUser(r)) // v2.63.0: section names in the reader's language
 	webhookURL, _ := models.GetSetting(s.DB, settingNotifyWebhookURL)
 	// v2.12.51: ntfy.sh push channel — load alongside the existing webhook.
 	ntfyURL, _ := models.GetSetting(s.DB, settingNotifyNtfyURL)
@@ -1532,10 +1533,10 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"DisableHTTP3":         mustGetSetting(s.DB, settingDisableHTTP3),
 		"DatabaseBackend":      string(appdb.BackendOf(s.DB)),
 		"Section":              "settings",
-		"SettingsSection":      settingsPage,                       // v2.44.0
-		"SettingsSectionLabel": settingsSectionLabel(settingsPage), // v2.44.0
-		"SettingsNav":          settingsSections,                   // v2.44.0
-		"SettingsAnchorsJSON":  settingsAnchorsJSON(),              // v2.44.0
+		"SettingsSection":      settingsPage,                                      // v2.44.0
+		"SettingsSectionLabel": localizedSettingsSectionLabel(lang, settingsPage), // v2.44.0; v2.63.0 translated
+		"SettingsNav":          localizedSettingsSections(lang),                   // v2.44.0; v2.63.0 translated
+		"SettingsAnchorsJSON":  settingsAnchorsJSON(),                             // v2.44.0
 	})
 }
 

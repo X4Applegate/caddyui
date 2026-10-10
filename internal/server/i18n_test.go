@@ -226,3 +226,64 @@ func TestASecondLanguageActuallyRenders(t *testing.T) {
 		t.Error("one user's language leaked to another")
 	}
 }
+
+// v2.63.0: the Settings navigation is defined in Go; en.json must carry the
+// same English text, or a translated page would show raw keys or stale wording.
+func TestSettingsNavigationMatchesTheEnglishCatalog(t *testing.T) {
+	en := translations().Catalog("en")
+	for _, sec := range settingsSections {
+		if got := en["settings.section."+sec.Slug+".label"]; got != sec.Label {
+			t.Errorf("settings.section.%s.label = %q, Go says %q", sec.Slug, got, sec.Label)
+		}
+		if got := en["settings.section."+sec.Slug+".blurb"]; got != sec.Blurb {
+			t.Errorf("settings.section.%s.blurb = %q, Go says %q", sec.Slug, got, sec.Blurb)
+		}
+	}
+	if got := localizedSettingsSectionLabel("en", "bogus"); got != "Settings" {
+		t.Errorf("unknown section label → %q", got)
+	}
+}
+
+// v2.63.0: the Dashboard, Profile and Settings › General pages follow the
+// chosen language, placeholders included, with untranslated keys left English.
+func TestDashboardProfileAndSettingsFollowTheLanguage(t *testing.T) {
+	en, _ := fs.ReadFile(web.FS, "i18n/en.json")
+	b, err := i18n.Load(fstest.MapFS{
+		"i18n/en.json": {Data: en},
+		"i18n/zh-CN.json": {Data: []byte(`{"_meta.name":"简体中文",
+			"dashboard.heading":"基础设施概览","js.health.port_disabled":"端口：已禁用",
+			"profile.heading":"我的资料",
+			"settings.section.general.label":"常规","settings.section.general.blurb":"站点标题等",
+			"settings.general.site_title":"站点标题","settings.save_section":"保存{section}设置"}`)},
+	}, "i18n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	translations()
+	orig := i18nBundle
+	i18nBundle = b
+	t.Cleanup(func() { i18nBundle = orig })
+
+	e := newSecEnv(t)
+	if rec := e.do(t, "admin", http.MethodPost, "/profile", url.Values{"action": {"update_locale"}, "locale": {"zh-CN"}}); !strings.Contains(rec.Header().Get("Location"), "flash=") {
+		t.Fatalf("choosing zh-CN failed: %s", rec.Header().Get("Location"))
+	}
+	pages := map[string][]string{
+		"/":                 {"基础设施概览", `"js.health.port_disabled":"端口：已禁用"`, "Sync Caddy"},
+		"/profile":          {"我的资料", "Display name"},
+		"/settings/general": {">常规<", "站点标题等", ">站点标题<", "保存常规设置", "Color theme", ">Notifications<"},
+	}
+	for path, wants := range pages {
+		body := e.do(t, "admin", http.MethodGet, path, nil).Body.String()
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s in zh-CN is missing %q", path, want)
+			}
+		}
+		for _, raw := range []string{">dashboard.", "\"dashboard.", ">profile.", ">settings.", "\"settings."} {
+			if strings.Contains(body, raw) {
+				t.Errorf("%s leaked a raw translation key (%s…)", path, raw)
+			}
+		}
+	}
+}

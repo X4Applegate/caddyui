@@ -53,7 +53,20 @@ This loads every catalog and fails if a file is not valid JSON, uses a key Engli
 
 ## What is translated so far
 
-The plumbing landed in v2.62.0 with English for the navigation, the top bar and its menus, the user menu, the list-page titles, the profile language picker and the default-language setting. More of the interface is moved onto keys release by release — the large proxy-host form last. When new keys appear in `en.json`, a translation simply shows English for them until it is updated.
+The plumbing landed in v2.62.0 with English for the navigation, the top bar and its menus, the user menu, the list-page titles, the profile language picker and the default-language setting.
+
+v2.63.0 added about 250 keys:
+
+| Prefix | What it covers |
+|---|---|
+| `dashboard.*` | the whole Dashboard page |
+| `js.dashboard.*`, `js.health.*` | texts the Dashboard's script writes (health-dot tooltips, update notice) |
+| `profile.*`, `profile.msg.*` | the whole Profile page and its saved/error messages |
+| `settings.section.*` | the Settings navigation: each section's name and description |
+| `settings.*` (others) | the Settings heading and save buttons, and the whole **General** page |
+| `status.*` | shared status words — Online, Offline, Enabled, Disabled, … |
+
+More of the interface is moved onto keys release by release — the other Settings pages, then the list pages and forms, the large proxy-host form last. When new keys appear in `en.json`, a translation simply shows English for them until it is updated.
 
 ## Sending a translation
 

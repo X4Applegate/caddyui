@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.63.0] - 2026-10-10 - Dashboard, Profile and Settings › General can be translated (#128)
+
+### Added
+
+- **250 more interface strings are on the translation catalog**, so a translation can now cover the whole **Dashboard** (banners, server and route summary, traffic, system health, *Needs attention*, the fleet cards, recent activity and the proxy-host / advanced-route tables, including the health-dot tooltips drawn by its script), the whole **Profile** page (including its saved/error messages), the **Settings navigation** (every section's name and description, the page heading and the *Save … settings* button) and the full **Settings › General** page (general options, timezone and post-apply checks). English output is unchanged.
+- **Messages built on the server can be translated too** — the Profile page's confirmations and errors are now looked up in the reader's language before the redirect.
+- Shared status words (*Online*, *Offline*, *Enabled*, *Disabled*, …) have their own `status.*` keys, ready for the list pages to reuse.
+
+### Notes
+
+- Translations simply show English for the new keys until they are updated — nothing breaks in the meantime. The remaining Settings pages, the list pages and the forms follow in the next batches; the large proxy-host form comes last.
+- A new test keeps the Settings navigation (defined in Go) and its English catalog text identical, and another renders the Dashboard, Profile and Settings › General pages in a second language.
+
+---
+
 ## [2.62.2] - 2026-10-10 - The default language setting now takes effect
 
 ### Fixed

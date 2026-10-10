@@ -3,6 +3,7 @@
 package web
 
 import (
+	"encoding/json"
 	"io/fs"
 	"strings"
 	"testing"
@@ -125,15 +126,26 @@ func TestDashboardClarifiesFleetTelemetryScopes(t *testing.T) {
 		t.Fatalf("read dashboard.html: %v", err)
 	}
 	dashboard := string(dashboardHTML)
-	for _, marker := range []string{
-		"Certificate definitions",
-		"CaddyUI host resources · Caddy telemetry from",
-		"CaddyUI host uptime",
-		"Node active requests",
-		"fetch('/api/system-stats')",
+	if !strings.Contains(dashboard, "fetch('/api/system-stats')") {
+		t.Fatal("dashboard template no longer fetches /api/system-stats")
+	}
+	// v2.63.0: the wording lives in the English catalog behind translation keys.
+	enJSON, err := FS.ReadFile("i18n/en.json")
+	if err != nil {
+		t.Fatalf("read en.json: %v", err)
+	}
+	var en map[string]string
+	if err := json.Unmarshal(enJSON, &en); err != nil {
+		t.Fatal(err)
+	}
+	for key, marker := range map[string]string{
+		"dashboard.routes.certificates":    "Certificate definitions",
+		"dashboard.system.description":     "CaddyUI host resources · Caddy telemetry from",
+		"dashboard.system.uptime":          "CaddyUI host uptime",
+		"dashboard.system.active_requests": "Node active requests",
 	} {
-		if !strings.Contains(dashboard, marker) {
-			t.Fatalf("dashboard template missing scope marker %q", marker)
+		if !strings.Contains(dashboard, `"`+key+`"`) || !strings.Contains(en[key], marker) {
+			t.Fatalf("dashboard is missing scope marker %q (key %s)", marker, key)
 		}
 	}
 	if strings.Contains(dashboard, "/api/system-stats?sid=") {

@@ -82,3 +82,9 @@ func (s *Server) requestLocale(r *http.Request, u *models.User) string {
 	}
 	return i18n.Default
 }
+
+// tr translates key for the request's language — for messages built in Go,
+// such as the flash and error texts handed to a page through a redirect.
+func (s *Server) tr(r *http.Request, key string, args ...any) string {
+	return translations().T(s.requestLocale(r, s.currentUser(r)), key, args...)
+}

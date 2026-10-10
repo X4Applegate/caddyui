@@ -7490,11 +7490,11 @@ func (s *Server) postProfile(w http.ResponseWriter, r *http.Request) {
 	case "update_locale": // v2.62.0 (issue #128)
 		loc := strings.TrimSpace(r.FormValue("locale"))
 		if loc != "" && !translations().Has(loc) {
-			http.Redirect(w, r, "/profile?error=Unknown+language", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.unknown_language")), http.StatusFound)
 			return
 		}
 		if err := models.UpdateUserLocale(s.DB, cu.ID, loc); err != nil {
-			http.Redirect(w, r, "/profile?error=Failed+to+save+language", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.save_language_failed")), http.StatusFound)
 			return
 		}
 		lang := loc
@@ -7506,41 +7506,41 @@ func (s *Server) postProfile(w http.ResponseWriter, r *http.Request) {
 	case "update_name":
 		name := strings.TrimSpace(r.FormValue("name"))
 		if name == "" {
-			http.Redirect(w, r, "/profile?error=Name+cannot+be+empty", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.name_empty")), http.StatusFound)
 			return
 		}
 		if _, err := s.DB.Exec(`UPDATE users SET name=? WHERE id=?`, name, cu.ID); err != nil {
 			log.Printf("profile update_name: %v", err)
-			http.Redirect(w, r, "/profile?error=Failed+to+update+name", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.name_failed")), http.StatusFound)
 			return
 		}
 		_ = models.LogActivity(s.DB, s.currentServerID(r), cu.Email, "profile_update_name", "", "", true)
-		http.Redirect(w, r, "/profile?flash=Name+updated+successfully", http.StatusFound)
+		http.Redirect(w, r, "/profile?flash="+url.QueryEscape(s.tr(r, "profile.msg.name_updated")), http.StatusFound)
 	case "change_password":
 		currentPw := r.FormValue("current_password")
 		newPw := r.FormValue("new_password")
 		confirmPw := r.FormValue("confirm_password")
 		if newPw != confirmPw {
-			http.Redirect(w, r, "/profile?error=New+passwords+do+not+match", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.password_mismatch")), http.StatusFound)
 			return
 		}
 		if len(newPw) < 8 {
-			http.Redirect(w, r, "/profile?error=Password+must+be+at+least+8+characters", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.password_short")), http.StatusFound)
 			return
 		}
 		u, err := models.GetUserByEmail(s.DB, cu.Email)
 		if err != nil || !auth.CheckPassword(u.PasswordHash, currentPw) {
-			http.Redirect(w, r, "/profile?error=Current+password+is+incorrect", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.password_wrong")), http.StatusFound)
 			return
 		}
 		hash, err := auth.HashPassword(newPw)
 		if err != nil {
-			http.Redirect(w, r, "/profile?error=Failed+to+hash+password", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.password_hash_failed")), http.StatusFound)
 			return
 		}
 		if _, err := s.DB.Exec(`UPDATE users SET password_hash=? WHERE id=?`, hash, cu.ID); err != nil {
 			log.Printf("profile change_password: %v", err)
-			http.Redirect(w, r, "/profile?error=Failed+to+update+password", http.StatusFound)
+			http.Redirect(w, r, "/profile?error="+url.QueryEscape(s.tr(r, "profile.msg.password_failed")), http.StatusFound)
 			return
 		}
 		// v2.57.1: sign every OTHER device out; this browser keeps its session.
@@ -7548,7 +7548,7 @@ func (s *Server) postProfile(w http.ResponseWriter, r *http.Request) {
 			_ = auth.DeleteOtherSessions(s.DB, cu.ID, c.Value)
 		}
 		_ = models.LogActivity(s.DB, s.currentServerID(r), cu.Email, "profile_change_password", "", "", true)
-		http.Redirect(w, r, "/profile?flash=Password+changed+successfully", http.StatusFound)
+		http.Redirect(w, r, "/profile?flash="+url.QueryEscape(s.tr(r, "profile.msg.password_changed")), http.StatusFound)
 	default:
 		http.Redirect(w, r, "/profile", http.StatusFound)
 	}

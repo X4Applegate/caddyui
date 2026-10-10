@@ -1,41 +1,41 @@
-{{define "title"}}Operations · CaddyUI{{end}}
+{{define "title"}}{{t $ "dashboard.title"}} · CaddyUI{{end}}
 {{define "content"}}
 <div class="ops-dashboard">
   {{if eq .GlobalMaintenance "1"}}
   <div class="ops-alert ops-alert--warning" role="status">
     <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-    <span><strong>Global maintenance mode is active.</strong> All proxy hosts are serving a 503 page. <a href="/settings/general">Turn it off in Settings</a> and sync Caddy to restore service.</span>
+    <span><strong>{{t $ "dashboard.maintenance.global_active"}}</strong> {{t $ "dashboard.maintenance.global_detail"}} <a href="/settings/general">{{t $ "dashboard.maintenance.turn_off"}}</a> {{t $ "dashboard.maintenance.restore"}}</span>
   </div>
   {{else if .MaintenanceCount}}
   <div class="ops-alert ops-alert--warning" role="status">
     <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-    <span><strong>{{.MaintenanceCount}} proxy {{if eq .MaintenanceCount 1}}host is{{else}}hosts are{{end}} in maintenance mode.</strong> <a href="/proxy-hosts?status=maintenance">View affected hosts</a>.</span>
+    <span><strong>{{if eq .MaintenanceCount 1}}{{t $ "dashboard.maintenance.hosts_one" "count" .MaintenanceCount}}{{else}}{{t $ "dashboard.maintenance.hosts_other" "count" .MaintenanceCount}}{{end}}</strong> <a href="/proxy-hosts?status=maintenance">{{t $ "dashboard.maintenance.view_affected"}}</a>.</span>
   </div>
   {{end}}
 
   <header class="ops-page-header">
     <div>
-      <div class="ops-page-header__eyebrow">Operations center</div>
-      <h1>Infrastructure overview</h1>
-      <p>Monitor the active Caddy environment, resolve issues, and move directly into common management workflows.</p>
+      <div class="ops-page-header__eyebrow">{{t $ "dashboard.eyebrow"}}</div>
+      <h1>{{t $ "dashboard.heading"}}</h1>
+      <p>{{t $ "dashboard.intro"}}</p>
     </div>
     <div class="ops-page-actions">
       {{if eq .User.Role "admin"}}
       <a href="/servers" class="ui-button ui-button--quiet">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg>
-        Manage servers
+        {{t $ "dashboard.manage_servers"}}
       </a>
       {{end}}
       <form method="post" action="/caddy/reload">
         <button class="ui-button ui-button--secondary">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-          Sync Caddy
+          {{t $ "dashboard.sync_caddy"}}
         </button>
       </form>
       {{if ne .User.Role "viewer"}}
       <a href="/proxy-hosts/new" class="ui-button ui-button--primary">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-        Publish service
+        {{t $ "dashboard.publish_service"}}
       </a>
       {{end}}
     </div>
@@ -47,25 +47,25 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="m8 12 2.5 2.5L16 9"/></svg>
     </div>
     <div class="ops-readiness__copy">
-      <div class="ops-readiness__eyebrow">Environment readiness · {{.ReadinessSteps}} of 4 required</div>
-      <h2 id="ops-readiness-title">Complete the recommended operating foundation</h2>
-      <p>Verify Caddy connectivity, administrator security, and the first published service. Add DNS automation only when your workflow needs it.</p>
+      <div class="ops-readiness__eyebrow">{{t $ "dashboard.readiness.eyebrow" "done" .ReadinessSteps}}</div>
+      <h2 id="ops-readiness-title">{{t $ "dashboard.readiness.heading"}}</h2>
+      <p>{{t $ "dashboard.readiness.body"}}</p>
     </div>
-    <a href="/onboarding" class="ui-button ui-button--primary">Continue setup</a>
+    <a href="/onboarding" class="ui-button ui-button--primary">{{t $ "dashboard.readiness.continue"}}</a>
   </section>
   {{end}}
 
   {{if .ExpiringSoon}}
   <div class="ops-alert ops-alert--warning">
     <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.3 3.8 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.8a2 2 0 0 0-3.4 0Z"/></svg>
-    <span><strong>{{.ExpiringSoon}} certificate(s) expire within 30 days.</strong> <a href="/certificates">Review certificates</a>.</span>
+    <span><strong>{{t $ "dashboard.certs.expiring" "count" .ExpiringSoon}}</strong> <a href="/certificates">{{t $ "dashboard.certs.review"}}</a>.</span>
   </div>
   {{end}}
 
   <div id="update-notice" class="ops-alert ops-alert--info hidden">
     <svg class="ops-alert__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
     <span id="update-notice-text"></span>
-    <a href="https://github.com/X4Applegate/caddyui/releases" target="_blank" rel="noopener" class="ml-auto">View release</a>
+    <a href="https://github.com/X4Applegate/caddyui/releases" target="_blank" rel="noopener" class="ml-auto">{{t $ "dashboard.update.view_release"}}</a>
   </div>
 
   {{if .CurrentServer}}
@@ -79,16 +79,16 @@
           <div class="ops-server__title" id="active-server-title">
             <span class="truncate">{{.CurrentServer.Name}}</span>
             {{if eq .CurrentServer.Status "online"}}
-            <span class="ui-status ui-status--success">Online</span>
+            <span class="ui-status ui-status--success">{{t $ "status.online"}}</span>
             {{else if eq .CurrentServer.Status "offline"}}
-            <span class="ui-status ui-status--danger">Offline</span>
+            <span class="ui-status ui-status--danger">{{t $ "status.offline"}}</span>
             {{else}}
-            <span class="ui-status ui-status--neutral">Unknown</span>
+            <span class="ui-status ui-status--neutral">{{t $ "status.unknown"}}</span>
             {{end}}
             {{if eq .CurrentServer.Type "managed"}}
-            <span class="ui-status ui-status--info">Managed</span>
+            <span class="ui-status ui-status--info">{{t $ "status.managed"}}</span>
             {{else}}
-            <span class="ui-status ui-status--neutral">External</span>
+            <span class="ui-status ui-status--neutral">{{t $ "status.external"}}</span>
             {{end}}
           </div>
           <div class="ops-server__url" title="{{.CurrentServer.AdminURL}}">{{.CurrentServer.AdminURL}}</div>
@@ -96,55 +96,55 @@
       </div>
       <dl class="ops-server__context">
         <div>
-          <dt class="ops-context__label">Last contact</dt>
-          <dd class="ops-context__value">{{if .CurrentServer.LastContactAt.Valid}}{{fmtIn .CurrentServer.LastContactAt.Time "Jan 2, 3:04 PM"}}{{else}}Never{{end}}</dd>
+          <dt class="ops-context__label">{{t $ "dashboard.server.last_contact"}}</dt>
+          <dd class="ops-context__value">{{if .CurrentServer.LastContactAt.Valid}}{{fmtIn .CurrentServer.LastContactAt.Time "Jan 2, 3:04 PM"}}{{else}}{{t $ "dashboard.server.never"}}{{end}}</dd>
         </div>
         <div>
-          <dt class="ops-context__label">Last sync</dt>
-          <dd class="ops-context__value">{{if .LastSync}}{{fmtIn .LastSync "Jan 2, 3:04 PM"}}{{else}}Never{{end}}</dd>
+          <dt class="ops-context__label">{{t $ "dashboard.server.last_sync"}}</dt>
+          <dd class="ops-context__value">{{if .LastSync}}{{fmtIn .LastSync "Jan 2, 3:04 PM"}}{{else}}{{t $ "dashboard.server.never"}}{{end}}</dd>
         </div>
         <div>
-          <dt class="ops-context__label">Caddy version</dt>
+          <dt class="ops-context__label">{{t $ "dashboard.server.caddy_version"}}</dt>
           <dd class="ops-context__value font-mono" id="caddy-version">…</dd>
         </div>
       </dl>
     </div>
 
-    <div class="ops-route-grid" aria-label="Route inventory">
+    <div class="ops-route-grid" aria-label="{{t $ "dashboard.routes.aria"}}">
       <a href="/proxy-hosts" class="ops-route-metric">
         <div class="ops-route-metric__value tabular-nums">{{len .ProxyHosts}}</div>
-        <div class="ops-route-metric__label">Proxy hosts</div>
+        <div class="ops-route-metric__label">{{t $ "dashboard.routes.proxy_hosts"}}</div>
       </a>
       <a href="/proxy-hosts" class="ops-route-metric">
         <div class="ops-route-metric__value tabular-nums">{{.EnabledHosts}}</div>
-        <div class="ops-route-metric__label">Enabled proxies</div>
+        <div class="ops-route-metric__label">{{t $ "dashboard.routes.enabled"}}</div>
       </a>
       <a href="/proxy-hosts" class="ops-route-metric">
         <div class="ops-route-metric__value tabular-nums">{{.DisabledHosts}}</div>
-        <div class="ops-route-metric__label">Disabled proxies</div>
+        <div class="ops-route-metric__label">{{t $ "dashboard.routes.disabled"}}</div>
       </a>
       <a href="/redirection-hosts" class="ops-route-metric">
         <div class="ops-route-metric__value tabular-nums">{{len .RedirectionHosts}}</div>
-        <div class="ops-route-metric__label">Redirections</div>
+        <div class="ops-route-metric__label">{{t $ "dashboard.routes.redirections"}}</div>
       </a>
       <a href="/raw-routes" class="ops-route-metric">
         <div class="ops-route-metric__value tabular-nums">{{.RawCount}}</div>
-        <div class="ops-route-metric__label">Advanced routes</div>
+        <div class="ops-route-metric__label">{{t $ "dashboard.routes.advanced"}}</div>
       </a>
       <a href="/certificates" class="ops-route-metric">
         <div class="ops-route-metric__value tabular-nums">{{.CertCount}}</div>
-        <div class="ops-route-metric__label">Certificate definitions</div>
+        <div class="ops-route-metric__label">{{t $ "dashboard.routes.certificates"}}</div>
       </a>
     </div>
 
     <div class="ops-health-strip">
-      <span class="ops-health-strip__label">Host health</span>
-      {{if .HealthyCount}}<a href="/proxy-hosts" class="ui-status ui-status--success">{{.HealthyCount}} healthy</a>{{end}}
-      {{if .DownCount}}<a href="/proxy-hosts" class="ui-status ui-status--danger">{{.DownCount}} down</a>{{end}}
-      {{if .UnknownCount}}<span class="ui-status ui-status--neutral">{{.UnknownCount}} unchecked</span>{{end}}
-      {{if not (or .HealthyCount .DownCount .UnknownCount)}}<span class="text-xs text-ink-400">No enabled hosts to check</span>{{end}}
-      {{if .MaintenanceHostCount}}<a href="/proxy-hosts?status=maintenance" class="ui-status ui-status--warning">{{.MaintenanceHostCount}} in maintenance</a>{{end}}
-      {{if eq .User.Role "admin"}}<a href="/servers/{{.CurrentServer.ID}}/config" class="ui-section-header__action ml-auto">View live config →</a>{{end}}
+      <span class="ops-health-strip__label">{{t $ "dashboard.health.label"}}</span>
+      {{if .HealthyCount}}<a href="/proxy-hosts" class="ui-status ui-status--success">{{t $ "dashboard.health.healthy" "count" .HealthyCount}}</a>{{end}}
+      {{if .DownCount}}<a href="/proxy-hosts" class="ui-status ui-status--danger">{{t $ "dashboard.health.down" "count" .DownCount}}</a>{{end}}
+      {{if .UnknownCount}}<span class="ui-status ui-status--neutral">{{t $ "dashboard.health.unchecked" "count" .UnknownCount}}</span>{{end}}
+      {{if not (or .HealthyCount .DownCount .UnknownCount)}}<span class="text-xs text-ink-400">{{t $ "dashboard.health.none"}}</span>{{end}}
+      {{if .MaintenanceHostCount}}<a href="/proxy-hosts?status=maintenance" class="ui-status ui-status--warning">{{t $ "dashboard.health.in_maintenance" "count" .MaintenanceHostCount}}</a>{{end}}
+      {{if eq .User.Role "admin"}}<a href="/servers/{{.CurrentServer.ID}}/config" class="ui-section-header__action ml-auto">{{t $ "dashboard.health.view_config"}} →</a>{{end}}
     </div>
   </section>
   {{end}}
@@ -153,36 +153,36 @@
     {{if or .TodayViews .TodayVisitors}}
     <section class="ui-panel" aria-labelledby="traffic-overview-title">
       <div class="px-4 py-3 border-b border-ink-100">
-        <h2 class="ui-section-header__title" id="traffic-overview-title">Traffic today</h2>
-        <p class="ui-section-header__description">{{if .CurrentServer}}{{.CurrentServer.Name}}{{else}}Active node{{end}} analytics since midnight UTC</p>
+        <h2 class="ui-section-header__title" id="traffic-overview-title">{{t $ "dashboard.traffic.heading"}}</h2>
+        <p class="ui-section-header__description">{{if .CurrentServer}}{{t $ "dashboard.traffic.description" "server" .CurrentServer.Name}}{{else}}{{t $ "dashboard.traffic.description" "server" (t $ "dashboard.traffic.active_node")}}{{end}}</p>
       </div>
       <div class="ops-metrics-grid">
         <div class="ui-metric">
-          <div class="ui-metric__label">Requests</div>
+          <div class="ui-metric__label">{{t $ "dashboard.traffic.requests"}}</div>
           <div class="ops-sparkline">
             <div>
               <div class="ui-metric__value tabular-nums">{{.TodayViews}}</div>
-              <a href="/analytics" class="ui-metric__meta">View analytics →</a>
+              <a href="/analytics" class="ui-metric__meta">{{t $ "dashboard.traffic.view_analytics"}} →</a>
             </div>
             <span id="sparkline-views" class="text-brand-400 opacity-70" aria-hidden="true"></span>
           </div>
         </div>
         <div class="ui-metric">
-          <div class="ui-metric__label">Unique visitors</div>
+          <div class="ui-metric__label">{{t $ "dashboard.traffic.visitors"}}</div>
           <div class="ops-sparkline">
             <div>
               <div class="ui-metric__value tabular-nums">{{.TodayVisitors}}</div>
-              <div class="ui-metric__meta">Unique IPs</div>
+              <div class="ui-metric__meta">{{t $ "dashboard.traffic.unique_ips"}}</div>
             </div>
             <span id="sparkline-visitors" class="text-purple-400 opacity-70" aria-hidden="true"></span>
           </div>
         </div>
         <div class="ui-metric">
-          <div class="ui-metric__label">Bandwidth</div>
+          <div class="ui-metric__label">{{t $ "dashboard.traffic.bandwidth"}}</div>
           <div class="ops-sparkline">
             <div>
               <div class="ui-metric__value tabular-nums">{{fmtBytes .TodayBandwidth}}</div>
-              <div class="ui-metric__meta">Bytes sent</div>
+              <div class="ui-metric__meta">{{t $ "dashboard.traffic.bytes_sent"}}</div>
             </div>
             <span id="sparkline-bandwidth" class="text-emerald-400 opacity-70" aria-hidden="true"></span>
           </div>
@@ -194,35 +194,35 @@
     {{if eq .User.Role "admin"}}
     <section class="ui-panel" id="sys-stats" aria-labelledby="system-health-title">
       <div class="px-4 py-3 border-b border-ink-100">
-        <h2 class="ui-section-header__title" id="system-health-title">System health</h2>
-        <p class="ui-section-header__description">CaddyUI host resources · Caddy telemetry from {{if .CurrentServer}}{{.CurrentServer.Name}}{{else}}the selected node{{end}}</p>
+        <h2 class="ui-section-header__title" id="system-health-title">{{t $ "dashboard.system.heading"}}</h2>
+        <p class="ui-section-header__description">{{if .CurrentServer}}{{t $ "dashboard.system.description" "server" .CurrentServer.Name}}{{else}}{{t $ "dashboard.system.description" "server" (t $ "dashboard.system.selected_node")}}{{end}}</p>
       </div>
       <div class="ops-system-grid">
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">CaddyUI host uptime</div>
+          <div class="ops-system-metric__label">{{t $ "dashboard.system.uptime"}}</div>
           <div class="ops-system-metric__value tabular-nums truncate" id="stat-uptime">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">CaddyUI load 1m / 5m</div>
+          <div class="ops-system-metric__label">{{t $ "dashboard.system.load"}}</div>
           <div class="ops-system-metric__value tabular-nums" id="stat-load">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">CaddyUI memory</div>
+          <div class="ops-system-metric__label">{{t $ "dashboard.system.memory"}}</div>
           <div class="ops-system-metric__value tabular-nums truncate" id="stat-mem">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">CaddyUI memory use</div>
+          <div class="ops-system-metric__label">{{t $ "dashboard.system.memory_use"}}</div>
           <div class="flex items-center gap-2 mt-2">
             <div class="flex-1 bg-ink-100 rounded-full h-1.5 overflow-hidden"><div class="mem-gradient-bar h-1.5 rounded-full" id="stat-mem-bar" style="width:0%"></div></div>
             <span class="ops-system-metric__value mt-0 tabular-nums" id="stat-mem-pct">0%</span>
           </div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Node active requests</div>
+          <div class="ops-system-metric__label">{{t $ "dashboard.system.active_requests"}}</div>
           <div class="ops-system-metric__value tabular-nums" id="stat-reqs">—</div>
         </div>
         <div class="ops-system-metric">
-          <div class="ops-system-metric__label">Node upstreams</div>
+          <div class="ops-system-metric__label">{{t $ "dashboard.system.upstreams"}}</div>
           <div class="ops-system-metric__value tabular-nums" id="stat-ups">—</div>
         </div>
       </div>
@@ -234,22 +234,22 @@
   <section class="ui-section" aria-labelledby="recommended-actions-title">
     <div class="ui-section-header">
       <div>
-        <h2 class="ui-section-header__title" id="recommended-actions-title">Needs attention</h2>
-        <p class="ui-section-header__description">Prioritized actions that improve reliability and security</p>
+        <h2 class="ui-section-header__title" id="recommended-actions-title">{{t $ "dashboard.attention.heading"}}</h2>
+        <p class="ui-section-header__description">{{t $ "dashboard.attention.description"}}</p>
       </div>
-      <a href="/activity" class="ui-section-header__action">Audit trail →</a>
+      <a href="/activity" class="ui-section-header__action">{{t $ "dashboard.attention.audit_trail"}} →</a>
     </div>
     <div class="ui-panel ops-attention-list">
       {{range .Recommendations}}
       <div class="ops-attention-row">
-        {{if eq .Severity "critical"}}<span class="ui-status ui-status--danger">{{.Severity}}</span>
-        {{else if eq .Severity "warning"}}<span class="ui-status ui-status--warning">{{.Severity}}</span>
-        {{else}}<span class="ui-status ui-status--info">{{.Severity}}</span>{{end}}
+        {{if eq .Severity "critical"}}<span class="ui-status ui-status--danger">{{t $ "dashboard.severity.critical"}}</span>
+        {{else if eq .Severity "warning"}}<span class="ui-status ui-status--warning">{{t $ "dashboard.severity.warning"}}</span>
+        {{else if eq .Severity "info"}}<span class="ui-status ui-status--info">{{t $ "dashboard.severity.info"}}</span>{{else}}<span class="ui-status ui-status--info">{{.Severity}}</span>{{end}}
         <div class="min-w-0">
           <div class="ops-attention-row__title">{{.Title}}</div>
           <div class="ops-attention-row__detail">{{.Detail}}</div>
         </div>
-        {{if .URL}}<a href="{{.URL}}" class="ui-section-header__action">{{if .Action}}{{.Action}}{{else}}Open{{end}} →</a>{{end}}
+        {{if .URL}}<a href="{{.URL}}" class="ui-section-header__action">{{if .Action}}{{.Action}}{{else}}{{t $ "dashboard.attention.open"}}{{end}} →</a>{{end}}
       </div>
       {{end}}
     </div>
@@ -260,10 +260,10 @@
   <section class="ui-section" aria-labelledby="fleet-health-title">
     <div class="ui-section-header">
       <div>
-        <h2 class="ui-section-header__title" id="fleet-health-title">Caddy fleet</h2>
-        <p class="ui-section-header__description">Availability and configuration context across registered servers</p>
+        <h2 class="ui-section-header__title" id="fleet-health-title">{{t $ "dashboard.fleet.heading"}}</h2>
+        <p class="ui-section-header__description">{{t $ "dashboard.fleet.description"}}</p>
       </div>
-      <a href="/servers" class="ui-section-header__action">Manage fleet →</a>
+      <a href="/servers" class="ui-section-header__action">{{t $ "dashboard.fleet.manage"}} →</a>
     </div>
     <div class="ops-fleet-grid">
       {{range .ServerHealth}}
@@ -272,23 +272,23 @@
           <div class="min-w-0">
             <div class="flex items-center gap-1.5 flex-wrap">
               <h3 class="ops-fleet-card__name truncate">{{.Name}}</h3>
-              {{if .IsActive}}<span class="ui-status ui-status--info">Active</span>{{end}}
-              {{if .IsExternal}}<span class="ui-status ui-status--warning" title="External read-only server">Read-only</span>{{end}}
+              {{if .IsActive}}<span class="ui-status ui-status--info">{{t $ "status.active"}}</span>{{end}}
+              {{if .IsExternal}}<span class="ui-status ui-status--warning" title="{{t $ "dashboard.fleet.external_title"}}">{{t $ "status.read_only"}}</span>{{end}}
             </div>
             <div class="ops-fleet-card__url" title="{{.AdminURL}}">{{.AdminURL}}</div>
           </div>
-          {{if eq .Status "online"}}<span class="ui-status ui-status--success">Online</span>
-          {{else if eq .Status "offline"}}<span class="ui-status ui-status--danger">Offline</span>
-          {{else}}<span class="ui-status ui-status--neutral">Unknown</span>{{end}}
+          {{if eq .Status "online"}}<span class="ui-status ui-status--success">{{t $ "status.online"}}</span>
+          {{else if eq .Status "offline"}}<span class="ui-status ui-status--danger">{{t $ "status.offline"}}</span>
+          {{else}}<span class="ui-status ui-status--neutral">{{t $ "status.unknown"}}</span>{{end}}
         </div>
         <dl class="ops-fleet-card__metrics">
-          <div class="ops-fleet-card__metric"><dt>Hosts</dt><dd>{{.HostCount}}</dd></div>
+          <div class="ops-fleet-card__metric"><dt>{{t $ "dashboard.fleet.hosts"}}</dt><dd>{{.HostCount}}</dd></div>
           <div class="ops-fleet-card__metric"><dt>Caddy</dt><dd class="font-mono truncate">{{if .Version}}{{.Version}}{{else}}—{{end}}</dd></div>
-          <div class="ops-fleet-card__metric"><dt>Last seen</dt><dd>{{fmtRel .LastContactAt}}</dd></div>
+          <div class="ops-fleet-card__metric"><dt>{{t $ "dashboard.fleet.last_seen"}}</dt><dd>{{fmtRel .LastContactAt}}</dd></div>
         </dl>
         {{if not .IsActive}}
         <form method="post" action="/servers/{{.ID}}/select" class="mt-3">
-          <button class="ui-button ui-button--secondary w-full text-xs">Switch environment</button>
+          <button class="ui-button ui-button--secondary w-full text-xs">{{t $ "dashboard.fleet.switch"}}</button>
         </form>
         {{end}}
       </article>
@@ -301,29 +301,29 @@
   <section class="ui-section" aria-labelledby="recent-activity-title">
     <div class="ui-section-header">
       <div>
-        <h2 class="ui-section-header__title" id="recent-activity-title">Recent activity</h2>
-        <p class="ui-section-header__description">Latest configuration changes on the active server</p>
+        <h2 class="ui-section-header__title" id="recent-activity-title">{{t $ "dashboard.activity.heading"}}</h2>
+        <p class="ui-section-header__description">{{t $ "dashboard.activity.description"}}</p>
       </div>
-      <a href="/activity" class="ui-section-header__action">View all activity →</a>
+      <a href="/activity" class="ui-section-header__action">{{t $ "dashboard.activity.view_all"}} →</a>
     </div>
     <div class="ui-panel ops-activity-list">
       {{range .RecentEdits}}
-      {{$type := "Other"}}
-      {{if hasPrefix .Action "proxy_"}}{{$type = "Proxy"}}{{end}}
-      {{if hasPrefix .Action "redirect_"}}{{$type = "Redirect"}}{{end}}
-      {{if hasPrefix .Action "raw_"}}{{$type = "Advanced"}}{{end}}
-      {{if hasPrefix .Action "cert_"}}{{$type = "Certificate"}}{{end}}
-      {{if hasPrefix .Action "group_"}}{{$type = "Group"}}{{end}}
-      {{if hasPrefix .Action "api_token_"}}{{$type = "API token"}}{{end}}
+      {{$type := t $ "dashboard.activity.type.other"}}
+      {{if hasPrefix .Action "proxy_"}}{{$type = t $ "dashboard.activity.type.proxy"}}{{end}}
+      {{if hasPrefix .Action "redirect_"}}{{$type = t $ "dashboard.activity.type.redirect"}}{{end}}
+      {{if hasPrefix .Action "raw_"}}{{$type = t $ "dashboard.activity.type.advanced"}}{{end}}
+      {{if hasPrefix .Action "cert_"}}{{$type = t $ "dashboard.activity.type.certificate"}}{{end}}
+      {{if hasPrefix .Action "group_"}}{{$type = t $ "dashboard.activity.type.group"}}{{end}}
+      {{if hasPrefix .Action "api_token_"}}{{$type = t $ "dashboard.activity.type.api_token"}}{{end}}
       {{$verb := .Action}}
-      {{if hasSuffix .Action "_create"}}{{$verb = "created"}}{{end}}
-      {{if hasSuffix .Action "_update"}}{{$verb = "updated"}}{{end}}
-      {{if hasSuffix .Action "_delete"}}{{$verb = "deleted"}}{{end}}
-      {{if hasSuffix .Action "_revoke"}}{{$verb = "revoked"}}{{end}}
-      {{if hasSuffix .Action "_enable"}}{{$verb = "enabled"}}{{end}}
-      {{if hasSuffix .Action "_disable"}}{{$verb = "disabled"}}{{end}}
-      {{if eq .Action "caddyfile_import"}}{{$verb = "imported"}}{{end}}
-      {{if eq .Action "raw_reclassify"}}{{$verb = "re-classified"}}{{end}}
+      {{if hasSuffix .Action "_create"}}{{$verb = t $ "dashboard.activity.verb.created"}}{{end}}
+      {{if hasSuffix .Action "_update"}}{{$verb = t $ "dashboard.activity.verb.updated"}}{{end}}
+      {{if hasSuffix .Action "_delete"}}{{$verb = t $ "dashboard.activity.verb.deleted"}}{{end}}
+      {{if hasSuffix .Action "_revoke"}}{{$verb = t $ "dashboard.activity.verb.revoked"}}{{end}}
+      {{if hasSuffix .Action "_enable"}}{{$verb = t $ "dashboard.activity.verb.enabled"}}{{end}}
+      {{if hasSuffix .Action "_disable"}}{{$verb = t $ "dashboard.activity.verb.disabled"}}{{end}}
+      {{if eq .Action "caddyfile_import"}}{{$verb = t $ "dashboard.activity.verb.imported"}}{{end}}
+      {{if eq .Action "raw_reclassify"}}{{$verb = t $ "dashboard.activity.verb.reclassified"}}{{end}}
       <div class="ops-activity-row">
         <span class="ui-status ui-status--neutral">{{$type}}</span>
         <div class="ops-activity-row__summary"><strong>{{.Actor}}</strong> {{$verb}} <span class="font-mono">{{if .Target}}{{.Target}}{{else}}—{{end}}</span>{{if .Detail}} <span>({{.Detail}})</span>{{end}}</div>
@@ -337,10 +337,10 @@
   <section class="ops-data-section" aria-labelledby="recent-proxies-title">
     <div class="ui-section-header">
       <div>
-        <h2 class="ui-section-header__title" id="recent-proxies-title">Proxy hosts</h2>
-        <p class="ui-section-header__description">Recent routes and live upstream reachability</p>
+        <h2 class="ui-section-header__title" id="recent-proxies-title">{{t $ "dashboard.proxies.heading"}}</h2>
+        <p class="ui-section-header__description">{{t $ "dashboard.proxies.description"}}</p>
       </div>
-      <a href="/proxy-hosts" class="ui-section-header__action">View all hosts →</a>
+      <a href="/proxy-hosts" class="ui-section-header__action">{{t $ "dashboard.proxies.view_all"}} →</a>
     </div>
 
     <div class="lg:hidden space-y-2">
@@ -348,26 +348,26 @@
       <a href="/proxy-hosts/{{.ID}}/edit" class="ops-mobile-card" data-host-id="{{.ID}}">
         <div class="flex items-start justify-between gap-2">
           <div class="flex flex-wrap gap-1 min-w-0">{{range splitDomains .Domains}}<span class="domain-pill break-all">{{.}}</span>{{end}}</div>
-          {{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}
+          {{if .Enabled}}<span class="ui-status ui-status--success">{{t $ "status.enabled"}}</span>{{else}}<span class="ui-status ui-status--neutral">{{t $ "status.disabled"}}</span>{{end}}
         </div>
         <div class="flex items-center gap-1.5 text-xs font-mono text-ink-400 mt-2">
-          <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
-          <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
+          <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="{{t $ "js.health.port_checking"}}"></span>
+          <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="{{t $ "js.health.app_checking"}}"></span>
           <span class="truncate">{{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}</span>
         </div>
       </a>
       {{else}}
       <div class="ui-panel ui-empty">
-        <div class="ui-empty__title">No proxy hosts yet</div>
-        <div class="ui-empty__body">Create a route to begin sending traffic to an upstream service.</div>
-        <a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Publish service</a>
+        <div class="ui-empty__title">{{t $ "dashboard.proxies.empty"}}</div>
+        <div class="ui-empty__body">{{t $ "dashboard.proxies.empty_body"}}</div>
+        <a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">{{t $ "dashboard.publish_service"}}</a>
       </div>
       {{end}}
     </div>
 
     <div class="hidden lg:block ui-table-wrap">
       <table class="ui-table">
-        <thead><tr><th>Source</th><th>Destination</th><th>Status</th></tr></thead>
+        <thead><tr><th>{{t $ "dashboard.table.source"}}</th><th>{{t $ "dashboard.table.destination"}}</th><th>{{t $ "dashboard.table.status"}}</th></tr></thead>
         <tbody>
           {{range .ProxyHosts}}
           <tr data-host-id="{{.ID}}">
@@ -375,8 +375,8 @@
               <div class="flex flex-wrap items-center gap-1">
                 {{$hostID := .ID}}
                 {{range splitDomains .Domains}}<span class="inline-flex items-center gap-0.5">
-                  <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
-                  <a href="/proxy-hosts/{{$hostID}}/edit" title="Edit proxy host" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-brand-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
+                  <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="{{t $ "dashboard.open_in_new_tab" "domain" .}}" class="domain-pill">{{.}}</a>
+                  <a href="/proxy-hosts/{{$hostID}}/edit" title="{{t $ "dashboard.proxies.edit"}}" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-brand-600 hover:bg-ink-100 transition" aria-label="{{t $ "dashboard.edit_domain" "domain" .}}">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   </a>
                 </span>{{end}}
@@ -384,15 +384,15 @@
             </td>
             <td class="font-mono text-xs text-ink-600">
               <span class="inline-flex items-center gap-1.5">
-                <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="Port: checking..."></span>
-                <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="App: checking..."></span>
+                <span class="health-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="{{t $ "js.health.port_checking"}}"></span>
+                <span class="app-dot w-2 h-2 rounded-full bg-ink-300 shrink-0" title="{{t $ "js.health.app_checking"}}"></span>
                 {{.ForwardScheme}}://{{.ForwardHost}}:{{.ForwardPort}}
               </span>
             </td>
-            <td>{{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}</td>
+            <td>{{if .Enabled}}<span class="ui-status ui-status--success">{{t $ "status.enabled"}}</span>{{else}}<span class="ui-status ui-status--neutral">{{t $ "status.disabled"}}</span>{{end}}</td>
           </tr>
           {{else}}
-          <tr><td colspan="3"><div class="ui-empty"><div class="ui-empty__title">No services published yet</div><div class="ui-empty__body">Create a route to begin sending traffic to an upstream service.</div><a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">Publish service</a></div></td></tr>
+          <tr><td colspan="3"><div class="ui-empty"><div class="ui-empty__title">{{t $ "dashboard.proxies.empty_table"}}</div><div class="ui-empty__body">{{t $ "dashboard.proxies.empty_body"}}</div><a href="/proxy-hosts/new" class="ui-button ui-button--primary mt-4">{{t $ "dashboard.publish_service"}}</a></div></td></tr>
           {{end}}
         </tbody>
       </table>
@@ -403,10 +403,10 @@
   <section class="ops-data-section" aria-labelledby="advanced-routes-title">
     <div class="ui-section-header">
       <div>
-        <h2 class="ui-section-header__title" id="advanced-routes-title">Advanced routes</h2>
-        <p class="ui-section-header__description">Recent raw route definitions on the active server</p>
+        <h2 class="ui-section-header__title" id="advanced-routes-title">{{t $ "dashboard.raw.heading"}}</h2>
+        <p class="ui-section-header__description">{{t $ "dashboard.raw.description"}}</p>
       </div>
-      <a href="/raw-routes" class="ui-section-header__action">View all routes →</a>
+      <a href="/raw-routes" class="ui-section-header__action">{{t $ "dashboard.raw.view_all"}} →</a>
     </div>
     <div class="lg:hidden space-y-2">
       {{range .RawRoutes}}
@@ -417,14 +417,14 @@
             {{if $srcHosts}}<div class="flex flex-wrap gap-1 mb-2">{{range $srcHosts}}<span class="domain-pill break-all">{{.}}</span>{{end}}</div>{{end}}
             <div class="font-mono text-xs text-ink-500 break-all">{{.Label}}</div>
           </div>
-          {{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}
+          {{if .Enabled}}<span class="ui-status ui-status--success">{{t $ "status.enabled"}}</span>{{else}}<span class="ui-status ui-status--neutral">{{t $ "status.disabled"}}</span>{{end}}
         </div>
       </a>
       {{end}}
     </div>
     <div class="hidden lg:block ui-table-wrap">
       <table class="ui-table">
-        <thead><tr><th>Source</th><th>Label</th><th>Status</th></tr></thead>
+        <thead><tr><th>{{t $ "dashboard.table.source"}}</th><th>{{t $ "dashboard.table.label"}}</th><th>{{t $ "dashboard.table.status"}}</th></tr></thead>
         <tbody>
           {{range .RawRoutes}}
           <tr>
@@ -434,16 +434,16 @@
               <div class="flex flex-wrap items-center gap-1">
                 {{$rid := .ID}}
                 {{range $srcHosts}}<span class="inline-flex items-center gap-0.5">
-                  <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="Open {{.}} in a new tab" class="domain-pill">{{.}}</a>
-                  <a href="/raw-routes/{{$rid}}/edit" title="Edit advanced route" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-purple-600 hover:bg-ink-100 transition" aria-label="Edit {{.}}">
+                  <a href="https://{{.}}" target="_blank" rel="noopener noreferrer" title="{{t $ "dashboard.open_in_new_tab" "domain" .}}" class="domain-pill">{{.}}</a>
+                  <a href="/raw-routes/{{$rid}}/edit" title="{{t $ "dashboard.raw.edit"}}" class="inline-flex items-center justify-center w-6 h-6 rounded text-ink-400 hover:text-purple-600 hover:bg-ink-100 transition" aria-label="{{t $ "dashboard.edit_domain" "domain" .}}">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   </a>
                 </span>{{end}}
               </div>
-              {{else}}<span class="text-ink-300 text-xs italic">No host matcher</span>{{end}}
+              {{else}}<span class="text-ink-300 text-xs italic">{{t $ "dashboard.raw.no_host_matcher"}}</span>{{end}}
             </td>
             <td class="font-mono text-xs text-ink-600">{{.Label}}</td>
-            <td>{{if .Enabled}}<span class="ui-status ui-status--success">Enabled</span>{{else}}<span class="ui-status ui-status--neutral">Disabled</span>{{end}}</td>
+            <td>{{if .Enabled}}<span class="ui-status ui-status--success">{{t $ "status.enabled"}}</span>{{else}}<span class="ui-status ui-status--neutral">{{t $ "status.disabled"}}</span>{{end}}</td>
           </tr>
           {{end}}
         </tbody>
@@ -471,15 +471,15 @@
         document.getElementById('stat-mem-pct').textContent  = d.mem_pct + '%';
       }
       var reqs = d.active_requests;
-      document.getElementById('stat-reqs').textContent = (reqs !== undefined) ? reqs : (d.caddy_error ? 'Unavailable' : '—');
+      document.getElementById('stat-reqs').textContent = (reqs !== undefined) ? reqs : (d.caddy_error ? caddyuiT('js.dashboard.unavailable') : '—');
       var h = d.healthy_upstreams, t = d.total_upstreams;
       if (t !== undefined) {
         var el = document.getElementById('stat-ups');
-        el.textContent = h + ' / ' + t + ' healthy';
+        el.textContent = caddyuiT('js.dashboard.upstreams_healthy', {healthy: h, total: t});
         el.classList.toggle('text-red-600', h < t);
         el.classList.toggle('text-brand-700', h === t && t > 0);
       } else if (d.caddy_error) {
-        document.getElementById('stat-ups').textContent = 'Unavailable';
+        document.getElementById('stat-ups').textContent = caddyuiT('js.dashboard.unavailable');
       }
     })
     .catch(function(){});
@@ -494,21 +494,21 @@
     dot.classList.remove('bg-ink-300', 'bg-green-500', 'bg-red-500', 'bg-amber-400');
     if (h.status === 'ok') {
       dot.classList.add('bg-green-500');
-      dot.title = 'Port: reachable (' + h.latency_ms + 'ms)';
+      dot.title = caddyuiT('js.health.port_reachable', {ms: h.latency_ms});
     } else if (h.status === 'disabled') {
       dot.classList.add('bg-ink-300');
-      dot.title = 'Port: disabled';
+      dot.title = caddyuiT('js.health.port_disabled');
     } else if (h.status === 'off') {
       // v2.28.0 (issue #39): monitoring switched off for this host. Neutral
       // dot, never red — nothing was probed, so "down" would be unfounded.
       dot.classList.add('bg-ink-300');
-      dot.title = 'Port: monitoring off for this host';
+      dot.title = caddyuiT('js.health.port_off');
     } else if (h.status === 'unknown') {
       dot.classList.add('bg-amber-400');
-      dot.title = 'Port: unknown (' + (h.error || 'not probeable from caddyui') + ')';
+      dot.title = caddyuiT('js.health.port_unknown', {reason: h.error || caddyuiT('js.health.not_probeable')});
     } else {
       dot.classList.add('bg-red-500');
-      dot.title = 'Port: unreachable — ' + (h.error || h.status);
+      dot.title = caddyuiT('js.health.port_down', {reason: h.error || h.status});
     }
   }
   function paintApp(dot, h) {
@@ -516,30 +516,30 @@
     var s = h.app_status;
     if (!s) {
       dot.classList.add('bg-ink-300');
-      dot.title = 'App: checking...';
+      dot.title = caddyuiT('js.health.app_checking');
       return;
     }
     var detail = h.app_code ? ('HTTP ' + h.app_code) : (h.app_error || s);
-    var ms = h.app_latency_ms ? (' in ' + h.app_latency_ms + 'ms') : '';
+    var ms = h.app_latency_ms ? caddyuiT('js.health.in_ms', {ms: h.app_latency_ms}) : '';
     if (s === 'ok') {
       dot.classList.add('bg-green-500');
-      dot.title = 'App: responding (' + detail + ms + ')';
+      dot.title = caddyuiT('js.health.app_responding', {detail: detail + ms});
     } else if (s === 'disabled') {
       dot.classList.add('bg-ink-300');
-      dot.title = 'App: disabled';
+      dot.title = caddyuiT('js.health.app_disabled');
     } else if (s === 'off') {
       // v2.28.0 (issue #39): see paintPort — no probe ran, so no verdict.
       dot.classList.add('bg-ink-300');
-      dot.title = 'App: monitoring off for this host';
+      dot.title = caddyuiT('js.health.app_off');
     } else if (s === 'unknown') {
       dot.classList.add('bg-amber-400');
-      dot.title = 'App: unknown (' + (h.app_error || 'not probeable from caddyui') + ')';
+      dot.title = caddyuiT('js.health.app_unknown', {reason: h.app_error || caddyuiT('js.health.not_probeable')});
     } else if (s === 'degraded') {
       dot.classList.add('bg-amber-400');
-      dot.title = 'App: degraded — ' + detail;
+      dot.title = caddyuiT('js.health.app_degraded', {detail: detail});
     } else {
       dot.classList.add('bg-red-500');
-      dot.title = 'App: down — ' + (h.app_error || detail);
+      dot.title = caddyuiT('js.health.app_down', {reason: h.app_error || detail});
     }
   }
   function applyHealth(data) {
@@ -565,11 +565,11 @@
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var el = document.getElementById('caddy-version');
-      if (el) el.textContent = data.version || 'unknown';
+      if (el) el.textContent = data.version || caddyuiT('js.dashboard.version_unknown');
     })
     .catch(function() {
       var el = document.getElementById('caddy-version');
-      if (el) el.textContent = 'unavailable';
+      if (el) el.textContent = caddyuiT('js.dashboard.version_unavailable');
     });
 })();
 
@@ -579,7 +579,7 @@ fetch('/api/version-check').then(function(r){ return r.json(); }).then(function(
     var el=document.getElementById('update-notice');
     var textEl=document.getElementById('update-notice-text');
     if(el && textEl){
-      textEl.textContent='CaddyUI '+d.latest+' is available (running '+d.current+').';
+      textEl.textContent=caddyuiT('js.dashboard.update_available', {latest: d.latest, current: d.current});
       el.classList.remove('hidden');
     }
   }

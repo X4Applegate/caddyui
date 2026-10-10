@@ -1,7 +1,7 @@
-{{define "title"}}Settings · CaddyUI{{end}}
+{{define "title"}}{{t $ "settings.title"}} · CaddyUI{{end}}
 {{define "content"}}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Settings <span class="text-ink-300 font-normal">/</span> {{.SettingsSectionLabel}}</h1>
+  <h1 class="text-2xl font-semibold tracking-tight text-ink-900">{{t $ "settings.title"}} <span class="text-ink-300 font-normal">/</span> {{.SettingsSectionLabel}}</h1>
   <p class="text-sm text-ink-500 mt-1">{{range .SettingsNav}}{{if eq .Slug $.SettingsSection}}{{.Blurb}}{{end}}{{end}}</p>
 </div>
 
@@ -10,7 +10,7 @@
      anchors (/settings#settings-smtp …) are redirected to the right page
      by the script at the bottom. */}}
 <div class="lg:flex lg:items-start lg:gap-8">
-<nav aria-label="Settings pages" data-settings-nav class="mb-6 lg:mb-0 lg:w-52 lg:shrink-0 lg:sticky lg:top-20">
+<nav aria-label="{{t $ "settings.nav_aria"}}" data-settings-nav class="mb-6 lg:mb-0 lg:w-52 lg:shrink-0 lg:sticky lg:top-20">
   <ul class="flex lg:flex-col gap-1 overflow-x-auto pb-1 lg:pb-0">
     {{range .SettingsNav}}
     <li class="shrink-0">
@@ -26,10 +26,10 @@
 <div class="min-w-0 flex-1">
 
 {{if .Success}}
-<div data-toast="success" class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">Settings saved successfully.</div>
+<div data-toast="success" class="bg-brand-50 border border-brand-200 text-brand-800 px-4 py-3 rounded-xl mb-4 text-sm">{{t $ "settings.saved"}}</div>
 {{end}}
 {{if .ClearedName}}
-<div data-toast="warning" class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.ClearedName}} credentials cleared. The provider is now disabled until you enter new credentials below.</div>
+<div data-toast="warning" class="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm">{{t $ "settings.dns.credentials_cleared" "name" .ClearedName}}</div>
 {{end}}
 {{if .Error}}
 <div data-toast="error" class="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm">{{.Error}}</div>
@@ -42,12 +42,12 @@
   {{/* ── General ── */}}
   <div id="settings-general" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
-      <div class="text-sm font-semibold text-ink-900 mb-0.5">General</div>
-      <p class="text-xs text-ink-500">Branding and display settings.</p>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">{{t $ "settings.general.heading"}}</div>
+      <p class="text-xs text-ink-500">{{t $ "settings.general.intro"}}</p>
     </div>
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Site title</label>
-      <p class="text-xs text-ink-500 mb-2">Shown in the browser tab title and sidebar. Leave blank to use "CaddyUI".</p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.general.site_title"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.general.site_title_help"}}</p>
       <input type="text" name="site_title" value="{{.SiteTitle}}"
         placeholder="CaddyUI"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition max-w-sm">
@@ -58,20 +58,20 @@
          a POST to /api/me/color-theme on change. Server-rendered
          data-color-theme on <html> takes precedence on next page load. */}}
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Color theme</label>
-      <p class="text-xs text-ink-500 mb-2">Independent of the light/dark toggle in the top bar — both can be combined (e.g. "dark + carbon orange"). Synced to your account, so it follows you across browsers and devices.</p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.general.color_theme"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.general.color_theme_help"}}</p>
       <select data-color-theme-select
         class="rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-        <option value="default">Default — Slate Blue</option>
-        <option value="orange">Carbon Orange</option>
-        <option value="forest">Forest Green</option>
-        <option value="rose">Rose / Crimson</option>
-        <option value="indigo">Deep Indigo</option>
+        <option value="default">{{t $ "settings.theme.default"}}</option>
+        <option value="orange">{{t $ "settings.theme.orange"}}</option>
+        <option value="forest">{{t $ "settings.theme.forest"}}</option>
+        <option value="rose">{{t $ "settings.theme.rose"}}</option>
+        <option value="indigo">{{t $ "settings.theme.indigo"}}</option>
       </select>
-      <p class="text-xs text-ink-400 mt-1.5">5 available themes: Default Slate Blue, Carbon Orange, Forest Green, Rose / Crimson, and Deep Indigo. Saved on your user account (<code class="bg-ink-100 px-1 rounded">users.color_theme</code>) and applied on every device you sign into. Cached locally for instant paint on subsequent loads.</p>
+      <p class="text-xs text-ink-400 mt-1.5">{{t $ "settings.general.themes_note"}} (<code class="bg-ink-100 px-1 rounded">users.color_theme</code>) {{t $ "settings.general.themes_note_after"}}</p>
     </div>
     <div class="flex items-center gap-3 py-3 border-b border-ink-100">
-      <label class="text-sm text-ink-700 w-32 shrink-0">Favicon URL</label>
+      <label class="text-sm text-ink-700 w-32 shrink-0">{{t $ "settings.general.favicon"}}</label>
       <input type="url" name="favicon_url" value="{{.FaviconURL}}"
         placeholder="https://example.com/favicon.ico"
         class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
@@ -85,23 +85,23 @@
       <p class="text-xs text-ink-400">{{t $ "settings.default_language.help"}}</p>
     </div>
     <div class="flex items-center gap-3 py-3 border-b border-ink-100">
-      <label class="text-sm text-ink-700 w-32 shrink-0">Fallback status code</label>
+      <label class="text-sm text-ink-700 w-32 shrink-0">{{t $ "settings.general.fallback_status"}}</label>
       <input type="number" name="fallback_status_code" min="400" max="599" value="{{.FallbackStatus}}" placeholder="404"
         class="w-28 text-sm px-3 py-1.5 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
-      <p class="text-xs text-ink-400">Answered for a request that matches no proxy host, redirection or Advanced route — on HTTP and HTTPS alike (default <code class="bg-ink-100 px-1 rounded">404</code>; any <code class="bg-ink-100 px-1 rounded">400</code>–<code class="bg-ink-100 px-1 rounded">599</code>, e.g. <code class="bg-ink-100 px-1 rounded">403</code>, <code class="bg-ink-100 px-1 rounded">418</code>, <code class="bg-ink-100 px-1 rounded">421</code>). Applied on next sync.</p>
+      <p class="text-xs text-ink-400">{{t $ "settings.general.fallback_status_help"}} ({{t $ "settings.general.word_default"}} <code class="bg-ink-100 px-1 rounded">404</code>; {{t $ "settings.general.word_any"}} <code class="bg-ink-100 px-1 rounded">400</code>–<code class="bg-ink-100 px-1 rounded">599</code>, {{t $ "settings.general.word_eg"}} <code class="bg-ink-100 px-1 rounded">403</code>, <code class="bg-ink-100 px-1 rounded">418</code>, <code class="bg-ink-100 px-1 rounded">421</code>). {{t $ "settings.applied_next_sync"}}</p>
     </div>
     <div>
-      <label class="block text-xs font-medium text-ink-700 mb-1">Custom fallback page HTML <span class="text-ink-400 font-normal">(optional — shown with the fallback status for requests matching no proxy, redirect or Advanced route)</span></label>
+      <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.general.fallback_html"}} <span class="text-ink-400 font-normal">{{t $ "settings.general.fallback_html_hint"}}</span></label>
       <textarea name="catch_all_404_html" rows="4" placeholder="&lt;!DOCTYPE html&gt;&lt;html&gt;…"
         class="w-full font-mono text-xs rounded-lg border border-ink-200 px-3 py-2 bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition resize-y">{{.CatchAll404HTML}}</textarea>
-      <p class="text-xs text-ink-400 mt-1">Leave blank to use Caddy's default error response (CaddyUI's branded page on HTTPS for 404). Applied on next sync.</p>
+      <p class="text-xs text-ink-400 mt-1">{{t $ "settings.general.fallback_html_help"}} {{t $ "settings.applied_next_sync"}}</p>
     </div>
     {{/* Global maintenance mode */}}
     <div class="pt-4 border-t border-ink-100">
       <div class="flex items-start justify-between gap-4">
         <div>
-          <label class="block text-sm font-medium text-ink-800">Global maintenance mode</label>
-          <p class="text-xs text-ink-500 mt-0.5">When enabled, ALL proxy hosts immediately serve a 503 maintenance page regardless of individual host settings. Use for emergency maintenance windows. Applied on next sync.</p>
+          <label class="block text-sm font-medium text-ink-800">{{t $ "settings.general.maintenance"}}</label>
+          <p class="text-xs text-ink-500 mt-0.5">{{t $ "settings.general.maintenance_help"}}</p>
         </div>
         <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
           <input type="checkbox" name="global_maintenance" value="1" {{if eq .GlobalMaintenance "1"}}checked{{end}} class="sr-only peer">
@@ -111,14 +111,14 @@
       {{if eq .GlobalMaintenance "1"}}
       <div class="mt-2 flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
         <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-        Global maintenance is <strong>active</strong> — all proxy hosts are serving 503. Sync Caddy to apply.
+        {{t $ "settings.general.maintenance_active_1"}} <strong>{{t $ "settings.general.maintenance_active_2"}}</strong> {{t $ "settings.general.maintenance_active_3"}}
       </div>
       {{end}}
     </div>
     {{/* Auto-sync interval */}}
     <div class="pt-4 border-t border-ink-100">
-      <label class="block text-sm font-medium text-ink-800 mb-1">Periodic auto-sync interval <span class="font-normal text-ink-400">(hours, 0 = disabled)</span></label>
-      <p class="text-xs text-ink-500 mb-2">CaddyUI re-syncs all Caddy servers automatically when this many hours have passed since the last sync. Useful as a failsafe when cert renewals or external config changes need to be reapplied.</p>
+      <label class="block text-sm font-medium text-ink-800 mb-1">{{t $ "settings.general.auto_sync"}} <span class="font-normal text-ink-400">{{t $ "settings.general.auto_sync_hint"}}</span></label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.general.auto_sync_help"}}</p>
       <input type="number" name="auto_sync_hours" min="0" max="168"
         value="{{if .AutoSyncHours}}{{.AutoSyncHours}}{{else}}0{{end}}"
         placeholder="0"
@@ -126,11 +126,11 @@
     </div>
     {{/* Activity log retention */}}
     <div class="pt-4 border-t border-ink-100">
-      <label class="block text-sm font-medium text-ink-800 mb-1">Activity Log Retention (days)</label>
-      <p class="text-xs text-ink-500 mb-2">Auto-delete activity log entries older than this many days. 0 keeps all entries.</p>
+      <label class="block text-sm font-medium text-ink-800 mb-1">{{t $ "settings.general.activity_retention"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.general.activity_retention_help"}}</p>
       <input type="number" name="activity_log_days" min="0"
         value="{{.ActivityLogDays}}"
-        placeholder="0 = keep forever"
+        placeholder="{{t $ "settings.general.activity_retention_placeholder"}}"
         class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
     </div>
     {{/* v2.12.14: globally stripped response headers — comma-separated list
@@ -139,17 +139,17 @@
          middleware insists on adding `X-Frame-Options` or `X-Powered-By`
          and you want it gone everywhere without touching each host. */}}
     <div class="pt-4 border-t border-ink-100">
-      <label class="block text-sm font-medium text-ink-800 mb-1">Globally stripped response headers <span class="text-ink-400 font-normal">(optional, comma-separated)</span></label>
-      <p class="text-xs text-ink-500 mb-2">CaddyUI deletes these response headers from every upstream's reply on every proxy host. Concatenated with each host's own <code class="bg-ink-100 px-1 rounded">strip_response_headers</code> field — both apply.</p>
+      <label class="block text-sm font-medium text-ink-800 mb-1">{{t $ "settings.general.strip_headers"}} <span class="text-ink-400 font-normal">{{t $ "settings.general.strip_headers_hint"}}</span></label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.general.strip_headers_help"}} <code class="bg-ink-100 px-1 rounded">strip_response_headers</code> {{t $ "settings.general.strip_headers_help_after"}}</p>
       <input type="text" name="global_strip_response_headers" value="{{.GlobalStripHeaders}}"
         placeholder="X-Frame-Options, X-Powered-By, Server"
         class="w-full max-w-xl rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-      <p class="text-xs text-ink-400 mt-1">Common candidates: <code class="bg-ink-100 px-1 rounded">X-Frame-Options</code> (when you want to control framing via Content-Security-Policy <code class="bg-ink-100 px-1 rounded">frame-ancestors</code> instead), <code class="bg-ink-100 px-1 rounded">X-Powered-By</code>, <code class="bg-ink-100 px-1 rounded">Server</code>. Applies on next sync.</p>
+      <p class="text-xs text-ink-400 mt-1">{{t $ "settings.general.strip_candidates"}} <code class="bg-ink-100 px-1 rounded">X-Frame-Options</code> {{t $ "settings.general.strip_candidates_framing"}} <code class="bg-ink-100 px-1 rounded">frame-ancestors</code> {{t $ "settings.general.strip_candidates_instead"}} <code class="bg-ink-100 px-1 rounded">X-Powered-By</code>, <code class="bg-ink-100 px-1 rounded">Server</code>. {{t $ "settings.applies_next_sync"}}</p>
     </div>
     {{/* v2.12.6: per-section save button. Submits the parent form (saves
          every setting, same as the bottom button) — just convenient. */}}
     <div class="pt-3 border-t border-ink-100">
-      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">{{t $ "settings.save"}}</button>
     </div>
   </div>
 
@@ -502,13 +502,13 @@
        matters when the DB value is empty and the TZ env fallback kicks in. */}}
   <div id="settings-timezone" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
-      <div class="text-sm font-semibold text-ink-900 mb-0.5">Timezone</div>
-      <p class="text-xs text-ink-500">Render timestamps (cert expiry, activity log, snapshots) in this zone. Leave blank to inherit the container's <code class="font-mono text-ink-700">TZ</code> environment variable.</p>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">{{t $ "settings.timezone.heading"}}</div>
+      <p class="text-xs text-ink-500">{{t $ "settings.timezone.help"}} <code class="font-mono text-ink-700">TZ</code> {{t $ "settings.timezone.help_after"}}</p>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Timezone</label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.timezone.heading"}}</label>
         {{/* Detect "custom" mode: the saved value isn't empty and isn't in
              the common list, so we need the text input revealed by default. */}}
         {{$tz := .Timezone}}
@@ -517,30 +517,30 @@
         {{range .TimezoneOptions}}{{if eq $tz .}}{{$isCommon = true}}{{end}}{{end}}
         <select id="timezone-select" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition"
           onchange="onTimezoneSelectChange()">
-          <option value="" {{if eq $tz ""}}selected{{end}}>Auto (use TZ env var)</option>
+          <option value="" {{if eq $tz ""}}selected{{end}}>{{t $ "settings.timezone.auto"}}</option>
           {{range .TimezoneOptions}}
           <option value="{{.}}" {{if eq $tz .}}selected{{end}}>{{.}}</option>
           {{end}}
-          <option value="__other__" {{if not $isCommon}}selected{{end}}>Other…</option>
+          <option value="__other__" {{if not $isCommon}}selected{{end}}>{{t $ "settings.timezone.other"}}</option>
         </select>
         {{/* The name="timezone" field the form actually submits. Starts
              populated with the saved value; the JS below keeps it in sync
              with the dropdown and the custom text input. */}}
         <input type="hidden" id="timezone-hidden" name="timezone" value="{{$tz}}" />
         <div id="timezone-custom-wrap" class="mt-2 {{if $isCommon}}hidden{{end}}">
-          <input id="timezone-custom" type="text" value="{{if not $isCommon}}{{$tz}}{{end}}" placeholder="e.g. America/Indiana/Indianapolis"
+          <input id="timezone-custom" type="text" value="{{if not $isCommon}}{{$tz}}{{end}}" placeholder="{{t $ "settings.timezone.custom_placeholder"}}"
             oninput="onTimezoneCustomInput()"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-          <p class="text-xs text-ink-500 mt-1">Any IANA zone name (see <a href="https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">tz database</a>).</p>
+          <p class="text-xs text-ink-500 mt-1">{{t $ "settings.timezone.any_iana"}} <a href="https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">{{t $ "settings.timezone.tz_database"}}</a>).</p>
         </div>
       </div>
       <div class="flex items-end">
-        <p class="text-xs text-ink-500">Currently rendering in <code class="font-mono text-ink-700">{{.TimezoneActive}}</code>.</p>
+        <p class="text-xs text-ink-500">{{t $ "settings.timezone.current"}} <code class="font-mono text-ink-700">{{.TimezoneActive}}</code>.</p>
       </div>
     </div>
 
     <div class="pt-3 border-t border-ink-100 flex flex-wrap items-center gap-3">
-      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">{{t $ "settings.save"}}</button>
     </div>
   </div>
 
@@ -1244,13 +1244,13 @@
 {{if eq .SettingsSection "general"}}
   <div id="expectations" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-4">
     <div>
-      <div class="text-sm font-semibold text-ink-900">Post-apply checks</div>
-      <p class="text-xs text-ink-500 mt-1">Expectations defined on a proxy host (its <em>Expectations</em> section) run right after every config sync. Choose what happens when one fails.</p>
+      <div class="text-sm font-semibold text-ink-900">{{t $ "settings.expectations.heading"}}</div>
+      <p class="text-xs text-ink-500 mt-1">{{t $ "settings.expectations.help"}} <em>{{t $ "settings.expectations.section_name"}}</em> {{t $ "settings.expectations.help_after"}}</p>
     </div>
     <label class="flex items-start gap-2.5 text-sm text-ink-700 cursor-pointer">
       <input type="hidden" name="expectations_auto_rollback" value="0" />
       <input name="expectations_auto_rollback" type="checkbox" value="1" {{if .ExpectationsAutoRollback}}checked{{end}} class="mt-0.5 rounded border-ink-300 text-brand-600 focus:ring-brand-500" />
-      <span>Roll back automatically<span class="block text-xs text-ink-500 mt-0.5 font-normal">Load the previous live config back into Caddy, pause automatic syncs for that server, and show a banner until you re-apply or keep the rolled-back config. Off = report only: results still appear on each host's health page and in the Activity log, but the new config stays live.</span></span>
+      <span>{{t $ "settings.expectations.rollback"}}<span class="block text-xs text-ink-500 mt-0.5 font-normal">{{t $ "settings.expectations.rollback_help"}}</span></span>
     </label>
   </div>
 
@@ -1379,8 +1379,8 @@
 {{end}}
   {{if ne .SettingsSection "backup"}}
   <div class="flex flex-wrap items-center gap-3">
-    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">Save {{.SettingsSectionLabel}} settings</button>
-    {{if eq .SettingsSection "analytics"}}<span class="text-xs text-ink-400">Saving re-applies the Caddy-side logger config.</span>{{end}}
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{t $ "settings.save_section" "section" .SettingsSectionLabel}}</button>
+    {{if eq .SettingsSection "analytics"}}<span class="text-xs text-ink-400">{{t $ "settings.analytics.save_note"}}</span>{{end}}
   </div>
   {{end}}
 </form>
