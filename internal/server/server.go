@@ -2024,18 +2024,22 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 	if oc := s.oidcConfig(); oc.ready() {
 		data["OIDCEnabled"] = true
 		data["OIDCButtonLabel"] = oc.ButtonLabel
+		// Translate only the built-in fallback, never an administrator's label.
+		if strings.TrimSpace(mustGetSetting(s.DB, settingOIDCButtonLabel)) == "" {
+			data["OIDCButtonLabel"] = s.tr(r, "login.sso_default")
+		}
 	}
 	if e := r.URL.Query().Get("error"); strings.HasPrefix(e, "sso") {
-		msg := "Single sign-on failed. Try again or use your password."
+		key := "login.error.sso_failed"
 		switch e {
 		case "sso_nouser":
-			msg = "No CaddyUI account matches your SSO identity. Ask an admin to add you."
+			key = "login.error.sso_no_user"
 		case "sso_email":
-			msg = "Your identity provider didn't return a verified email address."
+			key = "login.error.sso_email"
 		case "sso_denied":
-			msg = "Single sign-on was cancelled."
+			key = "login.error.sso_cancelled"
 		}
-		data["Error"] = msg
+		data["Error"] = s.tr(r, key)
 	}
 	s.render(w, r, "login.html", data)
 }
@@ -2203,7 +2207,7 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "login.html", data)
 	}
 	if ok, err := verifyCaptcha(captchaCfg, r); err != nil || !ok {
-		renderLoginErr("Security check failed. Please try again.")
+		renderLoginErr(s.tr(r, "login.error.security_check"))
 		return
 	}
 
@@ -2228,7 +2232,7 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 				time.Now().UTC().Add(-loginFailureWindow),
 			).Scan(&failCount)
 			if failCount >= maxAttempts {
-				renderLoginErr("Too many failed login attempts. Please wait 15 minutes and try again.")
+				renderLoginErr(s.tr(r, "login.error.login_limit"))
 				return
 			}
 		}
@@ -2239,12 +2243,12 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 	u, err := models.GetUserByEmail(s.DB, email)
 	if err != nil || !auth.CheckPassword(u.PasswordHash, pw) {
 		_ = models.LogActivity(s.DB, 0, email, "login_fail", "ip:"+clientIP, "invalid credentials", false)
-		renderLoginErr("Invalid email or password")
+		renderLoginErr(s.tr(r, "login.error.invalid_credentials"))
 		return
 	}
 	if u.TOTPEnabled && u.TOTPSecret != "" {
 		if s.totpLockedOut(u.Email) {
-			renderLoginErr("Too many failed verification attempts for this account. Please wait 15 minutes and try again.")
+			renderLoginErr(s.tr(r, "login.error.totp_limit"))
 			return
 		}
 		// Generate a pre-auth token and redirect to TOTP verification.

@@ -754,48 +754,48 @@
   <div id="settings-captcha" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
       <div class="flex items-center gap-2 mb-0.5">
-        <div class="text-sm font-semibold text-ink-900">CAPTCHA protection</div>
+        <div class="text-sm font-semibold text-ink-900">{{t $ "settings.security.captcha.title"}}</div>
         {{if .CaptchaDisabledByEnv}}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="CADDYUI_CAPTCHA_DISABLE is set — challenge is bypassed regardless of the provider below"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>overridden by env</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700" title="{{t $ "settings.security.captcha.override_title"}}"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>{{t $ "settings.security.captcha.overridden"}}</span>
         {{else if eq .CaptchaProvider "turnstile"}}
-          {{if .TurnstileEnabled}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>Turnstile active</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">Turnstile — keys missing</span>{{end}}
+          {{if .TurnstileEnabled}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>{{t $ "settings.security.captcha.turnstile_active"}}</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">{{t $ "settings.security.captcha.turnstile_missing"}}</span>{{end}}
         {{else if eq .CaptchaProvider "recaptcha"}}
-          {{if .RecaptchaEnabled}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>reCAPTCHA v3 active</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">reCAPTCHA v3 — keys missing</span>{{end}}
+          {{if .RecaptchaEnabled}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>{{t $ "settings.security.captcha.recaptcha_active"}}</span>{{else}}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">{{t $ "settings.security.captcha.recaptcha_missing"}}</span>{{end}}
         {{else}}
-          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">disabled</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-ink-100 text-ink-500">{{t $ "status.disabled"}}</span>
         {{end}}
       </div>
-      <p class="text-xs text-ink-500">Applied to sign-in, TOTP verification, and new-user creation. Pick a provider you already have an account with — Turnstile is free and privacy-friendly; reCAPTCHA is a good fallback if Cloudflare is having an outage.</p>
+      <p class="text-xs text-ink-500">{{t $ "settings.security.captcha.description"}}</p>
     </div>
 
     {{if .CaptchaDisabledByEnv}}
     <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
-      <span class="font-medium">Kill switch active:</span> <code class="font-mono bg-amber-100 px-1 py-0.5 rounded">CADDYUI_CAPTCHA_DISABLE</code> is set in the container env, so no challenge is shown or verified. Remove or unset that env var and restart to re-enable the provider below.
+      <span class="font-medium">{{t $ "settings.security.captcha.kill_switch"}}</span> <code class="font-mono bg-amber-100 px-1 py-0.5 rounded">CADDYUI_CAPTCHA_DISABLE</code> {{t $ "settings.security.captcha.override_help"}}
     </div>
     {{end}}
 
     <div>
-      <div class="text-sm font-medium text-ink-800 mb-2">Provider</div>
+      <div class="text-sm font-medium text-ink-800 mb-2">{{t $ "settings.security.captcha.provider"}}</div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
           <input type="radio" name="captcha_provider" value="off" data-captcha-provider {{if eq .CaptchaProvider "off"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
           <div>
-            <div class="text-sm font-medium text-ink-900">Off</div>
-            <div class="text-xs text-ink-500 mt-0.5">No challenge. Fine for private/LAN-only deployments.</div>
+            <div class="text-sm font-medium text-ink-900">{{t $ "settings.security.captcha.off"}}</div>
+            <div class="text-xs text-ink-500 mt-0.5">{{t $ "settings.security.captcha.off_help"}}</div>
           </div>
         </label>
         <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
           <input type="radio" name="captcha_provider" value="turnstile" data-captcha-provider {{if eq .CaptchaProvider "turnstile"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
           <div>
-            <div class="text-sm font-medium text-ink-900">Cloudflare Turnstile</div>
-            <div class="text-xs text-ink-500 mt-0.5">Managed widget, invisible when possible.</div>
+            <div class="text-sm font-medium text-ink-900">{{t $ "settings.security.captcha.turnstile_name"}}</div>
+            <div class="text-xs text-ink-500 mt-0.5">{{t $ "settings.security.captcha.turnstile_help"}}</div>
           </div>
         </label>
         <label class="flex items-start gap-2.5 p-3 rounded-lg border border-ink-200 cursor-pointer hover:border-ink-300 hover:bg-ink-50 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50">
           <input type="radio" name="captcha_provider" value="recaptcha" data-captcha-provider {{if eq .CaptchaProvider "recaptcha"}}checked{{end}} class="mt-0.5 text-brand-600 focus:ring-brand-500" />
           <div>
-            <div class="text-sm font-medium text-ink-900">Google reCAPTCHA v3</div>
-            <div class="text-xs text-ink-500 mt-0.5">Score-based, invisible. Good Cloudflare fallback.</div>
+            <div class="text-sm font-medium text-ink-900">{{t $ "settings.security.captcha.recaptcha_name"}}</div>
+            <div class="text-xs text-ink-500 mt-0.5">{{t $ "settings.security.captcha.recaptcha_help"}}</div>
           </div>
         </label>
       </div>
@@ -805,16 +805,16 @@
          The JS below toggles the hidden class on data-captcha-panel elements
          in response to radio changes so admins don't see irrelevant fields. */}}
     <div data-captcha-panel="turnstile" class="space-y-3 {{if ne .CaptchaProvider "turnstile"}}hidden{{end}}">
-      <p class="text-xs text-ink-500">Get your keys at <a href="https://dash.cloudflare.com/?to=/:account/turnstile" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">dash.cloudflare.com → Turnstile</a>. Use the "Managed" widget type.</p>
+      <p class="text-xs text-ink-500">{{t $ "settings.security.captcha.keys_intro"}} <a href="https://dash.cloudflare.com/?to=/:account/turnstile" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">{{t $ "settings.security.captcha.turnstile_link"}}</a>{{t $ "settings.security.captcha.turnstile_instructions"}}</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label class="block text-sm font-medium text-ink-800 mb-1.5">Site Key <span class="text-ink-400 font-normal text-xs">(public)</span></label>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.security.captcha.site_key"}} <span class="text-ink-400 font-normal text-xs">{{t $ "settings.security.captcha.public"}}</span></label>
           <input name="turnstile_site_key" value="{{.TurnstileSiteKey}}" type="text" autocomplete="off" placeholder="0x4AAAAAAA…"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span>{{if .TurnstileSecretKeySet}}<span class="text-ink-400 font-normal text-xs ml-1">(leave blank to keep existing)</span>{{end}}</label>
-          <input name="turnstile_secret_key" value="" type="password" autocomplete="new-password" placeholder="{{if .TurnstileSecretKeySet}}•••••••• (key set){{else}}0x4AAAAAAA…{{end}}"
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.security.captcha.secret_key"}} <span class="text-ink-400 font-normal text-xs">{{t $ "settings.security.captcha.server_side"}}</span>{{if .TurnstileSecretKeySet}}<span class="text-ink-400 font-normal text-xs ml-1">{{t $ "settings.security.captcha.keep_existing"}}</span>{{end}}</label>
+          <input name="turnstile_secret_key" value="" type="password" autocomplete="new-password" placeholder="{{if .TurnstileSecretKeySet}}{{t $ "settings.security.captcha.key_set"}}{{else}}0x4AAAAAAA…{{end}}"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
       </div>
@@ -825,24 +825,24 @@
          (captchaDefaultMinScore = 0.5). v3 only — v2 checkbox is not
          supported to keep the UX consistent with Turnstile's managed mode. */}}
     <div data-captcha-panel="recaptcha" class="space-y-3 {{if ne .CaptchaProvider "recaptcha"}}hidden{{end}}">
-      <p class="text-xs text-ink-500">Get your keys at <a href="https://www.google.com/recaptcha/admin" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">google.com/recaptcha/admin</a>. Pick reCAPTCHA v3 (score-based) — v2 is not supported here.</p>
+      <p class="text-xs text-ink-500">{{t $ "settings.security.captcha.keys_intro"}} <a href="https://www.google.com/recaptcha/admin" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:underline">google.com/recaptcha/admin</a>{{t $ "settings.security.captcha.recaptcha_instructions"}}</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label class="block text-sm font-medium text-ink-800 mb-1.5">Site Key <span class="text-ink-400 font-normal text-xs">(public)</span></label>
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.security.captcha.site_key"}} <span class="text-ink-400 font-normal text-xs">{{t $ "settings.security.captcha.public"}}</span></label>
           <input name="recaptcha_site_key" value="{{.RecaptchaSiteKey}}" type="text" autocomplete="off" placeholder="6Lc…"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-ink-800 mb-1.5">Secret Key <span class="text-ink-400 font-normal text-xs">(server-side)</span>{{if .RecaptchaSecretKeySet}}<span class="text-ink-400 font-normal text-xs ml-1">(leave blank to keep existing)</span>{{end}}</label>
-          <input name="recaptcha_secret_key" value="" type="password" autocomplete="new-password" placeholder="{{if .RecaptchaSecretKeySet}}•••••••• (key set){{else}}6Lc…{{end}}"
+          <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.security.captcha.secret_key"}} <span class="text-ink-400 font-normal text-xs">{{t $ "settings.security.captcha.server_side"}}</span>{{if .RecaptchaSecretKeySet}}<span class="text-ink-400 font-normal text-xs ml-1">{{t $ "settings.security.captcha.keep_existing"}}</span>{{end}}</label>
+          <input name="recaptcha_secret_key" value="" type="password" autocomplete="new-password" placeholder="{{if .RecaptchaSecretKeySet}}{{t $ "settings.security.captcha.key_set"}}{{else}}6Lc…{{end}}"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         </div>
       </div>
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Minimum score <span class="text-ink-400 font-normal text-xs">(0.0 bot &rarr; 1.0 human)</span></label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.security.captcha.min_score"}} <span class="text-ink-400 font-normal text-xs">{{t $ "settings.security.captcha.score_range"}}</span></label>
         <input name="recaptcha_min_score" value="{{.RecaptchaMinScore}}" type="number" step="0.1" min="0" max="1" placeholder="0.5"
           class="w-full sm:w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-        <p class="text-xs text-ink-500 mt-1.5">Challenges below this score are rejected. Google recommends <span class="font-mono">0.5</span> as a starting point; raise it if you still see bot traffic, lower it if legit users are bouncing.</p>
+        <p class="text-xs text-ink-500 mt-1.5">{{t $ "settings.security.captcha.score_help_intro"}} <span class="font-mono">0.5</span> {{t $ "settings.security.captcha.score_help_end"}}</p>
       </div>
     </div>
   </div>
@@ -873,25 +873,25 @@
   {{/* v2.12.6: per-section save button rendered after the captcha card (the
        card itself closes above; this floats as a sibling, same form). */}}
   <div class="flex items-center pt-1 pb-3">
-    <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+    <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">{{t $ "settings.save"}}</button>
   </div>
 
   {{/* ── Security policy (v2.9.5) ── 2FA enforcement and future auth settings */}}
   <div id="settings-security" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
-      <div class="text-sm font-semibold text-ink-900 mb-0.5">Security policy</div>
-      <p class="text-xs text-ink-500">Authentication requirements applied to all users.</p>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">{{t $ "settings.security.policy.title"}}</div>
+      <p class="text-xs text-ink-500">{{t $ "settings.security.policy.description"}}</p>
     </div>
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Trusted proxy IPs/CIDRs</label>
-      <p class="text-xs text-ink-500 mb-2">One per line or comma-separated. Used to extract real client IPs from X-Forwarded-For headers (e.g. Cloudflare, load balancers). IP allowlists and blocklists then check that real address. Only list proxies you control: anything listed here can claim any client address.</p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.security.trusted_proxies.label"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.security.trusted_proxies.help"}}</p>
       <textarea name="trusted_proxies" rows="3"
         placeholder="103.21.244.0/22&#10;103.22.200.0/22&#10;10.0.0.0/8"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.TrustedProxies}}</textarea>
     </div>
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Client IP headers</label>
-      <p class="text-xs text-ink-500 mb-2">Checked in order after the direct peer matches Trusted proxy IPs/CIDRs. Caddy defaults to X-Forwarded-For; Cloudflare users can put CF-Connecting-IP first.</p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.security.client_headers.label"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.security.client_headers.help"}}</p>
       <input type="text" name="client_ip_headers" value="{{.ClientIPHeaders}}"
         placeholder="CF-Connecting-IP, X-Forwarded-For"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
@@ -901,17 +901,17 @@
          path outside these directories still serves — it just cannot be
          previewed or copied here. */}}
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Extra certificate directories</label>
-      <p class="text-xs text-ink-500 mb-2">One absolute path per line. CaddyUI only opens certificate and key files inside these directories — for the expiry column, Inspect, and fleet copy-by-value. Caddy loads certificates itself, so a file outside them still serves normally; it just shows as unreadable here. Add a directory only if your certificates are mounted somewhere unusual.</p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.security.certificate_roots.label"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.security.certificate_roots.help"}}</p>
       <textarea name="certificate_read_roots" rows="3"
         placeholder="/opt/tls&#10;/mnt/certs"
         class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.CertificateReadRoots}}</textarea>
-      <p class="text-xs text-ink-500 mt-1.5">Allowed now: <span class="font-mono break-all">{{.CertificateReadRootsEffective}}</span></p>
+      <p class="text-xs text-ink-500 mt-1.5">{{t $ "settings.security.certificate_roots.allowed"}} <span class="font-mono break-all">{{.CertificateReadRootsEffective}}</span></p>
     </div>
     <div class="py-4 border-b border-ink-100 flex items-start justify-between gap-4">
       <div>
-        <label class="block text-sm font-medium text-ink-900 mb-1">Disable HTTP/3 (QUIC)</label>
-        <p class="text-xs text-ink-500">Restricts Caddy to HTTP/1.1 and HTTP/2 only. Fixes "proxy mismatch" or certificate errors on older Android clients (Bitwarden, Chrome). Requires a Caddy reload to take effect.</p>
+        <label class="block text-sm font-medium text-ink-900 mb-1">{{t $ "settings.security.disable_http3.label"}}</label>
+        <p class="text-xs text-ink-500">{{t $ "settings.security.disable_http3.help"}}</p>
       </div>
       <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
         <input type="checkbox" name="disable_http3" {{if eq .DisableHTTP3 "1"}}checked{{end}}
@@ -920,8 +920,8 @@
       </label>
     </div>
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Admin panel IP allowlist</label>
-      <p class="text-xs text-ink-500 mb-2">⚠️ One IP or CIDR per line. When set, only listed IPs can access CaddyUI. <strong>Make sure your own IP is included before saving!</strong></p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.security.allowlist.label"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.security.allowlist.help"}} <strong>{{t $ "settings.security.allowlist.warning"}}</strong></p>
 
       {{/* v2.65.0 (issue #140): show the address this very request arrived
            with, and where it was read from. Saving a list that does not
@@ -929,38 +929,38 @@
            to check short of trying it. */}}
       <div class="mb-2 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2">
         <div class="flex items-baseline gap-2 flex-wrap">
-          <span class="text-xs text-ink-600">You are connecting from</span>
+          <span class="text-xs text-ink-600">{{t $ "settings.security.allowlist.current_ip"}}</span>
           <code class="text-sm font-mono font-semibold text-ink-900">{{.CurrentClientIP}}</code>
           {{if .CurrentClientIPViaProxy}}
-            <span class="ui-status ui-status--info">via trusted proxy</span>
+            <span class="ui-status ui-status--info">{{t $ "settings.security.allowlist.via_proxy"}}</span>
           {{else}}
-            <span class="ui-status ui-status--info">direct connection</span>
+            <span class="ui-status ui-status--info">{{t $ "settings.security.allowlist.direct"}}</span>
           {{end}}
         </div>
         <p class="text-xs text-ink-500 mt-1">
           {{if .CurrentClientIPViaProxy}}
-            Read from a forwarding header, because the machine that opened this connection is a trusted proxy. This is the address the allowlist checks — include it, or a range containing it.
+            {{t $ "settings.security.allowlist.forwarded_help"}}
           {{else}}
-            This is the address of the connection itself, and what the allowlist checks. <strong>If CaddyUI sits behind a reverse proxy and this looks like the proxy rather than your own address</strong>, add the proxy under <em>Trusted proxy IPs/CIDRs</em> above first — otherwise every visitor arrives as this one address and the allowlist cannot tell them apart.
+            {{t $ "settings.security.allowlist.direct_help"}} <strong>{{t $ "settings.security.allowlist.proxy_warning"}}</strong>{{t $ "settings.security.allowlist.add_proxy"}} <em>{{t $ "settings.security.trusted_proxies.label"}}</em> {{t $ "settings.security.allowlist.proxy_help"}}
           {{end}}
         </p>
       </div>
 
       <textarea name="admin_allowlist" rows="4"
-        placeholder="Leave blank to allow all IPs&#10;192.168.1.0/24&#10;10.0.0.1"
+        placeholder="{{t $ "settings.security.allowlist.placeholder"}}"
         class="w-full text-sm px-3 py-2 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono">{{.AdminAllowlist}}</textarea>
 
       {{if .AdminAllowlistFromEnv}}
-      <p class="text-xs text-amber-700 mt-2"><strong>Overridden by the environment.</strong> <code class="font-mono">CADDYUI_ADMIN_ALLOWLIST</code> is set on this container and takes precedence over the list above, which is saved but not in force. Remove the variable to go back to using it.</p>
+      <p class="text-xs text-amber-700 mt-2"><strong>{{t $ "settings.security.allowlist.overridden"}}</strong> <code class="font-mono">CADDYUI_ADMIN_ALLOWLIST</code> {{t $ "settings.security.allowlist.override_help"}}</p>
       {{end}}
-      <p class="text-xs text-ink-500 mt-2">Locked out? Set <code class="font-mono">CADDYUI_ADMIN_ALLOWLIST</code> in your compose file and restart — it overrides this list, and <code class="font-mono">CADDYUI_ADMIN_ALLOWLIST=off</code> disables the gate entirely while you get back in. What you saved here is left untouched.</p>
+      <p class="text-xs text-ink-500 mt-2">{{t $ "settings.security.allowlist.recovery_intro"}} <code class="font-mono">CADDYUI_ADMIN_ALLOWLIST</code> {{t $ "settings.security.allowlist.recovery_middle"}} <code class="font-mono">CADDYUI_ADMIN_ALLOWLIST=off</code> {{t $ "settings.security.allowlist.recovery_end"}}</p>
     </div>
     {{/* issue #100: fleet-wide IP blocklist */}}
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Global IP blocklist</label>
-      <p class="text-xs text-ink-500 mb-2">One IP or CIDR per line (or comma-separated). Blocked with <strong>403</strong> across every host, ahead of routing — the fleet-wide counterpart to a host's own blocklist. Populated by the <strong>Block everywhere</strong> action on a visitor's analytics page; remove entries here to unblock.</p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.security.blocklist.label"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.security.blocklist.help_intro"}} <strong>403</strong> {{t $ "settings.security.blocklist.help_middle"}} <strong>{{t $ "settings.security.blocklist.block_action"}}</strong> {{t $ "settings.security.blocklist.help_end"}}</p>
       <textarea name="global_ip_blocklist" rows="4"
-        placeholder="Leave blank to block nothing&#10;203.0.113.5/32&#10;198.51.100.0/24"
+        placeholder="{{t $ "settings.security.blocklist.placeholder"}}"
         class="w-full text-sm px-3 py-2 rounded-lg border border-ink-200 bg-white text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono">{{.GlobalIPBlocklist}}</textarea>
     </div>
 
@@ -969,17 +969,17 @@
       <label class="flex items-center gap-2 cursor-pointer">
         <input type="checkbox" name="oidc_enabled" {{if .OIDCEnabled}}checked{{end}}
           class="w-4 h-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500">
-        <span class="text-sm font-medium text-ink-900">Single sign-on (OIDC)</span>
+        <span class="text-sm font-medium text-ink-900">{{t $ "settings.security.oidc.label"}}</span>
       </label>
-      <p class="text-xs text-ink-500">Let admins sign in through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP. Register CaddyUI as a confidential client and set its redirect URL to the callback below.</p>
+      <p class="text-xs text-ink-500">{{t $ "settings.security.oidc.help"}}</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label class="block text-xs font-medium text-ink-700 mb-1">Issuer URL</label>
+          <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.issuer"}}</label>
           <input name="oidc_issuer" value="{{.OIDCIssuer}}" type="url" placeholder="https://sso.example.com/application/o/caddyui/"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         </div>
         <div>
-          <label class="block text-xs font-medium text-ink-700 mb-1">Redirect URL <span class="text-ink-400 font-normal">(callback)</span></label>
+          <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.redirect"}} <span class="text-ink-400 font-normal">{{t $ "settings.security.oidc.callback"}}</span></label>
           <input name="oidc_redirect_url" value="{{.OIDCRedirectURL}}" type="url" placeholder="https://caddyui.example.com/auth/oidc/callback"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
           {{/* v2.65.0 (issue #139): the placeholder is the full callback URL,
@@ -987,89 +987,89 @@
                so it read as a recommendation to use the bare /auth/oidc path.
                Spell the whole thing out below the field instead, where it
                cannot be clipped, and build it from this request's own host. */}}
-          <p class="text-xs text-ink-500 mt-1">Register this exact URL with your provider — including the <strong>/callback</strong> on the end:</p>
+          <p class="text-xs text-ink-500 mt-1">{{t $ "settings.security.oidc.redirect_help" "suffix" "/callback"}}</p>
           <code class="mt-1 block w-full select-all break-all rounded-md bg-ink-50 border border-ink-200 px-2 py-1.5 text-xs font-mono text-ink-900">{{.OIDCSuggestedRedirectURL}}</code>
         </div>
         <div>
-          <label class="block text-xs font-medium text-ink-700 mb-1">Client ID</label>
+          <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.client_id"}}</label>
           <input name="oidc_client_id" value="{{.OIDCClientID}}" type="text" autocomplete="off"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         </div>
         <div>
-          <label class="block text-xs font-medium text-ink-700 mb-1">Client secret</label>
-          <input name="oidc_client_secret" value="" type="password" autocomplete="new-password" placeholder="{{if .OIDCClientSecretSet}}•••••••• (leave blank to keep){{else}}client secret{{end}}"
+          <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.client_secret"}}</label>
+          <input name="oidc_client_secret" value="" type="password" autocomplete="new-password" placeholder="{{if .OIDCClientSecretSet}}{{t $ "settings.security.oidc.keep_secret"}}{{else}}{{t $ "settings.security.oidc.secret_placeholder"}}{{end}}"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         </div>
         <div>
-          <label class="block text-xs font-medium text-ink-700 mb-1">Button label</label>
-          <input name="oidc_button_label" value="{{.OIDCButtonLabel}}" type="text" placeholder="Sign in with SSO"
+          <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.button_label"}}</label>
+          <input name="oidc_button_label" value="{{.OIDCButtonLabel}}" type="text" placeholder="{{t $ "settings.security.oidc.button_placeholder"}}"
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
         </div>
       </div>
       <label class="flex items-start gap-2 cursor-pointer">
         <input type="checkbox" name="oidc_auto_create" {{if .OIDCAutoCreate}}checked{{end}}
           class="mt-0.5 w-4 h-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500">
-        <span class="text-sm text-ink-700">Auto-create accounts<span class="block text-xs text-ink-500">Provision a user on first SSO sign-in (verified email required). Off = only users that already exist in CaddyUI can sign in via SSO.</span></span>
+        <span class="text-sm text-ink-700">{{t $ "settings.security.oidc.auto_create"}}<span class="block text-xs text-ink-500">{{t $ "settings.security.oidc.auto_create_help"}}</span></span>
       </label>
 
       {{/* v2.65.0 (issue #139): decide what an auto-created account may do.
            Before this, every SSO account arrived read-only and had to be
            promoted by hand under Users, with nothing in the UI saying so. */}}
       <div class="mt-4 pt-4 border-t border-ink-100 space-y-3">
-        <p class="text-xs font-medium text-ink-700">Access level for auto-created accounts</p>
+        <p class="text-xs font-medium text-ink-700">{{t $ "settings.security.oidc.access_level"}}</p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
           <div>
-            <label class="block text-xs font-medium text-ink-700 mb-1">Default role</label>
+            <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.default_role"}}</label>
             <select name="oidc_default_role" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-              <option value="view" {{if or (eq .OIDCDefaultRole "view") (eq .OIDCDefaultRole "")}}selected{{end}}>View — read-only (default)</option>
-              <option value="user" {{if eq .OIDCDefaultRole "user"}}selected{{end}}>User — can manage their own resources</option>
-              <option value="admin" {{if eq .OIDCDefaultRole "admin"}}selected{{end}}>Admin — full access</option>
+              <option value="view" {{if or (eq .OIDCDefaultRole "view") (eq .OIDCDefaultRole "")}}selected{{end}}>{{t $ "settings.security.oidc.role_view"}}</option>
+              <option value="user" {{if eq .OIDCDefaultRole "user"}}selected{{end}}>{{t $ "settings.security.oidc.role_user"}}</option>
+              <option value="admin" {{if eq .OIDCDefaultRole "admin"}}selected{{end}}>{{t $ "settings.security.oidc.role_admin"}}</option>
             </select>
           </div>
-          <p class="text-xs text-ink-500 sm:pt-6">Given to a new SSO account when no group rule below matches. Existing accounts keep the role they already have — this only applies at creation.</p>
+          <p class="text-xs text-ink-500 sm:pt-6">{{t $ "settings.security.oidc.default_role_help"}}</p>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
           <div>
-            <label class="block text-xs font-medium text-ink-700 mb-1">Groups claim <span class="text-ink-400 font-normal">(optional)</span></label>
+            <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.groups_claim"}} <span class="text-ink-400 font-normal">{{t $ "settings.security.optional"}}</span></label>
             <input name="oidc_groups_claim" value="{{.OIDCGroupsClaim}}" type="text" autocomplete="off" placeholder="groups"
               class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
           </div>
-          <p class="text-xs text-ink-500 sm:pt-6">The ID-token claim holding the user's groups — usually <code class="font-mono">groups</code>. Your provider has to be configured to include it in the token. Leave blank to use the default role for everyone.</p>
+          <p class="text-xs text-ink-500 sm:pt-6">{{t $ "settings.security.oidc.groups_help" "claim" "groups"}}</p>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
           <div>
-            <label class="block text-xs font-medium text-ink-700 mb-1">Group → role rules</label>
+            <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.oidc.rules"}}</label>
             <textarea name="oidc_role_mappings" rows="3" placeholder="caddyui-admins|admin&#10;infra|user"
               class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">{{.OIDCRoleMappings}}</textarea>
           </div>
-          <p class="text-xs text-ink-500 sm:pt-6">One <code class="font-mono">group|role</code> per line, role being <code class="font-mono">admin</code>, <code class="font-mono">user</code> or <code class="font-mono">view</code>. <strong>First match wins</strong>, so put the most privileged first. Group names are matched case-insensitively; a rule naming an unknown role is ignored rather than guessed at.</p>
+          <p class="text-xs text-ink-500 sm:pt-6">{{t $ "settings.security.oidc.rules_intro"}} <code class="font-mono">group|role</code> {{t $ "settings.security.oidc.rules_role"}} <code class="font-mono">admin</code>, <code class="font-mono">user</code> {{t $ "settings.security.oidc.rules_or"}} <code class="font-mono">view</code>. <strong>{{t $ "settings.security.oidc.rules_first_match"}}</strong>{{t $ "settings.security.oidc.rules_end"}}</p>
         </div>
       </div>
     </div>
 
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-xs font-medium text-ink-700 mb-1">Session duration (days)</label>
+      <label class="block text-xs font-medium text-ink-700 mb-1">{{t $ "settings.security.session.label"}}</label>
       <div class="flex items-center gap-2">
         <input type="number" name="session_duration_days" min="1" max="365"
           value="{{if .SessionDays}}{{.SessionDays}}{{else}}7{{end}}"
           class="w-24 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
-        <span class="text-xs text-ink-500">days · Default: 7</span>
+        <span class="text-xs text-ink-500">{{t $ "settings.security.session.default"}}</span>
       </div>
-      <p class="text-xs text-ink-400 mt-1">New sessions will use this duration. Existing sessions are not affected.</p>
+      <p class="text-xs text-ink-400 mt-1">{{t $ "settings.security.session.help"}}</p>
     </div>
     <div class="py-4 border-b border-ink-100">
-      <label class="block text-sm font-medium text-ink-900 mb-1.5">Max Login Attempts (per IP)</label>
-      <p class="text-xs text-ink-500 mb-2">Blocks an IP after this many failed login attempts in a 15-minute window. 0 disables brute-force protection.</p>
+      <label class="block text-sm font-medium text-ink-900 mb-1.5">{{t $ "settings.security.login_attempts.label"}}</label>
+      <p class="text-xs text-ink-500 mb-2">{{t $ "settings.security.login_attempts.help"}}</p>
       <input type="number" name="max_login_attempts" min="0"
         value="{{.MaxLoginAttempts}}"
-        placeholder="0 = no limit"
+        placeholder="{{t $ "settings.security.login_attempts.placeholder"}}"
         class="w-40 rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
     </div>
     <div class="flex items-start justify-between gap-4 mt-4 pt-4 border-t border-ink-100">
       <div>
-        <label class="block text-sm font-medium text-ink-800">Require two-factor authentication (TOTP) for everyone</label>
-        <p class="text-xs text-ink-500 mt-0.5">Site-wide policy. Any user who has not enrolled TOTP is sent to the setup page and cannot reach the rest of CaddyUI until they finish. It does not enrol anyone for you, and it cannot switch TOTP on or off for one account — each person manages their own under <strong>user menu → My two-factor authentication</strong>.</p>
-        <p class="text-xs text-amber-700 mt-1">This applies to you too. If your own account has no TOTP yet, saving this sends you straight to enrolment, and you will need to finish it before you can reach this page again — including to switch the policy back off.</p>
+        <label class="block text-sm font-medium text-ink-800">{{t $ "settings.security.totp.require"}}</label>
+        <p class="text-xs text-ink-500 mt-0.5">{{t $ "settings.security.totp.help" "profile" (t $ "settings.security.totp.profile_link")}}</p>
+        <p class="text-xs text-amber-700 mt-1">{{t $ "settings.security.totp.warning"}}</p>
       </div>
       <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
         <input type="checkbox" name="require_totp" value="1" {{if eq .RequireTOTP "1"}}checked{{end}} class="sr-only peer">
