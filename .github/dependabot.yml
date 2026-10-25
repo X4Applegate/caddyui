@@ -27,8 +27,8 @@ updates:
   # trailing comment; Dependabot moves the SHA and the comment together.
   # Without this the pins silently rot until an action is deprecated and CI
   # breaks. The week's cooldown means a hijacked release is usually caught and
-  # pulled before it is proposed here. The BuildKit and binfmt image digests
-  # in release-docker.yml are not seen by Dependabot; bump those by hand.
+  # pulled before it is proposed here. Dependabot does not update the image
+  # digests in release-docker.yml; its header says how to bump those.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -37,6 +37,12 @@ updates:
       default-days: 7
     open-pull-requests-limit: 3
     groups:
+      # The docker/* actions run in the release jobs that hold the Docker Hub
+      # token, so they come as their own PR. A dependency joins the first
+      # group it matches.
+      docker-actions:
+        patterns:
+          - "docker/*"
       actions:
         patterns:
           - "*"
