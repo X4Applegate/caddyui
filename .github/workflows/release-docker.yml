@@ -29,11 +29,13 @@
 # to a digest. The runner's own docker/buildx and the Dockerfiles' base
 # images are outside these pins.
 # Dependabot bumps the action SHAs but not the three image digests. Bump those
-# by hand: resolve the moving tag the action would otherwise use
-# (moby/buildkit:buildx-stable-1, docker/buildkit-syft-scanner:stable-1),
-# check that the vX.Y.Z tag you write has the same digest with
-# `docker buildx imagetools inspect`, and read
-# `gh api repos/moby/buildkit/security-advisories` before moving BuildKit.
+# by hand: resolve the moving tag the action would otherwise use, then check
+# with `docker buildx imagetools inspect` that the versioned tag you write has
+# the same digest:
+#   moby/buildkit:buildx-stable-1          -> moby/buildkit:vX.Y.Z
+#   tonistiigi/binfmt:latest               -> tonistiigi/binfmt:qemu-vX.Y.Z
+#   docker/buildkit-syft-scanner:stable-1  -> docker/buildkit-syft-scanner:X.Y.Z
+# Read `gh api repos/moby/buildkit/security-advisories` before moving BuildKit.
 name: Release Docker images
 
 on:
