@@ -23,13 +23,23 @@ updates:
     commit-message:
       prefix: "build(deps)"
 
-  # The workflows pin action versions (actions/checkout@v4 etc.); without this
-  # they silently rot until an action is deprecated and CI breaks.
+  # The workflows pin every action to a commit SHA with its release as a
+  # trailing comment; Dependabot moves the SHA and the comment together.
+  # Without this the pins silently rot until an action is deprecated and CI
+  # breaks. The week's cooldown means a hijacked release is usually caught and
+  # pulled before it is proposed here. The BuildKit and binfmt image digests
+  # in release-docker.yml are not seen by Dependabot; bump those by hand.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns:
+          - "*"
     commit-message:
       prefix: "ci(deps)"
 
