@@ -118,14 +118,90 @@ type storageCertificate struct {
 	CertPath string
 	KeyPath  string
 	Leaf     *x509.Certificate
+	// Uncovered lists the requested names this certificate does not present,
+	// so a caller shipping it somewhere can say so (v2.68.6, issue #153).
+	Uncovered []string
 }
 
-// findStorageCertificate locates the newest certificate Caddy stored for any
-// of domains (first match by domain order, latest NotAfter across issuers).
-// Every candidate is read through readCertificateFile, so roots must include
-// dataDir — certificateReadRoots adds each node's DataDir for exactly this.
+// certificateCoversName reports whether leaf presents name, honouring a
+// single-label wildcard the way TLS does. Caddy stores a wildcard and its apex
+// as separate certificates, so "*.example.com" must not be treated as cover
+// for the bare "example.com".
+func certificateCoversName(leaf *x509.Certificate, name string) bool {
+	name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+	if leaf == nil || name == "" {
+		return false
+	}
+	presented := leaf.DNSNames
+	if len(presented) == 0 && strings.TrimSpace(leaf.Subject.CommonName) != "" {
+		presented = []string{leaf.Subject.CommonName}
+	}
+	for _, san := range presented {
+		san = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(san)), ".")
+		if san == "" {
+			continue
+		}
+		if san == name {
+			return true
+		}
+		suffix, isWildcard := strings.CutPrefix(san, "*.")
+		if !isWildcard {
+			continue
+		}
+		// A requested "*.example.com" is satisfied only by a wildcard SAN for
+		// the same suffix, which the equality check above already covers. A
+		// concrete name is covered when the wildcard matches its single
+		// leftmost label.
+		if strings.HasPrefix(name, "*.") {
+			continue
+		}
+		if host, found := strings.CutSuffix(name, "."+suffix); found && host != "" && !strings.Contains(host, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+// storageCertificateCoverage scores how well leaf serves domains and returns
+// the requested names it does not present.
+//
+// A wildcard name scores higher than a concrete one because it protects every
+// subdomain behind it. Without that weighting a definition of
+// "*.example.com" + "example.com" is a 1-1 tie between the two certificates
+// Caddy stored, and the tie-break (expiry) picks whichever was obtained last
+// — usually the apex, which serves no subdomain at all (issue #153).
+func storageCertificateCoverage(leaf *x509.Certificate, domains []string) (score int, uncovered []string) {
+	for _, domain := range domains {
+		if strings.TrimSpace(domain) == "" {
+			continue
+		}
+		if !certificateCoversName(leaf, domain) {
+			uncovered = append(uncovered, strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), "."))
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(domain), "*.") {
+			score += 2
+			continue
+		}
+		score++
+	}
+	return score, uncovered
+}
+
+// findStorageCertificate locates the stored certificate that best serves
+// domains: the one covering the most of them, with the latest NotAfter
+// breaking a tie. Every candidate is read through readCertificateFile, so
+// roots must include dataDir — certificateReadRoots adds each node's DataDir
+// for exactly this.
+//
+// v2.68.6 (issue #153): selection was previously latest-NotAfter alone. A
+// definition listing both "*.example.com" and "example.com" is stored by Caddy
+// as two certificates, so the apex — newer, hence later-expiring — was picked
+// and pushed to fleet targets, breaking TLS for every subdomain. Coverage now
+// decides, and the names the winner misses come back in Uncovered.
 func findStorageCertificate(dataDir string, domains []string, roots []string) (*storageCertificate, error) {
 	var best *storageCertificate
+	bestScore := -1
 	var looked []string
 	denied := "" // first path CaddyUI was not allowed to read
 	deny := func(path string, err error) {
@@ -171,8 +247,11 @@ func findStorageCertificate(dataDir string, domains []string, roots []string) (*
 					deny(key, err)
 					continue
 				}
-				if best == nil || leaf.NotAfter.After(best.Leaf.NotAfter) {
-					best = &storageCertificate{CertPath: crt, KeyPath: key, Leaf: leaf}
+				score, uncovered := storageCertificateCoverage(leaf, domains)
+				if best == nil || score > bestScore ||
+					(score == bestScore && leaf.NotAfter.After(best.Leaf.NotAfter)) {
+					best = &storageCertificate{CertPath: crt, KeyPath: key, Leaf: leaf, Uncovered: uncovered}
+					bestScore = score
 				}
 			}
 		}

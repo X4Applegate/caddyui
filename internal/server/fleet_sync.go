@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -533,6 +534,17 @@ func (s *Server) sourcePushCertificateCopy(sourceServerID int64, source models.C
 	keyPEM, err := readCertificateFile(stored.KeyPath, roots)
 	if err != nil {
 		return models.Certificate{}, fmt.Errorf("read %s: %w", stored.KeyPath, err)
+	}
+	// v2.68.6 (issue #153): Caddy stores a wildcard and its apex as two
+	// separate certificates, and a target certificate row holds exactly one
+	// keypair, so one push cannot carry both. findStorageCertificate picks the
+	// broadest match; say plainly which names it leaves unprotected instead of
+	// pushing a partial certificate silently and breaking TLS on the target.
+	if len(stored.Uncovered) > 0 {
+		_ = models.LogActivity(s.DB, sourceServerID, "system", "cert_source_push",
+			fmt.Sprintf("cert:%d", source.ID),
+			fmt.Sprintf("pushed %s from %s, which does not cover %s — Caddy stores those as a separate certificate; give them their own certificate definition with its own push targets",
+				filepath.Base(stored.CertPath), srv.Name, strings.Join(stored.Uncovered, ", ")), false)
 	}
 	copy := source
 	copy.OwnerID = sql.NullInt64{}
