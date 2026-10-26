@@ -277,6 +277,20 @@ func stringField(value any) string {
 	}
 }
 
+// isSuccessfulRenewalInfoUpdate recognises Caddy's tls.cache.maintenance line
+// for a completed ARI fetch ("updated and stored ACME renewal information").
+// The failure counterpart is "failed updating renewal info from ACME CA", so
+// matching on "renewal info" alone would catch both; require the success verb.
+func isSuccessfulRenewalInfoUpdate(message string) bool {
+	if !strings.Contains(message, "renewal info") {
+		return false
+	}
+	if strings.Contains(message, "failed") || strings.Contains(message, "error") {
+		return false
+	}
+	return strings.Contains(message, "updated") || strings.Contains(message, "stored")
+}
+
 func certificateStates(entry Entry, raw map[string]any) []models.CertificateLifecycleStatus {
 	eventName := strings.ToLower(strings.TrimSpace(stringField(raw["name"])))
 	isTLSEvent := strings.HasPrefix(entry.Logger, "tls")
@@ -289,6 +303,14 @@ func certificateStates(entry Entry, raw map[string]any) []models.CertificateLife
 	switch {
 	case eventName == "cert_revoked" || strings.Contains(message, "revoked"):
 		phase = "revoked"
+	// v2.68.6 (issue #151): a successful ACME renewal-information (ARI) update
+	// proves the CA is reachable again and the certificate is current, but it
+	// issues nothing, so it emits no cert_obtained event. Without this arm the
+	// line fell through to the "failed"/"renewal" catch-all below and a
+	// transient ARI outage stayed on screen as Issuance error forever. It must
+	// be tested before the error arm, not after.
+	case isSuccessfulRenewalInfoUpdate(message):
+		phase = "active"
 	case eventName == "cert_obtained" || eventName == "cert_cached" ||
 		strings.Contains(message, "certificate obtained") ||
 		strings.Contains(message, "certificate renewed") ||
@@ -302,7 +324,9 @@ func certificateStates(entry Entry, raw map[string]any) []models.CertificateLife
 	case eventName == "cert_failed" || entry.Level == "ERROR" || strings.Contains(message, "could not get certificate") ||
 		strings.Contains(message, "failed") || strings.Contains(message, "giving up"):
 		phase = "error"
-	case strings.Contains(message, "renewing certificate") || strings.Contains(message, "started certificate renewal"):
+	case strings.Contains(message, "renewing certificate") || strings.Contains(message, "started certificate renewal") ||
+		// v2.68.6: tls.cache.maintenance's own wording for a due renewal.
+		strings.Contains(message, "expires soon; renewing"):
 		phase = "renewing"
 	case strings.Contains(message, "obtaining certificate") || strings.Contains(message, "trying to solve challenge") ||
 		strings.Contains(message, "starting certificate issuance"):

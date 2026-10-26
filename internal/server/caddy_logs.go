@@ -24,7 +24,31 @@ const (
 	runtimeLogCleanupRetry = 30 * time.Second
 	certificateProbeEvery  = time.Hour
 	staleCertificatePhase  = 15 * time.Minute
+	// v2.68.6 (issue #151): a failure is held longer than an in-flight phase
+	// before the live probe is allowed to overrule it, so a genuine outage is
+	// not masked within one renewal attempt's normal retry window.
+	staleCertificateFailure = time.Hour
 )
+
+// isStaleCertificatePhase reports whether a stored lifecycle phase has gone
+// unconfirmed long enough that a live TLS probe should be trusted over it.
+//
+// v2.68.6 (issue #151): "error" and "retrying" were previously excluded, so a
+// transient ACME failure — notably a renewal-information update that failed on
+// a DNS blip — was pinned on screen as Issuance error indefinitely, even while
+// the node kept serving a valid certificate. Only "revoked" is now permanent;
+// that is a CA decision no local probe may clear.
+func isStaleCertificatePhase(state models.CertificateLifecycleStatus, now time.Time) bool {
+	age := now.Sub(state.UpdatedAt)
+	switch state.Phase {
+	case "obtaining", "renewing":
+		return age >= staleCertificatePhase
+	case "error", "retrying":
+		return age >= staleCertificateFailure
+	default:
+		return false
+	}
+}
 
 type certificateProbeTarget struct {
 	Certificate models.Certificate
@@ -135,7 +159,7 @@ func (s *Server) reconcileCertificateLifecycle() (int, error) {
 		for _, target := range targets {
 			key := fmt.Sprintf("%d:%s", server.ID, models.NormalizeHostname(target.Identifier))
 			state, found := stateByServerIdentifier[key]
-			if !found || ((state.Phase == "obtaining" || state.Phase == "renewing") && now.Sub(state.UpdatedAt) >= staleCertificatePhase) {
+			if !found || isStaleCertificatePhase(state, now) {
 				jobs = append(jobs, probeJob{server: server, target: target})
 			}
 		}
