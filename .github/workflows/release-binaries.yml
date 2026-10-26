@@ -27,7 +27,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # On a tag this is v2.68.6. On a manual run from a branch it is the
+          # branch name, which may contain `/` — that would turn the archive
+          # name into a nested path and break the `tar -C dist` below.
           version="${GITHUB_REF_NAME:-manual}"
+          version="${version//\//-}"
           mkdir -p dist
 
           targets=(
