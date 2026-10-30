@@ -548,7 +548,7 @@ if ('serviceWorker' in navigator) {
       {{/* v2.12.26: data-topbar hook so the orange theme can paint a
            branded orange bottom border / warmer dark surface here without
            bleeding the rule into every other .border-b on the page. */}}
-      <div data-topbar class="app-topbar sticky top-0 z-10 border-b border-ink-100 bg-white/95 backdrop-blur-sm flex items-center gap-3 min-w-0">
+      <div data-topbar class="app-topbar sticky top-0 z-10 border-b border-ink-100 bg-white/95 backdrop-blur-sm flex items-center gap-2 sm:gap-3 min-w-0">
         <button type="button" aria-label="Open navigation" onclick="document.getElementById('sidebar').classList.remove('-translate-x-full');document.getElementById('sidebar-scrim').classList.remove('hidden');" class="lg:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-600 hover:bg-ink-100 dark:text-slate-400 dark:hover:bg-slate-800 transition shrink-0">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
@@ -573,12 +573,12 @@ if ('serviceWorker' in navigator) {
             {{else}}
             <span class="w-2 h-2 rounded-full bg-ink-400 shrink-0"></span>
             {{end}}
-            <span class="text-sm font-semibold text-ink-800 shrink-0 truncate">{{.CurrentServer.Name}}</span>
+            <span class="text-sm font-semibold text-ink-800 min-w-0 truncate" title="{{.CurrentServer.Name}}">{{.CurrentServer.Name}}</span>
             <span class="text-ink-200 shrink-0 hidden sm:inline">|</span>
             <span class="text-xs font-mono text-ink-400 truncate hidden sm:inline">{{.CurrentServer.AdminURL}}</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3 text-ink-400 shrink-0"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
-          <div data-server-menu-panel class="hidden absolute left-0 top-full mt-2 w-72 rounded-xl bg-white/95 border border-ink-200 shadow-card-hover overflow-hidden z-30 dark:bg-slate-800/95 dark:border-slate-700 backdrop-blur-sm">
+          <div data-server-menu-panel class="hidden absolute left-0 top-full mt-2 w-72 max-w-[calc(100vw-4rem)] rounded-xl bg-white/95 border border-ink-200 shadow-card-hover overflow-hidden z-30 dark:bg-slate-800/95 dark:border-slate-700 backdrop-blur-sm">
             <div class="px-3.5 py-2 border-b border-ink-100 dark:border-slate-700">
               <div class="text-[10px] font-semibold uppercase tracking-wider text-ink-500">{{t $ "topbar.switch_server"}}</div>
             </div>
@@ -616,8 +616,8 @@ if ('serviceWorker' in navigator) {
         {{else}}
         <span class="w-2 h-2 rounded-full bg-ink-400 shrink-0"></span>
         {{end}}
-        <span class="text-sm font-semibold text-ink-800 shrink-0">{{.CurrentServer.Name}}</span>
-        <span class="text-ink-200 shrink-0">|</span>
+        <span class="text-sm font-semibold text-ink-800 min-w-0 truncate" title="{{.CurrentServer.Name}}">{{.CurrentServer.Name}}</span>
+        <span class="text-ink-200 shrink-0 hidden sm:inline">|</span>
         <span class="text-xs font-mono text-ink-400 truncate hidden sm:block">{{.CurrentServer.AdminURL}}</span>
         {{end}}
         {{end}}
@@ -652,7 +652,7 @@ if ('serviceWorker' in navigator) {
 	          <summary class="ui-button ui-button--primary" aria-label="Create a resource">
 	            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 	            <span class="hidden sm:inline">{{t $ "topbar.create"}}</span>
-	            <svg class="app-create-menu__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+	            <svg class="app-create-menu__chevron hidden sm:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
 	          </summary>
 	          <div class="app-create-menu__panel">
 	            <div class="app-create-menu__label">{{t $ "topbar.create_menu"}}</div>
