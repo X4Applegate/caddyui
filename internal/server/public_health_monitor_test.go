@@ -3,6 +3,7 @@
 package server
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -54,6 +55,63 @@ func hostportOfURL(t *testing.T, raw string) string {
 		t.Fatalf("parse test server URL %q: %v", raw, err)
 	}
 	return u.Host
+}
+
+func TestCheckProxyHostClosesIdleConnections(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusFound, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			s := newPublicHealthTestServer(t)
+			const probes = 3
+			closed := make(chan struct{}, probes)
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if status == http.StatusFound {
+					w.Header().Set("Location", "/login")
+				}
+				w.WriteHeader(status)
+				if status != http.StatusNoContent {
+					_, _ = w.Write([]byte("healthy"))
+				}
+			}))
+			// No server-side idle timeout: the probe must close its own connection.
+			srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateClosed {
+					closed <- struct{}{}
+				}
+			}
+			srv.StartTLS()
+			defer srv.Close()
+
+			hostID, err := models.CreateProxyHost(s.DB, 1, 0, &models.ProxyHost{
+				Domains: hostportOfURL(t, srv.URL), ForwardScheme: "https",
+				ForwardHost: "backend", ForwardPort: 443, Enabled: true, SSLEnabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for i := 0; i < probes; i++ {
+				s.checkProxyHost(hostID, srv.URL, http.MethodGet, 0, 5*time.Second)
+				select {
+				case <-closed:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("probe %d left its connection open", i+1)
+				}
+			}
+
+			history, err := models.GetProxyHealthHistory(s.DB, hostID, probes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(history) != probes {
+				t.Fatalf("health history has %d entries, want %d", len(history), probes)
+			}
+			for _, check := range history {
+				if !check.OK || check.StatusCode != status {
+					t.Errorf("health check = %+v, want OK with HTTP %d", check, status)
+				}
+			}
+		})
+	}
 }
 
 func TestCheckAllProxyHostsSkipsMonitoringOff(t *testing.T) {
