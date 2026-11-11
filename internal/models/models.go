@@ -1022,6 +1022,39 @@ func (p *ProxyHost) StripRespHeaderList() []string {
 	return out
 }
 
+// MergeStripRequestHeaders folds the legacy v2.9.250 strip_request_headers
+// value into the canonical strip_req_headers one (issue #167).
+//
+// Two columns stripped request headers with identical semantics: whichever box
+// a user filled on the host form decided which one was written. Only
+// strip_req_headers reaches the Caddyfile exporter, so it is canonical, and
+// legacy values are carried over rather than dropped.
+//
+// Canonical entries keep their order and spelling; legacy entries that are not
+// already present are appended. Comparison is case-insensitive because HTTP
+// header names are, so "Authorization" and "authorization" collapse to one.
+// Blank entries are discarded. The result is a comma-separated list in the
+// same shape both columns already used.
+func MergeStripRequestHeaders(canonical, legacy string) string {
+	var out []string
+	seen := map[string]bool{}
+	for _, src := range []string{canonical, legacy} {
+		for _, h := range strings.Split(src, ",") {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			key := strings.ToLower(h)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, h)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
 // StripReqHeaderList parses the comma-separated strip_req_headers field.
 func (p *ProxyHost) StripReqHeaderList() []string {
 	if p.StripReqHeaders == "" {

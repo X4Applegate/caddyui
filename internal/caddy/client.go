@@ -2257,24 +2257,13 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			"method":  "{http.request.header.X-Http-Method-Override}",
 		})
 	}
-	// v2.9.250: strip_request_headers — delete listed request headers before forwarding.
-	if p.StripRequestHeaders != "" {
-		delList := []any{}
-		for _, h := range strings.Split(p.StripRequestHeaders, ",") {
-			h = strings.TrimSpace(h)
-			if h != "" {
-				delList = append(delList, h)
-			}
-		}
-		if len(delList) > 0 {
-			handlers = append(handlers, map[string]any{
-				"handler": "headers",
-				"request": map[string]any{
-					"delete": delList,
-				},
-			})
-		}
-	}
+	// issue #167: the v2.9.250 strip_request_headers block used to emit a
+	// second request-delete handler here. It duplicated strip_req_headers
+	// (same semantics, different column), so a host with both columns set got
+	// two strip directives while only strip_req_headers survived an export.
+	// strip_req_headers is now canonical and emits the single directive in the
+	// custom-request-headers block above; legacy values are merged into it by
+	// the migration in internal/db.
 	// v2.9.251: add_x_forwarded_method — forward HTTP method as X-Forwarded-Method.
 	if p.AddXForwardedMethod {
 		handlers = append(handlers, map[string]any{

@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **The host form showed two identical-looking "Strip request headers" inputs, and they were not the same setting (#167).** `strip_req_headers` (v2.9.35) and `strip_request_headers` (v2.9.250) were two database columns with identical behaviour, so which one a host used came down to which of two boxes the user happened to type in. That was a data-correctness bug, not just a confusing form: only `strip_req_headers` was read by the Caddyfile exporter, so a value in the other column stripped headers in the live config but **was missing from an export**, and filling both silently emitted **two** strip-request-headers directives.
+  - **`strip_req_headers` is now canonical** — it owns the header-name canonicalising helper, the exporter support, and the paired "Strip response headers" field above it in the form. The duplicate input is gone and the surviving one keeps the form's `ink-*` design tokens, which the v2.9.250 block did not use.
+  - **Existing values are migrated, not dropped.** On upgrade, anything stored in `strip_request_headers` is folded into `strip_req_headers`: a legacy-only value moves over verbatim, and when both columns are set the header names are **merged and deduplicated** (case-insensitively, since HTTP header names are case-insensitive) with the canonical order kept and new names appended. Nothing is discarded, and re-running the migration is a no-op.
+  - **The old `strip_request_headers` form value is still accepted for one release**, merged into the canonical field, so an old bookmarked form or an API client posting the v2.9.250 name does not silently lose data. It is marked for removal in v2.70 along with the column.
+  - The Caddy config now carries **exactly one** strip-request-headers directive, and an export round-trips header names typed into either box.
+
+---
+
 ## [2.68.6] - 2026-10-25 - Source Push sends the wildcard, not the apex (#153); a stale "Issuance error" clears once the CA recovers (#151)
 
 ### Fixed
