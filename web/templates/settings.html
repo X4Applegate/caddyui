@@ -1451,31 +1451,22 @@
   </div>
 
 {{end}}
-  {{if ne .SettingsSection "backup"}}
-  <div class="flex flex-wrap items-center gap-3">
-    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{t $ "settings.save_section" "section" .SettingsSectionLabel}}</button>
-    {{if eq .SettingsSection "analytics"}}<span class="text-xs text-ink-400">{{t $ "settings.analytics.save_note"}}</span>{{end}}
-  </div>
-  {{end}}
-</form>
 
-{{/* One empty form per configured DNS provider, lives OUTSIDE the main
-     settings form. The "Clear credentials" buttons inside each provider
-     card use HTML5 form="clear-dns-<id>" to post to these instead of the
-     big settings form. onsubmit confirm() gates the destructive POST. */}}
-{{if eq .SettingsSection "dns"}}{{range .DNSProviders}}{{if .Configured}}
-<form id="clear-dns-{{.ID}}" method="post" action="/settings/dns-provider/{{.ID}}/clear" class="hidden"
-      onsubmit="return confirm('Clear all {{.DisplayName}} API credentials? Existing DNS records on {{.DisplayName}} stay in place — this only removes the keys stored in CaddyUI.')"></form>
-{{end}}{{end}}{{end}}
+{{/* issue #166: the Notifier status and Backup cards used to sit AFTER
+     </form>. Backup has real inputs and two submit buttons, so outside the
+     form they belonged to no form at all (button.form === null) and "Save
+     settings" silently did nothing — scheduled backups (v2.52.0, issue #104)
+     could not be configured from the UI at all. Both cards now render inside
+     the action="/settings" form, so they post settings_section and the
+     CSRF token like every other section. Keep them here: a card with inputs
+     added after </form> is unreachable in exactly the same way.
 
-{{/* The Test Email and Test Webhook buttons used to live in their own
-     cards here, but v2.4.12 moved them up into the SMTP and Webhook cards
-     above (next to each section's Save button) so you can edit → save →
-     test without scrolling to the bottom of the page. */}}
-
+     "Back up now" stays a submit button with formaction="/settings/backup/run",
+     which overrides the form's action for that one button and now correctly
+     carries the CSRF field too. */}}
 {{if eq .SettingsSection "notifications"}}
 {{/* ── Notifier status ── */}}
-<div id="settings-notifier" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-6">
+<div id="settings-notifier" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6">
   <div class="text-sm font-semibold text-ink-800 mb-3">Notifier Status</div>
   <div id="notifier-status" class="text-sm text-ink-600">
     <span class="text-ink-400 text-xs">Loading…</span>
@@ -1485,7 +1476,7 @@
 {{end}}
 {{if eq .SettingsSection "backup"}}
 {{/* ── Backup ── */}}
-<div id="settings-backup" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-5">
+<div id="settings-backup" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-5">
   <div class="text-sm font-semibold text-ink-800 mb-1">Database Backup</div>
   {{if eq .DatabaseBackend "mariadb"}}
   <p class="text-xs text-ink-500 mb-3">MariaDB is active. Use <code class="bg-ink-100 px-1 rounded text-xs">mariadb-dump</code>, your hosting provider, or your database platform's scheduled backup and point-in-time recovery tools.</p>
@@ -1533,6 +1524,30 @@
 </div>
 
 {{end}}
+
+  {{/* The Backup page carries its own Save button inside the card above, so
+       it opts out of the generic one rather than showing two. */}}
+  {{if ne .SettingsSection "backup"}}
+  <div class="flex flex-wrap items-center gap-3">
+    <button class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-5 py-2 rounded-lg shadow-sm transition">{{t $ "settings.save_section" "section" .SettingsSectionLabel}}</button>
+    {{if eq .SettingsSection "analytics"}}<span class="text-xs text-ink-400">{{t $ "settings.analytics.save_note"}}</span>{{end}}
+  </div>
+  {{end}}
+</form>
+
+{{/* One empty form per configured DNS provider, lives OUTSIDE the main
+     settings form. The "Clear credentials" buttons inside each provider
+     card use HTML5 form="clear-dns-<id>" to post to these instead of the
+     big settings form. onsubmit confirm() gates the destructive POST. */}}
+{{if eq .SettingsSection "dns"}}{{range .DNSProviders}}{{if .Configured}}
+<form id="clear-dns-{{.ID}}" method="post" action="/settings/dns-provider/{{.ID}}/clear" class="hidden"
+      onsubmit="return confirm('Clear all {{.DisplayName}} API credentials? Existing DNS records on {{.DisplayName}} stay in place — this only removes the keys stored in CaddyUI.')"></form>
+{{end}}{{end}}{{end}}
+
+{{/* The Test Email and Test Webhook buttons used to live in their own
+     cards here, but v2.4.12 moved them up into the SMTP and Webhook cards
+     above (next to each section's Save button) so you can edit → save →
+     test without scrolling to the bottom of the page. */}}
 </div>
 </div>
 
