@@ -10,6 +10,16 @@
 # plugins under everyone who pulls :stable. Its :vX.Y.Z tag names the CaddyUI
 # release that last changed the module set.
 #
+# The flip side of that rule is that the Caddy image's Alpine layer only moves
+# when Dockerfile.caddy is edited, so Alpine security fixes can sit built-but-
+# unshipped between releases. caddy-image-refresh.yml closes that gap on a
+# weekly schedule and publishes those rebuilds as applegater/caddyui-caddy
+# :vX.Y.Z-pN (base-layer refresh N of release vX.Y.Z, same Caddy binary and
+# plugin set), moving :stable and :latest to the newest one. Tagging here is
+# unchanged: this workflow still emits only :vX.Y.Z, :stable and :latest, and
+# a release that does change Dockerfile.caddy publishes a fresh :vX.Y.Z whose
+# -pN counter then restarts at p1. docs/dockerhub.md documents -pN for users.
+#
 # Setup, once, by a repo admin (Settings -> Secrets and variables -> Actions):
 #   DOCKERHUB_USERNAME  Docker Hub account that owns applegater/*  (applegater)
 #   DOCKERHUB_TOKEN     Docker Hub access token, scope "Read & Write"

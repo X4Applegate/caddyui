@@ -1,0 +1,588 @@
+# Rebuild applegater/caddyui-caddy on a schedule so Alpine security fixes
+# actually ship, and publish the result only after a human looks at it.
+#
+# Why this exists
+# ---------------
+# release-docker.yml rebuilds the Caddy image only when Dockerfile.caddy
+# changed since the previous release tag. That is the right rule for the
+# *module set* — a blind rebuild can bump xcaddy plugins under everyone who
+# pulls :stable — but it means the image's Alpine layer only moves when
+# someone edits that file. Dockerfile.caddy's final stage runs
+# `apk upgrade --no-cache`, so between releases the fix exists upstream and
+# is never built: available, but unshipped. This workflow closes that gap on
+# a timer instead of waiting for an unrelated code change.
+#
+# What -pN means, precisely
+# -------------------------
+# A refresh publishes vX.Y.Z-pN, where vX.Y.Z is the newest release tag and N
+# counts refreshes of that release (p1, p2, …). It says exactly one thing:
+# the CaddyUI/Caddy binary and plugin set are identical to vX.Y.Z, and only
+# the base layer moved. N is monotonic and collision-free, which a date is
+# not — two builds on one day collide, and a republish after a failed push
+# needs a suffix anyway. The build date lives in the OCI label
+# org.opencontainers.image.created, where it belongs.
+#
+# NOT reproducible builds. `apk upgrade --no-cache` is unpinned by design, so
+# two runs a week apart produce different images from the same source. The
+# image is reproducible *by digest* — the digest names exactly one artifact,
+# and the publish job pushes by digest so the tags cannot drift from what was
+# scanned — but it is not bit-for-bit rebuildable from the Dockerfile alone.
+# That stronger property needs explicit Alpine package pinning, which is
+# separate and much larger work.
+#
+# Three jobs, three concerns
+# --------------------------
+#   build-scan  Scheduled. NO secrets, no registry credentials, no write
+#               permissions. Rebuilds both arches and runs Trivy on both.
+#               Clean + nothing new = ends silently. A workflow with no
+#               secrets is the one that can be trusted to run unattended;
+#               keep it that way.
+#   publish     Gated on the `caddy-image-publish` environment (required
+#               reviewer). Holds the Hub credentials. Publishes BY DIGEST
+#               from the scanned build, so the bytes a reviewer approved are
+#               the bytes that ship.
+#   alert       Opens exactly ONE issue when a human is needed, and comments
+#               on it instead of opening a second.
+#
+# The strict-subset gate
+# ----------------------
+# Publish requires the new image's findings to be a SUBSET of the
+# currently-published image's findings. Not "zero findings" — the published
+# image has always carried GO-2026-5932 (x/crypto/openpgp unmaintained, no
+# fix available, not reached by the binary), and a zero-findings rule would
+# mean this pipeline could never publish anything. The rule is "no NEW
+# findings": a rebuild that *removes* CVEs publishes, a rebuild that
+# *introduces* one stops and alerts. That is the whole point — an unattended
+# rebuild of an unpinned `apk upgrade` can regress, and the gate is what
+# makes that safe to automate.
+#
+# Setup, once, by a repo admin
+# ----------------------------
+# Settings -> Environments -> New environment:
+#   Name:              caddy-image-publish
+#   Required reviewers: @X4Applegate  (tick "Required reviewers")
+#   Secrets (on the environment, not the repo):
+#     DOCKERHUB_USERNAME   applegater
+#     DOCKERHUB_TOKEN      Docker Hub PAT, scope "Read & Write"
+# Until the environment exists, build-scan still runs and scans on schedule;
+# publish is never reachable without a manual dispatch, and would fail at the
+# login step rather than push anything.
+#
+# Every `uses:` is pinned to a commit SHA with its release as a trailing
+# comment, matching release-docker.yml. Dependabot's github-actions ecosystem
+# moves the SHA and the comment together.
+name: Caddy image refresh
+
+on:
+  schedule:
+    # Mondays 07:00 UTC — after the week's Alpine/Caddy updates have landed
+    # and before Dependabot's Monday gomod PR, so a human reviewing one is
+    # looking at the other's result too.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Request publish (still waits for the environment reviewer)"
+        required: false
+        type: boolean
+        default: false
+      force_alert:
+        description: "Open/comment on the alert issue even if the scan is clean (test the alert path)"
+        required: false
+        type: boolean
+        default: false
+
+# Default-deny. Each job widens only what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: caddy-image-refresh
+  cancel-in-progress: false
+
+env:
+  # Not a secret — it is the published image name, and it must not be built
+  # from DOCKERHUB_USERNAME: GitHub drops any job output containing a secret
+  # value, and "applegater" IS that secret, so a tag list built from it
+  # arrives empty in the next job. release-docker.yml documents this trap.
+  IMAGE: applegater/caddyui-caddy
+  TRIVY_SEVERITY: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. build-scan — unattended, no secrets, no credentials, read-only token.
+  # ---------------------------------------------------------------------------
+  build-scan:
+    name: Build and scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      patch_tag: ${{ steps.plan.outputs.patch_tag }}
+      baseline: ${{ steps.plan.outputs.baseline }}
+      verdict: ${{ steps.gate.outputs.verdict }}
+      new_findings: ${{ steps.gate.outputs.new_findings }}
+      summary: ${{ steps.gate.outputs.summary }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Work out which release this refresh belongs to and what the next -pN
+      # is, by reading the registry rather than guessing: N is derived from the
+      # tags that already exist, so a re-run after a failed push picks the same
+      # number and a successful one moves on.
+      - name: Work out version and next -pN
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stable_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          version="$(git tag --list 'v*' | grep -E "$stable_re" | sort -V | tail -1)"
+          if [ -z "$version" ]; then
+            echo "::error::no vX.Y.Z release tag found; nothing to refresh"
+            exit 1
+          fi
+
+          # Highest existing -pN for this version, from Docker Hub's tag list.
+          # A missing repo/tag page is not an error here: p1 is then correct.
+          page="https://hub.docker.com/v2/repositories/${IMAGE}/tags?page_size=100"
+          highest=0
+          for _ in 1 2 3 4 5; do
+            body="$(curl -fsS "$page" 2>/dev/null || true)"
+            [ -n "$body" ] || break
+            while read -r n; do
+              [ -n "$n" ] || continue
+              if [[ "$n" =~ ^${version}-p([0-9]+)$ ]]; then
+                cur="${BASH_REMATCH[1]}"
+                [ "$cur" -gt "$highest" ] && highest="$cur"
+              fi
+            done < <(jq -r '.results[]?.name // empty' <<<"$body")
+            page="$(jq -r '.next // empty' <<<"$body")"
+            [ -n "$page" ] || break
+          done
+
+          next=$((highest + 1))
+          patch_tag="${version}-p${next}"
+
+          {
+            echo "version=$version"
+            echo "patch_tag=$patch_tag"
+            echo "baseline=${IMAGE}:stable"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "refreshing $version -> $patch_tag (highest existing -pN: $highest)"
+
+      # QEMU only for the final stage's `apk upgrade` inside the arm64 alpine
+      # image; Caddy itself cross-compiles natively. Same privileged binfmt
+      # image and digest pin as release-docker.yml.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+          cache-image: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+      # Built per-arch and loaded locally so Trivy can scan each architecture's
+      # real filesystem. A multi-arch manifest cannot be `load`ed into the
+      # daemon, and scanning only amd64 would miss an arm64-only package
+      # regression — which is exactly what the subset gate is meant to catch.
+      - name: Build linux/amd64 (local, scannable)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.caddy
+          platforms: linux/amd64
+          tags: caddy-refresh:amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+
+      - name: Build linux/arm64 (local, scannable)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.caddy
+          platforms: linux/arm64
+          tags: caddy-refresh:arm64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+          cache: true
+
+      # One vulnerability DB download, reused by every scan below, so the four
+      # scans cannot disagree because the DB moved between them. A subset
+      # comparison against a different DB version is meaningless.
+      - name: Download Trivy databases once
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy image --download-db-only
+          trivy image --download-java-db-only || true
+
+      - name: Scan new and published images, both arches
+        id: scan
+        env:
+          BASELINE: ${{ steps.plan.outputs.baseline }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scan
+
+          # The published image is pulled per-arch so like is compared with
+          # like: new amd64 vs published amd64, new arm64 vs published arm64.
+          for arch in amd64 arm64; do
+            echo "::group::scan new $arch"
+            trivy image --skip-db-update --scanners vuln \
+              --severity "$TRIVY_SEVERITY" --format json \
+              --output "scan/new-$arch.json" "caddy-refresh:$arch"
+            echo "::endgroup::"
+
+            echo "::group::scan published $arch"
+            # A baseline that cannot be fetched is a hard stop, not an empty
+            # set: an empty baseline would make every finding "new" and alert,
+            # or worse, be read as "nothing to compare" and wave the build
+            # through. Fail loudly instead.
+            if ! docker pull --platform "linux/$arch" "$BASELINE"; then
+              echo "::error::cannot pull baseline $BASELINE for linux/$arch; refusing to compare against an unknown image"
+              exit 1
+            fi
+            trivy image --skip-db-update --scanners vuln \
+              --severity "$TRIVY_SEVERITY" --format json \
+              --output "scan/old-$arch.json" "$BASELINE"
+            echo "::endgroup::"
+          done
+
+      # The gate. Pure set arithmetic on vulnerability IDs per architecture:
+      # publish iff new ⊆ old on BOTH arches. Deliberately not "count went
+      # down" and not "no CRITICAL/HIGH" — a new MEDIUM introduced by an
+      # unattended, unpinned `apk upgrade` is exactly the event a human should
+      # see before it reaches six production boxes.
+      - name: Strict-subset gate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for arch in amd64 arm64; do
+            for side in new old; do
+              jq -r '[.Results[]?.Vulnerabilities[]? | .VulnerabilityID] | unique | .[]' \
+                "scan/$side-$arch.json" > "scan/$side-$arch.ids"
+            done
+            # comm -23: in new, not in old. Sorted inputs required.
+            sort -o "scan/new-$arch.ids" "scan/new-$arch.ids"
+            sort -o "scan/old-$arch.ids" "scan/old-$arch.ids"
+            comm -23 "scan/new-$arch.ids" "scan/old-$arch.ids" > "scan/added-$arch.ids"
+            comm -13 "scan/new-$arch.ids" "scan/old-$arch.ids" > "scan/removed-$arch.ids"
+          done
+
+          added="$(cat scan/added-amd64.ids scan/added-arm64.ids | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          removed_amd64="$(wc -l < scan/removed-amd64.ids | tr -d ' ')"
+          removed_arm64="$(wc -l < scan/removed-arm64.ids | tr -d ' ')"
+          new_amd64="$(wc -l < scan/new-amd64.ids | tr -d ' ')"
+          new_arm64="$(wc -l < scan/new-arm64.ids | tr -d ' ')"
+          old_amd64="$(wc -l < scan/old-amd64.ids | tr -d ' ')"
+          old_arm64="$(wc -l < scan/old-arm64.ids | tr -d ' ')"
+
+          if [ -n "$added" ]; then
+            verdict=blocked
+          elif [ "$removed_amd64" -gt 0 ] || [ "$removed_arm64" -gt 0 ]; then
+            verdict=improved
+          else
+            verdict=unchanged
+          fi
+
+          {
+            echo "### Caddy image refresh — $verdict"
+            echo
+            echo "| | amd64 | arm64 |"
+            echo "|---|---|---|"
+            echo "| findings, published \`:stable\` | $old_amd64 | $old_arm64 |"
+            echo "| findings, rebuilt image | $new_amd64 | $new_arm64 |"
+            echo "| closed by the rebuild | $removed_amd64 | $removed_arm64 |"
+            echo "| **newly introduced** | $(wc -l < scan/added-amd64.ids | tr -d ' ') | $(wc -l < scan/added-arm64.ids | tr -d ' ') |"
+            echo
+            if [ -n "$added" ]; then
+              echo "**New findings, so the strict-subset gate BLOCKED publish:**"
+              echo
+              for id in $added; do
+                echo "- \`$id\`"
+              done
+              echo
+              echo "A rebuild must only ever remove findings. Investigate before publishing."
+            else
+              echo "No new findings: every vulnerability in the rebuilt image is already present in the published \`:stable\`."
+            fi
+            echo
+            if [ "$removed_amd64" -gt 0 ] || [ "$removed_arm64" -gt 0 ]; then
+              echo "<details><summary>Closed by this rebuild</summary>"
+              echo
+              echo '```'
+              sort -u scan/removed-amd64.ids scan/removed-arm64.ids
+              echo '```'
+              echo
+              echo "</details>"
+            fi
+          } > scan/summary.md
+
+          cat scan/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "verdict=$verdict"
+            echo "new_findings=$added"
+            echo "summary<<SUMMARY_EOF"
+            cat scan/summary.md
+            echo "SUMMARY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "verdict=$verdict added=[$added]"
+
+      - name: Upload scan artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trivy-${{ steps.plan.outputs.patch_tag }}
+          path: scan/
+          retention-days: 30
+
+      # An improvement nobody publishes is the failure mode this pipeline is
+      # meant to fix, so say so out loud on a scheduled run. "unchanged" ends
+      # silently, as designed.
+      - name: Note that a publish is available
+        if: steps.gate.outputs.verdict == 'improved'
+        shell: bash
+        run: |
+          echo "::notice::rebuild closes findings and introduces none - run this workflow with publish=true to ship ${{ steps.plan.outputs.patch_tag }}"
+
+  # ---------------------------------------------------------------------------
+  # 2. publish — gated, credential-holding, publishes by digest.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish ${{ needs.build-scan.outputs.patch_tag }}
+    needs: build-scan
+    # Three independent conditions, all required:
+    #   - a human asked (never on the schedule),
+    #   - the gate did not block,
+    #   - there is something to ship.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish &&
+      needs.build-scan.outputs.verdict == 'improved'
+    runs-on: ubuntu-latest
+    # The required-reviewer gate. Everything above this line runs unattended;
+    # nothing below it runs without a human clicking Approve.
+    environment: caddy-image-publish
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+          cache-image: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Push the -pN tag ONLY. :stable and :latest are moved in the next step
+      # by digest, from this build's manifest, so the moving tags can only ever
+      # point at bytes that already exist under an immutable tag.
+      #
+      # org.opencontainers.image.created carries the build date — that is where
+      # the date belongs, instead of in the tag name.
+      # github.event.repository.updated_at is the REPO's last-touched time, not
+      # this build's, so the date is taken from the clock at build time.
+      - name: Record the build timestamp
+        id: now
+        shell: bash
+        run: echo "iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ needs.build-scan.outputs.patch_tag }}
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.caddy
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.IMAGE }}:${{ needs.build-scan.outputs.patch_tag }}
+          push: true
+          provenance: mode=max
+          sbom: generator=docker.io/docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          labels: |
+            org.opencontainers.image.created=${{ steps.now.outputs.iso }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build-scan.outputs.patch_tag }}
+            org.opencontainers.image.description=Caddy with CaddyUI's plugin set; base-layer refresh of ${{ needs.build-scan.outputs.version }}
+
+      # By digest, deliberately. `imagetools create` copies the manifest list
+      # rather than rebuilding, so :stable, :latest and :vX.Y.Z-pN are the same
+      # bytes by construction — a second build could differ (`apk upgrade` is
+      # unpinned) and the tags would silently diverge from what was scanned.
+      - name: Move :stable and :latest to that digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PATCH_TAG: ${{ needs.build-scan.outputs.patch_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::build-push-action reported no digest"; exit 1; }
+          echo "publishing ${IMAGE}@${DIGEST}"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:stable" \
+            --tag "${IMAGE}:latest" \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Verify all three tags are one multi-arch image at that digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PATCH_TAG: ${{ needs.build-scan.outputs.patch_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tag in "$PATCH_TAG" stable latest; do
+            out="$(docker buildx imagetools inspect "${IMAGE}:${tag}")"
+            for plat in linux/amd64 linux/arm64; do
+              grep -Eq "Platform:[[:space:]]+${plat}\$" <<<"$out" \
+                || { echo "::error::${IMAGE}:${tag} is missing $plat"; exit 1; }
+            done
+            got="$(awk '/^Digest:/{print $2; exit}' <<<"$out")"
+            [ "$got" = "$DIGEST" ] \
+              || { echo "::error::${IMAGE}:${tag} is $got, expected $DIGEST"; exit 1; }
+            echo "ok  ${IMAGE}:${tag}  $got"
+          done
+
+          {
+            echo "### Published"
+            echo
+            echo "\`${IMAGE}:${PATCH_TAG}\`, \`:stable\` and \`:latest\` all at:"
+            echo
+            echo "\`\`\`"
+            echo "$DIGEST"
+            echo "\`\`\`"
+            echo
+            echo "Base-layer refresh of ${{ needs.build-scan.outputs.version }}. App code and plugin set unchanged."
+            echo
+            echo "The six boxes that pull this image are NOT updated by this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 3. alert — exactly ONE issue, ever. Comment on it, never open a second.
+  # ---------------------------------------------------------------------------
+  alert:
+    name: Alert
+    needs: build-scan
+    # Only when the gate blocked, when build-scan itself failed, or when
+    # explicitly testing the alert path. An improved-but-unpublished rebuild
+    # is a notice in the run summary, not an issue — otherwise this opens an
+    # issue most weeks and gets ignored, which is the state it exists to avoid.
+    if: >-
+      always() && (
+        needs.build-scan.result == 'failure' ||
+        needs.build-scan.outputs.verdict == 'blocked' ||
+        (github.event_name == 'workflow_dispatch' && inputs.force_alert)
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the single alert issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          VERDICT: ${{ needs.build-scan.outputs.verdict }}
+          RESULT: ${{ needs.build-scan.result }}
+          PATCH_TAG: ${{ needs.build-scan.outputs.patch_tag }}
+          NEW_FINDINGS: ${{ needs.build-scan.outputs.new_findings }}
+          SUMMARY: ${{ needs.build-scan.outputs.summary }}
+        with:
+          script: |
+            const LABEL = 'caddy-image-refresh';
+            const TITLE = 'Caddy image refresh needs a look';
+            const { VERDICT, RESULT, PATCH_TAG, NEW_FINDINGS, SUMMARY } = process.env;
+            const runUrl =
+              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
+              `/actions/runs/${context.runId}`;
+
+            const why = RESULT === 'failure'
+              ? 'The build-and-scan job **failed**, so nothing was compared and nothing can publish. The scheduled refresh is not running until this is fixed.'
+              : VERDICT === 'blocked'
+                ? `The rebuild **introduces findings that the published image does not have**, so the strict-subset gate blocked publish: ${NEW_FINDINGS || '(see the run)'}`
+                : 'Alert path exercised by hand (`force_alert`). Nothing is wrong.';
+
+            const body = [
+              `**${PATCH_TAG || 'refresh'}** — [run](${runUrl})`,
+              '',
+              why,
+              '',
+              SUMMARY || '_No scan summary was produced._',
+              '',
+              '---',
+              '',
+              'This is the one standing issue for Caddy image refreshes. Later runs **comment here** rather than opening another, so close it once the cause is resolved and the next problem will open a fresh one.',
+            ].join('\n');
+
+            // The label may not exist yet on a first run; create it rather
+            // than letting the search silently match nothing.
+            try {
+              await github.rest.issues.getLabel({ ...context.repo, name: LABEL });
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              await github.rest.issues.createLabel({
+                ...context.repo,
+                name: LABEL,
+                color: 'b60205',
+                description: 'Scheduled applegater/caddyui-caddy base-layer refresh needs a human',
+              });
+            }
+
+            // Listed by label, not searched: code search is eventually
+            // consistent and would open a duplicate on a close-following run.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: 'open', labels: LABEL, per_page: 100,
+            });
+
+            if (open.length > 0) {
+              const issue = open[0];
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number, body,
+              });
+              core.notice(`commented on existing alert issue #${issue.number}`);
+              if (open.length > 1) {
+                core.warning(
+                  `${open.length} open '${LABEL}' issues exist; commented on the oldest (#${issue.number}). ` +
+                  'Close the extras so this stays a single standing issue.');
+              }
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              ...context.repo, title: TITLE, body, labels: [LABEL],
+            });
+            core.notice(`opened alert issue #${created.data.number}`);
