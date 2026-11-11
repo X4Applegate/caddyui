@@ -15,20 +15,34 @@
 # What -pN means, precisely
 # -------------------------
 # A refresh publishes vX.Y.Z-pN, where vX.Y.Z is the newest release tag and N
-# counts refreshes of that release (p1, p2, …). It says exactly one thing:
-# the CaddyUI/Caddy binary and plugin set are identical to vX.Y.Z, and only
-# the base layer moved. N is monotonic and collision-free, which a date is
-# not — two builds on one day collide, and a republish after a failed push
-# needs a suffix anyway. The build date lives in the OCI label
-# org.opencontainers.image.created, where it belongs.
+# counts refreshes of that release (p1, p2, …). N is monotonic and
+# collision-free, which a date is not — two builds on one day collide, and a
+# republish after a failed push needs a suffix anyway. The build date lives in
+# the OCI label org.opencontainers.image.created, where it belongs.
+#
+# -pN is built from the vX.Y.Z TAG, not from the branch: both jobs check out
+# that tag, so the Dockerfile that produced vX.Y.Z is the Dockerfile that
+# produces its refreshes. Building main's file and labelling it "identical to
+# vX.Y.Z" would be a lie as soon as Dockerfile.caddy moved on main.
+#
+# "Only the base layer moved" is ENFORCED, not assumed. Dockerfile.caddy pins
+# only some of its --with arguments; nine plugins (the caddy-dns providers,
+# ratelimit, caddy-l4, coraza) resolve to latest on every build, which is the
+# very reason release-docker.yml refuses to rebuild this image blindly. A
+# timer-driven rebuild would silently ship a new DNS provider or WAF release
+# under everyone pulling :stable, and a CVE-ID comparison would not notice,
+# because a plugin bump with no new CVE looks clean. So the gate also diffs
+# `caddy list-modules --versions` between the published image and the rebuild
+# and BLOCKS on any difference. A plugin bump is then a deliberate act —
+# edit Dockerfile.caddy and cut a release, which is what release-docker.yml
+# is for — rather than something this workflow does by accident.
 #
 # NOT reproducible builds. `apk upgrade --no-cache` is unpinned by design, so
 # two runs a week apart produce different images from the same source. The
-# image is reproducible *by digest* — the digest names exactly one artifact,
-# and the publish job pushes by digest so the tags cannot drift from what was
-# scanned — but it is not bit-for-bit rebuildable from the Dockerfile alone.
-# That stronger property needs explicit Alpine package pinning, which is
-# separate and much larger work.
+# image is reproducible *by digest* — a digest names exactly one artifact —
+# but it is not bit-for-bit rebuildable from the Dockerfile alone. That
+# stronger property needs explicit Alpine package pinning, which is separate
+# and much larger work.
 #
 # Three jobs, three concerns
 # --------------------------
@@ -38,9 +52,14 @@
 #               secrets is the one that can be trusted to run unattended;
 #               keep it that way.
 #   publish     Gated on the `caddy-image-publish` environment (required
-#               reviewer). Holds the Hub credentials. Publishes BY DIGEST
-#               from the scanned build, so the bytes a reviewer approved are
-#               the bytes that ship.
+#               reviewer). Holds the Hub credentials. It necessarily BUILDS
+#               AGAIN — a reviewer may approve days later, and `apk upgrade`
+#               is unpinned, so the second build can differ from the scanned
+#               one. It therefore RE-RUNS the full gate against the pushed
+#               digest before moving :stable/:latest, and aborts leaving only
+#               the immutable -pN tag behind if that build regressed. The
+#               moving tags are then only ever moved to bytes that passed the
+#               gate, which is the property that actually protects the boxes.
 #   alert       Opens exactly ONE issue when a human is needed, and comments
 #               on it instead of opening a second.
 #
@@ -122,9 +141,10 @@ jobs:
       patch_tag: ${{ steps.plan.outputs.patch_tag }}
       baseline: ${{ steps.plan.outputs.baseline }}
       verdict: ${{ steps.gate.outputs.verdict }}
-      new_findings: ${{ steps.gate.outputs.new_findings }}
       summary: ${{ steps.gate.outputs.summary }}
     steps:
+      # Full history and tags: the release tag is needed to work out the
+      # version, and the build then re-checks-out that exact tag.
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,6 +195,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           echo "refreshing $version -> $patch_tag (highest existing -pN: $highest)"
+
+      # -pN claims "same source as vX.Y.Z", so build vX.Y.Z's tree, not the
+      # branch this was dispatched from. Without this a Dockerfile.caddy that
+      # moved on main after the tag would be published as a refresh of a
+      # release it was never part of.
+      - name: Check out the release tag being refreshed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --quiet --detach "refs/tags/${{ steps.plan.outputs.version }}"
+          echo "building $(git rev-parse --short HEAD) = ${{ steps.plan.outputs.version }}"
+          git --no-pager log -1 --format='%H %s' -- Dockerfile.caddy
 
       # QEMU only for the final stage's `apk upgrade` inside the arm64 alpine
       # image; Caddy itself cross-compiles natively. Same privileged binfmt
@@ -235,128 +267,68 @@ jobs:
           trivy image --download-db-only
           trivy image --download-java-db-only || true
 
-      - name: Scan new and published images, both arches
-        id: scan
-        env:
-          BASELINE: ${{ steps.plan.outputs.baseline }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p scan
-
-          # The published image is pulled per-arch so like is compared with
-          # like: new amd64 vs published amd64, new arm64 vs published arm64.
-          for arch in amd64 arm64; do
-            echo "::group::scan new $arch"
-            trivy image --skip-db-update --scanners vuln \
-              --severity "$TRIVY_SEVERITY" --format json \
-              --output "scan/new-$arch.json" "caddy-refresh:$arch"
-            echo "::endgroup::"
-
-            echo "::group::scan published $arch"
-            # A baseline that cannot be fetched is a hard stop, not an empty
-            # set: an empty baseline would make every finding "new" and alert,
-            # or worse, be read as "nothing to compare" and wave the build
-            # through. Fail loudly instead.
-            if ! docker pull --platform "linux/$arch" "$BASELINE"; then
-              echo "::error::cannot pull baseline $BASELINE for linux/$arch; refusing to compare against an unknown image"
-              exit 1
-            fi
-            trivy image --skip-db-update --scanners vuln \
-              --severity "$TRIVY_SEVERITY" --format json \
-              --output "scan/old-$arch.json" "$BASELINE"
-            echo "::endgroup::"
-          done
-
-      # The gate. Pure set arithmetic on vulnerability IDs per architecture:
-      # publish iff new ⊆ old on BOTH arches. Deliberately not "count went
-      # down" and not "no CRITICAL/HIGH" — a new MEDIUM introduced by an
-      # unattended, unpinned `apk upgrade` is exactly the event a human should
-      # see before it reaches six production boxes.
-      - name: Strict-subset gate
+      # Both arches, both sides, both gates — in scripts/caddy-image-gate.sh so
+      # the publish job can re-run the IDENTICAL check after approval. Two
+      # copies of a gate drift; one copy cannot.
+      - name: Gate — vulnerability subset and module set
         id: gate
         shell: bash
         run: |
           set -euo pipefail
+          ./scripts/caddy-image-gate.sh \
+            caddy-refresh:amd64 \
+            "${{ steps.plan.outputs.baseline }}" \
+            scan amd64 || true
+          # A single-arch run cannot speak for the other arch, so each arch is
+          # gated in its own directory and the verdicts are combined below.
+          ./scripts/caddy-image-gate.sh \
+            caddy-refresh:arm64 \
+            "${{ steps.plan.outputs.baseline }}" \
+            scan-arm64 arm64 || true
 
-          for arch in amd64 arm64; do
-            for side in new old; do
-              jq -r '[.Results[]?.Vulnerabilities[]? | .VulnerabilityID] | unique | .[]' \
-                "scan/$side-$arch.json" > "scan/$side-$arch.ids"
-            done
-            # comm -23: in new, not in old. Sorted inputs required.
-            sort -o "scan/new-$arch.ids" "scan/new-$arch.ids"
-            sort -o "scan/old-$arch.ids" "scan/old-$arch.ids"
-            comm -23 "scan/new-$arch.ids" "scan/old-$arch.ids" > "scan/added-$arch.ids"
-            comm -13 "scan/new-$arch.ids" "scan/old-$arch.ids" > "scan/removed-$arch.ids"
-          done
+          a="$(cat scan/verdict 2>/dev/null || echo error)"
+          b="$(cat scan-arm64/verdict 2>/dev/null || echo error)"
+          echo "amd64=$a arm64=$b"
 
-          added="$(cat scan/added-amd64.ids scan/added-arm64.ids | sort -u | tr '\n' ' ' | sed 's/ $//')"
-          removed_amd64="$(wc -l < scan/removed-amd64.ids | tr -d ' ')"
-          removed_arm64="$(wc -l < scan/removed-arm64.ids | tr -d ' ')"
-          new_amd64="$(wc -l < scan/new-amd64.ids | tr -d ' ')"
-          new_arm64="$(wc -l < scan/new-arm64.ids | tr -d ' ')"
-          old_amd64="$(wc -l < scan/old-amd64.ids | tr -d ' ')"
-          old_arm64="$(wc -l < scan/old-arm64.ids | tr -d ' ')"
-
-          if [ -n "$added" ]; then
+          # The combined verdict is the WORST of the two: an arm64 regression
+          # must block an amd64-clean refresh, because one manifest ships both.
+          if [ "$a" = error ] || [ "$b" = error ]; then
+            verdict=error
+          elif [ "$a" = blocked ] || [ "$b" = blocked ]; then
             verdict=blocked
-          elif [ "$removed_amd64" -gt 0 ] || [ "$removed_arm64" -gt 0 ]; then
+          elif [ "$a" = improved ] || [ "$b" = improved ]; then
             verdict=improved
           else
             verdict=unchanged
           fi
 
           {
-            echo "### Caddy image refresh — $verdict"
+            echo "## linux/amd64"
+            cat scan/summary.md 2>/dev/null || echo "_gate did not run_"
             echo
-            echo "| | amd64 | arm64 |"
-            echo "|---|---|---|"
-            echo "| findings, published \`:stable\` | $old_amd64 | $old_arm64 |"
-            echo "| findings, rebuilt image | $new_amd64 | $new_arm64 |"
-            echo "| closed by the rebuild | $removed_amd64 | $removed_arm64 |"
-            echo "| **newly introduced** | $(wc -l < scan/added-amd64.ids | tr -d ' ') | $(wc -l < scan/added-arm64.ids | tr -d ' ') |"
-            echo
-            if [ -n "$added" ]; then
-              echo "**New findings, so the strict-subset gate BLOCKED publish:**"
-              echo
-              for id in $added; do
-                echo "- \`$id\`"
-              done
-              echo
-              echo "A rebuild must only ever remove findings. Investigate before publishing."
-            else
-              echo "No new findings: every vulnerability in the rebuilt image is already present in the published \`:stable\`."
-            fi
-            echo
-            if [ "$removed_amd64" -gt 0 ] || [ "$removed_arm64" -gt 0 ]; then
-              echo "<details><summary>Closed by this rebuild</summary>"
-              echo
-              echo '```'
-              sort -u scan/removed-amd64.ids scan/removed-arm64.ids
-              echo '```'
-              echo
-              echo "</details>"
-            fi
-          } > scan/summary.md
-
-          cat scan/summary.md >> "$GITHUB_STEP_SUMMARY"
+            echo "## linux/arm64"
+            cat scan-arm64/summary.md 2>/dev/null || echo "_gate did not run_"
+          } > scan/combined.md
 
           {
             echo "verdict=$verdict"
-            echo "new_findings=$added"
             echo "summary<<SUMMARY_EOF"
-            cat scan/summary.md
+            cat scan/combined.md
             echo "SUMMARY_EOF"
           } >> "$GITHUB_OUTPUT"
 
-          echo "verdict=$verdict added=[$added]"
+          cat scan/combined.md >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$verdict" != error ] || { echo "::error::the gate could not run"; exit 1; }
 
       - name: Upload scan artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
           name: trivy-${{ steps.plan.outputs.patch_tag }}
-          path: scan/
+          path: |
+            scan/
+            scan-arm64/
           retention-days: 30
 
       # An improvement nobody publishes is the failure mode this pipeline is
@@ -389,8 +361,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout repository
+      # The release tag, not the branch — same reason as in build-scan: -pN
+      # claims the source is vX.Y.Z's, so it must actually be.
+      - name: Checkout the release tag being refreshed
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.build-scan.outputs.version }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -441,10 +417,59 @@ jobs:
             org.opencontainers.image.version=${{ needs.build-scan.outputs.patch_tag }}
             org.opencontainers.image.description=Caddy with CaddyUI's plugin set; base-layer refresh of ${{ needs.build-scan.outputs.version }}
 
+      # The gate again, on the bytes that were actually pushed.
+      #
+      # This is not belt-and-braces. build-scan scanned a DIFFERENT build: it
+      # never pushes, and a reviewer may approve days later, by which time
+      # `apk upgrade` (unpinned, by design) can resolve differently and the
+      # unpinned plugins can re-resolve. Without this step the verdict a human
+      # approved would describe an image nobody ships, and :stable/:latest
+      # would move to an unscanned one. The script is the same file build-scan
+      # ran, so the standard cannot drift between the two.
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+          cache: true
+
+      - name: Download Trivy databases once
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy image --download-db-only
+          trivy image --download-java-db-only || true
+
+      - name: Re-gate the pushed digest before moving :stable
+        id: regate
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::build-push-action reported no digest"; exit 1; }
+
+          fail=0
+          ./scripts/caddy-image-gate.sh "${IMAGE}@${DIGEST}" "${IMAGE}:stable" verify amd64 || fail=1
+          ./scripts/caddy-image-gate.sh "${IMAGE}@${DIGEST}" "${IMAGE}:stable" verify-arm64 arm64 || fail=1
+
+          if [ "$fail" -ne 0 ]; then
+            {
+              echo "### ⛔ Publish aborted after the push"
+              echo
+              echo "\`${{ needs.build-scan.outputs.patch_tag }}\` was pushed and is immutable, but it did NOT pass the gate when re-checked, so \`:stable\` and \`:latest\` were left where they were."
+              echo
+              echo "This means the build made at approval time differs from the one that was scanned — expected occasionally, since \`apk upgrade\` and nine plugin versions are unpinned. Nothing that the six boxes pull has moved."
+              echo
+              echo "Delete the \`-pN\` tag from Docker Hub if you do not want it kept as a record."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::the pushed image did not pass the gate; :stable and :latest were NOT moved"
+            exit 1
+          fi
+
       # By digest, deliberately. `imagetools create` copies the manifest list
       # rather than rebuilding, so :stable, :latest and :vX.Y.Z-pN are the same
-      # bytes by construction — a second build could differ (`apk upgrade` is
-      # unpinned) and the tags would silently diverge from what was scanned.
+      # bytes by construction — a second build could differ and the tags would
+      # silently diverge from the image that just passed the gate above.
       - name: Move :stable and :latest to that digest
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
@@ -519,13 +544,12 @@ jobs:
           VERDICT: ${{ needs.build-scan.outputs.verdict }}
           RESULT: ${{ needs.build-scan.result }}
           PATCH_TAG: ${{ needs.build-scan.outputs.patch_tag }}
-          NEW_FINDINGS: ${{ needs.build-scan.outputs.new_findings }}
           SUMMARY: ${{ needs.build-scan.outputs.summary }}
         with:
           script: |
             const LABEL = 'caddy-image-refresh';
             const TITLE = 'Caddy image refresh needs a look';
-            const { VERDICT, RESULT, PATCH_TAG, NEW_FINDINGS, SUMMARY } = process.env;
+            const { VERDICT, RESULT, PATCH_TAG, SUMMARY } = process.env;
             const runUrl =
               `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
               `/actions/runs/${context.runId}`;
@@ -533,7 +557,7 @@ jobs:
             const why = RESULT === 'failure'
               ? 'The build-and-scan job **failed**, so nothing was compared and nothing can publish. The scheduled refresh is not running until this is fixed.'
               : VERDICT === 'blocked'
-                ? `The rebuild **introduces findings that the published image does not have**, so the strict-subset gate blocked publish: ${NEW_FINDINGS || '(see the run)'}`
+                ? 'The gate **blocked publish**: either the rebuild introduces a vulnerability the published image does not have, or the Caddy module set changed (a plugin re-resolved, which is a release-level change rather than a base-layer refresh). The per-arch detail is below.'
                 : 'Alert path exercised by hand (`force_alert`). Nothing is wrong.';
 
             const body = [
