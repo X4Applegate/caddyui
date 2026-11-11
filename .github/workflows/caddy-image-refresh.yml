@@ -196,10 +196,26 @@ jobs:
 
           echo "refreshing $version -> $patch_tag (highest existing -pN: $highest)"
 
-      # -pN claims "same source as vX.Y.Z", so build vX.Y.Z's tree, not the
-      # branch this was dispatched from. Without this a Dockerfile.caddy that
-      # moved on main after the tag would be published as a refresh of a
-      # release it was never part of.
+      # The BUILD INPUTS come from the tag; the TOOLING comes from this ref.
+      #
+      # Those are two different things and conflating them is a bug: -pN claims
+      # "same source as vX.Y.Z", so Dockerfile.caddy must be the tag's, but the
+      # gate script only exists on the branch that introduces it — no release
+      # tag cut before this workflow contains it. Checking out the tag over the
+      # whole tree therefore DELETES the gate, and the job would fail on every
+      # run until some future release happened to carry it.
+      #
+      # So the script is copied to RUNNER_TEMP first and invoked from there,
+      # outside the working tree the tag checkout rewrites.
+      - name: Stage the gate script outside the working tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -x scripts/caddy-image-gate.sh ] \
+            || { echo "::error::scripts/caddy-image-gate.sh is missing or not executable on this ref"; exit 1; }
+          cp scripts/caddy-image-gate.sh "$RUNNER_TEMP/caddy-image-gate.sh"
+          chmod +x "$RUNNER_TEMP/caddy-image-gate.sh"
+
       - name: Check out the release tag being refreshed
         shell: bash
         run: |
@@ -275,16 +291,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./scripts/caddy-image-gate.sh \
-            caddy-refresh:amd64 \
-            "${{ steps.plan.outputs.baseline }}" \
-            scan amd64 || true
+          gate="$RUNNER_TEMP/caddy-image-gate.sh"
+          # Fail loudly rather than letting a missing script become a generic
+          # "error" verdict: the two are very different problems and the alert
+          # should say which one happened.
+          [ -x "$gate" ] || { echo "::error::staged gate script missing at $gate"; exit 1; }
+
+          # `|| true` is deliberate HERE and only here: a blocked verdict is
+          # exit 1 and is a RESULT, not a failure, and both arches must be
+          # gated before the combined verdict is worked out. The staged-script
+          # check above is what keeps this from swallowing a real breakage.
+          "$gate" caddy-refresh:amd64 "${{ steps.plan.outputs.baseline }}" scan amd64 || true
           # A single-arch run cannot speak for the other arch, so each arch is
           # gated in its own directory and the verdicts are combined below.
-          ./scripts/caddy-image-gate.sh \
-            caddy-refresh:arm64 \
-            "${{ steps.plan.outputs.baseline }}" \
-            scan-arm64 arm64 || true
+          "$gate" caddy-refresh:arm64 "${{ steps.plan.outputs.baseline }}" scan-arm64 arm64 || true
 
           a="$(cat scan/verdict 2>/dev/null || echo error)"
           b="$(cat scan-arm64/verdict 2>/dev/null || echo error)"
@@ -361,8 +381,24 @@ jobs:
     permissions:
       contents: read
     steps:
-      # The release tag, not the branch — same reason as in build-scan: -pN
-      # claims the source is vX.Y.Z's, so it must actually be.
+      # Two checkouts, for the same reason build-scan stages the script: the
+      # gate tooling lives on this ref, the build inputs live on the tag, and
+      # no release tag cut before this workflow contains the gate script.
+      - name: Checkout this ref (for the gate script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Stage the gate script outside the working tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -x scripts/caddy-image-gate.sh ] \
+            || { echo "::error::scripts/caddy-image-gate.sh is missing or not executable on this ref"; exit 1; }
+          cp scripts/caddy-image-gate.sh "$RUNNER_TEMP/caddy-image-gate.sh"
+          chmod +x "$RUNNER_TEMP/caddy-image-gate.sh"
+
+      # -pN claims the source is vX.Y.Z's, so it must actually be. `clean: true`
+      # (the default) replaces the tree with the tag's contents, which is why
+      # the script was staged above first.
       - name: Checkout the release tag being refreshed
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -448,9 +484,12 @@ jobs:
           set -euo pipefail
           [ -n "$DIGEST" ] || { echo "::error::build-push-action reported no digest"; exit 1; }
 
+          gate="$RUNNER_TEMP/caddy-image-gate.sh"
+          [ -x "$gate" ] || { echo "::error::staged gate script missing at $gate"; exit 1; }
+
           fail=0
-          ./scripts/caddy-image-gate.sh "${IMAGE}@${DIGEST}" "${IMAGE}:stable" verify amd64 || fail=1
-          ./scripts/caddy-image-gate.sh "${IMAGE}@${DIGEST}" "${IMAGE}:stable" verify-arm64 arm64 || fail=1
+          "$gate" "${IMAGE}@${DIGEST}" "${IMAGE}:stable" verify amd64     || fail=1
+          "$gate" "${IMAGE}@${DIGEST}" "${IMAGE}:stable" verify-arm64 arm64 || fail=1
 
           if [ "$fail" -ne 0 ]; then
             {
