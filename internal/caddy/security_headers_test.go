@@ -11,7 +11,11 @@ import "testing"
 func TestSecurityHeadersBundleSetOnlyAndHonoursPerHostStrip(t *testing.T) {
 	p := baseHost()
 	p.SecurityHeadersEnabled = true
-	p.StripResponseHeaders = "X-Frame-Options"
+	// Was StripResponseHeaders (the v2.9.168 column). That column duplicated
+	// strip_resp_headers and has been consolidated into it, so the bundle
+	// precedence this test guards now reads the canonical field. The behaviour
+	// asserted below is unchanged.
+	p.StripRespHeaders = "X-Frame-Options"
 	route := BuildProxyRoute(p, nil)
 	found := false
 	for _, h := range route["handle"].([]any) {

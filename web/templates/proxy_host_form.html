@@ -2198,7 +2198,8 @@ document.addEventListener('DOMContentLoaded', function() {
       <label class="block text-xs font-medium text-ink-700 mb-1">Strip response headers <span class="text-ink-400 font-normal">(comma-separated, e.g. X-Powered-By, Server)</span></label>
       <input type="text" name="strip_resp_headers" value="{{.Host.StripRespHeaders}}"
         placeholder="X-Powered-By, Server, X-AspNet-Version"
-        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+        class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
+      <p class="text-xs text-ink-400 mt-1.5">Remove these headers from the upstream reply before sending it to the client. Any headers listed in Settings &rarr; &ldquo;Globally stripped response headers&rdquo; are stripped as well.</p>
     </div>
 
       <div>
@@ -2461,14 +2462,12 @@ document.addEventListener('DOMContentLoaded', function() {
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Sets a custom Content-Disposition response header value.</p>
       </div>
 
-      <!-- v2.9.168: strip_response_headers -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Strip Response Headers</label>
-        <input type="text" name="strip_response_headers" value="{{.Host.StripResponseHeaders}}"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono"
-          placeholder="e.g. X-Powered-By, Server, X-AspNet-Version">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated list of response header names to delete before sending the response to the client.</p>
-      </div>
+      {{/* The v2.9.168 "Strip Response Headers" input lived here and duplicated
+           the strip_resp_headers field in the Headers section — same behaviour,
+           a second database column, and only strip_resp_headers survived a
+           Caddyfile export. strip_resp_headers is now canonical; the global
+           strip setting and the SecurityHeaders bundle precedence read it, and
+           existing values from the old column are merged into it on upgrade. */}}
 
       <!-- v2.9.172: add_service_worker_allowed -->
       <div class="mb-4">

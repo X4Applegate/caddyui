@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **The host form showed two "Strip response headers" inputs — the response-side twin of #167.** `strip_resp_headers` (v2.9.35) and `strip_response_headers` (v2.9.168) were two database columns with identical behaviour, so which one a host used came down to which of two boxes the user typed in. Both emitted a *deferred* Caddy response-delete handler ahead of `reverse_proxy`; two delete lists are commutative, so the columns were genuinely interchangeable — and filling both silently emitted **two** strip-response-headers directives. Only `strip_resp_headers` was read by the Caddyfile exporter, so a value in the other column stripped headers in the live config but **was missing from an export**.
+  - **`strip_resp_headers` is now canonical.** The choice was not automatic: the legacy column owned two integrations the canonical one lacked — the Settings → **Globally stripped response headers** setting, and the precedence that stops the **Security Headers** bundle re-setting a header the host strips. Those were *moved onto* the canonical field rather than dropped, because the exporter gap is a correctness bug while the wiring is mechanical, because `strip_resp_headers` canonicalises header names (`http.CanonicalHeaderKey`) and the v2.9.168 path did not, and because #167 had already made the paired `strip_req_headers` canonical — picking the other column would have left request and response on opposite sides.
+  - **Both ported behaviours are preserved and now better.** The global strip list is still applied ahead of each host's own list, but is **deduplicated** against it: a header named in both the global setting and a host's own field used to be emitted twice. The security-bundle precedence is unchanged and remains case-insensitive, so stripping `x-frame-options` in lowercase still stops the bundle putting `SAMEORIGIN` back.
+  - **Existing values are migrated, not dropped.** On upgrade, anything stored in `strip_response_headers` is folded into `strip_resp_headers`: a legacy-only value moves over verbatim, and when both columns are set the header names are **merged and deduplicated** case-insensitively, canonical order kept and new names appended. The legacy column is drained only after its value has been written, in one statement per row, so an interrupted upgrade cannot lose data and a re-run is a no-op.
+  - **The old `strip_response_headers` form value is still accepted for one release**, merged into the canonical field, so an old bookmarked form or an API client posting the v2.9.168 name does not silently lose data. Marked for removal in v2.70 along with the column.
+  - The merge itself is now one shared helper (`models.MergeHeaderNameLists`) used by both the request- and response-side consolidations, rather than two copies of the same logic.
+  - The Caddy config now carries **exactly one** strip-response-headers directive, and an export round-trips header names typed into either box.
+
+### Notes
+
+- **This release contains a data migration** (the response-strip column merge described above). It is idempotent, discards nothing, and is covered by tests for the legacy-only carry-over, the merge case, case-insensitive dedupe, idempotency across a real database reopen, and a missing legacy column.
+
+---
+
 ## [2.68.7] - 2026-11-10 - Scheduled backups can finally be configured from the UI (#166); one "Strip request headers" field instead of two (#167)
 
 ### Fixed
