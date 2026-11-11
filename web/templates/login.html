@@ -1,4 +1,4 @@
-{{define "title"}}Sign in · CaddyUI{{end}}
+{{define "title"}}{{t $ "login.title"}}{{end}}
 {{define "content"}}
 <div class="max-w-md mx-auto mt-20">
   <div class="flex items-center gap-2.5 justify-center mb-6">
@@ -9,14 +9,14 @@
   </div>
 
   <div class="bg-white border border-ink-200 rounded-xl shadow-card p-8">
-    <h1 class="text-lg font-semibold text-ink-900 mb-1">Welcome back</h1>
-    <p class="text-sm text-ink-500 mb-6">Sign in to manage your Caddy routes.</p>
+    <h1 class="text-lg font-semibold text-ink-900 mb-1">{{t $ "login.heading"}}</h1>
+    <p class="text-sm text-ink-500 mb-6">{{t $ "login.description"}}</p>
 
     {{if .Reset}}
-    <div class="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg mb-4 text-sm">Password updated — please log in.</div>
+    <div class="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg mb-4 text-sm">{{t $ "login.password_updated"}}</div>
     {{end}}
     {{if .Invited}}
-    <div class="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg mb-4 text-sm">Account activated — please log in.</div>
+    <div class="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg mb-4 text-sm">{{t $ "login.account_activated"}}</div>
     {{end}}
     {{if .Error}}
     <div class="bg-red-50 border border-red-200 text-red-800 px-3 py-2 rounded-lg mb-4 text-sm">{{.Error}}</div>
@@ -24,23 +24,23 @@
 
     <form id="login-form" method="post" action="/login" class="space-y-4">
       <div>
-        <label for="login-email" class="block text-sm font-medium text-ink-800 mb-1.5">Email</label>
+        <label for="login-email" class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "profile.account.email"}}</label>
         <input id="login-email" name="email" type="email" autocomplete="email" required autofocus class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <div>
-        <label for="login-password" class="block text-sm font-medium text-ink-800 mb-1.5">Password</label>
+        <label for="login-password" class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "login.password"}}</label>
         <input id="login-password" name="password" type="password" autocomplete="current-password" required class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         <div class="mt-1.5 text-right">
-          <a href="/forgot-password" class="text-sm text-brand-600 hover:text-brand-700">Forgot password?</a>
+          <a href="/forgot-password" class="text-sm text-brand-600 hover:text-brand-700">{{t $ "login.forgot_password"}}</a>
         </div>
       </div>
       {{template "captchaWidget" (dict "CaptchaEnabled" .CaptchaEnabled "CaptchaProvider" .CaptchaProvider "CaptchaSiteKey" .CaptchaSiteKey "FormID" "login-form")}}
-      <button class="w-full inline-flex items-center justify-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm py-2.5 rounded-lg shadow-sm transition">Sign in</button>
+      <button class="w-full inline-flex items-center justify-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm py-2.5 rounded-lg shadow-sm transition">{{t $ "login.submit"}}</button>
     </form>
     {{if .OIDCEnabled}}
     <div class="flex items-center gap-3 my-5">
       <div class="h-px flex-1 bg-ink-200"></div>
-      <span class="text-xs text-ink-400">or</span>
+      <span class="text-xs text-ink-400">{{t $ "login.or"}}</span>
       <div class="h-px flex-1 bg-ink-200"></div>
     </div>
     <a href="/auth/oidc/login" class="w-full inline-flex items-center justify-center gap-2 border border-ink-300 hover:bg-ink-50 text-ink-800 font-medium text-sm py-2.5 rounded-lg transition">
