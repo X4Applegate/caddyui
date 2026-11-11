@@ -176,6 +176,7 @@ func (s *Server) checkProxyHost(hostID int64, targetURL, method string, expectSt
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // check reachability, not cert validity
 		},
 	}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequest(method, targetURL, nil)
 	if err != nil {
 		_ = models.InsertProxyHealth(s.DB, hostID, false, 0, 0, err.Error())
