@@ -1466,7 +1466,7 @@
      carries the CSRF field too. */}}
 {{if eq .SettingsSection "notifications"}}
 {{/* ── Notifier status ── */}}
-<div id="settings-notifier" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-6">
+<div id="settings-notifier" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6">
   <div class="text-sm font-semibold text-ink-800 mb-3">Notifier Status</div>
   <div id="notifier-status" class="text-sm text-ink-600">
     <span class="text-ink-400 text-xs">Loading…</span>
@@ -1476,7 +1476,7 @@
 {{end}}
 {{if eq .SettingsSection "backup"}}
 {{/* ── Backup ── */}}
-<div id="settings-backup" class="scroll-mt-20 max-w-2xl mt-4 bg-white border border-ink-200 rounded-xl shadow-card p-5">
+<div id="settings-backup" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-5">
   <div class="text-sm font-semibold text-ink-800 mb-1">Database Backup</div>
   {{if eq .DatabaseBackend "mariadb"}}
   <p class="text-xs text-ink-500 mb-3">MariaDB is active. Use <code class="bg-ink-100 px-1 rounded text-xs">mariadb-dump</code>, your hosting provider, or your database platform's scheduled backup and point-in-time recovery tools.</p>
