@@ -5,15 +5,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
-## [Unreleased]
+## [2.68.7] - 2026-11-10 - Scheduled backups can finally be configured from the UI (#166); one "Strip request headers" field instead of two (#167)
 
 ### Fixed
 
-- **The host form showed two identical-looking "Strip request headers" inputs, and they were not the same setting (#167).** `strip_req_headers` (v2.9.35) and `strip_request_headers` (v2.9.250) were two database columns with identical behaviour, so which one a host used came down to which of two boxes the user happened to type in. That was a data-correctness bug, not just a confusing form: only `strip_req_headers` was read by the Caddyfile exporter, so a value in the other column stripped headers in the live config but **was missing from an export**, and filling both silently emitted **two** strip-request-headers directives.
+- **Settings → Backup saved nothing, and the scheduled backups shipped in v2.52.0 could not be turned on from the UI at all (#166).** Reported by @BurkhardFS: clicking **Save settings** on the Backup page did nothing — no error, no saved value. The Backup card sat *after* the closing `</form>` of the settings form, so in HTML terms its inputs and both its buttons belonged to no form at all. The reporter's own diagnosis was exact: `button.form === null`. Every value typed there — the schedule, the retention count, the target directory — was discarded on submit, and because the schedule was one of those values, the scheduled-backup feature released in v2.52.0 had been **unreachable from the interface since it shipped**. The Notifier status card had drifted out of the form the same way.
+  - **Both cards now render inside the `action="/settings"` form**, so they post the `settings_section` marker and the CSRF token like every other section. That token is the reason this is not a cosmetic fix: a POST without it is refused with `403`, so the controls had to be inside the form, not merely adjacent to it.
+  - **"Back up now" works again too.** It stays a submit button and keeps its `formaction="/settings/backup/run"`, which overrides the form's action for that one button — outside a form, that attribute had nothing to override.
+  - **A regression test now walks the rendered page and asserts that no named control or submit button is left outside the form**, so a card added after `</form>` in future fails the build instead of silently losing data. Verified end to end against a running instance as well: before the fix all five Backup controls reported `form === null`; after it, all five are owned by `/settings`, values persist across a reload, and **Back up now** produces a valid SQLite backup.
+- **The host form showed two identical-looking "Strip request headers" inputs, and they were not the same setting (#167).** Reported by @AlexGuld: `strip_req_headers` (v2.9.35) and `strip_request_headers` (v2.9.250) were two database columns with identical behaviour, so which one a host used came down to which of two boxes the user happened to type in. That was a data-correctness bug, not just a confusing form: only `strip_req_headers` was read by the Caddyfile exporter, so a value in the other column stripped headers in the live config but **was missing from an export**, and filling both silently emitted **two** strip-request-headers directives.
   - **`strip_req_headers` is now canonical** — it owns the header-name canonicalising helper, the exporter support, and the paired "Strip response headers" field above it in the form. The duplicate input is gone and the surviving one keeps the form's `ink-*` design tokens, which the v2.9.250 block did not use.
   - **Existing values are migrated, not dropped.** On upgrade, anything stored in `strip_request_headers` is folded into `strip_req_headers`: a legacy-only value moves over verbatim, and when both columns are set the header names are **merged and deduplicated** (case-insensitively, since HTTP header names are case-insensitive) with the canonical order kept and new names appended. Nothing is discarded, and re-running the migration is a no-op.
   - **The old `strip_request_headers` form value is still accepted for one release**, merged into the canonical field, so an old bookmarked form or an API client posting the v2.9.250 name does not silently lose data. It is marked for removal in v2.70 along with the column.
   - The Caddy config now carries **exactly one** strip-request-headers directive, and an export round-trips header names typed into either box.
+- **A public health check leaked an idle connection on every probe.** Contributed by @kernaxis (#163): each probe opened a connection and left it in the idle pool, so a fleet with several monitored upstreams accumulated sockets for as long as the process ran. Idle connections are now closed once the probe is done.
+- **The top bar's actions stayed reachable with a long server name.** Contributed by @Thibault-MTZ (#159): a long name pushed the action buttons off the edge on narrow and mobile viewports, so they could not be tapped.
+
+### Security
+
+- **`go-jose` moves to 4.1.6, which fixes GHSA-mgcc-cww5-fp2q.** CaddyUI pulls go-jose in through `go-oidc`, so this is on the **OIDC single sign-on** path specifically.
+  - **Behaviour change worth knowing about if you use SSO:** 4.1.6 adds a cap on the RSA modulus accepted when parsing a JWK, `MaxRSAModulusBits = 4096`. The check rejects a key only when it is *larger* than that (`n.BitLen() > MaxRSAModulusBits`), so a 4096-bit identity-provider signing key — GitLab's size, for example — still parses. An IdP signing with something larger than 4096 bits would be refused; none of the common providers do.
+
+### Changed
+
+- **Spanish (es) interface translation.** Contributed by @gnacho (#162) — 316 strings.
+- **The Security settings and sign-in screens are translatable.** Contributed by @Thibault-MTZ (#147): 127 strings on those two screens were hardcoded English and could not be localised. Keys a translation has not caught up with fall back to English rather than rendering blank.
+- **Dependency updates.** `go-chi/chi` 5.4.0 → 5.5.0, `modernc.org/sqlite` 1.60.1 → 1.61.0, `modernc.org/libc` 1.77.1 → 1.79.0 and the AWS SDK / Route 53 modules to their current patches (#170, relanding #157).
+- **CI pins every action to a commit SHA, and BuildKit to a digest (#152).** A moving tag on a workflow action is a supply-chain risk for a workflow that holds a read/write Docker Hub token.
+
+### Notes
+
+- **This release contains a data migration.** On first start, anything stored in the legacy `strip_request_headers` column is folded into `strip_req_headers` as described above. It is idempotent and discards nothing, and it was verified against a real database by writing to both columns and re-running the upgrade. As always, a backup before upgrading is cheap insurance — and as of this release you can actually configure one from the UI.
+- `go test ./...` was run uncached against merged `main` for this release, rather than relying on the per-PR CI runs.
+- `applegater/caddyui-caddy` is **not** rebuilt for this release: `Dockerfile.caddy` is unchanged since v2.68.6, so its module set is untouched and `:stable` keeps pointing at the v2.68.5 build. Only `applegater/caddyui` is republished.
+- **The `:preview` Docker tag is gone** — it was deleted from Docker Hub in October 2026. If anything still references it, move to `:stable` or pin a version.
 
 ---
 
