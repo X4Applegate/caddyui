@@ -2202,19 +2202,16 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Strip request headers <span class="text-ink-400 font-normal">(comma separated)</span></label>
-        <input type="text" name="strip_req_headers" value="{{.Host.StripReqHeaders}}" placeholder="X-Internal-Header, Authorization" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">Strip request headers <span class="text-ink-400 font-normal">(comma-separated, e.g. X-Internal-Header, Authorization)</span></label>
+        <input type="text" name="strip_req_headers" value="{{.Host.StripReqHeaders}}" placeholder="X-Internal-Header, Authorization, X-Forwarded-Server" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
         <p class="text-xs text-ink-400 mt-1.5">Remove these headers from the upstream request before forwarding. Companion to "Strip response headers" above.</p>
       </div>
 
-      <!-- v2.9.250: strip_request_headers -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Strip Request Headers</label>
-        <input type="text" name="strip_request_headers" value="{{.Host.StripRequestHeaders}}"
-          placeholder="e.g. X-Forwarded-Server, Authorization"
-          class="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-1.5 text-sm font-mono">
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Comma-separated request header names to delete before forwarding to the upstream.</p>
-      </div>
+      {{/* issue #167: the v2.9.250 "Strip Request Headers" input lived here and
+           duplicated the strip_req_headers field above — same behaviour, a
+           second database column, and only strip_req_headers survived a
+           Caddyfile export. strip_req_headers is now canonical and existing
+           values from the old column are merged into it on upgrade. */}}
 
       <!-- v2.9.265: add_x_request_method_override -->
       <div class="mb-4 flex items-center gap-3">

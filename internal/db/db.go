@@ -2496,6 +2496,14 @@ func migrate(db *sql.DB) error {
 		migrationStep(db, `ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT ''`)
 	}
 
+	// v2.68.7 (issue #167): fold legacy strip_request_headers into the
+	// canonical strip_req_headers column. Both stripped request headers with
+	// identical semantics, but only strip_req_headers was understood by the
+	// Caddyfile exporter, so a user who filled the wrong box on the host form
+	// got headers stripped live but missing from an export — and filling both
+	// produced two strip directives. Values are merged, never dropped.
+	migrateStripRequestHeaders(db)
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {
