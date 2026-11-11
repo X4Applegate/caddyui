@@ -1022,20 +1022,21 @@ func (p *ProxyHost) StripRespHeaderList() []string {
 	return out
 }
 
-// MergeStripRequestHeaders folds the legacy v2.9.250 strip_request_headers
-// value into the canonical strip_req_headers one (issue #167).
+// MergeHeaderNameLists folds a legacy comma-separated header-name list into a
+// canonical one, preserving every distinct name.
 //
-// Two columns stripped request headers with identical semantics: whichever box
-// a user filled on the host form decided which one was written. Only
-// strip_req_headers reaches the Caddyfile exporter, so it is canonical, and
-// legacy values are carried over rather than dropped.
+// Shared by the two duplicate-column consolidations: issue #167 on the request
+// side (strip_request_headers -> strip_req_headers) and its response-side twin
+// (strip_response_headers -> strip_resp_headers). Both had identical semantics
+// — a comma-separated list of HTTP header names — so they share one helper
+// rather than carrying two copies of the same merge.
 //
 // Canonical entries keep their order and spelling; legacy entries that are not
 // already present are appended. Comparison is case-insensitive because HTTP
 // header names are, so "Authorization" and "authorization" collapse to one.
 // Blank entries are discarded. The result is a comma-separated list in the
-// same shape both columns already used.
-func MergeStripRequestHeaders(canonical, legacy string) string {
+// same shape the columns already used.
+func MergeHeaderNameLists(canonical, legacy string) string {
 	var out []string
 	seen := map[string]bool{}
 	for _, src := range []string{canonical, legacy} {
@@ -1053,6 +1054,29 @@ func MergeStripRequestHeaders(canonical, legacy string) string {
 		}
 	}
 	return strings.Join(out, ", ")
+}
+
+// MergeStripRequestHeaders folds the legacy v2.9.250 strip_request_headers
+// value into the canonical strip_req_headers one (issue #167).
+//
+// Retained as the named entry point for the request side; the merge itself is
+// MergeHeaderNameLists, shared with the response-side consolidation.
+func MergeStripRequestHeaders(canonical, legacy string) string {
+	return MergeHeaderNameLists(canonical, legacy)
+}
+
+// MergeStripResponseHeaders folds the legacy v2.9.168 strip_response_headers
+// value into the canonical strip_resp_headers one.
+//
+// The response-side twin of issue #167: strip_resp_headers (v2.9.35) and
+// strip_response_headers (v2.9.168) were two columns with identical semantics,
+// each with its own input on the host form, so whichever box a user filled
+// decided which column was written. strip_resp_headers is canonical — it owns
+// StripRespHeaderList (which canonicalises header names), the Caddyfile
+// exporter support, and the paired strip_req_headers UI — so legacy values are
+// carried over rather than dropped.
+func MergeStripResponseHeaders(canonical, legacy string) string {
+	return MergeHeaderNameLists(canonical, legacy)
 }
 
 // StripReqHeaderList parses the comma-separated strip_req_headers field.

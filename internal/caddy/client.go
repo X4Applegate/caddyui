@@ -1546,18 +1546,19 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 		// the bundle's set re-adds X-Frame-Options (or whatever) right after
 		// the v2.9.168 strip handler tries to remove it. Empty bundle after
 		// filtering = no handler emitted at all (skip the whole block).
-		// v2.45.2: the per-host strip_response_headers list gets the same
-		// treatment. Its delete handler runs *before* the bundle's deferred
-		// set (later handlers wrap the ResponseWriter innermost), so a host
-		// that strips X-Frame-Options while the bundle is on would otherwise
-		// get SAMEORIGIN back. Before v2.45.2 the bundle's own delete hid
-		// this by removing every header anyway.
+		// v2.45.2: the per-host response-strip list gets the same treatment.
+		// Its delete handler runs *before* the bundle's deferred set (later
+		// handlers wrap the ResponseWriter innermost), so a host that strips
+		// X-Frame-Options while the bundle is on would otherwise get
+		// SAMEORIGIN back. Before v2.45.2 the bundle's own delete hid this by
+		// removing every header anyway.
+		//
+		// Reads the canonical strip_resp_headers field. This precedence was
+		// originally wired to the duplicate strip_response_headers column;
+		// consolidating the two columns moved it here, so the behaviour is
+		// unchanged for users of either box.
 		stripNames := append([]string{}, p.GlobalStripHeaders...)
-		for _, h := range strings.Split(p.StripResponseHeaders, ",") {
-			if h = strings.TrimSpace(h); h != "" {
-				stripNames = append(stripNames, h)
-			}
-		}
+		stripNames = append(stripNames, p.StripRespHeaderList()...)
 		for _, name := range stripNames {
 			for k := range secHdrs {
 				if strings.EqualFold(k, name) {
@@ -1902,24 +1903,12 @@ func BuildProxyRoute(p models.ProxyHost, advancedHandlers []any) map[string]any 
 			},
 		})
 	}
-	// v2.9.168: strip_response_headers — delete comma-separated list of response headers from upstream replies.
-	if p.StripResponseHeaders != "" {
-		delList := []any{}
-		for _, h := range strings.Split(p.StripResponseHeaders, ",") {
-			h = strings.TrimSpace(h)
-			if h != "" {
-				delList = append(delList, h)
-			}
-		}
-		if len(delList) > 0 {
-			handlers = append(handlers, map[string]any{
-				"handler": "headers",
-				"response": map[string]any{
-					"delete": delList,
-				},
-			})
-		}
-	}
+	// v2.9.168 added a second strip-response-headers handler here, reading the
+	// duplicate strip_response_headers column. Both it and the v2.9.35
+	// strip_resp_headers handler below emitted a deferred response-delete list
+	// ahead of reverse_proxy, so the config carried two directives for one
+	// setting. The columns are consolidated on strip_resp_headers and the
+	// surviving handler is the "Feature B" block further down.
 	// v2.9.169: add_report_to — set Report-To response header (JSON endpoint group for CSP/NEL reporting).
 	if p.AddReportTo != "" {
 		handlers = append(handlers, map[string]any{

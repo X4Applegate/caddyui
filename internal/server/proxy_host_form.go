@@ -534,8 +534,24 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	ph.UpstreamTLSServerNameFromHost = r.FormValue("upstream_tls_server_name_from_host") == "on"
 	// v2.9.167: add_x_permitted_cross_domain_policies — X-Permitted-Cross-Domain-Policies response header value.
 	ph.AddXPermittedCrossDomainPolicies = strings.TrimSpace(r.FormValue("add_x_permitted_cross_domain_policies"))
-	// v2.9.168: strip_response_headers — comma-separated list of response headers to delete.
-	ph.StripResponseHeaders = strings.TrimSpace(r.FormValue("strip_response_headers"))
+	// strip_response_headers (v2.9.168) duplicated strip_resp_headers above —
+	// same semantics, a second column, and only strip_resp_headers was
+	// understood by the Caddyfile exporter. The duplicate input is gone from the
+	// form and strip_resp_headers is canonical; the global-strip setting and the
+	// security-bundle precedence now read the canonical field.
+	//
+	// The legacy form value is still ACCEPTED for one release so an old
+	// bookmarked form or an API client posting the v2.9.168 name does not
+	// silently lose data; it is merged into the canonical field instead of being
+	// stored separately. The legacy column is no longer written.
+	//
+	// TODO(v2.70): drop this fallback and the StripResponseHeaders field, and
+	// drop the strip_response_headers column once no supported upgrade path
+	// still carries an unmigrated value.
+	if legacy := strings.TrimSpace(r.FormValue("strip_response_headers")); legacy != "" {
+		ph.StripRespHeaders = models.MergeStripResponseHeaders(ph.StripRespHeaders, legacy)
+	}
+	ph.StripResponseHeaders = ""
 	// v2.9.169: add_report_to — Report-To response header value (JSON endpoint group config).
 	ph.AddReportTo = strings.TrimSpace(r.FormValue("add_report_to"))
 	// v2.9.170: add_nel_header — NEL response header JSON config for Network Error Logging.

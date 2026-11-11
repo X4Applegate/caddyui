@@ -1137,11 +1137,11 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 			}
 		}
 		for i := range proxies {
-			if strings.TrimSpace(proxies[i].StripResponseHeaders) == "" {
-				proxies[i].StripResponseHeaders = globalStrip
-			} else {
-				proxies[i].StripResponseHeaders = globalStrip + "," + proxies[i].StripResponseHeaders
-			}
+			// The global list is applied ahead of the per-host one and
+			// deduplicated: a header named in both used to be emitted twice.
+			// Reads strip_resp_headers (canonical) rather than the retired
+			// strip_response_headers column — see MergeStripResponseHeaders.
+			proxies[i].StripRespHeaders = models.MergeHeaderNameLists(globalStrip, proxies[i].StripRespHeaders)
 			proxies[i].GlobalStripHeaders = stripList
 		}
 	}

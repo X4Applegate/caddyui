@@ -2504,6 +2504,14 @@ func migrate(db *sql.DB) error {
 	// produced two strip directives. Values are merged, never dropped.
 	migrateStripRequestHeaders(db)
 
+	// The response-side twin of the above: fold the legacy v2.9.168
+	// strip_response_headers column into the canonical strip_resp_headers one.
+	// Same duplication, same exporter gap, same merge-never-drop rule. The
+	// legacy column's two extra integrations (the global strip setting and the
+	// SecurityHeaders bundle precedence) were moved onto the canonical field,
+	// so neither behaviour depends on the column this drains.
+	migrateStripResponseHeaders(db)
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {
