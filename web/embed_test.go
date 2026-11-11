@@ -5,6 +5,7 @@ package web
 import (
 	"encoding/json"
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -452,6 +453,106 @@ func TestExpectationsAreSurfaced(t *testing.T) {
 				t.Errorf("%s missing %q", file, m)
 			}
 		}
+	}
+}
+
+// blankTemplateNoise replaces Go template comments and <script> bodies with
+// spaces, preserving every byte offset so the caller can still compare
+// positions against the untouched document.
+//
+// Both have to go before any structural scan of settings.html: a </form>
+// written inside a {{/* ... */}} comment is prose, not a tag, and app-script
+// text like getElementById('timezone-select') otherwise reads as a <select.
+// Scanning the raw bytes finds both and silently mismeasures the boundary.
+func blankTemplateNoise(html string) string {
+	blank := func(m string) string { return strings.Repeat(" ", len(m)) }
+	html = regexp.MustCompile(`(?s)\{\{/\*.*?\*/\}\}`).ReplaceAllStringFunc(html, blank)
+	return regexp.MustCompile(`(?s)<script\b.*?</script>`).ReplaceAllStringFunc(html, blank)
+}
+
+// TestSettingsFormEnclosesEverySectionControl guards issue #166.
+//
+// The Settings page is one big <form method="post" action="/settings">, and
+// the hidden settings_section input plus the server-injected CSRF field live
+// just inside it. A card rendered AFTER </form> still looks completely normal
+// on screen — but its inputs belong to no form (button.form === null), so its
+// submit button posts nothing at all and the save silently does nothing.
+//
+// That is exactly what happened to the Backup card: scheduled backups shipped
+// in v2.52.0 (issue #104) and could never be configured from the UI, because
+// the card sat below the closing tag. Nothing caught it, because every
+// existing settings test asserts that markup is *present*, not where it sits
+// relative to the form boundary.
+//
+// So assert the boundary itself, for every control on the page rather than
+// just the backup ones — this is a whole class of bug, not one card.
+func TestSettingsFormEnclosesEverySectionControl(t *testing.T) {
+	body, err := FS.ReadFile("templates/settings.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := blankTemplateNoise(string(body))
+
+	open := strings.Index(html, `<form method="post" action="/settings"`)
+	if open < 0 {
+		t.Fatal("settings.html has no main <form action=\"/settings\"> — the page cannot save at all")
+	}
+	close := strings.Index(html[open:], "</form>")
+	if close < 0 {
+		t.Fatal("the main settings form is never closed")
+	}
+	close += open
+
+	inside := func(at int) bool { return at > open && at < close }
+
+	// The controls issue #166 was actually about. Named explicitly so a
+	// regression names the field rather than just a byte offset.
+	for _, control := range []string{
+		`name="backup_schedule_enabled"`,
+		`name="backup_schedule_dir"`,
+		`name="backup_schedule_interval_hours"`,
+		`name="backup_schedule_keep"`,
+		`formaction="/settings/backup/run"`,
+	} {
+		at := strings.Index(html, control)
+		if at < 0 {
+			t.Errorf("settings.html no longer has %s", control)
+			continue
+		}
+		if !inside(at) {
+			t.Errorf("%s is outside the settings form (at %d, form is %d..%d) — it would post nothing and the save would silently do nothing (issue #166)", control, at, open, close)
+		}
+	}
+
+	// The backup card must still submit as the backup section, or the handler
+	// would treat it as a legacy whole-form post.
+	if at := strings.Index(html, `name="settings_section"`); !inside(at) {
+		t.Errorf("the settings_section input must be inside the form (at %d)", at)
+	}
+
+	// And the general rule: no form control of any kind may sit after the
+	// closing tag. This is what makes the test guard the class of bug — a new
+	// card appended below </form> fails here without anyone remembering #166.
+	for _, m := range regexp.MustCompile(`<(input|select|textarea|button)\b[^>]*`).FindAllStringIndex(html, -1) {
+		if m[0] > close {
+			line := strings.Count(html[:m[0]], "\n") + 1
+			t.Errorf("settings.html line %d: %q sits after </form> — it belongs to no form and cannot be saved; move it above the closing tag", line, strings.TrimSpace(html[m[0]:m[1]]))
+		}
+	}
+
+	// Both late cards specifically, since they are the two that used to be
+	// stranded and are the natural place for a future one to be appended.
+	for _, id := range []string{`id="settings-notifier"`, `id="settings-backup"`} {
+		if at := strings.Index(html, id); at < 0 || !inside(at) {
+			t.Errorf("%s must render inside the settings form (at %d, form is %d..%d)", id, at, open, close)
+		}
+	}
+
+	// The per-provider "Clear credentials" forms must stay OUTSIDE: HTML
+	// forbids nested forms, and browsers drop the inner one, which would take
+	// the clear buttons down with it.
+	if at := strings.Index(html, `id="clear-dns-{{.ID}}"`); at < 0 || inside(at) {
+		t.Errorf("the clear-dns helper forms must stay outside the main form — nested forms are invalid HTML (at %d, form is %d..%d)", at, open, close)
 	}
 }
 
