@@ -23,8 +23,11 @@
 #     ca/ca.go already imports chi/v5/middleware, so a future import of that
 #     package would link it, and the floor makes such a build take a fixed chi.
 #     Caddy already links these packages, so the blank import xcaddy adds for
-#     each changes nothing else. The build fails if `go get` ever reports a
-#     downgrade, so a pin can't quietly pull a plugin back to an older release.
+#     each changes nothing else. (chi reaches the binary two ways: Caddy
+#     requires it directly for caddypki/acmeserver, and smallstep/certificates
+#     imports it in acme/api, api, scep/api and authority/admin/api.)
+#     The build fails if `go get` ever reports a downgrade, so a pin can't
+#     quietly pull a plugin back to an older release.
 #   - caddy-crowdsec-bouncer is back on a tag. It was pinned to raw commit
 #     bdd7e516 because it was the only upstream code supporting CrowdSec 1.7
 #     (v0.14.1, the newest tag then, needed 1.6). v0.15.0 (2026-10-30) requires
