@@ -16,10 +16,13 @@
 #     line, for the version in the image. x/net/http2 @v0.62.0 lifts
 #     golang.org/x/net past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045,
 #     and chi/v5 @v5.5.0 lifts go-chi past CVE-2026-114437 and CVE-2026-118681
-#     (auth bypass in chi middleware.SupressNotFound). chi itself IS linked --
+#     (auth bypass in chi middleware.SupressNotFound) but NOT past
+#     CVE-2026-122132 (open redirect in middleware.RedirectSlashes, affecting
+#     5.2.2 through 5.5.0 inclusive -- no fixed tag exists yet, so there is
+#     nothing to bump to; see T-0634). chi itself IS linked --
 #     Caddy requires it directly and uses it in caddypki/acmeserver -- but the
-#     chi/v5/middleware package is not, so that CVE is not reachable here today
-#     and this floor is prophylactic. It is worth keeping: smallstep/certificates
+#     chi/v5/middleware package is not, so NEITHER middleware CVE is reachable
+#     here today and this floor is prophylactic. It is worth keeping: smallstep/certificates
 #     ca/ca.go already imports chi/v5/middleware, so a future import of that
 #     package would link it, and the floor makes such a build take a fixed chi.
 #     Caddy already links these packages, so the blank import xcaddy adds for
