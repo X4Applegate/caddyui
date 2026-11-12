@@ -24,9 +24,12 @@
 #
 # Environment:
 #   TRIVY_SEVERITY      Severities to scan. Default UNKNOWN,LOW,…,CRITICAL.
-#   MODULE_DRIFT_POLICY block (default) | report. See gate 2 below. The default
-#                       is the strict one so a caller that forgets the variable
-#                       gets the SAFER behaviour, never the weaker one.
+#   MODULE_DRIFT_POLICY block (default) | report. Governs gates 2 AND 3 below.
+#                       The default is the strict one so a caller that forgets
+#                       the variable gets the SAFER behaviour, never the weaker
+#                       one. The name predates gate 3 and is kept because all
+#                       three call sites set it; it reads as "how strict is
+#                       drift", which is what it now means for both gates.
 #
 # Requires: trivy, jq, docker. Trivy's DB must already be downloaded
 # (`trivy image --download-db-only`): the caller does that ONCE so every scan
@@ -39,7 +42,7 @@
 #   1  blocked                (a human must look)
 #   2  the gate could not run (treat as blocked)
 #
-# A COVERAGE PRECONDITION, then TWO independent gates:
+# A COVERAGE PRECONDITION, then THREE independent gates:
 #
 #  0. Scan coverage. Before either gate runs, assert the new image's Trivy scan
 #     actually looked at the image: an OS was detected, it is not end-of-life,
@@ -95,6 +98,46 @@
 #     vulnerability still blocks, under either policy. Drift stops being an
 #     automatic verdict; it does not stop being reviewed. The release diff is
 #     the reviewable record of what the module set change actually was.
+#
+#  3. Image configuration, from `docker image inspect`. Gates 1 and 2 read the
+#     image's CONTENTS -- its packages and its linked Go modules -- and neither
+#     reads the metadata that decides how those contents are EXECUTED. A
+#     release editing Dockerfile.caddy could add `USER root`, repoint
+#     ENTRYPOINT at a wrapper that runs something before exec'ing caddy, add
+#     `ENV HTTP_PROXY=` or `SSL_CERT_FILE=`, or change EXPOSE/VOLUME/WORKDIR,
+#     and pass the coverage precondition, gate 1 and gate 2 untouched: the
+#     package set is identical, the module set is identical, and no CVE moved.
+#
+#     That gap matters more here than it would for most images. This one is
+#     pulled by six public-facing edge proxies that hold DNS-provider API
+#     credentials for TLS issuance, so the difference between "runs as caddy"
+#     and "runs as root", or between "execs caddy" and "execs a wrapper", is
+#     the difference between a reverse proxy and a credential exfiltration
+#     foothold. None of it needs an extra scan: the data comes from an inspect
+#     the script already runs to verify each side's architecture.
+#
+#     Fields compared: Config.User, Config.Entrypoint, Config.Cmd, Config.Env,
+#     Config.ExposedPorts, Config.Volumes, Config.WorkingDir. Deliberately NOT
+#     Labels (every build stamps fresh org.opencontainers.image.* values, so it
+#     differs on every single build and would make this gate meaningless noise)
+#     and NOT Healthcheck/StopSignal (absent on both sides today; add them here
+#     if that changes rather than carrying a field that is always empty).
+#
+#     Same two policies as gate 2, for the same reason, so the caller's
+#     existing MODULE_DRIFT_POLICY choice governs both:
+#
+#       block   (the refresh path) A refresh rebuilds an UNCHANGED
+#               Dockerfile.caddy from a release tag, so the config must come
+#               out byte-identical. A difference is not "unexpected", it is
+#               impossible-unless-something-is-wrong, which makes blocking
+#               strictly correct rather than merely cautious.
+#
+#       report  (the release path) A release MAY legitimately change config --
+#               that is how a deliberate EXPOSE or WORKDIR change ships. So the
+#               diff is computed, printed in full and carried into the summary,
+#               and gate 1 decides the verdict. The reviewer approving the
+#               release is the control, and this gate's job is to make sure the
+#               change is in front of them rather than invisible.
 set -euo pipefail
 
 die() { echo "::error::$*" >&2; exit 2; }
@@ -143,7 +186,7 @@ mkdir -p "$OUT"
 rm -f "$OUT/verdict" "$OUT/summary.md" \
       "$OUT"/added-*.ids "$OUT"/removed-*.ids \
       "$OUT"/new-*.ids "$OUT"/old-*.ids \
-      "$OUT"/mods-*.txt 2>/dev/null || true
+      "$OUT"/mods-*.txt "$OUT"/cfg-*.txt 2>/dev/null || true
 
 command -v trivy >/dev/null || die "trivy not found"
 command -v jq    >/dev/null || die "jq not found"
@@ -484,6 +527,75 @@ modules_from() {
   [ -s "$out" ] || die "no modules parsed from $ref ($arch)"
 }
 
+# The image's execution configuration, as a stable one-field-per-line text so
+# the comparison can be a plain `diff -u` like gate 2's and the output is
+# readable by whoever has to approve it.
+#
+# Three normalisations, each load-bearing:
+#
+#  - null collapses to empty. The real published image reports `User: null` and
+#    `Volumes: null`, not "" and {}. Docker is inconsistent about which of the
+#    two it emits for an unset field across versions and across build paths
+#    (buildx vs a plain build), so comparing them raw would report drift for a
+#    field that is unset on BOTH sides -- a false block on the refresh timer,
+#    which is the failure mode that gets a gate switched off.
+#
+#  - ExposedPorts and Volumes are JSON OBJECTS whose values are empty objects;
+#    only their keys carry meaning, and object key order is not guaranteed
+#    stable. So take `keys` and sort. Dropping the (always-{}) values also
+#    keeps the line readable.
+#
+#  - Env is a LIST whose order reflects the order of ENV/base-image layers
+#    rather than anything semantic, so it is sorted and emitted one variable
+#    per line. Per-line means a single added variable shows up in the diff as
+#    one added line instead of rewriting the whole field, which is the
+#    difference between a reviewable diff and a wall of JSON.
+#
+# Every value here is UNTRUSTED in exactly the sense documented for ids_from
+# and safe_text above: on the release path the image is built from a
+# Dockerfile the submitter controls, and these strings flow into $OUT/cfg-*,
+# into summary.md, and from there into BOTH this script's
+# `summary<<GATE_SUMMARY_EOF` heredoc and the refresh workflow's own
+# `summary<<SUMMARY_EOF` heredoc. An `ENV` value is free-form and can contain
+# a newline, so without sanitising, `ENV X="<newline>GATE_SUMMARY_EOF..."`
+# would close the heredoc early and let the scanned image forge step outputs
+# -- including verdict=improved over a blocked run. That is the hole closed in
+# e1c4677 for package names; an env var is the same hole through a different
+# field, so it gets the same treatment at the same single point of entry.
+#
+# Sanitising happens INSIDE jq, so the tab-separated field/value structure
+# cannot be broken by embedding a tab either. The character class is wider
+# than ids_from's because a legitimate PATH or Cmd contains spaces, commas,
+# quotes and brackets; it excludes the control characters and `%` that give a
+# workflow-command line its authority. Replaced rather than dropped, so a
+# tampered value stays readable and visibly tampered.
+config_from() {
+  local ref="$1" out="$2"
+  local raw
+  if ! raw="$(docker image inspect --format '{{json .Config}}' "$ref" 2>/dev/null)" \
+     || [ -z "$raw" ] || [ "$raw" = null ]; then
+    die "cannot inspect the image configuration of $ref; refusing to guess it"
+  fi
+  printf '%s' "$raw" | jq -r '
+    def clean: tostring | gsub("[^A-Za-z0-9._:/@+=,() \\[\\]{}\"'"'"'*?!#$^&~`|<>-]"; "?") | .[0:400];
+    def nlist: if . == null then [] else . end;
+    def nobj:  if . == null then {} else . end;
+    [ "User\t"         + ((.User // "")       | clean),
+      "WorkingDir\t"   + ((.WorkingDir // "") | clean),
+      "Entrypoint\t"   + ((.Entrypoint | nlist | map(clean)) | @json),
+      "Cmd\t"          + ((.Cmd        | nlist | map(clean)) | @json),
+      "ExposedPorts\t" + ((.ExposedPorts | nobj | keys | sort | map(clean)) | @json),
+      "Volumes\t"      + ((.Volumes      | nobj | keys | sort | map(clean)) | @json)
+    ]
+    + ((.Env | nlist | map(clean) | sort) | map("Env\t" + .))
+    | .[]' > "$out" \
+    || die "cannot parse the image configuration of $ref"
+  # A non-empty result is guaranteed by construction (six fixed lines), so an
+  # empty file means jq produced nothing despite exiting 0 -- treat it as a
+  # failed read rather than as "no configuration", which would compare clean.
+  [ -s "$out" ] || die "no image configuration parsed from $ref"
+}
+
 for arch in $ARCHES; do
   echo "::group::gate: linux/$arch"
 
@@ -588,6 +700,15 @@ for arch in $ARCHES; do
   diff -u "$OUT/mods-old-$arch.txt" "$OUT/mods-new-$arch.txt" \
     > "$OUT/mods-diff-$arch.txt" || true
 
+  # Gate 3: the execution configuration. Read from the SAME resolved refs the
+  # other two gates used -- the per-arch digest, not the mutable tag -- so this
+  # cannot end up describing the other arch's copy of :stable. No extra pull
+  # and no extra scan: both images are already local by this point.
+  config_from "$new_ref"  "$OUT/cfg-new-$arch.txt"
+  config_from "$base_ref" "$OUT/cfg-old-$arch.txt"
+  diff -u "$OUT/cfg-old-$arch.txt" "$OUT/cfg-new-$arch.txt" \
+    > "$OUT/cfg-diff-$arch.txt" || true
+
   echo "::endgroup::"
 done
 
@@ -597,22 +718,28 @@ done
 added_total=0
 removed_total=0
 moddrift=0
+cfgdrift=0
 for arch in $ARCHES; do
   added_total=$(( added_total + $(wc -l < "$OUT/added-$arch.ids") ))
   removed_total=$(( removed_total + $(wc -l < "$OUT/removed-$arch.ids") ))
   [ -s "$OUT/mods-diff-$arch.txt" ] && moddrift=1
+  [ -s "$OUT/cfg-diff-$arch.txt" ] && cfgdrift=1
 done
 
-# Gate 2 contributes to the verdict only under the block policy. Under report
-# the drift is still measured, still diffed and still printed below — it just
-# does not decide the verdict, because on the release path drift is the
-# intended result rather than a fault.
+# Gates 2 and 3 contribute to the verdict only under the block policy. Under
+# report the drift is still measured, still diffed and still printed below — it
+# just does not decide the verdict, because on the release path a deliberate
+# change is the intended result rather than a fault.
 drift_blocks=0
 if [ "$moddrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
   drift_blocks=1
 fi
+cfg_blocks=0
+if [ "$cfgdrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
+  cfg_blocks=1
+fi
 
-if [ "$added_total" -gt 0 ] || [ "$drift_blocks" -eq 1 ]; then
+if [ "$added_total" -gt 0 ] || [ "$drift_blocks" -eq 1 ] || [ "$cfg_blocks" -eq 1 ]; then
   verdict=blocked
 elif [ "$removed_total" -gt 0 ]; then
   verdict=improved
@@ -652,6 +779,19 @@ fi
       # Say which policy is in force on the row itself: "yes" alone reads as a
       # failure, and on the release path it is not one.
       if [ "$DRIFT_POLICY" = block ]; then row+=' **yes** |'; else row+=' yes (expected) |'; fi
+    else
+      row+=' none |'
+    fi
+  done
+  echo "$row"
+  row='| image-config drift |'
+  for arch in $ARCHES; do
+    if [ -s "$OUT/cfg-diff-$arch.txt" ]; then
+      # Unlike module drift, a config change is NOT the expected outcome of an
+      # ordinary release either -- most releases change the module set and
+      # leave User/Entrypoint/Env alone. So it is flagged for review under
+      # report rather than labelled "expected".
+      if [ "$DRIFT_POLICY" = block ]; then row+=' **yes** |'; else row+=' yes (review) |'; fi
     else
       row+=' none |'
     fi
@@ -706,11 +846,46 @@ fi
     done
   fi
 
+  if [ "$cfgdrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
+    echo "**Gate 3 FAILED — the image's execution configuration changed.** A refresh may change the OS layer and nothing else."
+    echo
+    echo "This compares \`User\`, \`Entrypoint\`, \`Cmd\`, \`Env\`, \`ExposedPorts\`, \`Volumes\` and \`WorkingDir\` from \`docker image inspect\`. A refresh rebuilds an **unchanged** \`Dockerfile.caddy\` from a release tag, so every one of these must come out identical — a difference here cannot be a side effect of a base-layer bump, it means the build produced a different image than the released one describes. Six public-facing edge proxies pull this image and hold DNS-provider TLS credentials, so a change to who it runs as or what it executes first is not a cosmetic diff."
+    echo
+  elif [ "$cfgdrift" -eq 1 ]; then
+    echo "**Image configuration changed — reported, not blocked.** This is the release path, where a deliberate \`EXPOSE\`, \`WORKDIR\` or \`ENV\` edit is allowed to ship."
+    echo
+    echo "Read this one closely even so. Gates 1 and 2 cover the image's *contents* — its packages and its linked Go modules — and neither sees how those contents are **executed**. \`USER root\`, an \`ENTRYPOINT\` repointed at a wrapper that runs something before exec'ing caddy, or an added \`HTTP_PROXY\`/\`SSL_CERT_FILE\` passes both of them untouched: same packages, same modules, no CVE moved. If you did not intend a line below, do not move \`:stable\`."
+    echo
+  fi
+
+  if [ "$cfgdrift" -eq 1 ]; then
+    for arch in $ARCHES; do
+      if [ -s "$OUT/cfg-diff-$arch.txt" ]; then
+        echo "<details><summary>Image config diff, linux/$arch (published → rebuilt)</summary>"
+        echo
+        echo '```diff'
+        cat "$OUT/cfg-diff-$arch.txt"
+        echo '```'
+        echo
+        echo "</details>"
+        echo
+      fi
+    done
+  fi
+
   if [ "$verdict" != blocked ]; then
-    if [ "$moddrift" -eq 1 ]; then
-      echo "No new findings: every vulnerability in the new image is already present in the baseline image, against the same package. The module set changed, which is expected here and is diffed above."
+    # Say which of the two drift gates were quiet, rather than asserting both.
+    # The old wording claimed "the module set is unchanged" whenever gate 2 was
+    # quiet, which under `report` would now be printed over an unmentioned
+    # config change -- a reassurance the gate had not actually earned.
+    if [ "$moddrift" -eq 1 ] && [ "$cfgdrift" -eq 1 ]; then
+      echo "No new findings: every vulnerability in the new image is already present in the baseline image, against the same package. The module set and the image configuration both changed; both are diffed above and both need reading."
+    elif [ "$moddrift" -eq 1 ]; then
+      echo "No new findings: every vulnerability in the new image is already present in the baseline image, against the same package. The module set changed, which is expected here and is diffed above; the image configuration is unchanged."
+    elif [ "$cfgdrift" -eq 1 ]; then
+      echo "No new findings, and the module set is unchanged: every vulnerability in the rebuilt image is already present in the published image, against the same package. The image **configuration** changed, which is diffed above and needs reading."
     else
-      echo "No new findings, and the module set is unchanged: every vulnerability in the rebuilt image is already present in the published image, against the same package."
+      echo "No new findings, and neither the module set nor the image configuration changed: every vulnerability in the rebuilt image is already present in the published image, against the same package."
     fi
     echo
   fi
@@ -748,6 +923,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "added_count=$added_total"
     echo "removed_count=$removed_total"
     echo "module_drift=$moddrift"
+    echo "config_drift=$cfgdrift"
     echo "module_drift_policy=$DRIFT_POLICY"
     echo "summary<<$SUMMARY_DELIM"
     cat "$OUT/summary.md"
