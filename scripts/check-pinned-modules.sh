@@ -270,11 +270,36 @@ replaced_file="$OUT_DIR/replaced.txt"
 : > "$replaced_file"
 
 while IFS= read -r raw; do
-  # Normalise `--with=X` to `--with X` so one extraction handles both.
+  # A TAB between `--with` and its argument is legal in a Dockerfile RUN line
+  # and the extraction below splits on spaces, so tabs are normalised first.
+  raw="${raw//$'\t'/ }"
+  # Normalise `--with=X` to `--with X` so one extraction handles both, then
+  # collapse a run of separators so `--with=  X` and `--with   X` reduce to
+  # the same single-space form the extraction below expects.
   raw="${raw/--with=/--with }"
+  while case "$raw" in *'--with  '*) true ;; *) false ;; esac; do
+    raw="${raw/--with  /--with }"
+  done
   arg="${raw#*--with }"
   arg="${arg%% *}"
   arg="${arg%\\}"
+  # QUOTES ARE STRIPPED, because the shell strips them before xcaddy sees
+  # argv and therefore `--with="mod@ver"` is a perfectly valid, building pin:
+  #
+  #   $ bash -c 'set -- --with="github.com/go-chi/chi/v5@v5.4.0"; echo "$1"'
+  #   --with=github.com/go-chi/chi/v5@v5.4.0
+  #
+  # Left in place, the leading quote made `arg` fail the package-path test
+  # below, so the pin was dropped from pins.tsv AND from unpinned.txt — the
+  # plugin vanished from the watch while the report still said every pin was
+  # current. Worse, it also evaded the reconciliation that exists to catch
+  # exactly that: the quote is not in `raw_with_count`'s character class, so
+  # BOTH counters lost the same argument and agreed. Quoting the CrowdSec CVE
+  # floor in the real Dockerfile reproduced it end to end — a one-character
+  # PR diff that reads as adding quotes to a string, with no error, no
+  # warning, and the floor still shipping in the binary.
+  arg="${arg%\"}"; arg="${arg#\"}"
+  arg="${arg%\'}"; arg="${arg#\'}"
   [ -n "$arg" ] || continue
   # `module@version=replacement` — keep the replacement out of the version.
   replacement=""
@@ -288,7 +313,13 @@ while IFS= read -r raw; do
     *@*) printf '%s\t%s\n' "${arg%@*}" "${arg##*@}" >> "$pins_file" ;;
     *)   printf '%s\n' "$arg" >> "$unpinned_file" ;;
   esac
-done < <(grep -v '^[[:space:]]*#' "$DOCKERFILE" | grep -oE -- '--with[= ][^ \\]+' || true)
+# `[=[:space:]]+` rather than a single separator character: `--with=  arg`
+# and `--with<TAB>arg` are both legal and both build, and matching only one
+# separator left them unparsed. They now fail loudly thanks to the token
+# counter above rather than vanishing silently, but failing a legitimate
+# reformat is still a weekly false alarm, so they are parsed properly.
+done < <(grep -v '^[[:space:]]*#' "$DOCKERFILE" \
+  | grep -oE -- '--with[=[:space:]]+[^ \\]+' || true)
 
 pin_count="$(wc -l < "$pins_file" | tr -d ' ')"
 unpinned_count="$(wc -l < "$unpinned_file" | tr -d ' ')"
@@ -306,8 +337,17 @@ fi
 # drops SOME, which is the more dangerous shape because the report still looks
 # complete. Any future --with spelling this parser does not understand becomes
 # a loud `error` verdict here rather than a quietly unwatched plugin.
+# Counted as TOKENS, not as well-formed arguments. The obvious form — reusing
+# the same strict package-path pattern the parser uses — cannot do this job,
+# because any argument the parser cannot read is also invisible to the
+# counter, so both sides lose it together and the comparison passes. That is
+# not a theoretical weakness: it is how a quoted `--with` removed a pin from
+# the watch silently (see the quote-stripping note above), and the same held
+# for a tab separator and for two spaces. Counting every `--with` occurrence
+# instead means an argument this parser does not understand is a loud `error`
+# rather than an unwatched plugin, which is the whole point of the check.
 raw_with_count="$(grep -v '^[[:space:]]*#' "$DOCKERFILE" \
-  | grep -oE -- '--with[= ][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[^ \\]+' | wc -l | tr -d ' ')"
+  | grep -oE -- '(^|[[:space:]])--with([=[:space:]]|$)' | wc -l | tr -d ' ')"
 parsed_count=$(( pin_count + unpinned_count ))
 if [ "$raw_with_count" != "$parsed_count" ]; then
   die "parsed $parsed_count pin(s) but $DOCKERFILE contains $raw_with_count --with argument(s); an unparsed pin would be silently unwatched"
