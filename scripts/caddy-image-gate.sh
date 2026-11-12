@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# The publish gate for applegater/caddyui-caddy base-layer refreshes.
+# The publish gate for applegater/caddyui-caddy.
 #
 # Decides whether a rebuilt Caddy image may replace the published one. Used by
-# .github/workflows/caddy-image-refresh.yml from BOTH the unattended scan and
-# the post-approval publish, so the two cannot drift apart: the check that
+# BOTH workflows that move this image's :stable/:latest tags:
+#
+#   caddy-image-refresh.yml  the weekly base-layer refresh, from its unattended
+#                            scan AND its post-approval publish
+#   release-docker.yml       the release that publishes :vX.Y.Z, after the push
+#                            and before the moving tags are created
+#
+# One copy, so the standard cannot drift between the paths: the check that
 # gave a reviewer their verdict is byte-for-byte the check that guards the
 # moving tags.
 #
@@ -16,6 +22,12 @@
 #                       summary.md, and verdict.
 #   arches              Space-separated, default "amd64 arm64".
 #
+# Environment:
+#   TRIVY_SEVERITY      Severities to scan. Default UNKNOWN,LOW,…,CRITICAL.
+#   MODULE_DRIFT_POLICY block (default) | report. See gate 2 below. The default
+#                       is the strict one so a caller that forgets the variable
+#                       gets the SAFER behaviour, never the weaker one.
+#
 # Requires: trivy, jq, docker. Trivy's DB must already be downloaded
 # (`trivy image --download-db-only`): the caller does that ONCE so every scan
 # in a run compares against the same DB version. A subset comparison across
@@ -27,7 +39,7 @@
 #   1  blocked                (a human must look)
 #   2  the gate could not run (treat as blocked)
 #
-# TWO independent gates, both hard:
+# TWO independent gates:
 #
 #  1. Vulnerability subset. The rebuild's findings must be a SUBSET of the
 #     published image's, per arch. Deliberately not "zero findings": every
@@ -42,15 +54,34 @@
 #     a DIFFERENT package is a new exposure, and comparing bare IDs would let
 #     it cancel out.
 #
-#  2. Module set. `caddy list-modules --versions` must be IDENTICAL. Every
-#     --with argument in Dockerfile.caddy now carries a version, so a rebuild
-#     should reproduce the same module set; this gate is the independent check
-#     that it actually did. It still catches what gate 1 cannot: a resolver,
-#     proxy or toolchain change that moves a DNS provider, caddy-l4 or Coraza
-#     with no CVE change at all, and a pin edit that reached the image without
-#     going through a release. A refresh is allowed to change the OS layer and
-#     nothing else; bumping a plugin is a deliberate act that goes through a
-#     release.
+#  2. Module set, from `caddy list-modules --versions`. Every --with argument
+#     in Dockerfile.caddy now carries a version, so a rebuild should reproduce
+#     the same module set; this gate is the independent check that it actually
+#     did. It catches what gate 1 cannot: a resolver, proxy or toolchain change
+#     that moves a DNS provider, caddy-l4 or Coraza with no CVE change at all,
+#     and a pin edit that reached the image without going through a release.
+#
+#     What a module-set change MEANS depends on which path is running, so this
+#     gate has two policies and the caller picks:
+#
+#       block   (default, the refresh path) Any drift is wrong BY DEFINITION.
+#               A refresh rebuilds an UNCHANGED Dockerfile.caddy from a release
+#               tag, so the module set must come out identical; if it did not,
+#               something re-resolved and a timer is about to ship a plugin bump
+#               to :stable. Blocking is the whole point.
+#
+#       report  (the release path) Drift is the EXPECTED OUTCOME of a release
+#               that edits Dockerfile.caddy — that is how a plugin bump is
+#               meant to arrive. Blocking here would mean no module change
+#               could ever be released, i.e. the gate would forbid the one
+#               legitimate route it tells refreshes to use. So the diff is
+#               computed, printed in full and carried into the job summary,
+#               and the verdict is decided by gate 1 alone.
+#
+#     report does NOT weaken gate 1: a release that introduces a NEW
+#     vulnerability still blocks, under either policy. Drift stops being an
+#     automatic verdict; it does not stop being reviewed. The release diff is
+#     the reviewable record of what the module set change actually was.
 set -euo pipefail
 
 die() { echo "::error::$*" >&2; exit 2; }
@@ -69,12 +100,45 @@ command -v docker >/dev/null || die "docker not found"
 mkdir -p "$OUT"
 SEVERITY="${TRIVY_SEVERITY:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
 
-# A finding is identified by ID *and* package. Target is deliberately excluded:
-# it contains the image reference, which differs between the two sides by
-# definition, so including it would make every finding look new.
+# Unset or empty means block: a caller that forgets this variable gets the
+# strict refresh behaviour. Only the two spellings are accepted — a typo such
+# as MODULE_DRIFT_POLICY=Report must not silently fall through to the weaker
+# policy, so it is a hard stop rather than a default.
+DRIFT_POLICY="${MODULE_DRIFT_POLICY:-block}"
+case "$DRIFT_POLICY" in
+  block|report) ;;
+  *) die "MODULE_DRIFT_POLICY must be 'block' or 'report' (got: $DRIFT_POLICY)" ;;
+esac
+
+# A finding is identified by ID *and* package, and DELIBERATELY NOT by the
+# installed version.
+#
+# Target is excluded because it contains the image reference, which differs
+# between the two sides by definition, so including it would make every finding
+# look new.
+#
+# InstalledVersion is excluded for a sharper reason: including it made an
+# UPGRADE of a still-affected package look like a brand-new exposure. Measured
+# on the real images — GO-2026-5932 (x/crypto, unmaintained openpgp, no fix
+# available) sits on both sides of v2.61.0 -> v2.68.9, at v0.57.0 and v0.58.0.
+# Keyed with the version it appeared as one finding removed plus one added, so
+# the subset gate BLOCKED; keyed on ID+package it correctly cancels out and the
+# added count is zero.
+#
+# That mattered little while this gate only guarded refreshes, where the
+# package set is not supposed to move at all. On the release path it would
+# block the ordinary case of a security release: bump a module to a newer
+# version that is still affected by one standing advisory, and the gate calls
+# your fix a regression. Fixing forward would block the same way.
+#
+# What this gives up is small and recoverable: a same-ID finding against the
+# same package whose version moved is no longer counted as new. The version
+# change is still visible in the per-arch JSON kept as a build artifact, and a
+# genuinely new exposure means a new ID or a new package, which is still
+# caught.
 ids_from() {
   jq -r '[.Results[]?.Vulnerabilities[]?
-          | "\(.VulnerabilityID)\t\(.PkgName)\t\(.InstalledVersion // "-")"]
+          | "\(.VulnerabilityID)\t\(.PkgName)"]
          | unique | .[]' "$1"
 }
 
@@ -206,7 +270,16 @@ for arch in $ARCHES; do
   [ -s "$OUT/mods-diff-$arch.txt" ] && moddrift=1
 done
 
-if [ "$added_total" -gt 0 ] || [ "$moddrift" -eq 1 ]; then
+# Gate 2 contributes to the verdict only under the block policy. Under report
+# the drift is still measured, still diffed and still printed below — it just
+# does not decide the verdict, because on the release path drift is the
+# intended result rather than a fault.
+drift_blocks=0
+if [ "$moddrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
+  drift_blocks=1
+fi
+
+if [ "$added_total" -gt 0 ] || [ "$drift_blocks" -eq 1 ]; then
   verdict=blocked
 elif [ "$removed_total" -gt 0 ]; then
   verdict=improved
@@ -215,7 +288,13 @@ else
 fi
 
 {
-  echo "### Caddy image refresh — \`$verdict\`"
+  # The heading names the path, because this script now guards two of them and
+  # a summary headed "refresh" on a release run would be actively misleading.
+  if [ "$DRIFT_POLICY" = block ]; then
+    echo "### Caddy image refresh — \`$verdict\`"
+  else
+    echo "### Caddy image release gate — \`$verdict\`"
+  fi
   echo
   echo "\`$NEW_IMAGE\` vs published \`$BASELINE\`"
   echo
@@ -236,7 +315,13 @@ fi
   done
   row='| module-set drift |'
   for arch in $ARCHES; do
-    if [ -s "$OUT/mods-diff-$arch.txt" ]; then row+=' **yes** |'; else row+=' none |'; fi
+    if [ -s "$OUT/mods-diff-$arch.txt" ]; then
+      # Say which policy is in force on the row itself: "yes" alone reads as a
+      # failure, and on the release path it is not one.
+      if [ "$DRIFT_POLICY" = block ]; then row+=' **yes** |'; else row+=' yes (expected) |'; fi
+    else
+      row+=' none |'
+    fi
   done
   echo "$row"
   echo
@@ -246,22 +331,34 @@ fi
     echo
     echo '```'
     for arch in $ARCHES; do
-      while IFS=$'\t' read -r id pkg ver; do
+      while IFS=$'\t' read -r id pkg; do
         [ -n "${id:-}" ] || continue
-        printf '%s  %s  %s %s\n' "$arch" "$id" "$pkg" "$ver"
+        printf '%s  %s  %s\n' "$arch" "$id" "$pkg"
       done < "$OUT/added-$arch.ids"
     done
     echo '```'
     echo
-    echo "A refresh must only ever remove findings. Investigate before publishing."
+    if [ "$DRIFT_POLICY" = block ]; then
+      echo "A refresh must only ever remove findings. Investigate before publishing."
+    else
+      echo "A release may change the module set, but it must not introduce a vulnerability the published image does not already have. The immutable \`:vX.Y.Z\` tag exists; \`:stable\` and \`:latest\` were NOT moved. Investigate before moving them."
+    fi
     echo
   fi
 
-  if [ "$moddrift" -eq 1 ]; then
+  if [ "$moddrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
     echo "**Gate 2 FAILED — the Caddy module set changed.** A refresh may change the OS layer and nothing else."
     echo
     echo "Every \`--with\` in Dockerfile.caddy is pinned, so a module-set change here means the build did not reproduce the pinned set — a re-resolved DNS provider, caddy-l4 or Coraza, or a pin edit that never went through a release. That is a Caddy change, not a base-layer refresh, and it must go through a normal release (edit \`Dockerfile.caddy\`, cut a tag) so it is reviewed and versioned rather than arriving on \`:stable\` via a timer."
     echo
+  elif [ "$moddrift" -eq 1 ]; then
+    echo "**Module set changed — reported, not blocked.** This is the release path, where editing \`Dockerfile.caddy\` is how a plugin bump is *supposed* to arrive, so the diff below is the expected result rather than a fault."
+    echo
+    echo "Read it anyway: it is the authoritative record of what this release actually did to the module set, taken from \`caddy list-modules --versions\` inside the pushed image rather than from the Dockerfile diff. Modules can move **without** a \`--with\` edit (a transitive dependency of a bumped plugin), and a \`--with\` edit can fail to move anything. Anything here you did not intend to change is a finding."
+    echo
+  fi
+
+  if [ "$moddrift" -eq 1 ]; then
     for arch in $ARCHES; do
       if [ -s "$OUT/mods-diff-$arch.txt" ]; then
         echo "<details><summary>Module diff, linux/$arch (published → rebuilt)</summary>"
@@ -277,7 +374,11 @@ fi
   fi
 
   if [ "$verdict" != blocked ]; then
-    echo "No new findings, and the module set is unchanged: every vulnerability in the rebuilt image is already present in the published image, against the same package."
+    if [ "$moddrift" -eq 1 ]; then
+      echo "No new findings: every vulnerability in the new image is already present in the baseline image, against the same package. The module set changed, which is expected here and is diffed above."
+    else
+      echo "No new findings, and the module set is unchanged: every vulnerability in the rebuilt image is already present in the published image, against the same package."
+    fi
     echo
   fi
 
@@ -286,9 +387,9 @@ fi
     echo
     echo '```'
     for arch in $ARCHES; do
-      while IFS=$'\t' read -r id pkg ver; do
+      while IFS=$'\t' read -r id pkg; do
         [ -n "${id:-}" ] || continue
-        printf '%s  %s  %s %s\n' "$arch" "$id" "$pkg" "$ver"
+        printf '%s  %s  %s\n' "$arch" "$id" "$pkg"
       done < "$OUT/removed-$arch.ids"
     done
     echo '```'
@@ -307,6 +408,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "added_count=$added_total"
     echo "removed_count=$removed_total"
     echo "module_drift=$moddrift"
+    echo "module_drift_policy=$DRIFT_POLICY"
     echo "summary<<GATE_SUMMARY_EOF"
     cat "$OUT/summary.md"
     echo "GATE_SUMMARY_EOF"

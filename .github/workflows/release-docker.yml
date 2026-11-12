@@ -5,10 +5,21 @@
 #   applegater/caddyui-caddy   only when Dockerfile.caddy changed since the
 #                              previous release tag (or when asked for by hand)
 #
-# The Caddy image is deliberately not rebuilt on every release: xcaddy fetches
-# each plugin at its latest version, so a blind rebuild could silently bump
-# plugins under everyone who pulls :stable. Its :vX.Y.Z tag names the CaddyUI
-# release that last changed the module set.
+# The Caddy image is deliberately not rebuilt on every release. Every --with
+# argument in Dockerfile.caddy now carries a version (pinned in v2.68.9), so a
+# rebuild no longer re-resolves plugins to latest the way it once could; the
+# rule stays because the module set should move only when someone edited the
+# file that defines it, and because the base image and toolchain are still
+# outside those pins. Its :vX.Y.Z tag names the CaddyUI release that last
+# changed the module set.
+#
+# When this workflow DOES rebuild it, the caddy job below gates the pushed
+# digest with scripts/caddy-image-gate.sh before :stable and :latest are
+# moved - the same script and standard caddy-image-refresh.yml uses. Its
+# module-drift policy follows whether Dockerfile.caddy actually changed in
+# this release: `report` when it did, because such a release is allowed to
+# change the module set deliberately, and `block` when it did not. See the
+# long comment on that step.
 #
 # The flip side of that rule is that the Caddy image's Alpine layer only moves
 # when Dockerfile.caddy is edited, so Alpine security fixes can sit built-but-
@@ -86,6 +97,7 @@ jobs:
       kind: ${{ steps.p.outputs.kind }}
       push: ${{ steps.p.outputs.push }}
       caddy: ${{ steps.p.outputs.caddy }}
+      caddy_changed: ${{ steps.p.outputs.caddy_changed }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,16 +144,35 @@ jobs:
 
           # Rebuild the Caddy image when asked, or when Dockerfile.caddy differs
           # from the previous release tag (nearest tag before this commit).
+          # caddy          = rebuild the image at all.
+          # caddy_changed   = Dockerfile.caddy ACTUALLY differs from the previous
+          #                   release. These are not the same question, and the
+          #                   gate's module-drift policy depends on the second,
+          #                   not the first. A hand-dispatched `caddy=true` with
+          #                   the file unchanged must still be held to "the
+          #                   module set may not move", because nothing in the
+          #                   source asked it to; treating that run as a release
+          #                   that intends drift would let a re-resolved plugin
+          #                   reach :stable with no reviewer, which is exactly
+          #                   what caddy-image-refresh.yml blocks.
           caddy=false
-          if [ "$WANT_CADDY" = "true" ]; then
-            caddy=true
-          elif [ "$kind" != none ]; then
+          caddy_changed=false
+          if [ "$kind" != none ]; then
             prev="$(git describe --tags --abbrev=0 "${version}^" 2>/dev/null || true)"
             if [ -z "$prev" ]; then
+              # No previous release to compare against: treat the module set as
+              # newly defined rather than drifted.
               caddy=true
+              caddy_changed=true
             elif ! git diff --quiet "$prev" "$version" -- Dockerfile.caddy; then
               caddy=true
+              caddy_changed=true
             fi
+          fi
+          # Asked for by hand: rebuild, but do NOT inherit "drift is expected"
+          # unless the diff above already established it.
+          if [ "$WANT_CADDY" = "true" ]; then
+            caddy=true
           fi
 
           # Only the version and release kind cross to the build jobs — never the
@@ -156,9 +187,10 @@ jobs:
             echo "kind=$kind"
             echo "push=$push"
             echo "caddy=$caddy"
+            echo "caddy_changed=$caddy_changed"
           } >> "$GITHUB_OUTPUT"
 
-          echo "version=$version kind=$kind push=$push caddy=$caddy"
+          echo "version=$version kind=$kind push=$push caddy=$caddy caddy_changed=$caddy_changed"
 
   caddyui:
     name: applegater/caddyui
@@ -271,6 +303,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Only the IMMUTABLE :vX.Y.Z tag is pushed by the build. :stable and
+      # :latest are moved later, by digest, and ONLY after the gate below
+      # passes on the bytes that were actually pushed. KIND is still read here
+      # so a non-stable release (an older tag re-run by hand, or a prerelease)
+      # skips the tag-move steps entirely.
       - name: Work out image tags
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -280,40 +317,311 @@ jobs:
           set -euo pipefail
           repo=applegater/caddyui-caddy
           {
-            echo "TAGS<<EOF"
-            echo "$repo:$VERSION"
-            if [ "$KIND" = stable ]; then
-              echo "$repo:stable"
-              echo "$repo:latest"
-            fi
-            echo "EOF"
+            echo "IMAGE=$repo"
+            echo "VERSION_TAG=$repo:$VERSION"
+            if [ "$KIND" = stable ]; then echo "MOVE_TAGS=true"; else echo "MOVE_TAGS=false"; fi
           } >> "$GITHUB_ENV"
 
       - name: Build (and push) linux/amd64 + linux/arm64
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.caddy
           platforms: linux/amd64,linux/arm64
-          tags: ${{ env.TAGS }}
+          tags: ${{ env.VERSION_TAG }}
           push: ${{ needs.plan.outputs.push == 'true' }}
           provenance: mode=max
           sbom: generator=docker.io/docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
 
-      - name: Verify every pushed tag is one multi-arch image
+      # ---------------------------------------------------------------------
+      # The release gate. Same script, same standard, as the weekly refresh.
+      #
+      # Why it is HERE and not only in caddy-image-refresh.yml: this workflow
+      # is the one that publishes :vX.Y.Z and MOVES :stable and :latest, and
+      # six boxes track those two tags. Until this gate existed the protection
+      # was backwards — a base-layer refresh (unchanged source, lowest risk)
+      # was gated twice and sat behind a required reviewer, while a release
+      # (which can change the module set arbitrarily, because Dockerfile.caddy
+      # is edited) was gated not at all by CI. The only thing standing in for
+      # it was a human remembering to scan the pushed digest afterwards.
+      #
+      # MODULE_DRIFT_POLICY is conditional, and that is the point. On the
+      # refresh path any module-set drift is wrong by definition. On this path
+      # a changed module set is the expected outcome of a release that EDITS
+      # Dockerfile.caddy — blocking that would forbid the exact route the
+      # refresh gate tells plugin bumps to take — so those runs get `report`:
+      # drift is diffed and recorded, and the verdict is gate 1's alone.
+      #
+      # A release that did NOT touch Dockerfile.caddy gets `block`, the same
+      # standard as the refresh. That covers the hand-dispatched `caddy=true`
+      # rebuild of an unchanged file: nothing in the source asked the module
+      # set to move, so if it moved that is a re-resolved plugin reaching
+      # :stable with no reviewer, which is what the refresh gate exists to
+      # stop. Under either policy a release that introduces a vulnerability
+      # the published image does not have still blocks.
+      #
+      # Order is push -> re-gate -> imagetools create, matching the refresh
+      # path. On failure the immutable :vX.Y.Z exists and the moving tags stay
+      # where they were, so nothing the fleet pulls has changed.
+      # ---------------------------------------------------------------------
+      - name: Stage the gate script outside the working tree
+        if: needs.plan.outputs.push == 'true'
+        # Passed through env rather than interpolated into the script body:
+        # ${{ }} inside run: is the shape that becomes script injection, even
+        # where the value is a regex-constrained tag name.
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The script lives on the ref being released, which for any tag cut
+          # from main after it landed is correct. A tag from before it existed
+          # cannot be gated: say so and fail rather than moving :stable and
+          # :latest unchecked, which is the whole defect this closes.
+          [ -x scripts/caddy-image-gate.sh ] || {
+            echo "::error::scripts/caddy-image-gate.sh is missing or not executable on ${VERSION}; refusing to publish this image ungated"
+            exit 1
+          }
+          cp scripts/caddy-image-gate.sh "$RUNNER_TEMP/caddy-image-gate.sh"
+          chmod +x "$RUNNER_TEMP/caddy-image-gate.sh"
+
+      - name: Install Trivy
+        if: needs.plan.outputs.push == 'true'
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+          cache: true
+
+      # Once, so every scan in this run compares against the same DB version.
+      # A subset comparison across two DB versions is meaningless.
+      - name: Download Trivy databases once
         if: needs.plan.outputs.push == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          first=""
-          while read -r tag; do
-            [ -n "$tag" ] || continue
-            out="$(docker buildx imagetools inspect "$tag")"
+          trivy image --download-db-only
+          trivy image --download-java-db-only || true
+
+      - name: Gate the pushed digest against the published image
+        id: gate
+        if: needs.plan.outputs.push == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          # report ONLY when Dockerfile.caddy actually changed in this release.
+          # A hand-dispatched rebuild of an unchanged file gets `block`, the
+          # same standard as the weekly refresh: the module set had no reason
+          # to move, so if it moved that is a fault, not an intention.
+          MODULE_DRIFT_POLICY: ${{ needs.plan.outputs.caddy_changed == 'true' && 'report' || 'block' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::build-push-action reported no digest"; exit 1; }
+
+          gate="$RUNNER_TEMP/caddy-image-gate.sh"
+          [ -x "$gate" ] || { echo "::error::staged gate script missing at $gate"; exit 1; }
+
+          # The baseline is the image the fleet is running right now, which is
+          # what :stable points at until this job moves it. On the very first
+          # gated release :stable exists, so this is always resolvable; if it
+          # ever is not, the script hard-stops rather than comparing against
+          # an empty set, which would make every finding look new.
+          #
+          # That baseline only MEANS something when this build is about to
+          # become :stable. For an older tag re-run by hand, or a prerelease,
+          # MOVE_TAGS is false and nothing moves whatever the verdict is -- and
+          # :stable has usually closed findings since, so the comparison is
+          # backwards and would fail a build that was never going to publish.
+          # Such a run is gated for its REPORT only: the verdict is recorded in
+          # the summary and the artifacts, and a block does not fail the job,
+          # because there is nothing to hold back.
+
+          # Record what :stable is RIGHT NOW, before gating, so the move step
+          # can confirm it has not moved underneath this run. Captured as the
+          # index digest, which is what imagetools reports for a tag. This is
+          # written to the REAL $GITHUB_OUTPUT, before the redirect below.
+          baseline_digest="$(docker buildx imagetools inspect "${IMAGE}:stable" 2>/dev/null \
+                             | awk '/^Digest:/{print $2; exit}' || true)"
+          echo "baseline_digest=$baseline_digest" >> "$GITHUB_OUTPUT"
+          echo "baseline :stable = ${baseline_digest:-<unresolved>}"
+
+          # The script appends its own per-arch summary to $GITHUB_STEP_SUMMARY
+          # and writes its own $GITHUB_OUTPUT keys. This step publishes the
+          # COMBINED summary instead, so send the script's copies elsewhere:
+          # otherwise each arch prints twice, and the two calls' identical
+          # output keys would append after (and conflict with) baseline_digest
+          # above. The gate's `summary` output also embeds the image name, and
+          # "applegater" IS the DOCKERHUB_USERNAME secret, so keeping those
+          # writes out of this step's real output file avoids that trap too.
+          SUMMARY_OUT="$GITHUB_STEP_SUMMARY"
+          export GITHUB_STEP_SUMMARY=/dev/null
+          export GITHUB_OUTPUT="$RUNNER_TEMP/gate-output.discard"
+
+          fail=0
+          "$gate" "${IMAGE}@${DIGEST}" "${IMAGE}:stable" release-gate       amd64 || fail=1
+          "$gate" "${IMAGE}@${DIGEST}" "${IMAGE}:stable" release-gate-arm64 arm64 || fail=1
+
+          {
+            echo "## linux/amd64"
+            cat release-gate/summary.md 2>/dev/null || echo "_gate did not run_"
+            echo
+            echo "## linux/arm64"
+            cat release-gate-arm64/summary.md 2>/dev/null || echo "_gate did not run_"
+          } > release-gate-combined.md
+
+          if [ "$fail" -ne 0 ] && [ "$MOVE_TAGS" != true ]; then
+            {
+              echo "### Gate reported findings — nothing was going to move"
+              echo
+              echo "\`${VERSION_TAG}\` is not becoming \`:stable\`/\`:latest\` on this run (an older tag re-run by hand, or a prerelease), so the gate is advisory here and does not fail the job."
+              echo
+              echo "Compared against the CURRENT \`:stable\`, which is normally NEWER than this build, so findings it has since closed show up as newly introduced. Read the detail below on its own terms."
+            } >> "$SUMMARY_OUT"
+            cat release-gate-combined.md >> "$SUMMARY_OUT"
+            echo "::notice::gate reported findings, but MOVE_TAGS=false so :stable and :latest were never going to move"
+            exit 0
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            {
+              echo "### ⛔ Moving tags held back"
+              echo
+              echo "\`${VERSION_TAG}\` was pushed and is immutable, but it did NOT pass the release gate, so \`:stable\` and \`:latest\` were left where they were. Nothing the six boxes pull has moved."
+              echo
+              # Which causes are possible depends on the drift policy this run
+              # used, so do not describe one policy's rules under the other.
+              # Saying "a module-set change alone does NOT cause this" on a
+              # `block` run would send the reader hunting for a CVE that is not
+              # there, when the drift table below already names the real cause.
+              if [ "${MODULE_DRIFT_POLICY:-block}" = report ]; then
+                echo "A module-set change alone does NOT cause this — this release edited \`Dockerfile.caddy\`, so drift is reported, not blocked. This means the new image carries a vulnerability the published image does not have, against the same package, or the gate could not read one of the two images."
+              else
+                echo "This release did NOT edit \`Dockerfile.caddy\`, so the module set was held to the weekly refresh's standard: it may not move. Either the new image carries a vulnerability the published image does not have, against the same package, or an unexpected module-set change was detected (see the module drift section below), or the gate could not read one of the two images."
+                echo
+                echo "An unexpected module-set change on an unchanged \`Dockerfile.caddy\` usually means a plugin re-resolved. Pin it rather than moving the tags."
+              fi
+              echo
+              echo "Fix forward with a new patch release. Do not move the tags by hand."
+            } >> "$SUMMARY_OUT"
+            cat release-gate-combined.md >> "$SUMMARY_OUT"
+            echo "::error::the pushed image did not pass the release gate; :stable and :latest were NOT moved"
+            exit 1
+          fi
+
+          cat release-gate-combined.md >> "$SUMMARY_OUT"
+
+      - name: Upload gate artifacts
+        if: always() && needs.plan.outputs.push == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: caddy-release-gate-${{ needs.plan.outputs.version }}
+          path: |
+            release-gate/
+            release-gate-arm64/
+            release-gate-combined.md
+          retention-days: 90
+
+      # By digest, so :stable, :latest and :vX.Y.Z are the same bytes by
+      # construction. A second build could differ (`apk upgrade` is unpinned)
+      # and the tags would silently diverge from the image that just passed.
+      #
+      # RE-CHECKED AT MOVE TIME, not just at plan time. The plan job decided
+      # `kind=stable` by comparing this tag against the newest release, and its
+      # comment promises that re-running an old tag "can never roll them
+      # backwards" — but that comparison is minutes or days stale by the time
+      # this step runs, and GitHub's "Re-run failed jobs" REUSES the original
+      # plan outputs rather than recomputing them. This gate makes a failed
+      # caddy job an expected outcome, so re-running one is now the natural
+      # reaction, which is exactly when the staleness bites:
+      #
+      #   v2.70.0's gate fails -> v2.70.1 is released and takes :stable ->
+      #   someone re-runs v2.70.0's failed job, still carrying kind=stable ->
+      #   :stable and :latest roll BACK to the older release.
+      #
+      # So the two facts the move depends on are verified again here, against
+      # the live registry and the real tag list, immediately before the move.
+      - name: Move :stable and :latest to the gated digest
+        if: needs.plan.outputs.push == 'true' && env.MOVE_TAGS == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          BASELINE_DIGEST: ${{ steps.gate.outputs.baseline_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::build-push-action reported no digest"; exit 1; }
+
+          # 1. Is this STILL the newest release? Read the tags from the remote,
+          #    not from the plan job's snapshot.
+          stable_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          newest="$(git ls-remote --tags --refs origin 'refs/tags/v*' \
+                    | awk '{sub(/^refs\/tags\//,"",$2); print $2}' \
+                    | grep -E "$stable_re" | sort -V | tail -1)"
+          if [ -z "$newest" ]; then
+            echo "::error::could not read the release tag list from origin; refusing to move the moving tags"
+            exit 1
+          fi
+          if [ "$VERSION" != "$newest" ]; then
+            echo "::error::$VERSION is no longer the newest release ($newest). Refusing to move :stable/:latest backwards. ${IMAGE}:${VERSION} is published and unaffected."
+            exit 1
+          fi
+
+          # 2. Compare-and-swap: has :stable moved since the gate read it? If
+          #    another release or an approved -pN refresh took it mid-run, the
+          #    verdict above describes a comparison that no longer applies.
+          #
+          #    Both halves of this check fail CLOSED. An unreadable baseline or
+          #    an unreadable live digest means the question "is the gate's
+          #    comparison still valid?" is unanswered, and an unanswered
+          #    question must not be scored as a pass - that would turn a
+          #    registry timeout, a 429 or an auth hiccup into a silent licence
+          #    to move the fleet's two moving tags on a stale verdict, which is
+          #    the exact failure this step exists to prevent.
+          #
+          #    An empty BASELINE_DIGEST should be unreachable: the gate script
+          #    hard-stops when it cannot resolve :stable, so a MOVE_TAGS=true
+          #    run fails at the gate and never arrives here. It is checked
+          #    anyway rather than trusted, because the cost of being wrong is
+          #    asymmetric and six boxes track these tags.
+          if [ -z "${BASELINE_DIGEST:-}" ]; then
+            echo "::error::the gate reported no :stable baseline digest, so there is nothing to compare against; refusing to move the tags. ${IMAGE}:${VERSION} is published and unaffected."
+            exit 1
+          fi
+          now="$(docker buildx imagetools inspect "${IMAGE}:stable" 2>/dev/null \
+                 | awk '/^Digest:/{print $2; exit}' || true)"
+          if [ -z "$now" ]; then
+            echo "::error::could not re-read ${IMAGE}:stable to confirm it has not moved since the gate read it; refusing to move the tags. ${IMAGE}:${VERSION} is published and unaffected."
+            exit 1
+          fi
+          if [ "$now" != "$BASELINE_DIGEST" ]; then
+            echo "::error::${IMAGE}:stable moved from $BASELINE_DIGEST to $now while this run was gating; the verdict describes a stale baseline. Refusing to move the tags. Re-run after checking what took :stable."
+            exit 1
+          fi
+
+          echo "publishing ${IMAGE}@${DIGEST}"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:stable" \
+            --tag "${IMAGE}:latest" \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Verify every pushed tag is one multi-arch image
+        if: needs.plan.outputs.push == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tags="$VERSION"
+          if [ "$MOVE_TAGS" = true ]; then tags="$tags stable latest"; fi
+          for tag in $tags; do
+            out="$(docker buildx imagetools inspect "${IMAGE}:${tag}")"
             for plat in linux/amd64 linux/arm64; do
-              grep -Eq "Platform:[[:space:]]+${plat}\$" <<<"$out" || { echo "::error::$tag is missing $plat"; exit 1; }
+              grep -Eq "Platform:[[:space:]]+${plat}\$" <<<"$out" \
+                || { echo "::error::${IMAGE}:${tag} is missing $plat"; exit 1; }
             done
-            digest="$(awk '/^Digest:/{print $2; exit}' <<<"$out")"
-            first="${first:-$digest}"
-            [ "$digest" = "$first" ] || { echo "::error::$tag digest $digest differs from $first"; exit 1; }
-            echo "ok  $tag  $digest"
-          done <<<"$TAGS"
+            got="$(awk '/^Digest:/{print $2; exit}' <<<"$out")"
+            [ "$got" = "$DIGEST" ] \
+              || { echo "::error::${IMAGE}:${tag} is $got, expected $DIGEST"; exit 1; }
+            echo "ok  ${IMAGE}:${tag}  $got"
+          done
