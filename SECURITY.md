@@ -111,9 +111,9 @@ What neither check covers is the **Caddy base image's own** module set, which is
 
 Development is assisted by Claude (Anthropic). No secrets, credentials, database contents, or user data are shared with Claude — only code structure and logic.
 
-### Unpatched advisories in the shipped Caddy base
+### Caddy base advisories: fixed upstream in 2.11.8, base bump pending
 
-The `applegater/caddyui-caddy` image is built on **Caddy 2.11.7**. Five security advisories published 2026-11-04 affect every Caddy release up to and including 2.11.7 and have **no fixed upstream release yet** (`first_patched_version: null`). They carry no CVE id, so vulnerability scanners that source from OSV report the base layer as clean — `osv.dev` returns zero vulnerabilities for `github.com/caddyserver/caddy/v2` at 2.11.7. The advisories are only visible through GitHub's advisory API for `caddyserver/caddy`.
+The `applegater/caddyui-caddy` image is built on **Caddy 2.11.7**. Five security advisories published 2026-11-04 affect every Caddy release up to and including 2.11.7. **All five are fixed upstream in Caddy 2.11.8** (`patched_versions: 2.11.8`); 2.11.9 is the current release and no advisory affects it. None carries a CVE id, so none appears in OSV or in CVE-keyed scanners — they are visible only through GitHub's repository advisory endpoint. **The base-image bump to 2.11.8+ is pending and tracked as T-0660**; until it ships, the preconditions below still apply to this image.
 
 None of these is reachable through configuration CaddyUI generates, and tenant-authored config cannot reach any of them (`file_server`, `templates` and `acme_server` are admin-only — see *Roles and the admin boundary*). They matter only to an **admin hand-writing** one of the configurations below, which CaddyUI does support.
 
@@ -125,9 +125,9 @@ None of these is reachable through configuration CaddyUI generates, and tenant-a
 | [`GHSA-25cw-38mq-q7m6`](https://github.com/caddyserver/caddy/security/advisories/GHSA-25cw-38mq-q7m6) | medium | A `file` matcher used to enforce suffix path rules; `/file/./` resolves to a regular file and bypasses the matcher. |
 | [`GHSA-69hv-5jfc-mvmv`](https://github.com/caddyserver/caddy/security/advisories/GHSA-69hv-5jfc-mvmv) | medium | A `rewrite` using `{http.matchers.file.remainder}`, which is re-decoded and bypasses path-based deny rules. |
 
-**Until an upstream fix ships, do not build a `root` from `{host}`.** Enumerate sites explicitly, or map host to directory in CaddyUI rather than interpolating the request host into a filesystem path. This is the only mitigation available for the high-severity advisory; the others are avoided by not using the named directive, or by leaving `file_server` to admins as shipped.
+**Until this image is rebuilt on Caddy 2.11.8 or newer, do not build a `root` from `{host}`.** Enumerate sites explicitly, or map host to directory in CaddyUI rather than interpolating the request host into a filesystem path. This is the only mitigation available for the high-severity advisory; the others are avoided by not using the named directive, or by leaving `file_server` to admins as shipped.
 
-The base image will be refreshed onto the first Caddy release that fixes these.
+The fix is available now: the base image is being refreshed onto Caddy 2.11.8 or newer, which clears all five. Pin or rebuild on a `caddyui-caddy` release built from 2.11.8+ once published.
 
 ---
 
