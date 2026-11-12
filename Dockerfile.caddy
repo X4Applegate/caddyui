@@ -4,13 +4,34 @@
 # which needs QEMU for arm64 (release-docker.yml sets it up).
 #
 # Security pins:
-#   - The first three --with lines are version floors. xcaddy runs `go get` once
+#   - The first four --with lines are version floors. xcaddy runs `go get` once
 #     per --with, in order, and `go get pkg@ver` sets exactly that version, so
 #     they must come first: a plugin fetched after them can still raise these
 #     modules but never lowers them. crowdsec/pkg/apiclient @v1.7.8 lifts
 #     CrowdSec past CVE-2026-44982, x/net/http2 @v0.62.0 lifts golang.org/x/net
-#     past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045, and chi/v5 @v5.4.0
-#     lifts go-chi past CVE-2026-114437.
+#     past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045, chi/v5 @v5.4.0
+#     lifts go-chi past CVE-2026-114437, and go-jose/v4 @v4.1.7 lifts go-jose
+#     past CVE-2026-116587 plus five further advisories.
+#     go-jose is pinned to 4.1.7, not 4.1.6: 4.1.6 fixes CVE-2026-116587 but
+#     4.1.7 is the version that closes every published go-jose v4 advisory --
+#     GHSA-v6h2 (DoS verifying certificates), GHSA-c67m (DoS in JWS/JWE JSON
+#     serialization), GHSA-p9j4 (unprotected JWE headers overriding empty
+#     protected values), GHSA-r39w and GHSA-27pc (parser panics). Those five
+#     were published 2026-10-30 and are NOT yet in OSV, so a version-matched
+#     OSV query on 4.1.6 looks clean; check GitHub's advisory list for this
+#     module, not OSV alone. Nothing later is needed: 4.1.8 only adds ML-DSA
+#     and 4.1.9 only fixes bugs, so 4.1.7 is the security ceiling.
+#     The sibling go-jose/v3 line (v3.0.5) stays and is affected by three CVEs --
+#     CVE-2026-116587 (HIGH) plus -116585 and -116586 (both medium): the
+#     advisories list v3 as affected in all versions with no fix ever
+#     published, and the five above are unfixed there too. Its only importer
+#     is go.step.sm/crypto/jose, which reaches the binary through Caddy's
+#     embedded smallstep/certificates under
+#     modules/caddypki — the base PKI app, so it is linked by `tls internal`
+#     too, not only by acme_server. crypto v0.92.0 does move to go-jose v4, but
+#     it is an API break that certificates v0.30.2 does not compile against, so
+#     the v3 line can only leave when a certificates release adopts it and
+#     Caddy picks that up — already done on certificates main, not yet tagged.
 #     Caddy already links these packages, so the blank import xcaddy adds for
 #     each changes nothing else. The build fails if `go get` ever reports a
 #     downgrade, so a pin can't quietly pull a plugin back to an older release.
@@ -41,6 +62,7 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \
     --with golang.org/x/net/http2@v0.62.0 \
     --with github.com/go-chi/chi/v5@v5.4.0 \
+    --with github.com/go-jose/go-jose/v4@v4.1.7 \
     --with github.com/caddy-dns/cloudflare@v0.2.4 \
     --with github.com/caddy-dns/porkbun@v0.3.1 \
     --with github.com/caddy-dns/namecheap@v1.0.0 \
