@@ -104,26 +104,75 @@ for arch in $ARCHES; do
   # A pull failure is only fatal when the image is not already local at the
   # right arch: in CI the rebuild is a locally-loaded tag that does not exist
   # in any registry, and in a local dry-run the baseline may be too.
-  ensure_local() {
-    local ref="$1" want="$2" role="$3" have
+  #
+  # A MUTABLE TAG CANNOT NAME AN ARCHITECTURE. One tag is one entry in the
+  # local image store, so after the amd64 pass `:stable` is resolved to amd64
+  # there, and whether a later `docker pull --platform linux/arm64` of the
+  # same tag replaces that entry is daemon- and store-dependent: it does on a
+  # plain overlay2 host, and does NOT on the GitHub runner, where the arm64
+  # pass then died with "cannot obtain baseline ... (local arch: amd64)".
+  # So for a registry image, resolve the tag through its manifest list to the
+  # DIGEST for the arch being gated and use that digest as the reference.
+  # A digest names exactly one artifact, cannot be shadowed by the other
+  # arch's copy of the same tag, and does not depend on pull-replaces-tag
+  # semantics. Returns the reference to actually use, on stdout.
+  resolve_ref() {
+    local ref="$1" want="$2" role="$3" have digest repo
+
+    # Already local at the right arch (the locally-built rebuild, or a
+    # dry-run baseline that was loaded by hand): use it as given. Checked
+    # first so a locally-loaded tag never needs a registry at all.
     have="$(docker image inspect --format '{{.Architecture}}' "$ref" 2>/dev/null || true)"
-    if [ "$have" = "$want" ]; then
+    if [ "$have" = "$want" ] && ! printf '%s' "$ref" | grep -q '@sha256:'; then
+      printf '%s\n' "$ref"
       return 0
     fi
+
+    # Already a digest reference: pull it as-is, it is unambiguous.
+    if printf '%s' "$ref" | grep -q '@sha256:'; then
+      docker pull --quiet "$ref" >/dev/null 2>&1 || true
+      have="$(docker image inspect --format '{{.Architecture}}' "$ref" 2>/dev/null || true)"
+      [ "$have" = "$want" ] \
+        || die "cannot obtain $role image $ref for linux/$want (got: ${have:-absent}); refusing to compare against an unknown image"
+      printf '%s\n' "$ref"
+      return 0
+    fi
+
+    # A tag: resolve the manifest list to this arch's digest.
+    repo="${ref%%:*}"
+    digest="$(docker manifest inspect "$ref" 2>/dev/null | jq -r --arg a "$want" '
+      if .manifests then
+        [ .manifests[]
+          | select(.platform.architecture == $a and .platform.os == "linux")
+          | .digest ] | first // empty
+      else empty end' || true)"
+
+    if [ -n "$digest" ]; then
+      docker pull --quiet "$repo@$digest" >/dev/null 2>&1 || true
+      have="$(docker image inspect --format '{{.Architecture}}' "$repo@$digest" 2>/dev/null || true)"
+      [ "$have" = "$want" ] \
+        || die "cannot obtain $role image $repo@$digest for linux/$want (got: ${have:-absent}); refusing to compare against an unknown image"
+      printf '%s\n' "$repo@$digest"
+      return 0
+    fi
+
+    # No manifest list (single-arch image, or the registry is unreachable).
+    # Fall back to the platform pull, then VERIFY the arch, so a
+    # single-arch repo still gates and a wrong arch is still a hard stop.
     docker pull --quiet --platform "linux/$want" "$ref" >/dev/null 2>&1 || true
     have="$(docker image inspect --format '{{.Architecture}}' "$ref" 2>/dev/null || true)"
     [ "$have" = "$want" ] \
       || die "cannot obtain $role image $ref for linux/$want (local arch: ${have:-absent}); refusing to compare against an unknown image"
+    printf '%s\n' "$ref"
   }
 
-  ensure_local "$BASELINE"  "$arch" baseline
-  ensure_local "$NEW_IMAGE" "$arch" rebuild
-  new_ref="$NEW_IMAGE"
+  base_ref="$(resolve_ref "$BASELINE"  "$arch" baseline)"
+  new_ref="$(resolve_ref "$NEW_IMAGE" "$arch" rebuild)"
 
   trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
     --format json --output "$OUT/new-$arch.json" "$new_ref"
   trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
-    --format json --output "$OUT/old-$arch.json" "$BASELINE"
+    --format json --output "$OUT/old-$arch.json" "$base_ref"
 
   ids_from "$OUT/new-$arch.json" | sort > "$OUT/new-$arch.ids"
   ids_from "$OUT/old-$arch.json" | sort > "$OUT/old-$arch.ids"
@@ -131,7 +180,7 @@ for arch in $ARCHES; do
   comm -13 "$OUT/new-$arch.ids" "$OUT/old-$arch.ids" > "$OUT/removed-$arch.ids"
 
   modules_from "$new_ref"  "$arch" "$OUT/mods-new-$arch.txt"
-  modules_from "$BASELINE" "$arch" "$OUT/mods-old-$arch.txt"
+  modules_from "$base_ref" "$arch" "$OUT/mods-old-$arch.txt"
   diff -u "$OUT/mods-old-$arch.txt" "$OUT/mods-new-$arch.txt" \
     > "$OUT/mods-diff-$arch.txt" || true
 
