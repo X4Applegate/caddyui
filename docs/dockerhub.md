@@ -322,7 +322,7 @@ docker buildx imagetools inspect applegater/caddyui-caddy:stable --format '{{jso
 **Pin a digest if you need byte-level certainty**, and `:vX.Y.Z-pN` if you want a stable, immutable name:
 
 ```yaml
-image: applegater/caddyui-caddy:v2.68.8-p1
+image: applegater/caddyui-caddy:v2.68.8-p2
 # or, strictest:
 image: applegater/caddyui-caddy@sha256:…
 ```

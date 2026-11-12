@@ -52,12 +52,12 @@ docker run --rm --entrypoint /usr/bin/caddy applegater/caddyui-caddy:stable list
 Because `apk upgrade` is unpinned — that is how the image picks up fixes at all — two builds of the same source a week apart produce different images. So a tag names exactly one artifact and `:vX.Y.Z-pN` never changes under you, but the image is **not** bit-for-bit rebuildable from `Dockerfile.caddy` alone. Pin a digest if you need byte-level certainty:
 
 ```yaml
-image: applegater/caddyui-caddy:v2.68.8-p1
+image: applegater/caddyui-caddy:v2.68.8-p2
 # or, strictest:
 image: applegater/caddyui-caddy@sha256:…
 ```
 
-Every refresh is gated on a human review before it is published, and a rebuild that *introduces* a vulnerability — or that changes the Caddy module set — is blocked rather than shipped. The first `-pN` tag has not been published yet; until it is, `:stable` points at a plain `:vX.Y.Z` build.
+Every refresh is gated on a human review before it is published, and a rebuild that *introduces* a vulnerability — or that changes the Caddy module set — is blocked rather than shipped.
 
 ## Quick start
 
