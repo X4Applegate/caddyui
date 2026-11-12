@@ -14,12 +14,22 @@
 # changed the module set.
 #
 # When this workflow DOES rebuild it, the caddy job below gates the pushed
-# digest with scripts/caddy-image-gate.sh before :stable and :latest are
-# moved - the same script and standard caddy-image-refresh.yml uses. Its
-# module-drift policy follows whether Dockerfile.caddy actually changed in
-# this release: `report` when it did, because such a release is allowed to
-# change the module set deliberately, and `block` when it did not. See the
-# long comment on that step.
+# digest with scripts/caddy-image-gate.sh before ANY tag is created - the same
+# script and standard caddy-image-refresh.yml uses. Its module-drift policy
+# follows whether Dockerfile.caddy actually changed in this release: `report`
+# when it did, because such a release is allowed to change the module set
+# deliberately, and `block` when it did not. See the long comment on that step.
+#
+# That job pushes BY DIGEST and creates every tag afterwards, :vX.Y.Z included,
+# from the gated digest and only on a PASSING verdict - not merely on the gate
+# step exiting 0, which it also does on the one advisory path. So a release
+# that fails the gate leaves no tag behind at all, on any path. The gate is a
+# precondition for each name, not just for the two moving ones. Docker Hub tags
+# on these repositories are mutable, so "immutable :vX.Y.Z" was only ever a
+# convention; creating it after the verdict is what actually enforces it.
+# A tag-immutability rule on the repository (Settings -> General -> Tag
+# mutability, regex ^v[0-9]+\.[0-9]+\.[0-9]+$) would enforce the other half,
+# that a published version tag can never be overwritten by a later re-run.
 #
 # The flip side of that rule is that the Caddy image's Alpine layer only moves
 # when Dockerfile.caddy is edited, so Alpine security fixes can sit built-but-
@@ -303,11 +313,36 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Only the IMMUTABLE :vX.Y.Z tag is pushed by the build. :stable and
-      # :latest are moved later, by digest, and ONLY after the gate below
-      # passes on the bytes that were actually pushed. KIND is still read here
-      # so a non-stable release (an older tag re-run by hand, or a prerelease)
-      # skips the tag-move steps entirely.
+      # NO tag is pushed by the build. The build uploads the manifest under its
+      # DIGEST only; every tag - :vX.Y.Z as much as :stable and :latest - is
+      # created afterwards, from that digest, and only once the gate below has
+      # passed on the bytes that were actually uploaded.
+      #
+      # Why :vX.Y.Z is not pushed by the build either (T-0627). It used to be,
+      # on the reasoning that it is "immutable" and therefore harmless to
+      # publish early. Both are wrong:
+      #
+      #   - A BLOCKED RELEASE KEPT ITS VERSION TAG. The gate holds :stable and
+      #     :latest back, which is what protects the six boxes, but :vX.Y.Z
+      #     already pointed at the image that failed. applegateserver's own
+      #     convention is to pin explicit version tags, so the one consumer
+      #     most likely to be pinned pulled exactly the bytes the gate
+      #     rejected. A blocked release is a NORMAL outcome now that the gate
+      #     exists, so this is a path that gets taken, not a corner case.
+      #   - IT IS NOT IMMUTABLE. Docker Hub tags on this repository are
+      #     overwritable: a re-run, or a workflow_dispatch with caddy=true
+      #     against an existing tag, replaces :vX.Y.Z with fresh ungated bytes,
+      #     and for kind=older that happens with no tag move and no gate
+      #     consequence whatsoever. "Immutable" was true by convention only,
+      #     and the convention was not enforced anywhere.
+      #
+      # Creating every tag after the verdict makes the gate a precondition for
+      # ALL of them rather than just the moving two. Nothing reachable by name
+      # exists until the image has passed.
+      #
+      # KIND is still read here so a non-stable release (an older tag re-run by
+      # hand, or a prerelease) creates only its own :vX.Y.Z and leaves the
+      # moving tags alone.
       - name: Work out image tags
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -322,15 +357,28 @@ jobs:
             if [ "$KIND" = stable ]; then echo "MOVE_TAGS=true"; else echo "MOVE_TAGS=false"; fi
           } >> "$GITHUB_ENV"
 
-      - name: Build (and push) linux/amd64 + linux/arm64
+      # `outputs:` rather than `tags:` + `push:`.
+      #
+      # push-by-digest=true uploads the manifest with no tag attached, so the
+      # registry holds the bytes and nothing resolves to them by name yet.
+      # name= still has to name the repository - that is where the blobs go -
+      # and name-canonical=true makes the action report repo@sha256:… .
+      #
+      # A BUILD-ONLY RUN (push=false) must not set this exporter at all: the
+      # unpushed case has no registry to upload to, and type=image,push=false
+      # would simply discard the result. The two shapes are therefore selected
+      # by the same needs.plan.outputs.push the old `push:` input used, so a
+      # secrets-less run still builds both architectures and publishes nothing,
+      # exactly as the file's header promises. `cacheonly` is the no-op
+      # exporter for that case; the build itself still runs in full.
+      - name: Build (and push by digest) linux/amd64 + linux/arm64
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.caddy
           platforms: linux/amd64,linux/arm64
-          tags: ${{ env.VERSION_TAG }}
-          push: ${{ needs.plan.outputs.push == 'true' }}
+          outputs: ${{ needs.plan.outputs.push == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
           provenance: mode=max
           sbom: generator=docker.io/docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
 
@@ -361,9 +409,18 @@ jobs:
       # stop. Under either policy a release that introduces a vulnerability
       # the published image does not have still blocks.
       #
-      # Order is push -> re-gate -> imagetools create, matching the refresh
-      # path. On failure the immutable :vX.Y.Z exists and the moving tags stay
-      # where they were, so nothing the fleet pulls has changed.
+      # Order is push-by-digest -> gate -> imagetools create, which is the
+      # refresh path's push -> re-gate -> create with the tag taken off the
+      # first step (T-0627). On any non-passing verdict NO tag exists for this
+      # build at all: the bytes sit in the registry addressable only by digest,
+      # :stable and :latest stay where they were, and :vX.Y.Z still points at
+      # whatever it pointed at before - nothing, for a new release. So nothing
+      # the fleet pulls has changed, and nothing pinned to the version can
+      # reach the rejected image either.
+      #
+      # The steps that create tags key off steps.gate.outputs.passed rather
+      # than off this step succeeding, because the two are NOT the same
+      # question: the advisory path below exits 0 with findings.
       # ---------------------------------------------------------------------
       - name: Stage the gate script outside the working tree
         if: needs.plan.outputs.push == 'true'
@@ -422,10 +479,10 @@ jobs:
           [ -x "$gate" ] || { echo "::error::staged gate script missing at $gate"; exit 1; }
 
           # The baseline is the image the fleet is running right now, which is
-          # what :stable points at until this job moves it. On the very first
-          # gated release :stable exists, so this is always resolvable; if it
-          # ever is not, the script hard-stops rather than comparing against
-          # an empty set, which would make every finding look new.
+          # what :stable points at until the create step below moves it. On the
+          # very first gated release :stable exists, so this is always
+          # resolvable; if it ever is not, the script hard-stops rather than
+          # comparing against an empty set, which would make every finding new.
           #
           # That baseline only MEANS something when this build is about to
           # become :stable. For an older tag re-run by hand, or a prerelease,
@@ -445,6 +502,21 @@ jobs:
           echo "baseline_digest=$baseline_digest" >> "$GITHUB_OUTPUT"
           echo "baseline :stable = ${baseline_digest:-<unresolved>}"
 
+          # `passed` is what authorises tag creation, and it is published from
+          # an EXIT TRAP so that exactly one value is ever written, on every
+          # path, including one this script does not anticipate. It defaults to
+          # false and is only flipped on the single success path below, so a
+          # crash, a `set -e` abort or an early return withholds the tags
+          # rather than leaving the key absent (which an `== 'true'` test would
+          # read correctly, but silently) or written twice (which would depend
+          # on GitHub's undocumented duplicate-key precedence).
+          #
+          # The real output file is captured before the redirect below takes
+          # $GITHUB_OUTPUT away from this shell.
+          REAL_OUTPUT="$GITHUB_OUTPUT"
+          gate_passed=false
+          trap 'echo "passed=$gate_passed" >> "$REAL_OUTPUT"' EXIT
+
           # The script appends its own per-arch summary to $GITHUB_STEP_SUMMARY
           # and writes its own $GITHUB_OUTPUT keys. This step publishes the
           # COMBINED summary instead, so send the script's copies elsewhere:
@@ -457,9 +529,26 @@ jobs:
           export GITHUB_STEP_SUMMARY=/dev/null
           export GITHUB_OUTPUT="$RUNNER_TEMP/gate-output.discard"
 
+          # Exit 1 is a VERDICT (blocked); exit 2 means the gate could not run
+          # and must never be collapsed into it. Both deny the tag, but only
+          # the second means the summary below describes nothing that was
+          # actually compared, so it is reported as its own error rather than
+          # as a finding the reader can go and look at. caddy-image-gate.sh
+          # documents these statuses, and the refresh path already separates
+          # them; this is the one place the two standards had drifted.
           fail=0
-          "$gate" "${IMAGE}@${DIGEST}" "${IMAGE}:stable" release-gate       amd64 || fail=1
-          "$gate" "${IMAGE}@${DIGEST}" "${IMAGE}:stable" release-gate-arm64 arm64 || fail=1
+          run_gate() {
+            local out_dir="$1" arch="$2" rc=0
+            "$gate" "${IMAGE}@${DIGEST}" "${IMAGE}:stable" "$out_dir" "$arch" || rc=$?
+            case "$rc" in
+              0) ;;
+              1) fail=1 ;;
+              *) echo "::error::the release gate could not run for linux/${arch} (exit $rc); refusing to create any tag"
+                 exit 1 ;;
+            esac
+          }
+          run_gate release-gate       amd64
+          run_gate release-gate-arm64 arm64
 
           {
             echo "## linux/amd64"
@@ -471,22 +560,22 @@ jobs:
 
           if [ "$fail" -ne 0 ] && [ "$MOVE_TAGS" != true ]; then
             {
-              echo "### Gate reported findings — nothing was going to move"
+              echo "### Gate reported findings — no tag was created"
               echo
-              echo "\`${VERSION_TAG}\` is not becoming \`:stable\`/\`:latest\` on this run (an older tag re-run by hand, or a prerelease), so the gate is advisory here and does not fail the job."
+              echo "\`${VERSION_TAG}\` was not becoming \`:stable\`/\`:latest\` on this run (an older tag re-run by hand, or a prerelease), so the gate does not FAIL the job here — there was nothing to hold back. It still withholds the tag: \`${VERSION_TAG}\` was NOT created, and nothing points at this build."
               echo
-              echo "Compared against the CURRENT \`:stable\`, which is normally NEWER than this build, so findings it has since closed show up as newly introduced. Read the detail below on its own terms."
+              echo "Compared against the CURRENT \`:stable\`, which is normally NEWER than this build, so findings it has since closed show up as newly introduced. Read the detail below on its own terms — if the findings are only that artefact, re-cut the release rather than tagging this digest by hand."
             } >> "$SUMMARY_OUT"
             cat release-gate-combined.md >> "$SUMMARY_OUT"
-            echo "::notice::gate reported findings, but MOVE_TAGS=false so :stable and :latest were never going to move"
+            echo "::notice::gate reported findings; the job stays green because MOVE_TAGS=false, but no tag was created"
             exit 0
           fi
 
           if [ "$fail" -ne 0 ]; then
             {
-              echo "### ⛔ Moving tags held back"
+              echo "### ⛔ No tag was created"
               echo
-              echo "\`${VERSION_TAG}\` was pushed and is immutable, but it did NOT pass the release gate, so \`:stable\` and \`:latest\` were left where they were. Nothing the six boxes pull has moved."
+              echo "The image was uploaded BY DIGEST ONLY and did NOT pass the release gate, so no tag was created for it: \`${VERSION_TAG}\`, \`:stable\` and \`:latest\` were all left exactly as they were. Nothing the six boxes pull has moved, and nothing pinned to that version can reach these bytes."
               echo
               # Which causes are possible depends on the drift policy this run
               # used, so do not describe one policy's rules under the other.
@@ -498,16 +587,21 @@ jobs:
               else
                 echo "This release did NOT edit \`Dockerfile.caddy\`, so the module set was held to the weekly refresh's standard: it may not move. Either the new image carries a vulnerability the published image does not have, against the same package, or an unexpected module-set change was detected (see the module drift section below), or the gate could not read one of the two images."
                 echo
-                echo "An unexpected module-set change on an unchanged \`Dockerfile.caddy\` usually means a plugin re-resolved. Pin it rather than moving the tags."
+                echo "An unexpected module-set change on an unchanged \`Dockerfile.caddy\` usually means a plugin re-resolved. Pin it rather than creating the tags by hand."
               fi
               echo
-              echo "Fix forward with a new patch release. Do not move the tags by hand."
+              echo "Fix forward with a new patch release. Do not create the tags by hand."
+              echo
+              echo "The rejected manifest stays in the registry unreferenced, addressable only as \`${IMAGE}@${DIGEST}\`, so the scan below can be reproduced against the exact bytes that failed."
             } >> "$SUMMARY_OUT"
             cat release-gate-combined.md >> "$SUMMARY_OUT"
-            echo "::error::the pushed image did not pass the release gate; :stable and :latest were NOT moved"
+            echo "::error::the image did not pass the release gate; NO tag was created (not :vX.Y.Z, :stable or :latest)"
             exit 1
           fi
 
+          # The ONLY path that authorises tag creation; the EXIT trap publishes
+          # it.
+          gate_passed=true
           cat release-gate-combined.md >> "$SUMMARY_OUT"
 
       - name: Upload gate artifacts
@@ -520,6 +614,99 @@ jobs:
             release-gate-arm64/
             release-gate-combined.md
           retention-days: 90
+
+      # THE VERSION TAG IS CREATED HERE, not by the build (T-0627).
+      #
+      # Guarded on steps.gate.outputs.passed, NOT merely on the gate step
+      # having succeeded. The gate deliberately exits 0 on one path where it
+      # found something: an older tag re-run by hand or a prerelease, where
+      # MOVE_TAGS is false and the baseline comparison runs backwards, so the
+      # job stays green because there was nothing to hold back. A green step
+      # is therefore NOT the same question as a passing verdict, and only the
+      # verdict may authorise a tag. `passed` is written false up front and set
+      # true on exactly one path, so an unanticipated exit withholds the tag.
+      #
+      # Without that distinction this step reintroduced the very defect the
+      # card is about, just one path over: a gate-blocked `kind=older` rebuild
+      # would have overwritten a published :vX.Y.Z with rejected bytes on a
+      # green job. Found in review, not in production.
+      #
+      # Separate from the move step below BECAUSE the two have different
+      # preconditions. :vX.Y.Z is this build's own name and is correct for
+      # every publishing run, including a prerelease and a deliberate re-run of
+      # an older tag. :stable and :latest are the fleet's names and additionally
+      # require that this really is still the newest release - see the step
+      # after this one. Collapsing them would either withhold the version tag
+      # from a prerelease or hand the moving tags to an older one.
+      - name: Create :vX.Y.Z from the gated digest
+        if: needs.plan.outputs.push == 'true' && steps.gate.outputs.passed == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::build-push-action reported no digest"; exit 1; }
+
+          # Overwriting is still possible on this repository - Docker Hub tags
+          # are mutable unless a tag-immutability rule is configured - so say
+          # what the tag pointed at before, if anything. On a normal new
+          # release this resolves to nothing and prints <new>; on a re-run it
+          # names the digest being replaced, which is the fact worth having in
+          # the log when someone asks why a version tag changed.
+          #
+          # "Absent" and "could not ask" are told apart deliberately. Swallowing
+          # every failure into an empty $prior would silence the overwrite
+          # warning exactly when something is already wrong (a 429, an auth
+          # failure, a registry blip), reporting <new> for a tag that does
+          # exist. Only a genuine not-found counts as absent; anything else
+          # stops, because an unanswered question must not be scored as a pass.
+          rc=0
+          inspect_out="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" 2>&1)" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            prior="$(awk '/^Digest:/{print $2; exit}' <<<"$inspect_out")"
+          elif grep -qiE 'not found|manifest unknown|no such manifest|NAME_UNKNOWN|MANIFEST_UNKNOWN' <<<"$inspect_out"; then
+            prior=""
+          else
+            echo "::error::could not determine whether ${IMAGE}:${VERSION} already exists (exit $rc); refusing to create the tag blind. Registry said: ${inspect_out}"
+            exit 1
+          fi
+
+          echo "creating ${IMAGE}:${VERSION} -> ${DIGEST} (was: ${prior:-<new>})"
+
+          # IDEMPOTENT, AND IT REFUSES TO REPLACE.
+          #
+          # Three cases, and only the first two write:
+          #
+          #   absent          create it. The normal release.
+          #   same digest     already correct, so do nothing and succeed. This
+          #                   is what makes a re-run recoverable: if the gate
+          #                   passed and this tag was created, but the :stable
+          #                   move then failed on a transient registry error,
+          #                   "Re-run failed jobs" must be able to get back to
+          #                   the move instead of dying here.
+          #   other digest    STOP. A published version tag names one artifact;
+          #                   silently repointing it at different bytes is the
+          #                   other half of the defect this card is about, and
+          #                   it is not made acceptable by the release having
+          #                   passed the gate - anything pinned to ${VERSION}
+          #                   would change underneath it with one ::warning::
+          #                   as the only trace. A rebuild is not the same
+          #                   image: `apk upgrade` is unpinned by design.
+          #                   Fix forward with a new patch version instead.
+          #
+          # The registry-side rule (T-0633) would enforce this independently;
+          # this check does not wait for it, and does not depend on registry
+          # configuration the workflow cannot verify.
+          if [ -z "$prior" ]; then
+            docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}@${DIGEST}"
+            echo "created ${IMAGE}:${VERSION}"
+          elif [ "$prior" = "$DIGEST" ]; then
+            echo "${IMAGE}:${VERSION} already points at ${DIGEST}; nothing to do"
+          else
+            echo "::error::${IMAGE}:${VERSION} already exists at $prior and this run built $DIGEST. Refusing to repoint a published version tag at different bytes - anything pinned to ${VERSION} would silently change. Fix forward with a new patch version. The gated image remains available as ${IMAGE}@${DIGEST}."
+            exit 1
+          fi
 
       # By digest, so :stable, :latest and :vX.Y.Z are the same bytes by
       # construction. A second build could differ (`apk upgrade` is unpinned)
@@ -541,7 +728,7 @@ jobs:
       # So the two facts the move depends on are verified again here, against
       # the live registry and the real tag list, immediately before the move.
       - name: Move :stable and :latest to the gated digest
-        if: needs.plan.outputs.push == 'true' && env.MOVE_TAGS == 'true'
+        if: needs.plan.outputs.push == 'true' && env.MOVE_TAGS == 'true' && steps.gate.outputs.passed == 'true'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ needs.plan.outputs.version }}
@@ -562,7 +749,7 @@ jobs:
             exit 1
           fi
           if [ "$VERSION" != "$newest" ]; then
-            echo "::error::$VERSION is no longer the newest release ($newest). Refusing to move :stable/:latest backwards. ${IMAGE}:${VERSION} is published and unaffected."
+            echo "::error::$VERSION is no longer the newest release ($newest). Refusing to move :stable/:latest backwards. ${IMAGE}:${VERSION} was created from the gated digest by the previous step and is unaffected."
             exit 1
           fi
 
@@ -584,13 +771,13 @@ jobs:
           #    anyway rather than trusted, because the cost of being wrong is
           #    asymmetric and six boxes track these tags.
           if [ -z "${BASELINE_DIGEST:-}" ]; then
-            echo "::error::the gate reported no :stable baseline digest, so there is nothing to compare against; refusing to move the tags. ${IMAGE}:${VERSION} is published and unaffected."
+            echo "::error::the gate reported no :stable baseline digest, so there is nothing to compare against; refusing to move the tags. ${IMAGE}:${VERSION} was created from the gated digest and is unaffected."
             exit 1
           fi
           now="$(docker buildx imagetools inspect "${IMAGE}:stable" 2>/dev/null \
                  | awk '/^Digest:/{print $2; exit}' || true)"
           if [ -z "$now" ]; then
-            echo "::error::could not re-read ${IMAGE}:stable to confirm it has not moved since the gate read it; refusing to move the tags. ${IMAGE}:${VERSION} is published and unaffected."
+            echo "::error::could not re-read ${IMAGE}:stable to confirm it has not moved since the gate read it; refusing to move the tags. ${IMAGE}:${VERSION} was created from the gated digest and is unaffected."
             exit 1
           fi
           if [ "$now" != "$BASELINE_DIGEST" ]; then
@@ -604,14 +791,63 @@ jobs:
             --tag "${IMAGE}:latest" \
             "${IMAGE}@${DIGEST}"
 
-      - name: Verify every pushed tag is one multi-arch image
-        if: needs.plan.outputs.push == 'true'
+      # The other half of the verdict guard. With every tag-writing step keyed
+      # on `passed`, a REJECTED run would otherwise assert nothing at all, and
+      # ":stable did not move" is exactly the claim such a run needs to be able
+      # to make. So prove it instead of assuming it.
+      #
+      # ONLY :stable is asserted, because only :stable has a recorded baseline
+      # (the gate captures it to drive the compare-and-swap). :latest is
+      # reported for context and explicitly NOT asserted - claiming "unchanged"
+      # for a tag nothing was compared against would be a false all-clear, and
+      # a reassuring line is worse than no line. The two tags always move
+      # together in this file, so :stable standing still is strong evidence for
+      # both, but evidence is not the same as a check and is not labelled as one.
+      #
+      # Advisory by design (no `set -e`, no exit 1): this path is already
+      # reporting a withheld release, and a registry hiccup while
+      # double-checking must not convert that into a different, more confusing
+      # failure. If :stable really did move, that is a loud ::error::.
+      - name: Confirm :stable did not move on a rejected run
+        if: needs.plan.outputs.push == 'true' && steps.gate.outputs.passed != 'true'
+        env:
+          BASELINE_DIGEST: ${{ steps.gate.outputs.baseline_digest }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "this run created no tag for ${VERSION}; confirming :stable is untouched"
+
+          now="$(docker buildx imagetools inspect "${IMAGE}:stable" 2>/dev/null \
+                 | awk '/^Digest:/{print $2; exit}' || true)"
+          if [ -z "$now" ]; then
+            echo "::warning::could not re-read ${IMAGE}:stable to confirm it is unchanged"
+          elif [ -z "${BASELINE_DIGEST:-}" ]; then
+            echo "::warning::the gate recorded no :stable baseline, so this run cannot prove :stable is unchanged; it is currently $now"
+          elif [ "$now" != "$BASELINE_DIGEST" ]; then
+            echo "::error::${IMAGE}:stable is now $now but the gate recorded $BASELINE_DIGEST. This run did not move it, so something else did - check what published during this run."
+          else
+            echo "ok  ${IMAGE}:stable unchanged at $now"
+          fi
+
+          # Context only. Deliberately not asserted - see the comment above.
+          latest="$(docker buildx imagetools inspect "${IMAGE}:latest" 2>/dev/null \
+                    | awk '/^Digest:/{print $2; exit}' || true)"
+          echo "note  ${IMAGE}:latest is ${latest:-<unreadable>} (no baseline recorded; not asserted)"
+
+      # Same verdict guard as the create steps: when the gate withheld the
+      # tags there is nothing to inspect, and inspecting a tag that was
+      # deliberately not created would fail the job for the wrong reason —
+      # turning a correctly-withheld advisory run red and hiding why.
+      - name: Verify every created tag is one multi-arch image
+        if: needs.plan.outputs.push == 'true' && steps.gate.outputs.passed == 'true'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ needs.plan.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::build-push-action reported no digest"; exit 1; }
           tags="$VERSION"
           if [ "$MOVE_TAGS" = true ]; then tags="$tags stable latest"; fi
           for tag in $tags; do
