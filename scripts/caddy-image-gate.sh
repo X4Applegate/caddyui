@@ -211,13 +211,48 @@ scan_types() {
   jq -r '[.Results[]?.Type | select(. != null and . != "")] | unique | .[]' "$1"
 }
 
+# Scan-derived strings are UNTRUSTED. .Metadata.OS.Family and .Results[].Type
+# come from the image under test, which on the release path is built from a
+# Dockerfile the submitter controls -- i.e. the exact actor this gate exists to
+# constrain. These values are interpolated into `::error::` lines, and the
+# summary they land in is also appended to $GITHUB_OUTPUT inside a
+# `summary<<GATE_SUMMARY_EOF` heredoc.
+#
+# A newline in such a value therefore lets the image forge GitHub Actions
+# workflow commands, and a line reading exactly GATE_SUMMARY_EOF closes the
+# heredoc early so the rest is parsed as further step outputs -- including
+# `verdict=improved`. Verified reachable through all three new messages before
+# this was added.
+#
+# So flatten to one line and strip the two metacharacter sequences that give a
+# log line authority: a leading `::` (a workflow command) and `%` (the encoding
+# GitHub uses for escaped newlines in those commands). Truncated, because an
+# arbitrarily long field is its own denial-of-readability.
+safe_text() {
+  printf '%s' "$1" \
+    | tr '\n\r\t' '   ' \
+    | sed -e 's/::/:/g' -e 's/%/pct/g' \
+    | cut -c1-200
+}
+
 # Packages are present even under `--scanners vuln` (verified: 32 OS packages,
 # 236 Go modules on :stable), so a per-type package count is available without
 # a second scan. This is the check that catches a PARTIAL blinding, where the
 # result type still exists but has been reduced to almost nothing -- which set
 # arithmetic cannot distinguish from a genuine fix.
+#
+# Counts the Packages ARRAY rather than its entries, so "the key is absent or
+# null" is distinguishable from "the key is an empty list". Emits the literal
+# `unmeasurable` for the former. A count that cannot be taken must not be
+# reported as 0: 0 reads as "nothing to compare" and skips the floor, which is
+# the same fail-open shape this whole function exists to close, one level down.
 pkg_count_for_type() {
-  jq -r --arg t "$2" '[.Results[]? | select(.Type == $t) | .Packages[]?] | length' "$1"
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) ] as $r
+    | if ($r | length) == 0 then "absent"
+      elif ($r | map(select((.Packages | type) == "array")) | length) == 0 then "unmeasurable"
+      else ( $r | map(.Packages // [] | length) | add )
+      end' "$1"
 }
 
 assert_scan_coverage() {
@@ -248,7 +283,7 @@ assert_scan_coverage() {
   # stopped, not because the image got better.
   eosl="$(jq -r '.Metadata.OS.EOSL // false' "$new")"
   if [ "$eosl" = true ]; then
-    die "the rebuild's base OS ($os_family) is flagged END-OF-LIFE in the vulnerability database for linux/$arch: advisories are no longer published for it, so a short findings list reflects missing DATA rather than a fixed image. Rebase onto a supported release."
+    die "the rebuild's base OS ($(safe_text "$os_family")) is flagged END-OF-LIFE in the vulnerability database for linux/$arch: advisories are no longer published for it, so a short findings list reflects missing DATA rather than a fixed image. Rebase onto a supported release."
   fi
 
   # 3. Every scan target the baseline had, the rebuild still has.
@@ -266,9 +301,9 @@ assert_scan_coverage() {
     # tr-join each list onto one line, then trim the trailing separator, so the
     # message reads as prose instead of "gobinary-- that target".
     local missing_1l old_1l new_1l
-    missing_1l="$(printf '%s' "$missing"   | tr '\n' ' ')"; missing_1l="${missing_1l% }"
-    old_1l="$(printf '%s' "$old_types"    | tr '\n' ' ')"; old_1l="${old_1l% }"
-    new_1l="$(printf '%s' "$new_types"    | tr '\n' ' ')"; new_1l="${new_1l% }"
+    missing_1l="$(safe_text "$(printf '%s' "$missing"   | tr '\n' ' ')")"; missing_1l="${missing_1l% }"
+    old_1l="$(safe_text "$(printf '%s' "$old_types"    | tr '\n' ' ')")"; old_1l="${old_1l% }"
+    new_1l="$(safe_text "$(printf '%s' "$new_types"    | tr '\n' ' ')")"; new_1l="${new_1l% }"
     die "the rebuild's scan of linux/$arch lost scan target(s) the published image has: $missing_1l -- that target is now UNOBSERVED, not clean, so any finding it used to report would silently cancel out of the subset comparison. (published: $old_1l / rebuild: $new_1l)"
   fi
 
@@ -279,13 +314,19 @@ assert_scan_coverage() {
   # `gobinary` but yields 3 modules instead of 236, or an OS database read
   # partially. Set arithmetic cannot tell that from a real fix.
   #
-  # The floor is deliberately loose (50% of baseline, rounded down), because a
-  # legitimate release really can remove packages: dropping a plugin removes
-  # its whole dependency subtree. The purpose is to catch a COLLAPSE in
-  # visibility, not to police ordinary churn -- a tight floor here would block
-  # real releases and get switched off, which is worse than a loose one that
-  # stays on. Measured for scale: the Go module count moved 213 -> 236 across
-  # v2.55.0 -> :stable, i.e. ~10% and upward, nowhere near this floor.
+  # The floor is deliberately loose (50% of baseline), because a legitimate
+  # release really can remove packages: dropping a plugin removes its whole
+  # dependency subtree. The purpose is to catch a COLLAPSE in visibility, not
+  # to police ordinary churn -- a tight floor here would block real releases
+  # and get switched off, which is worse than a loose one that stays on.
+  # Measured for scale: the Go module count moved 213 -> 236 across v2.55.0 ->
+  # :stable, i.e. ~10% and upward, nowhere near this floor.
+  #
+  # Rounded UP, not down. Rounded down, a baseline of 1 package yields floor 0,
+  # and `0 -lt 0` is false, so a target the baseline could see one package in
+  # and the rebuild can see NONE in would pass. Rounding up makes a floor of at
+  # least 1 for any non-empty baseline, so "the baseline saw something here and
+  # the rebuild sees nothing" is always caught.
   #
   # Only types present on BOTH sides are compared. A type the rebuild added has
   # no baseline to be measured against, and check 3 has already established
@@ -294,15 +335,33 @@ assert_scan_coverage() {
     printf '%s\n' "$old_types" | grep -qxF "$t" || continue
     new_pkgs="$(pkg_count_for_type "$new" "$t")"
     old_pkgs="$(pkg_count_for_type "$old" "$t")"
-    [ "$old_pkgs" -gt 0 ] 2>/dev/null || continue
-    floor=$(( old_pkgs / 2 ))
+
+    # An unmeasurable count is a hard stop, on EITHER side, rather than a
+    # skipped check. `unmeasurable` means the result exists but its Packages is
+    # absent or not a list, so the count cannot be taken -- and check 3 cannot
+    # help here, because the type IS present on both sides. Treating it as
+    # "nothing to compare" would let a rebuild be gutted for exactly the
+    # targets whose baseline count happens to be unreadable.
+    case "$new_pkgs" in
+      unmeasurable|absent)
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch reports no readable package list (Packages absent or not an array), so its package count cannot be taken and the target's contents are UNOBSERVED rather than clean. Refusing to compare against it." ;;
+    esac
+    case "$old_pkgs" in
+      absent) continue ;;
+      unmeasurable)
+        die "the published image's '$(safe_text "$t")' scan of linux/$arch reports no readable package list, so there is no measurable baseline for this target and a collapse in the rebuild's coverage could not be detected. Refusing to treat an unmeasurable baseline as nothing to check." ;;
+    esac
+
+    # Both counts are integers from here: jq's `add` over array lengths.
+    [ "$old_pkgs" -gt 0 ] || continue
+    floor=$(( (old_pkgs + 1) / 2 ))
     if [ "$new_pkgs" -lt "$floor" ]; then
-      die "the rebuild's '$t' scan of linux/$arch sees $new_pkgs package(s) where the published image has $old_pkgs (floor $floor): the target is present but its contents largely could not be read, so most of it is UNOBSERVED rather than fixed. A findings list this far short of the baseline's cannot be compared against it."
+      die "the rebuild's '$(safe_text "$t")' scan of linux/$arch sees $new_pkgs package(s) where the published image has $old_pkgs (floor $floor): the target is present but its contents largely could not be read, so most of it is UNOBSERVED rather than fixed. A findings list this far short of the baseline's cannot be compared against it."
     fi
   done
 
   printf 'scan coverage OK (linux/%s): os=%s, targets=%s\n' \
-    "$arch" "$os_family" "$(printf '%s' "$new_types" | tr '\n' ' ')"
+    "$arch" "$(safe_text "$os_family")" "$(safe_text "$(printf '%s' "$new_types" | tr '\n' ' ')")"
 }
 
 # `caddy list-modules --versions` from inside the image. The image is
