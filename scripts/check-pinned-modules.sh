@@ -282,9 +282,13 @@ untagged_repo() {
 }
 
 # A pinned version is a commit SHA or a pseudo-version, i.e. not a plain tag.
+# The pseudo-version arm matches `-0.` followed by go's 14-digit UTC timestamp
+# and a `-` before the revision, NOT a bare `-0.`: a legitimate prerelease tag
+# such as v1.0.0-0.1 would otherwise be reported as an untagged commit pin and
+# compared against git HEAD forever.
 is_untagged_pin() {
   case "$1" in
-    v0.0.0-*|*-0.*) return 0 ;;                     # pseudo-version
+    v0.0.0-*|*-0.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*) return 0 ;;  # pseudo-version
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
       # A bare hex string of 7+ chars with no dots is a commit SHA.
       case "$1" in *.*) return 1 ;; esac
