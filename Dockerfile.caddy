@@ -15,7 +15,13 @@
 #     crowdsec cannot silently drop below it. Check the built binary, not this
 #     line, for the version in the image. x/net/http2 @v0.62.0 lifts
 #     golang.org/x/net past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045,
-#     and chi/v5 @v5.4.0 lifts go-chi past CVE-2026-114437.
+#     and chi/v5 @v5.5.0 lifts go-chi past CVE-2026-114437 and CVE-2026-118681
+#     (auth bypass in chi middleware.SupressNotFound). chi itself IS linked --
+#     Caddy requires it directly and uses it in caddypki/acmeserver -- but the
+#     chi/v5/middleware package is not, so that CVE is not reachable here today
+#     and this floor is prophylactic. It is worth keeping: smallstep/certificates
+#     ca/ca.go already imports chi/v5/middleware, so a future import of that
+#     package would link it, and the floor makes such a build take a fixed chi.
 #     Caddy already links these packages, so the blank import xcaddy adds for
 #     each changes nothing else. The build fails if `go get` ever reports a
 #     downgrade, so a pin can't quietly pull a plugin back to an older release.
@@ -48,7 +54,7 @@ ARG TARGETARCH
 RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \
     --with golang.org/x/net/http2@v0.62.0 \
-    --with github.com/go-chi/chi/v5@v5.4.0 \
+    --with github.com/go-chi/chi/v5@v5.5.0 \
     --with github.com/caddy-dns/cloudflare@v0.2.4 \
     --with github.com/caddy-dns/porkbun@v0.3.1 \
     --with github.com/caddy-dns/namecheap@v1.0.0 \
