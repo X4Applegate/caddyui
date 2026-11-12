@@ -4,13 +4,51 @@
 # which needs QEMU for arm64 (release-docker.yml sets it up).
 #
 # Security pins:
-#   - The first three --with lines are version floors. xcaddy runs `go get` once
+#   - The first FOUR --with lines are version floors. xcaddy runs `go get` once
 #     per --with, in order, and `go get pkg@ver` sets exactly that version, so
 #     they must come first: a plugin fetched after them can still raise these
-#     modules but never lowers them. crowdsec/pkg/apiclient @v1.7.8 lifts
-#     CrowdSec past CVE-2026-44982, x/net/http2 @v0.62.0 lifts golang.org/x/net
-#     past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045, and chi/v5 @v5.4.0
-#     lifts go-chi past CVE-2026-114437.
+#     modules but never lowers them.
+#     crowdsec/pkg/apiclient @v1.7.8 is the documented CVE-BEARING minimum
+#     (past CVE-2026-44982 and CVE-2026-44981) but is NOT a clean version and
+#     is NOT what ships: two CVE-less advisories reach <= 1.7.8 (GHSA-rh69,
+#     GHSA-g2x2, both patched 1.8.0) -- see the crowdsec block below, which
+#     measures why neither is linked. What protects the image is that MVS
+#     resolves higher, not this number: caddy-crowdsec-bouncer @v0.15.0 below
+#     requires crowdsec v1.8.1, so MVS resolves to 1.8.1 and this floor is
+#     currently slack. It stays as the stated minimum, so a future bouncer
+#     wanting an older crowdsec cannot silently drop below it. Check the built
+#     binary, not this line, for the version in the image.
+#     x/net/http2 @v0.62.0 lifts golang.org/x/net past CVE-2026-78669,
+#     CVE-2026-78661 and CVE-2026-97045.
+#     chi/v5 @v5.5.0 lifts go-chi past CVE-2026-114437 and CVE-2026-118681
+#     (auth bypass in chi middleware.SupressNotFound) but NOT past
+#     CVE-2026-122132 (open redirect in middleware.RedirectSlashes, affecting
+#     5.2.2 through 5.5.0 inclusive -- no fixed tag exists yet, so there is
+#     nothing to bump to; see T-0652). chi itself IS linked -- Caddy requires
+#     it directly and uses it in caddypki/acmeserver, and smallstep/certificates
+#     imports it in acme/api, api, scep/api and authority/admin/api -- but the
+#     chi/v5/middleware package is not, so NEITHER middleware CVE is reachable
+#     here today and this floor is prophylactic. It is worth keeping:
+#     smallstep/certificates ca/ca.go already imports chi/v5/middleware, so a
+#     future import of that package would link it, and the floor makes such a
+#     build take a fixed chi.
+#     go-jose/v4 @v4.1.7 lifts go-jose past SIX live advisories, not one:
+#     CVE-2026-116587 (HIGH, = GHSA-mgcc-cww5-fp2q, fixed in 4.1.6) PLUS five
+#     published 2026-10-30 with NO CVE id -- v6h2, c67m, p9j4, r39w, 27pc --
+#     each vulnerable at <= v4.1.6 and patched only in v4.1.7. So 4.1.7 is
+#     REQUIRED, not currency; 4.1.6 would be insufficient. Those five are
+#     absent from OSV and from GitHub's global advisory index (both 404) and
+#     are visible only via repos/go-jose/go-jose/security-advisories, because
+#     an advisory with no CVE id is not promoted into the global or ecosystem
+#     indexes -- the same blind spot documented for crowdsec below. Do not
+#     conclude "no advisories" for any pin here from OSV alone (T-0646).
+#     go-jose/v4 was ALREADY in this image transitively at v4.1.5, so this pin
+#     is a version floor on an existing module, not a new dependency. A
+#     production import path exists via smallstep/certificates ->
+#     coreos/go-oidc/v3 -> go-jose/v4 (oidc/jose.go, jwks.go, verify.go),
+#     reachable only with `acme_server` configured, which no fleet host does.
+#     The sibling go-jose/v3 line (v3.0.5) is untouched and still carries
+#     advisories with no v3 fix published at all -- see T-0645.
 #     Caddy already links these packages, so the blank import xcaddy adds for
 #     each changes nothing else. The build fails if `go get` ever reports a
 #     downgrade, so a pin can't quietly pull a plugin back to an older release.
@@ -50,10 +88,13 @@
 #     range leads with `>=`. Conservative by design, not a bug.
 #     Re-check if the bouncer ever links acquisition or notification code, or
 #     if the splunk advisory gets a fixed release (T-0661).
-#   - caddy-crowdsec-bouncer @bdd7e516 is an exact pin: the upstream commit that
-#     supports CrowdSec 1.7. v0.14.1, the newest tag, needs CrowdSec 1.6; the
-#     commit's only code change since then is that fix. Go back to a tag once
-#     one exists.
+#   - caddy-crowdsec-bouncer is back on a tag. It was pinned to raw commit
+#     bdd7e516 because it was the only upstream code supporting CrowdSec 1.7
+#     (v0.14.1, the newest tag then, needed 1.6). v0.15.0 (2026-10-30) requires
+#     crowdsec v1.8.1, so that reason is gone and an ordinary version comparison
+#     works again. This tag is also upstream main's HEAD, so the pin is current
+#     as well as legible. It is what actually sets the crowdsec version (1.8.1),
+#     above the floor near the top of this block.
 #   - EVERY --with below carries a version. An unpinned --with re-resolves to
 #     whatever is latest at build time, so a base-layer refresh (an Alpine CVE,
 #     a -pN tag) could pull new third-party code into the binary on all six
@@ -86,10 +127,11 @@ FROM --platform=$BUILDPLATFORM caddy:2.11.7-builder AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
-    # pin-watch: floor pin=v1.7.8 against=v1.8.2 ref=T-0636 reason=v1.7.8 is the exact version fixing CVE-2026-44982 and CVE-2026-44981, so it is still a true CVE boundary, and OSV holds nothing at either version. The 3 GitHub-only advisories here are acquisition/notification code, outside the 6-package closure of pkg/apiclient + the bouncer, so none is linked and a bump buys no reachable fix; v1.8.2 still would not clear the splunk one. Measured: header, T-0653.
+    # pin-watch: floor pin=v1.7.8 against=v1.8.2 ref=T-0636 reason=v1.7.8 is the exact version fixing CVE-2026-44982 and CVE-2026-44981, so it is a true CVE-BEARING boundary -- but NOT a clean version: 2 of the 3 GitHub-only advisories reach <= 1.7.8, and OSV is blind to all 3 because none carries a CVE id, so an OSV-clean reading of either version proves nothing (T-0646). All 3 are acquisition/notification code, outside the 6-package closure of pkg/apiclient + the bouncer, so none is linked and a bump buys no reachable fix; v1.8.2 still would not clear the splunk one. This floor is also currently SLACK: the bouncer at v0.15.0 requires crowdsec v1.8.1, so MVS resolves to 1.8.1 and the built binary is past the two acquisition advisories regardless. Kept so a future bouncer cannot silently drop below the CVE boundary. Measured: header, T-0653.
     --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \
     --with golang.org/x/net/http2@v0.62.0 \
-    --with github.com/go-chi/chi/v5@v5.4.0 \
+    --with github.com/go-chi/chi/v5@v5.5.0 \
+    --with github.com/go-jose/go-jose/v4@v4.1.7 \
     --with github.com/caddy-dns/cloudflare@v0.2.4 \
     --with github.com/caddy-dns/porkbun@v0.3.1 \
     --with github.com/caddy-dns/namecheap@v1.0.0 \
@@ -98,9 +140,9 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/caddy-dns/hetzner/v2@v2.0.1 \
     --with github.com/caddy-dns/route53@v1.6.2 \
     --with github.com/caddy-dns/gandi@v1.2.1 \
-    --with github.com/hslatman/caddy-crowdsec-bouncer/http@bdd7e516ec46fede2321a99d62ba63f9b9ebd857 \
+    --with github.com/hslatman/caddy-crowdsec-bouncer/http@v0.15.0 \
     --with github.com/mholt/caddy-ratelimit@v0.1.0 \
-    --with github.com/mholt/caddy-l4@v0.1.2 \
+    --with github.com/mholt/caddy-l4@v0.1.3 \
     --with github.com/corazawaf/coraza-caddy/v2@v2.6.2 \
     2>&1 | tee /tmp/xcaddy.log \
     && if grep 'go: downgraded' /tmp/xcaddy.log; then echo 'a pin downgraded a module' >&2; exit 1; fi

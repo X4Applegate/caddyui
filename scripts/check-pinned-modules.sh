@@ -334,6 +334,12 @@ clean_reason() {
 # path only, which is the shape of failure this file exists to avoid.
 errors="$OUT_DIR/errors.txt"
 : > "$errors"
+# Housekeeping worth a human's attention but which does NOT invalidate the
+# run, kept separate from $errors on purpose: $errors means "these numbers
+# cannot be trusted" and forces verdict=error, which would bury a real
+# staleness finding under a could-not-run warning.
+notices="$OUT_DIR/notices.txt"
+: > "$notices"
 
 pins_file="$OUT_DIR/pins.tsv"
 : > "$pins_file"
@@ -664,15 +670,21 @@ done < "$floors_file"
 untagged_repo() {
   case "$1" in
     github.com/caddy-dns/digitalocean)              echo "https://github.com/caddy-dns/digitalocean.git" ;;
-    github.com/hslatman/caddy-crowdsec-bouncer/http) echo "https://github.com/hslatman/caddy-crowdsec-bouncer.git" ;;
+    # caddy-crowdsec-bouncer is back on a tag (v0.15.0), so it is compared by
+    # version like any other pin. Re-add it only if it ever needs a raw commit
+    # again; while it is tagged, an entry here would be reported as stale.
     *) echo "" ;;
   esac
 }
 
 # A pinned version is a commit SHA or a pseudo-version, i.e. not a plain tag.
+# The pseudo-version arm matches `-0.` followed by go's 14-digit UTC timestamp
+# and a `-` before the revision, NOT a bare `-0.`: a legitimate prerelease tag
+# such as v1.0.0-0.1 would otherwise be reported as an untagged commit pin and
+# compared against git HEAD forever.
 is_untagged_pin() {
   case "$1" in
-    v0.0.0-*|*-0.*) return 0 ;;                     # pseudo-version
+    v0.0.0-*|*-0.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*) return 0 ;;  # pseudo-version
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
       # A bare hex string of 7+ chars with no dots is a commit SHA.
       case "$1" in *.*) return 1 ;; esac
@@ -871,7 +883,19 @@ while IFS=$'\t' read -r arg pinned; do
   note=""
   kind="tag"
   repo="$(untagged_repo "$arg")"
-  if is_untagged_pin "$pinned" || [ -n "$repo" ]; then
+  # The allowlist says WHERE to look for a commit pin's upstream, not THAT this
+  # pin is one. Only the pin's own shape decides that. A module can return to a
+  # tag -- the CrowdSec bouncer did, in v0.15.0 -- and treating a tag as a
+  # commit would compare it against upstream HEAD forever, reporting a current,
+  # tagged pin as "no longer at upstream HEAD". A leftover entry is surfaced as
+  # a housekeeping notice rather than silently forcing commit mode, so the list
+  # cannot rot. It is a notice and not an error on purpose: the pin is still
+  # resolved and compared correctly, so the run stays authoritative.
+  if [ -n "$repo" ] && ! is_untagged_pin "$pinned"; then
+    echo "\`$arg\` is in the untagged-pin allowlist but is pinned to \`$pinned\`, which is a tag; drop it from untagged_repo()" >> "$notices"
+    repo=""
+  fi
+  if is_untagged_pin "$pinned"; then
     kind="commit"
     if [ -z "$repo" ]; then
       # clean_scalar even though the value is allowlisted below: this is the
@@ -940,7 +964,8 @@ done < "$pins_file"
 # a reminder.
 # ---------------------------------------------------------------------------
 tag_now_ok=""
-if [ -z "$FIXTURE" ] && grep -q 'caddy-crowdsec-bouncer' "$pins_file"; then
+b_pinned_now="$(awk -F'\t' '$1 ~ /caddy-crowdsec-bouncer/ {print $2}' "$pins_file" | head -1)"
+if [ -z "$FIXTURE" ] && [ -n "$b_pinned_now" ] && is_untagged_pin "$b_pinned_now"; then
   cs_floor="$(awk -F'\t' '$1 ~ /crowdsecurity\/crowdsec/ {print $2}' "$pins_file" | head -1)"
   cs_major="$(printf '%s' "${cs_floor#v}" | cut -d. -f1-2)"
   b_mod="github.com/hslatman/caddy-crowdsec-bouncer"
@@ -1556,6 +1581,11 @@ done
     done < "$replaced_file"
     echo
   fi
+  if [ -s "$notices" ]; then
+    echo "**Housekeeping** (the comparisons above are unaffected):"
+    while IFS= read -r n; do echo "- $n"; done < "$notices"
+    echo
+  fi
   if [ -s "$errors" ]; then
     echo "**The check could not complete for every pin.** An unchecked pin is not a clean pin:"
     while IFS= read -r e; do echo "- $e"; done < "$errors"
@@ -1640,7 +1670,8 @@ elif [ "$unresolved" -gt 0 ] || [ "$osv_failed" -eq 1 ] \
 elif [ "$behind" -gt 0 ] || [ "$moved" -gt 0 ] || [ -n "$tag_now_ok" ] \
   || [ "$floors_expired" -gt 0 ] \
   || [ "$adv_partial" -gt 0 ] || [ -s "$gh_extra" ] || [ -n "$gh_unavailable" ] \
-  || [ -s "$unpinned_file" ] || [ -s "$replaced_file" ]; then verdict="attention"; rc=1
+  || [ -s "$unpinned_file" ] || [ -s "$replaced_file" ] \
+  || [ -s "$notices" ]; then verdict="attention"; rc=1
 else verdict="ok"; rc=0
 fi
 
