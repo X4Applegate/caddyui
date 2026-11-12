@@ -345,11 +345,21 @@ jobs:
             cat scan-arm64/summary.md 2>/dev/null || echo "_gate did not run_"
           } > scan/combined.md
 
+          # Random delimiter, same reason as in the gate script: combined.md is
+          # built from scan-derived text, so a fixed token could be closed early
+          # by the scanned image and the remainder parsed as further step
+          # outputs. GitHub takes the LAST value for a duplicated key, so that
+          # would forge this step's own verdict output. The gate sanitizes the
+          # fields that reach the summary; this is the second layer.
+          delim="SUMMARY_EOF_$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+          if grep -qxF "$delim" scan/combined.md; then
+            echo "::error::the combined summary contains the generated output delimiter"; exit 1
+          fi
           {
             echo "verdict=$verdict"
-            echo "summary<<SUMMARY_EOF"
+            echo "summary<<$delim"
             cat scan/combined.md
-            echo "SUMMARY_EOF"
+            echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
           cat scan/combined.md >> "$GITHUB_STEP_SUMMARY"

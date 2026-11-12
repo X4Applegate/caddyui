@@ -106,14 +106,16 @@ BASELINE="$2"
 OUT="$3"
 ARCHES="${4:-amd64 arm64}"
 
-command -v trivy >/dev/null || die "trivy not found"
-command -v jq    >/dev/null || die "jq not found"
-command -v docker >/dev/null || die "docker not found"
-
 mkdir -p "$OUT"
 
-# Remove any verdict left by a PREVIOUS run in this directory, before anything
+# Remove the outputs left by a PREVIOUS run in this directory, before anything
 # that can `die`.
+#
+# This runs BEFORE the dependency checks below, not after. A missing trivy/jq/
+# docker is exactly the "the gate could not run" case these files misreport, so
+# clearing them after those checks would leave the stale-verdict hole open for
+# the aborts most likely to hit it. Only argument parsing precedes this, and
+# that cannot leave a stale file behind because $OUT is not yet known.
 #
 # The refresh path reads the verdict FILE rather than the exit status
 # (`cat scan/verdict 2>/dev/null || echo error`) and turns a missing file into
@@ -122,7 +124,38 @@ mkdir -p "$OUT"
 # run's answer, so a gate that aborted at exit 2 would be reported as whatever
 # the last run concluded -- including `improved`. Deleting it up front means an
 # aborted gate always presents as an ABSENT verdict, never an old one.
-rm -f "$OUT/verdict"
+#
+# Every file this script writes is cleared, not just the verdict.
+#
+# `summary.md` is the other output a caller reads back from disk: the refresh
+# workflow renders `cat scan/summary.md || echo "_gate did not run_"` into the
+# report a human reads and into the 30-day artifact. A stale summary survives
+# an abort, the `|| echo` fallback is defeated because the file EXISTS, and the
+# job then fails with the previous run's reassuring "improved / no new
+# findings" attached -- the opposite of what the reader needs at exactly the
+# moment the gate could not run. The id and module lists are cleared for the
+# same reason: they are inputs to the next summary.
+#
+# Hosted runners get a clean workspace per job, so this is not reachable on
+# either CI path today. It is reachable for a local run and for any future
+# self-hosted runner, and it defeats a fallback the workflow deliberately
+# wrote for this case.
+rm -f "$OUT/verdict" "$OUT/summary.md" \
+      "$OUT"/added-*.ids "$OUT"/removed-*.ids \
+      "$OUT"/new-*.ids "$OUT"/old-*.ids \
+      "$OUT"/mods-*.txt 2>/dev/null || true
+
+command -v trivy >/dev/null || die "trivy not found"
+command -v jq    >/dev/null || die "jq not found"
+command -v docker >/dev/null || die "docker not found"
+
+# A per-run delimiter for the $GITHUB_OUTPUT heredoc, so that even if a value
+# reaching summary.md were ever un-sanitized again, it cannot name the token
+# that closes the block. `ids_from` already restricts the fields that land
+# there; this is the second layer, and it is the pattern GitHub documents.
+SUMMARY_DELIM="GATE_SUMMARY_EOF_$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
+[ "$SUMMARY_DELIM" = "GATE_SUMMARY_EOF_" ] && SUMMARY_DELIM="GATE_SUMMARY_EOF_$$_$(date +%s)"
+readonly SUMMARY_DELIM
 
 SEVERITY="${TRIVY_SEVERITY:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
 
@@ -162,9 +195,32 @@ esac
 # change is still visible in the per-arch JSON kept as a build artifact, and a
 # genuinely new exposure means a new ID or a new package, which is still
 # caught.
+# Both fields are sanitized HERE, at the single point they enter the script,
+# rather than at each place they are printed.
+#
+# `PkgName` is attacker-chosen for a `gobinary` result: Trivy copies it from
+# the Go build info of the binary in the image, and on the release path the
+# image is built from a Dockerfile the submitter controls -- the actor this
+# gate exists to constrain. These values flow into `$OUT/*.ids`, into the
+# per-finding rows of `summary.md`, and from there into BOTH this script's
+# `summary<<GATE_SUMMARY_EOF` heredoc and the refresh workflow's own
+# `summary<<SUMMARY_EOF` heredoc. A newline in either field therefore let the
+# scanned image write arbitrary lines into `$GITHUB_OUTPUT`: a line reading
+# exactly the delimiter closed the heredoc early and the rest parsed as
+# further step outputs, and GitHub takes the LAST value for a duplicated key,
+# so a crafted module path could forge `verdict=improved` against a run whose
+# verdict was `blocked`. Confirmed reachable before this fix.
+#
+# A real Trivy ID or package name is a plain token, so restricting the
+# character set costs nothing legitimate: anything outside it is replaced
+# rather than dropped, keeping the row readable and visibly tampered. Field
+# order is preserved by sanitizing inside jq, so the tab-separated structure
+# the readers rely on cannot be broken by embedding a tab either.
 ids_from() {
   jq -r '[.Results[]?.Vulnerabilities[]?
-          | "\(.VulnerabilityID)\t\(.PkgName)"]
+          | ((.VulnerabilityID // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120]) as $id
+          | ((.PkgName // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) as $pkg
+          | "\($id)\t\($pkg)"]
          | unique | .[]' "$1"
 }
 
@@ -665,15 +721,22 @@ cat "$OUT/summary.md"
 echo "$verdict" > "$OUT/verdict"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  # Belt and braces: refuse rather than emit if the delimiter is ever present
+  # in the body. `ids_from` already restricts what can get there, and the
+  # delimiter is random per run, so reaching this means an assumption broke --
+  # and a corrupt $GITHUB_OUTPUT is worse than a failed step.
+  if grep -qxF "$SUMMARY_DELIM" "$OUT/summary.md"; then
+    die "the gate summary contains the generated output delimiter: refusing to append a heredoc that cannot be closed unambiguously."
+  fi
   {
     echo "verdict=$verdict"
     echo "added_count=$added_total"
     echo "removed_count=$removed_total"
     echo "module_drift=$moddrift"
     echo "module_drift_policy=$DRIFT_POLICY"
-    echo "summary<<GATE_SUMMARY_EOF"
+    echo "summary<<$SUMMARY_DELIM"
     cat "$OUT/summary.md"
-    echo "GATE_SUMMARY_EOF"
+    echo "$SUMMARY_DELIM"
   } >> "$GITHUB_OUTPUT"
 fi
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
