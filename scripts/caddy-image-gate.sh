@@ -225,13 +225,20 @@ scan_types() {
 # this was added.
 #
 # So flatten to one line and strip the two metacharacter sequences that give a
-# log line authority: a leading `::` (a workflow command) and `%` (the encoding
-# GitHub uses for escaped newlines in those commands). Truncated, because an
+# log line authority: `::` (a workflow command) and `%` (the encoding GitHub
+# uses for escaped newlines in those commands). Truncated, because an
 # arbitrarily long field is its own denial-of-readability.
+#
+# Collapse any RUN of colons to one, rather than replacing the pair `::`.
+# `s/::/:/g` consumes non-overlapping pairs, so `:::error` -> `::error` leaves
+# exactly the sequence being removed; `:::::` -> `:::`. A run-collapse has no
+# such residue for any number of colons. Flattening newlines already stops a
+# forged command from starting a line, which is what GitHub actually requires,
+# but the two are independent defences and neither should carry this alone.
 safe_text() {
   printf '%s' "$1" \
     | tr '\n\r\t' '   ' \
-    | sed -e 's/::/:/g' -e 's/%/pct/g' \
+    | sed -e 's/:\{2,\}/:/g' -e 's/%/pct/g' \
     | cut -c1-200
 }
 
