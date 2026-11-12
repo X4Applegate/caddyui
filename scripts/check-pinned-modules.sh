@@ -298,8 +298,19 @@ while IFS= read -r raw; do
   # floor in the real Dockerfile reproduced it end to end — a one-character
   # PR diff that reads as adding quotes to a string, with no error, no
   # warning, and the floor still shipping in the binary.
-  arg="${arg%\"}"; arg="${arg#\"}"
-  arg="${arg%\'}"; arg="${arg#\'}"
+  #
+  # Stripping quotes off `arg` alone did NOT close this. It fixed
+  # `--with="mod@ver"` but left the two spellings where the quote covers the
+  # FLAG, and `"--with" "mod@ver"` is the worst of them: the token counter
+  # requires a separator immediately after `--with`, and there the next byte
+  # is a quote, so the counter sees zero too. Both sides lose the token
+  # together, they agree, and the reconciliation stays silent — the same
+  # silent-unwatch shape, reproduced on the real Dockerfile (15 → 14 pins,
+  # empty errors.txt, verdict=advisory rather than error). That is why the
+  # normalisation happens once, at the line level, for both consumers.
+  # Nothing to strip here any more: see the line-level normalisation at the
+  # bottom of this loop, which removes quotes for the parser and the token
+  # counter in the same place so the two cannot disagree about a pin.
   [ -n "$arg" ] || continue
   # `module@version=replacement` — keep the replacement out of the version.
   replacement=""
@@ -318,7 +329,12 @@ while IFS= read -r raw; do
 # separator left them unparsed. They now fail loudly thanks to the token
 # counter above rather than vanishing silently, but failing a legitimate
 # reformat is still a weekly false alarm, so they are parsed properly.
+# Quotes are turned into spaces BEFORE extraction, for the parser and for the
+# token counter alike. Doing it here rather than per-argument is what makes
+# the quoted-flag spellings (`"--with" "mod@ver"`, `"--with=mod@ver"`) visible
+# to both counters instead of invisible to both; see the note above.
 done < <(grep -v '^[[:space:]]*#' "$DOCKERFILE" \
+  | sed 's/["'"'"']/ /g' \
   | grep -oE -- '--with[=[:space:]]+[^ \\]+' || true)
 
 pin_count="$(wc -l < "$pins_file" | tr -d ' ')"
@@ -346,7 +362,11 @@ fi
 # for a tab separator and for two spaces. Counting every `--with` occurrence
 # instead means an argument this parser does not understand is a loud `error`
 # rather than an unwatched plugin, which is the whole point of the check.
+# Same quote normalisation as the parser above, and for the same reason: if
+# only one of the two sides understood a spelling, the comparison would pass
+# while the pin went unwatched.
 raw_with_count="$(grep -v '^[[:space:]]*#' "$DOCKERFILE" \
+  | sed 's/["'"'"']/ /g' \
   | grep -oE -- '(^|[[:space:]])--with([=[:space:]]|$)' | wc -l | tr -d ' ')"
 parsed_count=$(( pin_count + unpinned_count ))
 if [ "$raw_with_count" != "$parsed_count" ]; then
