@@ -17,6 +17,22 @@
 #     supports CrowdSec 1.7. v0.14.1, the newest tag, needs CrowdSec 1.6; the
 #     commit's only code change since then is that fix. Go back to a tag once
 #     one exists.
+#   - EVERY --with below carries a version. An unpinned --with re-resolves to
+#     whatever is latest at build time, so a base-layer refresh (an Alpine CVE,
+#     a -pN tag) could pull new third-party code into the binary on all six
+#     boxes — including a DNS provider holding TLS-cert API credentials and the
+#     Coraza WAF. caddy-image-gate.sh blocks such a build from publishing by
+#     diffing `caddy list-modules --versions`, but that is detection after the
+#     fact: it stops the refresh rather than the drift, so an unrelated plugin
+#     release holds the CVE fix hostage until a human investigates. Pinning
+#     makes a plugin bump a deliberate edit, reviewed and versioned like any
+#     other change, and leaves the gate as a second, independent check.
+#     The trade, accepted knowingly: plugin fixes no longer arrive on their own
+#     and need a deliberate bump here — the same trade already made for
+#     crowdsec, x/net and chi.
+#     caddy-dns/digitalocean has never been tagged upstream, so its pin is the
+#     pseudo-version of master@04bde286 (2025-06-06) — the exact commit the
+#     published image already contains, not a new choice.
 FROM --platform=$BUILDPLATFORM caddy:2.11.7-builder AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -24,18 +40,18 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \
     --with golang.org/x/net/http2@v0.61.0 \
     --with github.com/go-chi/chi/v5@v5.4.0 \
-    --with github.com/caddy-dns/cloudflare \
-    --with github.com/caddy-dns/porkbun \
-    --with github.com/caddy-dns/namecheap \
-    --with github.com/caddy-dns/godaddy \
-    --with github.com/caddy-dns/digitalocean \
-    --with github.com/caddy-dns/hetzner/v2 \
+    --with github.com/caddy-dns/cloudflare@v0.2.4 \
+    --with github.com/caddy-dns/porkbun@v0.3.1 \
+    --with github.com/caddy-dns/namecheap@v1.0.0 \
+    --with github.com/caddy-dns/godaddy@v1.2.0 \
+    --with github.com/caddy-dns/digitalocean@v0.0.0-20250606074528-04bde2867106 \
+    --with github.com/caddy-dns/hetzner/v2@v2.0.1 \
     --with github.com/caddy-dns/route53@v1.6.2 \
-    --with github.com/caddy-dns/gandi \
+    --with github.com/caddy-dns/gandi@v1.2.1 \
     --with github.com/hslatman/caddy-crowdsec-bouncer/http@bdd7e516ec46fede2321a99d62ba63f9b9ebd857 \
-    --with github.com/mholt/caddy-ratelimit \
-    --with github.com/mholt/caddy-l4 \
-    --with github.com/corazawaf/coraza-caddy/v2 \
+    --with github.com/mholt/caddy-ratelimit@v0.1.0 \
+    --with github.com/mholt/caddy-l4@v0.1.2 \
+    --with github.com/corazawaf/coraza-caddy/v2@v2.6.2 \
     2>&1 | tee /tmp/xcaddy.log \
     && if grep 'go: downgraded' /tmp/xcaddy.log; then echo 'a pin downgraded a module' >&2; exit 1; fi
 
