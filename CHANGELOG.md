@@ -9,6 +9,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.68.9] - 2026-11-12 - Every Caddy-image plugin is pinned, and x/net clears two more CVEs
+
+### Security
+
+- **`applegater/caddyui-caddy` no longer resolves any plugin at build time.** Ten of the image's fifteen `--with` arguments carried no version, so each rebuild fetched whatever was newest: seven DNS providers (cloudflare, porkbun, namecheap, godaddy, digitalocean, hetzner, gandi), `caddy-ratelimit`, `caddy-l4` and the Coraza WAF. A rebuild happens for reasons that have nothing to do with those plugins — an Alpine security fix published as a `-pN` tag — so unreviewed third-party code could reach the edge proxy through an unrelated patch, including providers that hold DNS API credentials for certificate issuance. Every argument now carries a version.
+  - **This release changes nothing in the binary.** Each plugin is pinned to the version the published image already contained, verified on linux/amd64 against `:v2.68.8-p2`: the full Go module graph is byte-identical at 235 dependencies, `caddy list-modules --versions` is identical at 192, Trivy reports the same findings with none added or removed, and the binary keeps `cap_net_bind_service=ep`.
+  - **It was not a hypothetical risk.** `caddy-l4` v0.1.3 was tagged on 2026-11-09, days before this release. A control build with that one argument left unpinned moves it from v0.1.2 and pulls in `vnxme/hybrid`, a module that has never been in this image, as part of a redesign of UDP and packet-connection serving that also touches core matching, `proxy` and `proxy_protocol`. The next rebuild for any reason would have shipped it.
+  - **The trade is deliberate: plugin fixes now need an explicit bump here**, the same trade already made for the CrowdSec, x/net and go-chi pins. `caddy-l4` v0.1.3 does carry fixes worth having — among them a listener-wrapper buffer reuse that can echo another client's TLS ClientHello session ID under load — and that bump will come as its own reviewed release, since it also requires Go 1.26. It is not reachable in a default CaddyUI deployment: it needs layer4 configured as a listener wrapper.
+  - `caddy-dns/digitalocean` has never been tagged upstream, so it is pinned to the `master` commit the published image already contained rather than to a new choice.
+- **`golang.org/x/net` moves to 0.62.0, clearing CVE-2026-78661 (High) and CVE-2026-97045 (Medium).** The first is quadratic complexity when the HTML parser coalesces text nodes (`Parse`, `ParseFragment`, `parser.addText`, `parser.fosterParent`); the second renders raw text without checking every ancestor namespace transition (`Render`, `childTextNodesAreLiteral`). Trivy goes from 8 findings to 6, with none added, and the module graph changes by exactly one line.
+  - **Both are in `golang.org/x/net/html`, and neither was reachable over the network.** The vulnerable functions are linked into the binary, through `smallstep/cli-utils`, which Caddy pulls in for its PKI support — but only inside the step CLI's own help-report generator, which has no HTTP route in a Caddy server. The one piece of `x/net/html` that *does* run on request data is `UnescapeString`, used by the Coraza WAF for the CRS `t:htmlEntityDecode` transformation, and it appears in neither advisory's affected-symbol list. So this closes two scanner findings and removes vulnerable code from the image; it does not fix an exploitable path, and no CaddyUI deployment was exposed through either advisory.
+
+### Changed
+
+- **The Caddy image gate's own documentation matched the old policy.** `scripts/caddy-image-gate.sh` described gate 2 as compensating for nine unpinned `--with` arguments, both in its header and in the message it prints when it blocks a refresh. It now describes what that gate is actually for: the independent check that a rebuild reproduced the pinned module set, still catching a resolver or toolchain change that moves a plugin without changing any CVE. The gate's logic, verdicts and exit codes are unchanged.
+
+### Notes
+
+- **CaddyUI itself has no code changes in this release.** It republishes `applegater/caddyui` unchanged and publishes a rebuilt `applegater/caddyui-caddy`. Pull `applegater/caddyui-caddy:stable` (or `:v2.68.9`) and recreate the Caddy container to pick it up.
+- The `-pN` base-layer counter restarts at this release: `:stable` and `:latest` move from `v2.68.8-p2` to `v2.68.9`. To roll back, pin `applegater/caddyui-caddy:v2.68.8-p2`, which remains published.
+
+---
+
 ## [2.68.8] - 2026-11-10 - One "Strip response headers" field instead of two (#173)
 
 ### Fixed
