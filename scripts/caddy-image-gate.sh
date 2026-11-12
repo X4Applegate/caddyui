@@ -439,7 +439,22 @@ assert_scan_coverage() {
     esac
 
     # Both counts are integers from here: jq's `add` over array lengths.
-    [ "$old_pkgs" -gt 0 ] || continue
+    #
+    # A baseline of zero packages is a broken baseline, not a free pass. The
+    # earlier spelling of this line was `[ "$old_pkgs" -gt 0 ] || continue`,
+    # which skipped the floor entirely for such a target -- and that is
+    # self-perpetuating rather than transient: check 3 still passes (the TYPE
+    # is present on both sides), so one event that empties a target's package
+    # list while leaving the result in place publishes once, and from then on
+    # :stable IS the blind baseline. Every later release hits the same zero,
+    # skips the floor, and prints "scan coverage OK" over a target that is
+    # 100% unobserved on both sides.
+    if [ "$old_pkgs" -eq 0 ]; then
+      die "the published image's '$(safe_text "$t")' scan of linux/$arch reports 0 packages: the baseline is itself blind for this target, so it cannot define a coverage floor and a rebuild equally blind here would compare as clean. Re-scan the baseline, or rebase onto an image Trivy can read."
+    fi
+    # Absolute, not relative: a target present but entirely unobserved is never
+    # an improvement, whatever the baseline says.
+    [ "$new_pkgs" -gt 0 ] || die "the rebuild's '$(safe_text "$t")' scan of linux/$arch reports 0 packages: that target is present but entirely UNOBSERVED, so it has no findings to contribute and would cancel the baseline's out of the comparison."
     floor=$(( (old_pkgs + 1) / 2 ))
     if [ "$new_pkgs" -lt "$floor" ]; then
       die "the rebuild's '$(safe_text "$t")' scan of linux/$arch sees $new_pkgs package(s) where the published image has $old_pkgs (floor $floor): the target is present but its contents largely could not be read, so most of it is UNOBSERVED rather than fixed. A findings list this far short of the baseline's cannot be compared against it."
@@ -743,5 +758,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
 fi
 
+# The trailing `exit 0` is REQUIRED, not redundant. `[ ... ] && exit 1` returns
+# 1 when the test is false, so if this were the last command of the script a
+# non-blocked verdict would exit 1 under `set -e` -- wrongly blocking every
+# good image. Do not "tidy away" the explicit exit below.
 [ "$verdict" = blocked ] && exit 1
 exit 0
