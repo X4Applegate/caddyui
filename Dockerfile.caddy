@@ -7,17 +7,25 @@
 #   - The first three --with lines are version floors. xcaddy runs `go get` once
 #     per --with, in order, and `go get pkg@ver` sets exactly that version, so
 #     they must come first: a plugin fetched after them can still raise these
-#     modules but never lowers them. crowdsec/pkg/apiclient @v1.7.8 lifts
-#     CrowdSec past CVE-2026-44982, x/net/http2 @v0.62.0 lifts golang.org/x/net
-#     past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045, and chi/v5 @v5.4.0
-#     lifts go-chi past CVE-2026-114437.
+#     modules but never lowers them. crowdsec/pkg/apiclient @v1.7.8 is the
+#     documented CVE minimum (past CVE-2026-44982) but is NOT what ships today:
+#     caddy-crowdsec-bouncer @v0.15.0 below requires crowdsec v1.8.1, which is
+#     higher, so MVS resolves to 1.8.1 and the floor is currently slack. It
+#     stays as the stated minimum, so a future bouncer that wanted an older
+#     crowdsec cannot silently drop below it. Check the built binary, not this
+#     line, for the version in the image. x/net/http2 @v0.62.0 lifts
+#     golang.org/x/net past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045,
+#     and chi/v5 @v5.4.0 lifts go-chi past CVE-2026-114437.
 #     Caddy already links these packages, so the blank import xcaddy adds for
 #     each changes nothing else. The build fails if `go get` ever reports a
 #     downgrade, so a pin can't quietly pull a plugin back to an older release.
-#   - caddy-crowdsec-bouncer @bdd7e516 is an exact pin: the upstream commit that
-#     supports CrowdSec 1.7. v0.14.1, the newest tag, needs CrowdSec 1.6; the
-#     commit's only code change since then is that fix. Go back to a tag once
-#     one exists.
+#   - caddy-crowdsec-bouncer is back on a tag. It was pinned to raw commit
+#     bdd7e516 because it was the only upstream code supporting CrowdSec 1.7
+#     (v0.14.1, the newest tag then, needed 1.6). v0.15.0 (2026-10-30) requires
+#     crowdsec v1.8.1, so that reason is gone and an ordinary version comparison
+#     works again. This tag is also upstream main's HEAD, so the pin is current
+#     as well as legible. It is what actually sets the crowdsec version (1.8.1),
+#     above the floor near the top of this block.
 #   - EVERY --with below carries a version. An unpinned --with re-resolves to
 #     whatever is latest at build time, so a base-layer refresh (an Alpine CVE,
 #     a -pN tag) could pull new third-party code into the binary on all six
@@ -49,7 +57,7 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/caddy-dns/hetzner/v2@v2.0.1 \
     --with github.com/caddy-dns/route53@v1.6.2 \
     --with github.com/caddy-dns/gandi@v1.2.1 \
-    --with github.com/hslatman/caddy-crowdsec-bouncer/http@bdd7e516ec46fede2321a99d62ba63f9b9ebd857 \
+    --with github.com/hslatman/caddy-crowdsec-bouncer/http@v0.15.0 \
     --with github.com/mholt/caddy-ratelimit@v0.1.0 \
     --with github.com/mholt/caddy-l4@v0.1.3 \
     --with github.com/corazawaf/coraza-caddy/v2@v2.6.2 \
