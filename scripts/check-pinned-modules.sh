@@ -154,6 +154,26 @@ set -uo pipefail
 
 PROXY="${GOPROXY_BASE:-https://proxy.golang.org}"
 OSV="${OSV_BASE:-https://api.osv.dev}"
+# ---------------------------------------------------------------------------
+# DESIGN RULE, earned three times in this script: WHEN ONE OUTPUT CARRIES TWO
+# MEANINGS, SAY WHICH ONE YOU MEAN -- do not change the behaviour, add the
+# distinction.
+#   1. `behind` conflated "we have not looked" with "we looked and chose this"
+#      -> fixed by the `# pin-watch: floor` acknowledgement, which reports an
+#         intentional floor separately and re-arms if upstream passes the
+#         version the decision was taken against.
+#   2. a leftover untagged-pin allowlist entry was routed to $errors, which
+#      means "these numbers cannot be trusted" -> fixed by $notices, rendering
+#      a Housekeeping section at attention/rc=1 instead of error/rc=3.
+#   3. the report did not say WHICH TREE it read. This script reads
+#      $DOCKERFILE by plain path, so a local run in a shared clone can grade
+#      an uncommitted pin set while reading identically to a CI run. The fix
+#      is disclosure, NOT reading HEAD: the weekly job must grade the
+#      checked-out ref (pristine after actions/checkout) and a deliberate
+#      pre-commit run is legitimate. So state the path and whether it is dirty.
+# Before adding any new verdict, counter or row, ask what it reports when its
+# own input is missing, and whether a reader can tell the two cases apart.
+# ---------------------------------------------------------------------------
 DOCKERFILE="Dockerfile.caddy"
 OUT_DIR=""
 EMIT_JSON=0
@@ -1632,7 +1652,18 @@ done
     fi
   fi
   echo
-  echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`.</sub>"
+  # Which tree did we actually read? This script reads $DOCKERFILE by plain
+  # path, so say so -- a dirty file means the verdict describes uncommitted
+  # pins. Disclosure, not relocation: see the design rule in the header.
+  tree_note="$DOCKERFILE"
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    if git diff --quiet -- "$DOCKERFILE" 2>/dev/null; then
+      tree_note="$DOCKERFILE (clean vs HEAD)"
+    else
+      tree_note="$DOCKERFILE (**UNCOMMITTED CHANGES** vs HEAD -- these pins are not what HEAD builds)"
+    fi
+  fi
+  echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`. Read from \`$tree_note\`.</sub>"
 } >> "$report"
 
 # Order matters, and it is not the obvious one.
