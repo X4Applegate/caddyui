@@ -123,7 +123,7 @@
 #     whose `pin=` no longer matches the line below it is a hard error rather
 #     than a floor quietly inherited by a new version. So re-pinning a floored
 #     module means re-taking the decision, which is the point.
-FROM --platform=$BUILDPLATFORM caddy:2.11.7-builder AS builder
+FROM --platform=$BUILDPLATFORM caddy:2.11.9-builder AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
@@ -147,7 +147,7 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     2>&1 | tee /tmp/xcaddy.log \
     && if grep 'go: downgraded' /tmp/xcaddy.log; then echo 'a pin downgraded a module' >&2; exit 1; fi
 
-FROM caddy:2.11.7-alpine
+FROM caddy:2.11.9-alpine
 # The caddy base image only gets Alpine fixes when it is rebuilt upstream;
 # upgrade here so this image ships them (e.g. brotli-libs 1.2.1, CVE-2026-111497).
 RUN apk upgrade --no-cache

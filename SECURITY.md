@@ -111,24 +111,23 @@ What neither check covers is the **Caddy base image's own** module set, which is
 
 Development is assisted by Claude (Anthropic). No secrets, credentials, database contents, or user data are shared with Claude — only code structure and logic.
 
-### Unpatched advisories in the shipped Caddy base
+### Caddy base advisories (resolved)
 
-The `applegater/caddyui-caddy` image is built on **Caddy 2.11.7**. Five security advisories published 2026-11-04 affect every Caddy release up to and including 2.11.7 and have **no fixed upstream release yet** (`first_patched_version: null`). They carry no CVE id, so vulnerability scanners that source from OSV report the base layer as clean — `osv.dev` returns zero vulnerabilities for `github.com/caddyserver/caddy/v2` at 2.11.7. The advisories are only visible through GitHub's advisory API for `caddyserver/caddy`.
+Five CVE-less advisories published 2026-11-04 affected Caddy **2.11.7** and earlier, including one
+**high** (`GHSA-r766-rf9f-588h`: `Host`/`:authority` values with dot segments escaping a
+`{host}`-based document root). **All five are fixed in Caddy 2.11.8, and this image is now built on
+2.11.9**, which no Caddy advisory affects.
 
-None of these is reachable through configuration CaddyUI generates, and tenant-authored config cannot reach any of them (`file_server`, `templates` and `acme_server` are admin-only — see *Roles and the admin boundary*). They matter only to an **admin hand-writing** one of the configurations below, which CaddyUI does support.
+None carried a CVE id, so none appeared in OSV or in CVE-keyed scanners — they were visible only
+through GitHub's repository advisory endpoint. That blind spot is why the pinned-module watcher
+cross-checks that endpoint per repository, and why a green image-gate scan is not on its own evidence
+that a base image is clean.
 
-| Advisory | Severity | Precondition an admin must write |
-|---|---|---|
-| [`GHSA-r766-rf9f-588h`](https://github.com/caddyserver/caddy/security/advisories/GHSA-r766-rf9f-588h) | **high** | A `root` built from the request host (e.g. `root * /srv/sites/{host}`). `Host` / `:authority` values containing dot segments or slashes escape that root. |
-| [`GHSA-f278-mgc7-46j3`](https://github.com/caddyserver/caddy/security/advisories/GHSA-f278-mgc7-46j3) | medium | A `php_fastcgi` site. Dot segments in the request path bypass authorization. |
-| [`GHSA-jf74-f69g-hcj9`](https://github.com/caddyserver/caddy/security/advisories/GHSA-jf74-f69g-hcj9) | medium | `file_server` where Caddy's data directory has fallen back to `./caddy`; private keys become servable. |
-| [`GHSA-25cw-38mq-q7m6`](https://github.com/caddyserver/caddy/security/advisories/GHSA-25cw-38mq-q7m6) | medium | A `file` matcher used to enforce suffix path rules; `/file/./` resolves to a regular file and bypasses the matcher. |
-| [`GHSA-69hv-5jfc-mvmv`](https://github.com/caddyserver/caddy/security/advisories/GHSA-69hv-5jfc-mvmv) | medium | A `rewrite` using `{http.matchers.file.remainder}`, which is re-decoded and bypasses path-based deny rules. |
-
-**Until an upstream fix ships, do not build a `root` from `{host}`.** Enumerate sites explicitly, or map host to directory in CaddyUI rather than interpolating the request host into a filesystem path. This is the only mitigation available for the high-severity advisory; the others are avoided by not using the named directive, or by leaving `file_server` to admins as shipped.
-
-The base image will be refreshed onto the first Caddy release that fixes these.
-
+If you run an older `caddyui-caddy` image, upgrade. Builds from 2.11.7 or earlier remain affected,
+and the preconditions were admin-authored config: a `root` built from `{host}`, a `php_fastcgi` site,
+`file_server` with the data directory fallen back to `./caddy`, or a `file` matcher or `rewrite` using
+the file-matcher remainder. CaddyUI generates none of those, and `file_server`, `templates` and
+`acme_server` are admin-only — see *Roles and Permissions*.
 ---
 
 ## Threat Model Notes
