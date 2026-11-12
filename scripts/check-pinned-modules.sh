@@ -402,6 +402,23 @@ resolve_module() {
 # queryable by one and not the other, and the advisory column must only read
 # as clean when AT LEAST ONE question was actually asked.
 #
+# THE ROW IS READ WITH A FIELD-COUNT ASSERTION, NOT BY FIELD POSITION. The
+# note below says `note` goes last because `IFS=$'\t' read` collapses a run of
+# separators rather than preserving an empty field. Adding osv_commit created a
+# SECOND routinely-empty field, and `note` being last stopped protecting
+# anything: for a commit pin whose upstream HEAD could not be read,
+# osv_commit is empty while note is set, so the note text slid into
+# osv_commit, `asked` reached 2, the advisory lookup found nothing, and the
+# cell rendered the clean em dash reserved for "both questions asked and
+# clean" — a false clean of exactly the kind this script exists to prevent,
+# introduced by the change that was meant to remove one. Reproduced before
+# fixing.
+#
+# Position-based reading cannot be made safe by ordering alone once more than
+# one field can be empty, so the rows are now split by awk (which counts
+# fields correctly) into a NUL-delimited stream with an explicit NF check, and
+# a row of the wrong width becomes a malformed row rather than a shifted one.
+#
 # osv_version is kept separate from `pinned` on purpose: `pinned` is what the
 # Dockerfile says and is what a human must read in the report, while
 # osv_version is what OSV can actually range-match (see the pseudo-version
@@ -420,6 +437,19 @@ resolve_module() {
 # only routinely-empty field, goes LAST.
 rows="$OUT_DIR/rows.tsv"
 : > "$rows"
+
+# awk emits, per row, the field count and then EACH FIELD individually, every
+# item NUL-terminated. The consumers `mapfile -d ''` that stream, so an empty
+# field occupies its own slot and nothing shifts.
+#
+# Note that `IFS=$'\t' read -r -a` does NOT solve this: word splitting
+# collapses a run of separators there exactly as it does for scalar `read`, so
+# an array read reproduced the same left-shift. Verified both ways before
+# settling on a per-field NUL stream, which is the only form that preserves an
+# empty field positionally.
+row_reader() {
+  awk -F'\t' '{ printf "%d%c", NF, 0; for (i = 1; i <= NF; i++) printf "%s%c", $i, 0 }' "$1"
+}
 errors="$OUT_DIR/errors.txt"
 : > "$errors"
 
@@ -525,7 +555,16 @@ while IFS=$'\t' read -r arg pinned; do
   if is_untagged_pin "$pinned" || [ -n "$repo" ]; then
     kind="commit"
     if [ -z "$repo" ]; then
-      repo="$(jq -r '.Origin.URL // ""' <<<"$latest_json" 2>/dev/null || true)"
+      # clean_scalar even though the value is allowlisted below: this is the
+      # one upstream scalar that used to skip it, and on the REJECTION path it
+      # is echoed into $errors, so a newline in it injected attacker-chosen
+      # lines into the report. That was contained only because the error
+      # renderer re-prefixes every line with `- ` and because $errors is
+      # tested with `-s` (which forces `error`, i.e. away from a clean
+      # verdict) — both incidental properties of today's code, which is
+      # precisely the condition this file's header says re-opens the bug
+      # class. Sanitised at the point of read, like every other scalar.
+      repo="$(clean_scalar "$(jq -r '.Origin.URL // ""' <<<"$latest_json" 2>/dev/null || true)")"
       [ -n "$repo" ] && repo="${repo}.git"
     fi
     head=""
@@ -724,6 +763,14 @@ gh_extra="$OUT_DIR/gh-extra.tsv"
 gh_checked=0
 gh_unavailable=""
 
+# The skip switch is a local/test escape hatch and is set by no workflow, but
+# it must not be able to produce a report that CLAIMS the cross-check ran. It
+# routes through the same `gh_unavailable` path as a rate limit, so the
+# all-clear sentence cannot print and the verdict reaches `attention`.
+if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" = "1" ]; then
+  gh_unavailable="the GitHub advisory cross-check was disabled via PINWATCH_SKIP_GITHUB, so no second index was consulted"
+fi
+
 if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
   gh_auth=()
   gh_tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
@@ -737,7 +784,14 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
     case "$g_module" in github.com/*/*) ;; *) continue ;; esac
     g_owner="$(printf '%s' "$g_module" | cut -d/ -f2)"
     g_repo="$(printf '%s' "$g_module" | cut -d/ -f3)"
+    # `.` is in the character class, so the pattern alone accepts `../r` and
+    # `../..`. Not reachable from a network response today — the module path
+    # comes from resolve_module walking the Dockerfile argument, so forging it
+    # needs commit access, and curl normalises the traversal server-side while
+    # the scheme and host are literal with no -L anywhere — but a path
+    # component that can climb has no business reaching a URL regardless.
     printf '%s' "$g_owner/$g_repo" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || continue
+    case "$g_owner/$g_repo" in *..*) continue ;; esac
 
     g_body="$(curl -fsS --max-time 25 \
       -H 'Accept: application/vnd.github+json' \
@@ -765,6 +819,12 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
     # and the table printed a version range under "severity". Observed, not
     # theoretical.
     while IFS= read -r -d '' g_rec; do
+      # A record with no marker would leave every ${var#*} unchanged, so the
+      # GHSA id would echo into the severity and range cells — visible
+      # nonsense in a table a human is asked to judge. Skipped rather than
+      # rendered; it cannot hide a finding, because a record this malformed
+      # carried no usable advisory in the first place.
+      case "$g_rec" in **) ;; *) continue ;; esac
       g_ghsa="${g_rec%%*}";  g_rest="${g_rec#*}"
       g_cve="${g_rest%%*}";  g_rest="${g_rest#*}"
       g_sev="${g_rest%%*}";  g_range="${g_rest#*}"
@@ -857,7 +917,18 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
     # de-duplication above compares against what OSV actually said rather
     # than against an empty string (which would re-report every OSV hit as
     # a GitHub-only finding).
-    while IFS=$'\t' read -r r_arg r_pinned r_module _r_latest _r_time _r_kind r_osvver r_osvcommit _r_note; do
+    # Same field-count discipline as the report loop below: an empty
+    # osv_version or osv_commit must not shift the remaining fields.
+    mapfile -d '' -t r_toks < <(row_reader "$rows")
+    r_i=0
+    while [ "$r_i" -lt "${#r_toks[@]}" ]; do
+      # Same field-count discipline as the report loop: an empty osv_version
+      # or osv_commit must not shift the remaining fields.
+      [ "${r_toks[$r_i]}" = "9" ] || break
+      r_f=( "${r_toks[@]:$((r_i+1)):9}" )
+      r_i=$(( r_i + 10 ))
+      r_pinned="${r_f[1]-}"; r_module="${r_f[2]-}"
+      r_osvver="${r_f[6]-}"; r_osvcommit="${r_f[7]-}"
       [ -n "$r_module" ] || continue
       case "$r_module" in unresolved) continue ;; esac
       r_ids=""
@@ -870,7 +941,7 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
         fi
       fi
       printf '%s\t%s\t%s\n' "$r_module" "$r_pinned" "$r_ids"
-    done < "$rows" | sort -u
+    done | sort -u
   )
 fi
 
@@ -889,7 +960,28 @@ report="$OUT_DIR/report.md"
 } > "$report"
 
 malformed_rows=0
-while IFS=$'\t' read -r arg pinned module latest latest_time kind osv_version osv_commit note; do
+mapfile -d '' -t row_toks < <(row_reader "$rows")
+row_i=0
+while [ "$row_i" -lt "${#row_toks[@]}" ]; do
+  row_nf="${row_toks[$row_i]}"
+  # A row that is not exactly nine fields wide was not written by this script
+  # as it stands, so it is a format error rather than something to interpret.
+  # Counting it as malformed reaches the `error` verdict via the existing
+  # guard, instead of letting a shifted field render a clean-looking cell.
+  case "$row_nf" in
+    9) ;;
+    *)
+      malformed_rows=$((malformed_rows+1))
+      echo "row with ${row_nf:-0} field(s) instead of 9; this pin was NOT compared" >> "$errors"
+      # Without a trustworthy width there is no way to find the next row, so
+      # stop rather than resynchronise onto a field boundary by guesswork.
+      break ;;
+  esac
+  row_f=( "${row_toks[@]:$((row_i+1)):9}" )
+  row_i=$(( row_i + 10 ))
+  arg="${row_f[0]-}"; pinned="${row_f[1]-}"; module="${row_f[2]-}"
+  latest="${row_f[3]-}"; latest_time="${row_f[4]-}"; kind="${row_f[5]-}"
+  osv_version="${row_f[6]-}"; osv_commit="${row_f[7]-}"; note="${row_f[8]-}"
   # Defence in depth behind clean_scalar. If a row is ever short of fields,
   # `kind` reads empty, matches no `case` branch below, and the pin is
   # silently never compared -- which is how a deceived run produced
@@ -1005,7 +1097,7 @@ while IFS=$'\t' read -r arg pinned module latest latest_time kind osv_version os
   fi
   printf '| `%s` | `%s` | %s | %s |\n' \
     "$arg" "$pinned" "$up" "$adv_cell" >> "$report"
-done < "$rows"
+done
 
 {
   echo
