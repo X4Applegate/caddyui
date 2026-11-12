@@ -781,24 +781,54 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
 
       # Drop advisories that are plainly OLDER than the pin. GitHub's range is
       # free text, so this is a conservative TEXTUAL filter, not a comparator:
-      # it only discards a range of the shape `<= X` / `< X` (optionally after
-      # a `>= 0,` lower bound) where X sorts strictly below the pinned version.
-      # Anything it cannot confidently place is KEPT, because the failure to
-      # understand a range must not look like the absence of an advisory.
+      # it only discards a range whose upper bound sorts strictly below the
+      # pinned version. Anything it cannot confidently place is KEPT, because
+      # the failure to understand a range must not look like the absence of an
+      # advisory — a dropped row is invisible, and this is the one place in
+      # this script where being wrong produces a false CLEAN.
       #
-      # Without this the cross-check reported 12 "GitHub-only" findings for
-      # this Dockerfile, mostly advisories fixed long before the pinned
+      # Without any filter the cross-check reported 12 "GitHub-only" findings
+      # for this Dockerfile, mostly advisories fixed long before the pinned
       # release — exactly the history noise trap 3 above exists to keep out of
       # this report, re-entering through the second index.
+      #
+      # THE BOUND IS THE HIGHEST ONE IN THE STRING, NOT THE LAST. An earlier
+      # version used `tail -1`, which takes the textually last `<=` match, and
+      # that is a false-clean generator on three observed-plausible shapes:
+      #
+      #   "<= 1.7.8, <= 1.0.0"             pin 1.7.8 -> dropped on 1.0.0
+      #   "affects <= 9.9.9 and <= 1.0.0"  pin 5.4.0 -> dropped on 1.0.0
+      #
+      # A range listing several bounds is legal free text, and an attacker who
+      # controls GitHub's response (or simply a sloppy advisory author) could
+      # append a low bound to hide a real finding. Taking the maximum means an
+      # extra bound can only ever make the row MORE likely to be kept.
+      #
+      # It is also compared with the pin ZERO-PADDED to the same number of
+      # components. `sort -V` ranks "5.4" below "5.4.0", so a truncated bound
+      # of `<= 5.4` dropped a row whose pin was exactly v5.4.0 — the advisory
+      # covers the pin and the filter hid it. Padding makes "5.4" compare as
+      # "5.4.0", so equality is seen and the row is kept.
       g_hi="$(printf '%s' "$g_range" | grep -oiE '<=?[[:space:]]*v?[0-9]+(\.[0-9]+)*' \
-              | tail -1 | grep -oE '[0-9]+(\.[0-9]+)*' || true)"
+              | grep -oE '[0-9]+(\.[0-9]+)*' | sort -V | tail -1 || true)"
       if [ -n "$g_hi" ] && ! printf '%s' "$g_range" | grep -qE '^[[:space:]]*(>|>=)' ; then
         g_pin_n="${g_pinned#v}"
         case "$g_pin_n" in
           *[!0-9.]*) ;;   # pseudo-version or SHA: cannot compare, keep
           *)
-            if [ "$(printf '%s\n%s\n' "$g_pin_n" "$g_hi" | sort -V | tail -1)" = "$g_pin_n" ] \
-               && [ "$g_pin_n" != "$g_hi" ]; then
+            # Pad the SHORTER of the two with .0 components so that a
+            # truncated bound compares as the release it names.
+            g_cmp_pin="$g_pin_n"; g_cmp_hi="$g_hi"
+            while [ "$(printf '%s' "$g_cmp_hi" | tr -cd '.' | wc -c)" \
+                 -lt "$(printf '%s' "$g_cmp_pin" | tr -cd '.' | wc -c)" ]; do
+              g_cmp_hi="$g_cmp_hi.0"
+            done
+            while [ "$(printf '%s' "$g_cmp_pin" | tr -cd '.' | wc -c)" \
+                 -lt "$(printf '%s' "$g_cmp_hi" | tr -cd '.' | wc -c)" ]; do
+              g_cmp_pin="$g_cmp_pin.0"
+            done
+            if [ "$(printf '%s\n%s\n' "$g_cmp_pin" "$g_cmp_hi" | sort -V | tail -1)" = "$g_cmp_pin" ] \
+               && [ "$g_cmp_pin" != "$g_cmp_hi" ]; then
               continue   # upper bound is strictly below the pin
             fi ;;
         esac
