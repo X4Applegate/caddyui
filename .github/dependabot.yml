@@ -49,10 +49,33 @@ updates:
     commit-message:
       prefix: "ci(deps)"
 
+  # Dockerfile and Dockerfile.caddy base images. Weekly rather than monthly
+  # because this is the only automation that moves `caddy:2.11.x-builder` and
+  # `caddy:2.11.x-alpine`: Dockerfile.caddy's own `apk upgrade --no-cache`
+  # refreshes the Alpine packages inside the pinned base, but nothing moves the
+  # pin itself, so a new Caddy patch release sat unproposed for as long as the
+  # interval. caddy-image-refresh.yml rebuilds and scans weekly on the same
+  # day, so a human reviewing one is looking at the other's result too.
+  #
+  # Grouped for the same reason as the Go bumps — the two base images move in
+  # lockstep and are one decision, not two PRs. The week's cooldown means a
+  # bad base-image release is usually pulled before it is proposed here.
+  # Dependabot does not touch the digest-pinned BuildKit, binfmt or SBOM
+  # scanner images in release-docker.yml; that file's header says how.
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
+    groups:
+      caddy-base-images:
+        patterns:
+          - "caddy"
+      docker-base-images:
+        patterns:
+          - "*"
     commit-message:
       prefix: "build(docker)"

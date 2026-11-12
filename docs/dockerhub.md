@@ -285,6 +285,50 @@ No PEM upload, fake proxy upstream, or private-key transfer is required.
 
 Multi-arch: `linux/amd64` + `linux/arm64`. Scratch base image, runs as non-root uid `10001`.
 
+### `applegater/caddyui-caddy` patch tags: `:vX.Y.Z-pN`
+
+The Caddy image carries one extra tag shape that `applegater/caddyui` does not.
+
+`applegater/caddyui-caddy` is built from [`Dockerfile.caddy`](https://github.com/X4Applegate/caddyui/blob/main/Dockerfile.caddy), whose final stage runs `apk upgrade --no-cache` so the image ships Alpine security fixes the upstream `caddy:*-alpine` base has not been rebuilt for yet. Those fixes only reach you when something rebuilds the image — and the release pipeline rebuilds it only when `Dockerfile.caddy` itself changes, which is the right rule for the plugin set but leaves the OS layer to go stale between releases.
+
+A scheduled job therefore rebuilds and re-scans the image weekly. When the rebuild closes vulnerabilities and introduces none, it is published as:
+
+| Tag | What it points at |
+|---|---|
+| `:vX.Y.Z` | The CaddyUI release whose module set this image was built with. |
+| `:vX.Y.Z-pN` | Base-layer refresh **N** of that same release. Immutable. |
+| `:stable` / `:latest` | The newest refresh, i.e. the highest `-pN` of the newest `vX.Y.Z`. |
+
+**`-pN` means exactly one thing: only the base OS layer moved.** So `v2.68.8-p3` is `v2.68.8`'s Caddy build on a newer Alpine layer — no Caddy upgrade, no plugin change, nothing to re-test at the application level. `N` counts up from 1 and is never reused.
+
+That is **enforced, not assumed**. A refresh is built from the `vX.Y.Z` tag's own `Dockerfile.caddy`, and before it is published the pipeline diffs `caddy list-modules --versions` between the published image and the rebuild and refuses to publish on any difference. This matters because `Dockerfile.caddy` deliberately leaves several plugin versions unpinned, so a rebuild *could* otherwise pick up a new DNS provider or WAF release; a plugin change has to go through a normal release instead, where it gets a version number and a CHANGELOG entry. You can check it yourself:
+
+```sh
+docker run --rm --entrypoint /usr/bin/caddy applegater/caddyui-caddy:stable list-modules --versions
+```
+
+Why a counter and not a date: a date records when a build ran, not what went into it. Two builds on one day collide, a republish after a failed push needs a suffix anyway, and a date invites "newer must be safer" when the real question is which CVEs closed. The build time is recorded where it belongs, in the image's `org.opencontainers.image.created` label:
+
+```sh
+docker buildx imagetools inspect applegater/caddyui-caddy:stable --format '{{json .Image}}' \
+  | grep -o '"org.opencontainers.image.created":"[^"]*"'
+```
+
+**What this does and does not guarantee.** Because `apk upgrade --no-cache` is deliberately unpinned — that is how the image picks up fixes at all — two builds of the same source a week apart produce *different* images. So:
+
+- ✅ **Reproducible by digest.** A tag names exactly one artifact. `:vX.Y.Z-pN` never changes under you, and `:stable`/`:latest` are moved to a digest only after that exact digest has been re-scanned and passed the gate — so the moving tags always point at bytes that were checked, not at a later unverified rebuild.
+- ❌ **Not bit-for-bit rebuildable** from `Dockerfile.caddy` alone. Rebuilding it yourself tomorrow will not reproduce today's digest. That stronger property would require pinning every Alpine package explicitly.
+
+**Pin a digest if you need byte-level certainty**, and `:vX.Y.Z-pN` if you want a stable, immutable name:
+
+```yaml
+image: applegater/caddyui-caddy:v2.68.8-p1
+# or, strictest:
+image: applegater/caddyui-caddy@sha256:…
+```
+
+Every refresh is gated on a human review before it is published, and a rebuild that *introduces* a vulnerability — or that changes the Caddy module set — is blocked rather than shipped.
+
 ---
 
 ## 🔧 Configuration
