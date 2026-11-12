@@ -888,6 +888,57 @@ fi
       echo "No new findings, and neither the module set nor the image configuration changed: every vulnerability in the rebuilt image is already present in the published image, against the same package."
     fi
     echo
+
+    # What "no new findings" is NOT evidence of.
+    #
+    # Printed only on a non-blocked verdict, because that is the one a reader
+    # over-reads. A blocked summary already tells them to look; a green one is
+    # where "the gate passed" quietly becomes "there are no known advisories",
+    # and those are different statements.
+    #
+    # Two independent limits, both measured in this repo rather than supposed:
+    #
+    #  - Trivy's vulnerability data is OSV-derived, and gate 1 is set
+    #    arithmetic over it. An advisory OSV has not ingested is in NEITHER
+    #    findings list, so it cannot appear in the added set and cannot block.
+    #    Measured during T-0624: five go-jose/v4 advisories published
+    #    2026-10-30, affecting every version through 4.1.6, were absent from
+    #    OSV thirteen days later (`/v1/vulns/GHSA-v6h2-qj3f-2h6v` -> code 5,
+    #    not found) and absent from Trivy's scan of the image that contained
+    #    them. All five lack a CVE id, which is the likely reason. The repo
+    #    nearly shipped a release calling that image clean.
+    #
+    #  - The gate is a DIFFERENCE, by design (see gate 1's rationale: a
+    #    zero-findings rule could never publish, because GO-2026-5932 sits on
+    #    every image). So a finding present on both sides cancels out and is
+    #    reported under "closed by this rebuild"/counts, never as a reason to
+    #    stop. `unchanged` means "no worse than what the fleet already runs",
+    #    which is the question this gate asks and the only one it answers.
+    #
+    # The pin watcher is named because it is the check that DOES ask the other
+    # question, against GitHub's repo-scoped advisory index (T-0634) — so the
+    # reader is pointed at a real second source rather than merely warned.
+    #
+    # But it is named for what it ACTUALLY covers: the `--with` plugin pins,
+    # not CaddyUI's own `go.mod`. Measured 2026-11-12 (T-0654): `go.mod` is
+    # watched by Dependabot's gomod ecosystem, which keys on GitHub's GLOBAL
+    # advisory database -- and that index omits CVE-less advisories just as
+    # OSV does. The same five go-jose records are absent from it, and no
+    # Dependabot alert was ever raised for them, while all 19 alerts this repo
+    # HAS received carry a CVE id. So pointing a reader at the pin watcher for
+    # a go.mod question would be sending them to a check that does not look
+    # there. Both scopes are stated rather than one implied.
+    echo "<details><summary>What this verdict is not evidence of</summary>"
+    echo
+    echo "**It is not a statement that the image has no known advisories.** Two limits, both deliberate:"
+    echo
+    echo "- **Trivy's vulnerability data is OSV-derived, and this gate is set arithmetic over it.** An advisory OSV has not ingested is missing from *both* findings lists, so it cannot be \"added\" and cannot block. That is not hypothetical here: five \`go-jose/v4\` advisories published 2026-10-30, affecting every version through 4.1.6, were still absent from OSV thirteen days later and absent from Trivy's scan of the image containing them. None of the five has a CVE id, and a CVE-less advisory is reliably visible only on GitHub's **per-repository** endpoint."
+    echo "  - For the \`--with\` plugin pins, the weekly pin watcher (\`check-pinned-modules.sh\`) asks that endpoint — read it, not this gate, for \"are there known advisories\"."
+    echo "  - For CaddyUI's own \`go.mod\`, **nothing currently asks it.** Dependabot covers \`go.mod\` but keys on GitHub's *global* advisory index, which omits CVE-less records the same way OSV does. See \`SECURITY.md\` → \"How \`go.mod\` is watched for advisories\"."
+    echo "- **This gate is a difference, not an audit.** A finding present on both images cancels out by construction, because a zero-findings standard could never publish anything. \`$verdict\` means *no worse than the image the fleet already runs* — which is the question it asks, and the only one it answers."
+    echo
+    echo "</details>"
+    echo
   fi
 
   if [ "$removed_total" -gt 0 ]; then
