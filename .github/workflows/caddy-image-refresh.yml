@@ -419,6 +419,9 @@ jobs:
     outputs:
       verdict: ${{ steps.check.outputs.verdict }}
       report: ${{ steps.check.outputs.report }}
+      # Exposed so `alert` can distinguish "could not establish whether an
+      # advisory applies" from an ordinary could-not-run; see that job's `if`.
+      advisory_unknown: ${{ steps.check.outputs.advisory_unknown }}
     steps:
       # main's checkout, not the release tag's: this asks whether the pins we
       # ship TODAY are current, and the script only exists on main. Checking
@@ -427,9 +430,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Check pins against proxy.golang.org and OSV
+      - name: Check pins against proxy.golang.org, OSV and GitHub advisories
         id: check
         shell: bash
+        env:
+          # Only to lift the advisory-API rate limit from 60/hour per runner IP
+          # to 5000/hour. The endpoint the script calls
+          # (/repos/{owner}/{repo}/security-advisories) is public, so
+          # `contents: read` already suffices and no extra permission is
+          # granted here; without the token the cross-check simply reports
+          # itself as unavailable on a busy runner rather than appearing to
+          # find nothing. A rate-limit body is a JSON object, and the script
+          # refuses to read a non-array as an empty advisory list.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           [ -x scripts/check-pinned-modules.sh ] \
@@ -470,19 +483,40 @@ jobs:
       - name: Flag the result
         env:
           VERDICT: ${{ steps.check.outputs.verdict }}
+          ADV_UNKNOWN: ${{ steps.check.outputs.advisory_unknown }}
+          ADV_PARTIAL: ${{ steps.check.outputs.advisory_partial }}
+          GITHUB_ONLY: ${{ steps.check.outputs.github_only }}
         shell: bash
         run: |
           case "$VERDICT" in
             advisory)
               echo "::error::a published advisory matches a PINNED plugin version - see the job summary" ;;
             attention)
-              echo "::notice::a pinned plugin is behind upstream - see the job summary" ;;
+              echo "::notice::a pinned plugin is behind upstream, or an advisory needs a human read - see the job summary" ;;
             ok)
-              echo "::notice::every pin is current and no advisory matches a pinned version" ;;
+              echo "::notice::every pin is current, and both the version-scoped and commit-scoped advisory queries came back clean" ;;
             '')
               echo "::warning::the pin check produced no verdict, so nothing was verified; an unchecked pin is not a clean pin" ;;
             *)
               echo "::warning::the pin check could not complete (verdict: $VERDICT); an unchecked pin is not a clean pin" ;;
+          esac
+
+          # Called out separately from the verdict because "could not establish"
+          # is the failure mode this watch is least able to afford and the
+          # easiest to skim past: the advisory column prints a dash for a pin
+          # OSV cleared, and anything that is NOT such a dash has to be visible
+          # in the log and not only in the summary. See T-0634.
+          case "$ADV_UNKNOWN" in
+            ''|0) ;;
+            *) echo "::warning::advisory status could not be established for $ADV_UNKNOWN pin(s); those rows say nothing about whether an advisory applies" ;;
+          esac
+          case "$ADV_PARTIAL" in
+            ''|0) ;;
+            *) echo "::warning::$ADV_PARTIAL pin(s) were checked by only one of the two advisory queries, so the result is narrower than a clean dash" ;;
+          esac
+          case "$GITHUB_ONLY" in
+            ''|0) ;;
+            *) echo "::warning::GitHub's advisory database lists $GITHUB_ONLY advisory record(s) that OSV did not report for these pins; the ranges are free text and need a human read" ;;
           esac
 
   # ---------------------------------------------------------------------------
@@ -701,11 +735,23 @@ jobs:
     # exists to avoid. An improved-but-unpublished rebuild is excluded for the
     # same reason. An advisory against a version the six boxes are running is
     # the opposite case: rare, and worth interrupting someone for.
+    #
+    # `advisory_unknown` alerts for the same reason, and it is the condition
+    # T-0634 was filed about: a pin whose advisory status could not be
+    # ESTABLISHED is indistinguishable, from the report alone, from a pin that
+    # was checked and is clean. It stays quiet in the common case (it is 0
+    # whenever both queries could be asked, which is every pin today), so it
+    # does not re-introduce the weekly noise the paragraph above rejects — but
+    # when it does fire, nobody learns anything from a verdict buried in a log
+    # line. Note this is the COUNT, not the verdict: `error` also covers
+    # ordinary proxy hiccups, which are not worth an issue.
     if: >-
       always() && (
         needs.build-scan.result == 'failure' ||
         needs.build-scan.outputs.verdict == 'blocked' ||
         needs.watch-pins.outputs.verdict == 'advisory' ||
+        (needs.watch-pins.outputs.advisory_unknown != '0' &&
+         needs.watch-pins.outputs.advisory_unknown != '') ||
         (github.event_name == 'workflow_dispatch' && inputs.force_alert)
       )
     runs-on: ubuntu-latest

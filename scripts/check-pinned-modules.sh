@@ -91,6 +91,48 @@
 #    pseudo-version, so no normalisation is needed. Sent as ONE /v1/querybatch
 #    rather than fifteen /v1/query calls: fewer round trips, and every pin is
 #    then matched against the same snapshot of the database.
+#
+# 4. THE PACKAGE+VERSION QUERY CANNOT SEE A WHOLE CLASS OF ADVISORY, so on its
+#    own it is a detector that reports clean where it is structurally blind.
+#    Trap 3 above is still true and still necessary — it is about NOISE. This
+#    is the opposite failure, and it is the worse one.
+#
+#    OSV ingests CVEs that never got a curated Go advisory through the
+#    `cve-osv-conversion` pipeline. Those records carry NO `package` field at
+#    all: the affected range is a `GIT` range keyed on the repo URL, with the
+#    semver equivalent buried in `database_specific.extracted_events`. OSV's
+#    package-scoped query index has nothing to match on, so such a record is
+#    invisible to a package+version query and reachable only by its ID.
+#
+#    Measured on the chi pin this image actually shipped (T-0634):
+#
+#      {"package":"github.com/go-chi/chi/v5","version":"v5.4.0"}  -> {}
+#      {"package":"github.com/go-chi/chi/v5"} (no version)        -> {}
+#      {"commit":"7f9b7448f51d..."} (v5.4.0's upstream commit)     -> 2 CVEs
+#
+#    CVE-2026-118681 (auth bypass, fixed 5.5.0) and CVE-2026-122132 (open
+#    redirect, 5.2.2 through 5.5.0) BOTH affected the pinned version, and the
+#    package query returned clean for both. T-0626 published a table saying
+#    "advisory on pin? none" for chi on the strength of that query.
+#
+#    So the pinned version is ALSO resolved to its upstream commit and queried
+#    by `{"commit": ...}`, which matches GIT ranges directly, and the two
+#    result sets are unioned. The commit comes from the module proxy's
+#    `.info` endpoint (`Origin.Hash`) and is available for a plain tag, a
+#    pseudo-version and a bare SHA alike, so every pin gets both questions.
+#
+#    The commit query does NOT re-introduce trap 3's noise: it is matched
+#    against GIT ranges containing that specific commit, not against the
+#    module's history. Verified on golang.org/x/net, which has 18 historical
+#    advisories and returns 0 for its pinned commit.
+#
+#    Both questions go in the SAME querybatch. Verified that /v1/querybatch
+#    accepts commit and package queries mixed in one request and returns
+#    results 1:1 in query order, so the existing count-reconciliation below
+#    still holds.
+#
+#    A pin for which NEITHER question could be asked must not render like a
+#    pin that was asked and came back clean — see `adv_cell` near the end.
 set -uo pipefail
 
 PROXY="${GOPROXY_BASE:-https://proxy.golang.org}"
@@ -129,6 +171,12 @@ die() {
       echo "behind=0"
       echo "advisories=0"
       echo "moved=0"
+      # Not 0: nothing was established about any pin, and a 0 here would read
+      # as "no pin had an unknown advisory status" — the same false clean the
+      # verdict above is guarding against.
+      echo "advisory_unknown=unknown"
+      echo "advisory_partial=unknown"
+      echo "github_only=unknown"
       echo "report<<$PINREPORT_DELIM"
       echo "### Pinned xcaddy plugin watch"
       echo
@@ -347,7 +395,12 @@ resolve_module() {
 # ---------------------------------------------------------------------------
 # Pass 1 — resolve module paths and latest versions.
 # ---------------------------------------------------------------------------
-# arg \t pinned \t module \t latest \t latest_time \t kind \t osv_version \t note
+# arg \t pinned \t module \t latest \t latest_time \t kind \t osv_version \t osv_commit \t note
+#
+# osv_commit is the upstream commit the pinned version was cut from, used for
+# the GIT-range query (trap 4). It is independent of osv_version: a pin can be
+# queryable by one and not the other, and the advisory column must only read
+# as clean when AT LEAST ONE question was actually asked.
 #
 # osv_version is kept separate from `pinned` on purpose: `pinned` is what the
 # Dockerfile says and is what a human must read in the report, while
@@ -382,15 +435,15 @@ while IFS=$'\t' read -r arg pinned; do
     line="$(grep -P "^\Q$arg\E\t" "$FIXTURE" 2>/dev/null || grep -F "$arg	" "$FIXTURE" 2>/dev/null || true)"
     module="$(printf '%s' "$line" | cut -f2)"
     latest="$(printf '%s' "$line" | cut -f3)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$arg" "$pinned" "${module:-$arg}" "${latest:-unknown}" "-" "tag" "$pinned" "" >> "$rows"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$arg" "$pinned" "${module:-$arg}" "${latest:-unknown}" "-" "tag" "$pinned" "" "" >> "$rows"
     continue
   fi
 
   if ! resolved="$(resolve_module "$arg")"; then
     echo "could not resolve any module path for '$arg' on $PROXY" >> "$errors"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$arg" "$pinned" "unresolved" "unknown" "-" "error" "" "proxy returned no module for this path or any parent" >> "$rows"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$arg" "$pinned" "unresolved" "unknown" "-" "error" "" "" "proxy returned no module for this path or any parent" >> "$rows"
     continue
   fi
   module="$(clean_scalar "$(printf '%s' "$resolved" | cut -f1)")"
@@ -433,16 +486,37 @@ while IFS=$'\t' read -r arg pinned; do
   # does parse. If that conversion fails there is no safe version to send, so
   # the row is marked advisory-unknown rather than queried with a value OSV
   # will misread.
+  # One `.info` fetch answers both questions, so it is done once here. The
+  # endpoint returns the canonical version AND `Origin.Hash`, the upstream
+  # commit the version was cut from.
+  info_json="$(proxy_get "$module" "@v/${pinned}.info" 2>/dev/null || true)"
+
   osv_version="$pinned"
   if is_untagged_pin "$pinned" && [ "${pinned#v0.0.0-}" = "$pinned" ] \
      && [ "${pinned#*-0.}" = "$pinned" ]; then
-    pv="$(clean_scalar "$(proxy_get "$module" "@v/${pinned}.info" | jq -r '.Version // ""' 2>/dev/null || true)")"
+    pv="$(clean_scalar "$(jq -r '.Version // ""' <<<"$info_json" 2>/dev/null || true)")"
     if [ -n "$pv" ]; then
       osv_version="$pv"
     else
       osv_version=""   # no safe value; excluded from the batch below
-      echo "could not resolve commit '$pinned' of '$module' to a pseudo-version; advisory status is UNKNOWN for this pin" >> "$errors"
+      echo "could not resolve commit '$pinned' of '$module' to a pseudo-version; the version-scoped advisory query was not possible for this pin" >> "$errors"
     fi
+  fi
+
+  # The commit for the GIT-range query (trap 4). Validated as a full 40-char
+  # hex SHA before use: it is untrusted HTTP body text on its way into a JSON
+  # request body, and a non-SHA value there would at best waste the query and
+  # at worst be a value OSV misinterprets the way it misinterprets a
+  # non-version. A short or malformed hash is treated as "no commit to ask
+  # about", which feeds the unknown rendering rather than a clean dash.
+  osv_commit="$(clean_scalar "$(jq -r '.Origin.Hash // ""' <<<"$info_json" 2>/dev/null || true)")"
+  if [ -n "$osv_commit" ] \
+     && ! printf '%s' "$osv_commit" | grep -qE '^[0-9a-f]{40}$'; then
+    echo "implausible commit hash '$osv_commit' from $PROXY for '$arg'; the GIT-range advisory query was not possible for this pin" >> "$errors"
+    osv_commit=""
+  fi
+  if [ -z "$osv_commit" ]; then
+    echo "could not resolve '$pinned' of '$module' to an upstream commit; the GIT-range advisory query (which is the only one that sees package-less CVE records) was not possible for this pin" >> "$errors"
   fi
 
   note=""
@@ -496,8 +570,8 @@ while IFS=$'\t' read -r arg pinned; do
     fi
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$arg" "$pinned" "$module" "$latest" "$latest_time" "$kind" "$osv_version" "$note" >> "$rows"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$arg" "$pinned" "$module" "$latest" "$latest_time" "$kind" "$osv_version" "$osv_commit" "$note" >> "$rows"
 done < "$pins_file"
 
 # ---------------------------------------------------------------------------
@@ -528,20 +602,39 @@ if [ -z "$FIXTURE" ] && grep -q 'caddy-crowdsec-bouncer' "$pins_file"; then
 fi
 
 # ---------------------------------------------------------------------------
-# Pass 3 — OSV, one batch, every pin matched against its pinned version.
+# Pass 3 — OSV, one batch, TWO questions per pin.
+#
+# The package+version question (trap 3) and the commit question (trap 4) are
+# both asked, in the same batch, and their results are unioned per pin. Asking
+# only the first is the blindness T-0634 is about; asking only the second
+# would lose the curated Go advisories that have a proper package range.
+#
+# The keys are kept disjoint so the mapping back onto rows cannot collide:
+# a version query is keyed `v<TAB>module<TAB>version`, a commit query
+# `c<TAB>commit<TAB>-`. Two pins sharing a commit (same repo, different
+# module paths) is legal and both rows then read the same answer, which is
+# correct.
 # ---------------------------------------------------------------------------
 osv_out="$OUT_DIR/osv.json"
 echo '{}' > "$osv_out"
 osv_failed=0
 
 if [ -z "$FIXTURE" ]; then
-  # $8 (osv_version), not $2 (pinned): see the rows.tsv comment. A row with an
-  # empty $8 is deliberately left out of the batch — querying it would return
-  # the module's whole advisory history and read as an urgent finding.
-  q="$(awk -F'\t' '$3 != "unresolved" && $3 != "" && $7 != "" {printf "%s\t%s\n", $3, $7}' "$rows" \
+  # $7 (osv_version) and $8 (osv_commit), not $2 (pinned): see the rows.tsv
+  # comment. A row with an empty $7 is deliberately left out of the version
+  # queries — querying it would return the module's whole advisory history and
+  # read as an urgent finding. A row with an empty $8 is left out of the commit
+  # queries because there is no commit to ask about. A row left out of BOTH was
+  # never asked at all and must not render as clean; that is enforced at
+  # `adv_cell`.
+  q="$( { awk -F'\t' '$3 != "unresolved" && $3 != "" && $7 != "" {printf "v\t%s\t%s\n", $3, $7}' "$rows"
+         awk -F'\t' '$8 != "" {printf "c\t%s\t-\n", $8}' "$rows" ; } \
       | sort -u \
       | jq -R -s -c '{queries: [ split("\n")[] | select(length>0) | split("\t")
-          | {package: {name: .[0], ecosystem: "Go"}, version: .[1]} ]}')"
+          | if .[0] == "c"
+            then {commit: .[1]}
+            else {package: {name: .[1], ecosystem: "Go"}, version: .[2]}
+            end ]}')"
   if ! curl -fsS --max-time 40 --retry 2 --retry-delay 2 \
         -X POST "$OSV/v1/querybatch" \
         -H 'Content-Type: application/json' \
@@ -577,7 +670,13 @@ if [ "$osv_failed" -eq 0 ] && [ -z "$FIXTURE" ]; then
     osv_failed=1
     echo "OSV returned $n_r results for $n_q queries; refusing to map them, advisory status is UNKNOWN" >> "$errors"
   else
-    paste <(jq -r '.queries[] | "\(.package.name)\t\(.version)"' "$OUT_DIR/osv-query.json") \
+    # The key must be reconstructed in the SAME disjoint form the query was
+    # built in, or a commit answer could be read as a version answer. `jq`
+    # emits the discriminator from the query's own shape rather than from a
+    # remembered order, so the two cannot drift apart.
+    paste <(jq -r '.queries[] | if has("commit") then "c\t\(.commit)\t-"
+                                else "v\t\(.package.name)\t\(.version)" end' \
+              "$OUT_DIR/osv-query.json") \
           <(jq -r '.results[] | [ (.vulns // [])[].id ] | join(",")' "$osv_out") \
       > "$osv_hits" 2>/dev/null || { osv_failed=1; : > "$osv_hits"; }
     # One line per query, or the row-to-advisory mapping is off by something.
@@ -591,9 +690,164 @@ if [ "$osv_failed" -eq 0 ] && [ -z "$FIXTURE" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Pass 4 — GitHub's advisory database, as an INDEPENDENT cross-check.
+#
+# This is a second opinion from a different index, not a replacement for OSV.
+# GitHub keys advisories on the REPOSITORY, so it sees records whose Go module
+# path is absent or wrong — the same class OSV's package query misses. On the
+# chi case it lists GHSA-rqrp-8cg2-5958 with a proper `<=5.4.0` range, which
+# OSV's package index does not have at all.
+#
+# Deliberately advisory-only, never authoritative, for three reasons:
+#
+#  - The ranges are human-written free text. Real values observed on one repo
+#    include `<=5.4.0`, `<= 5.3.2`, `>= 5.2.1`, `>=5.2.2` and `v5.2.1`, with
+#    the package named variously `github.com/go-chi/chi/v5`,
+#    `https://github.com/go-chi/chi `, `go-chi/chi` and `chi`. Writing a
+#    comparator for that is writing a parser for prose, and a wrong parse here
+#    would either invent an advisory or excuse one.
+#  - Unauthenticated calls are rate-limited to 60/hour per IP, so on a busy
+#    runner this will sometimes return nothing for reasons that have nothing
+#    to do with the pin.
+#  - The GLOBAL `/advisories/{ghsa}` endpoint returns a body with every field
+#    null when unauthenticated, which is why the repo-scoped endpoint is used
+#    instead. A script that read the global endpoint would conclude "no
+#    advisory" from a successful-looking 200.
+#
+# So a GitHub hit that OSV did not report is surfaced for a human to judge
+# and reaches `attention`; it never sets `advisory` on its own, and a GitHub
+# failure never downgrades an OSV finding. GH_TOKEN/GITHUB_TOKEN is used when
+# present purely for rate limits.
+# ---------------------------------------------------------------------------
+gh_extra="$OUT_DIR/gh-extra.tsv"
+: > "$gh_extra"
+gh_checked=0
+gh_unavailable=""
+
+if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
+  gh_auth=()
+  gh_tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  [ -n "$gh_tok" ] && gh_auth=(-H "Authorization: Bearer $gh_tok")
+
+  # Only github.com modules have a repo-scoped endpoint to ask. The owner/repo
+  # is taken from the MODULE path (already proxy-verified) and must match a
+  # strict pattern before it reaches a URL.
+  while IFS=$'\t' read -r g_module g_pinned g_adv; do
+    [ -n "$g_module" ] || continue
+    case "$g_module" in github.com/*/*) ;; *) continue ;; esac
+    g_owner="$(printf '%s' "$g_module" | cut -d/ -f2)"
+    g_repo="$(printf '%s' "$g_module" | cut -d/ -f3)"
+    printf '%s' "$g_owner/$g_repo" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || continue
+
+    g_body="$(curl -fsS --max-time 25 \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      "${gh_auth[@]+"${gh_auth[@]}"}" \
+      "https://api.github.com/repos/$g_owner/$g_repo/security-advisories" 2>/dev/null || true)"
+    # An array is the only shape that means "this is the advisory list". A
+    # rate-limit or error object is a JSON object, and treating it as an empty
+    # list would read as "no advisories" — the exact inversion this script
+    # exists to prevent.
+    if [ -z "$g_body" ] || ! jq -e 'type == "array"' <<<"$g_body" >/dev/null 2>&1; then
+      [ -z "$gh_unavailable" ] && gh_unavailable="GitHub's advisory API did not return a list (rate limit, or no token); the cross-check did not run for every module"
+      continue
+    fi
+    gh_checked=$((gh_checked+1))
+
+    # Report only GHSA ids OSV did not already give us for this pin, by GHSA
+    # id and by CVE alias — OSV returns CVE ids for the converted records, so
+    # comparing GHSA-to-GHSA alone would re-report the chi finding as new.
+    # Fields are read with `read -d` on a NUL-delimited record and split on a
+    # literal marker rather than by IFS, because `IFS=$'\t' read` COLLAPSES a
+    # run of separators instead of preserving an empty field — the same trap
+    # documented for `note` in rows.tsv. `cve_id` is routinely null here, so
+    # with tab-splitting the severity and range columns shifted left by one
+    # and the table printed a version range under "severity". Observed, not
+    # theoretical.
+    while IFS= read -r -d '' g_rec; do
+      g_ghsa="${g_rec%%*}";  g_rest="${g_rec#*}"
+      g_cve="${g_rest%%*}";  g_rest="${g_rest#*}"
+      g_sev="${g_rest%%*}";  g_range="${g_rest#*}"
+      [ -n "$g_ghsa" ] || continue
+
+      # Already reported by OSV for this pin? Compare on the GHSA id and on
+      # the CVE alias: OSV returns CVE ids for the cve-osv-conversion records,
+      # so a GHSA-only comparison would re-report the very finding OSV just
+      # gave us as though GitHub had found something extra.
+      case ",$g_adv," in *",$g_ghsa,"*) continue ;; esac
+      if [ -n "$g_cve" ]; then
+        case ",$g_adv," in *",$g_cve,"*) continue ;; esac
+      fi
+
+      # Drop advisories that are plainly OLDER than the pin. GitHub's range is
+      # free text, so this is a conservative TEXTUAL filter, not a comparator:
+      # it only discards a range of the shape `<= X` / `< X` (optionally after
+      # a `>= 0,` lower bound) where X sorts strictly below the pinned version.
+      # Anything it cannot confidently place is KEPT, because the failure to
+      # understand a range must not look like the absence of an advisory.
+      #
+      # Without this the cross-check reported 12 "GitHub-only" findings for
+      # this Dockerfile, mostly advisories fixed long before the pinned
+      # release — exactly the history noise trap 3 above exists to keep out of
+      # this report, re-entering through the second index.
+      g_hi="$(printf '%s' "$g_range" | grep -oiE '<=?[[:space:]]*v?[0-9]+(\.[0-9]+)*' \
+              | tail -1 | grep -oE '[0-9]+(\.[0-9]+)*' || true)"
+      if [ -n "$g_hi" ] && ! printf '%s' "$g_range" | grep -qE '^[[:space:]]*(>|>=)' ; then
+        g_pin_n="${g_pinned#v}"
+        case "$g_pin_n" in
+          *[!0-9.]*) ;;   # pseudo-version or SHA: cannot compare, keep
+          *)
+            if [ "$(printf '%s\n%s\n' "$g_pin_n" "$g_hi" | sort -V | tail -1)" = "$g_pin_n" ] \
+               && [ "$g_pin_n" != "$g_hi" ]; then
+              continue   # upper bound is strictly below the pin
+            fi ;;
+        esac
+      fi
+
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$g_module" "$g_pinned" "$(clean_scalar "$g_ghsa")" \
+        "$(clean_scalar "${g_sev:-?}")" "$(clean_scalar "${g_range:-?}")" >> "$gh_extra"
+    done < <(jq -j --arg mod "$g_module" '
+      .[]
+      | . as $a
+      | (.vulnerabilities // [])[]
+      # Keep only entries whose package plausibly names this module or its
+      # repo; the field is free text (values seen on one repo include the full
+      # module path, a bare repo URL with a trailing space, `owner/repo` and
+      # just `repo`), so matching is intentionally loose and the result is
+      # only ever a pointer for a human.
+      | select((.package.name // "") | ascii_downcase
+               | (test($mod | ascii_downcase | split("/") | .[2] | gsub("\\."; "\\\\."))
+                  or test($mod | ascii_downcase | gsub("\\."; "\\\\."))))
+      | [ ($a.ghsa_id // ""), ($a.cve_id // ""), ($a.severity // ""),
+          (.vulnerable_version_range // "") ]
+      | join("\u001f") + "\u0000"' <<<"$g_body" 2>/dev/null)
+  done < <(
+    # module \t pinned \t the OSV ids already found for this pin, so the
+    # de-duplication above compares against what OSV actually said rather
+    # than against an empty string (which would re-report every OSV hit as
+    # a GitHub-only finding).
+    while IFS=$'\t' read -r r_arg r_pinned r_module _r_latest _r_time _r_kind r_osvver r_osvcommit _r_note; do
+      [ -n "$r_module" ] || continue
+      case "$r_module" in unresolved) continue ;; esac
+      r_ids=""
+      if [ -s "$osv_hits" ]; then
+        [ -n "$r_osvver" ] && r_ids="$(awk -F'\t' -v m="$r_module" -v v="$r_osvver" \
+          '$1=="v" && $2==m && $3==v {print $4; exit}' "$osv_hits")"
+        if [ -n "$r_osvcommit" ]; then
+          r_c="$(awk -F'\t' -v c="$r_osvcommit" '$1=="c" && $2==c {print $4; exit}' "$osv_hits")"
+          [ -n "$r_c" ] && r_ids="$r_ids,$r_c"
+        fi
+      fi
+      printf '%s\t%s\t%s\n' "$r_module" "$r_pinned" "$r_ids"
+    done < "$rows" | sort -u
+  )
+fi
+
+# ---------------------------------------------------------------------------
 # Verdict + report.
 # ---------------------------------------------------------------------------
-behind=0; advisories=0; unresolved=0; moved=0
+behind=0; advisories=0; unresolved=0; moved=0; adv_unknown=0; adv_partial=0
 report="$OUT_DIR/report.md"
 {
   echo "### Pinned xcaddy plugin watch"
@@ -605,7 +859,7 @@ report="$OUT_DIR/report.md"
 } > "$report"
 
 malformed_rows=0
-while IFS=$'\t' read -r arg pinned module latest latest_time kind osv_version note; do
+while IFS=$'\t' read -r arg pinned module latest latest_time kind osv_version osv_commit note; do
   # Defence in depth behind clean_scalar. If a row is ever short of fields,
   # `kind` reads empty, matches no `case` branch below, and the pin is
   # silently never compared -- which is how a deceived run produced
@@ -617,13 +871,35 @@ while IFS=$'\t' read -r arg pinned module latest latest_time kind osv_version no
       echo "malformed row for '${arg:-?}' (kind='${kind:-}'); this pin was NOT compared" >> "$errors"
       continue ;;
   esac
+  # Union the two questions. `asked` counts how many were actually put to
+  # OSV for this pin; it is what separates "clean" from "unknown" below, and
+  # it is deliberately not inferred from `adv` being empty — empty is exactly
+  # what both a clean answer and an unasked question look like.
   adv=""
-  if [ -s "$osv_hits" ] && [ -n "$osv_version" ]; then
+  asked=0
+  if [ -s "$osv_hits" ]; then
     # The advisory list is the LAST field of the table printf, so a newline
     # here would reach column 0 and could end the GITHUB_OUTPUT heredoc.
     # Sanitised even though OSV ids are observed to be [A-Za-z0-9-] only:
     # that is an observation about today's data, not an enforced contract.
-    adv="$(clean_scalar "$(awk -F'\t' -v m="$module" -v v="$osv_version" '$1==m && $2==v {print $3; exit}' "$osv_hits")")"
+    if [ -n "$osv_version" ]; then
+      asked=$((asked+1))
+      adv_v="$(clean_scalar "$(awk -F'\t' -v m="$module" -v v="$osv_version" \
+        '$1=="v" && $2==m && $3==v {print $4; exit}' "$osv_hits")")"
+      [ -n "$adv_v" ] && adv="$adv_v"
+    fi
+    if [ -n "$osv_commit" ]; then
+      asked=$((asked+1))
+      adv_c="$(clean_scalar "$(awk -F'\t' -v c="$osv_commit" \
+        '$1=="c" && $2==c {print $4; exit}' "$osv_hits")")"
+      if [ -n "$adv_c" ]; then
+        # De-duplicate: a curated advisory with both a package range and a
+        # GIT range legitimately answers both questions, and listing its id
+        # twice in one cell makes the row look like two findings.
+        adv="$(printf '%s,%s' "$adv" "$adv_c" | tr ',' '\n' \
+          | grep -v '^$' | sort -u | paste -sd, -)"
+      fi
+    fi
   fi
   state="ok"
   case "$kind" in
@@ -669,15 +945,33 @@ while IFS=$'\t' read -r arg pinned module latest latest_time kind osv_version no
   [ "$latest_time" != "-" ] && [ "$state" = "behind" ] && up="$latest (tagged $latest_time)"
   [ -n "$note" ] && up="$up — $note"
 
-  # An em dash in the advisory column must mean "OSV was asked about this
-  # exact version and said no". Where no version could be sent, say so: a
-  # dash there would be a clean-looking cell for a pin that was never checked.
-  if [ "$osv_failed" -eq 1 ]; then
+  # An em dash in the advisory column must mean "OSV was asked and said no",
+  # and it must mean nothing else. Three cells, three meanings, and the second
+  # and third must not look like the first (T-0634 point 3):
+  #
+  #   —                 both questions asked, neither matched
+  #   partial (…)       one question asked and clean, the other impossible
+  #   **not checked**   neither question could be asked, or the batch failed
+  #
+  # `partial` exists because the two questions see different classes of
+  # advisory: a version-only answer cannot see package-less GIT-range CVEs
+  # (the chi case), and a commit-only answer can miss a curated range. Either
+  # alone is a narrower question than this script claims to ask, so it is not
+  # allowed to render as a clean dash.
+  if [ "$osv_failed" -eq 1 ] || [ "$asked" -eq 0 ]; then
     adv_cell="**not checked**"
-  elif [ -z "$osv_version" ]; then
-    adv_cell="**not checked**"
+    adv_unknown=$((adv_unknown+1))
+  elif [ -n "$adv" ]; then
+    adv_cell="$adv"
+  elif [ "$asked" -lt 2 ]; then
+    if [ -z "$osv_commit" ]; then
+      adv_cell="partial (no GIT-range query)"
+    else
+      adv_cell="partial (no version query)"
+    fi
+    adv_partial=$((adv_partial+1))
   else
-    adv_cell="${adv:-—}"
+    adv_cell="—"
   fi
   printf '| `%s` | `%s` | %s | %s |\n' \
     "$arg" "$pinned" "$up" "$adv_cell" >> "$report"
@@ -709,14 +1003,35 @@ done < "$rows"
     while IFS= read -r e; do echo "- $e"; done < "$errors"
     echo
   fi
+  if [ -s "$gh_extra" ]; then
+    echo "**GitHub's advisory database lists advisories that OSV did not report for these pins.** A second index, keyed on the repository rather than the module path, so it sees records whose Go module path is missing or wrong. The version ranges below are GitHub's own free text and have NOT been compared against the pin mechanically — read them and decide:"
+    echo
+    echo "| module | pinned | GHSA | severity | GitHub's affected range |"
+    echo "| --- | --- | --- | --- | --- |"
+    while IFS=$'\t' read -r x_mod x_pin x_ghsa x_sev x_range; do
+      printf '| `%s` | `%s` | %s | %s | `%s` |\n' "$x_mod" "$x_pin" "$x_ghsa" "$x_sev" "$x_range"
+    done < "$gh_extra"
+    echo
+  fi
+  [ -n "$gh_unavailable" ] && { echo "**$gh_unavailable.** The OSV result above still stands on its own; only the independent second opinion is missing."; echo; }
+  if [ "$adv_unknown" -gt 0 ]; then
+    echo "**Advisory status could not be established for $adv_unknown pin(s).** Neither the version-scoped nor the commit-scoped query could be asked, so those rows say nothing about whether an advisory applies. An unchecked pin is not a clean pin."
+    echo
+  fi
+  if [ "$adv_partial" -gt 0 ]; then
+    echo "**$adv_partial pin(s) were checked by only one of the two queries.** A version-only check cannot see CVE records that carry no package field (their affected range is a \`GIT\` range keyed on the repo); a commit-only check can miss a curated package range. Those rows are narrower than a — and are marked \`partial\`."
+    echo
+  fi
   if [ "$advisories" -eq 0 ] && [ "$behind" -eq 0 ] && [ "$moved" -eq 0 ] \
-     && [ "$malformed_rows" -eq 0 ] \
+     && [ "$malformed_rows" -eq 0 ] && [ "$adv_unknown" -eq 0 ] \
+     && [ "$adv_partial" -eq 0 ] \
      && [ ! -s "$errors" ] && [ ! -s "$unpinned_file" ] \
+     && [ ! -s "$gh_extra" ] && [ -z "$gh_unavailable" ] \
      && [ ! -s "$replaced_file" ] && [ -z "$tag_now_ok" ]; then
-    echo "Every pin is at upstream's newest release and no advisory matches a pinned version."
+    echo "Every pin is at upstream's newest release, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report."
   fi
   echo
-  echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\` matched against the pinned version. Untagged pins compared against upstream \`HEAD\`.</sub>"
+  echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`.</sub>"
 } >> "$report"
 
 # Order matters, and it is not the obvious one.
@@ -735,10 +1050,22 @@ done < "$rows"
 # with the error sitting in the report — a hostile proxy response reduced to a
 # footnote under an all-clear. Anything that records an error now forces
 # `error`, including a path added later that this list does not know about.
+# `adv_unknown` joins the error arm, and that is the point of T-0634: a pin
+# whose advisory status could not be established must not be able to leave the
+# run at `verdict=ok`. Before this, the only question asked was one that
+# structurally cannot see package-less GIT-range CVE records, and every — in
+# the column was therefore unproven while the verdict read clean.
+#
+# `adv_partial` is the weaker form of the same problem — one of the two
+# questions was asked and clean, the other was impossible — so it reaches
+# `attention` rather than `error`: something real was verified, but less than
+# this script claims to verify, and `ok` would overstate it.
 if   [ "$advisories" -gt 0 ]; then verdict="advisory"; rc=2
 elif [ "$unresolved" -gt 0 ] || [ "$osv_failed" -eq 1 ] \
-  || [ "$malformed_rows" -gt 0 ] || [ -s "$errors" ]; then verdict="error"; rc=3
+  || [ "$malformed_rows" -gt 0 ] || [ "$adv_unknown" -gt 0 ] \
+  || [ -s "$errors" ]; then verdict="error"; rc=3
 elif [ "$behind" -gt 0 ] || [ "$moved" -gt 0 ] || [ -n "$tag_now_ok" ] \
+  || [ "$adv_partial" -gt 0 ] || [ -s "$gh_extra" ] || [ -n "$gh_unavailable" ] \
   || [ -s "$unpinned_file" ] || [ -s "$replaced_file" ]; then verdict="attention"; rc=1
 else verdict="ok"; rc=0
 fi
@@ -749,7 +1076,12 @@ echo "verdict=$verdict"
 if [ "$EMIT_JSON" -eq 1 ]; then
   jq -n --arg v "$verdict" --argjson b "$behind" --argjson a "$advisories" \
         --argjson m "$moved" --argjson u "$unresolved" \
-        '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u}' \
+        --argjson au "$adv_unknown" --argjson ap "$adv_partial" \
+        --argjson gx "$(wc -l < "$gh_extra" | tr -d ' ')" \
+        --argjson gc "$gh_checked" \
+        '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
+          advisory_unknown:$au, advisory_partial:$ap,
+          github_only:$gx, github_modules_checked:$gc}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
 fi
@@ -760,6 +1092,9 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "behind=$behind"
     echo "advisories=$advisories"
     echo "moved=$moved"
+    echo "advisory_unknown=$adv_unknown"
+    echo "advisory_partial=$adv_partial"
+    echo "github_only=$(wc -l < "$gh_extra" | tr -d ' ')"
     echo "report<<$PINREPORT_DELIM"
     cat "$report"
     echo "$PINREPORT_DELIM"
