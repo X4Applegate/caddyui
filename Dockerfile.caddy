@@ -8,8 +8,9 @@
 #     per --with, in order, and `go get pkg@ver` sets exactly that version, so
 #     they must come first: a plugin fetched after them can still raise these
 #     modules but never lowers them. crowdsec/pkg/apiclient @v1.7.8 lifts
-#     CrowdSec past CVE-2026-44982, x/net/http2 @v0.61.0 lifts golang.org/x/net
-#     past CVE-2026-78669, and chi/v5 @v5.4.0 lifts go-chi past CVE-2026-114437.
+#     CrowdSec past CVE-2026-44982, x/net/http2 @v0.62.0 lifts golang.org/x/net
+#     past CVE-2026-78669, CVE-2026-78661 and CVE-2026-97045, and chi/v5 @v5.4.0
+#     lifts go-chi past CVE-2026-114437.
 #     Caddy already links these packages, so the blank import xcaddy adds for
 #     each changes nothing else. The build fails if `go get` ever reports a
 #     downgrade, so a pin can't quietly pull a plugin back to an older release.
@@ -38,7 +39,7 @@ ARG TARGETOS=linux
 ARG TARGETARCH
 RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \
-    --with golang.org/x/net/http2@v0.61.0 \
+    --with golang.org/x/net/http2@v0.62.0 \
     --with github.com/go-chi/chi/v5@v5.4.0 \
     --with github.com/caddy-dns/cloudflare@v0.2.4 \
     --with github.com/caddy-dns/porkbun@v0.3.1 \
