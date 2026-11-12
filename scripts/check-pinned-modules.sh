@@ -904,11 +904,12 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
       # append a low bound to hide a real finding. Taking the maximum means an
       # extra bound can only ever make the row MORE likely to be kept.
       #
-      # It is also compared with the pin ZERO-PADDED to the same number of
-      # components. `sort -V` ranks "5.4" below "5.4.0", so a truncated bound
-      # of `<= 5.4` dropped a row whose pin was exactly v5.4.0 — the advisory
-      # covers the pin and the filter hid it. Padding makes "5.4" compare as
-      # "5.4.0", so equality is seen and the row is kept.
+      # Component counts are reconciled before comparing. `sort -V` ranks
+      # "5.4" below "5.4.0", so a truncated bound of `<= 5.4` dropped a row
+      # whose pin was exactly v5.4.0 — the advisory covers the pin and the
+      # filter hid it. A bound with FEWER components than the pin is kept
+      # outright (see below); otherwise the pin is zero-padded up to the
+      # bound's length so equality is seen.
       g_hi="$(printf '%s' "$g_range" | grep -oiE '<=?[[:space:]]*v?[0-9]+(\.[0-9]+)*' \
               | grep -oE '[0-9]+(\.[0-9]+)*' | sort -V | tail -1 || true)"
       if [ -n "$g_hi" ] && ! printf '%s' "$g_range" | grep -qE '^[[:space:]]*(>|>=)' ; then
@@ -916,20 +917,27 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
         case "$g_pin_n" in
           *[!0-9.]*) ;;   # pseudo-version or SHA: cannot compare, keep
           *)
-            # Pad the SHORTER of the two with .0 components so that a
-            # truncated bound compares as the release it names.
-            g_cmp_pin="$g_pin_n"; g_cmp_hi="$g_hi"
-            while [ "$(printf '%s' "$g_cmp_hi" | tr -cd '.' | wc -c)" \
-                 -lt "$(printf '%s' "$g_cmp_pin" | tr -cd '.' | wc -c)" ]; do
-              g_cmp_hi="$g_cmp_hi.0"
-            done
-            while [ "$(printf '%s' "$g_cmp_pin" | tr -cd '.' | wc -c)" \
-                 -lt "$(printf '%s' "$g_cmp_hi" | tr -cd '.' | wc -c)" ]; do
-              g_cmp_pin="$g_cmp_pin.0"
-            done
-            if [ "$(printf '%s\n%s\n' "$g_cmp_pin" "$g_cmp_hi" | sort -V | tail -1)" = "$g_cmp_pin" ] \
-               && [ "$g_cmp_pin" != "$g_cmp_hi" ]; then
-              continue   # upper bound is strictly below the pin
+            # A bound with FEWER components than the pin names a release
+            # series, not a point release, and padding it with .0 silently
+            # picks the bottom of that series: `<= 1.7` against a v1.7.8 pin
+            # padded to 1.7.0 and DROPPED the row, hiding an advisory that
+            # most likely covers 1.7.x. GitHub's ranges are free text, so a
+            # short bound is precisely the case this filter cannot
+            # confidently place — keep the row instead of guessing.
+            g_hi_dots="$(printf '%s' "$g_hi" | tr -cd '.' | wc -c)"
+            g_pin_dots="$(printf '%s' "$g_pin_n" | tr -cd '.' | wc -c)"
+            if [ "$g_hi_dots" -ge "$g_pin_dots" ]; then
+              # Pad the pin up to the bound's component count so that a
+              # bound naming more components still compares correctly.
+              g_cmp_pin="$g_pin_n"; g_cmp_hi="$g_hi"
+              while [ "$(printf '%s' "$g_cmp_pin" | tr -cd '.' | wc -c)" \
+                   -lt "$(printf '%s' "$g_cmp_hi" | tr -cd '.' | wc -c)" ]; do
+                g_cmp_pin="$g_cmp_pin.0"
+              done
+              if [ "$(printf '%s\n%s\n' "$g_cmp_pin" "$g_cmp_hi" | sort -V | tail -1)" = "$g_cmp_pin" ] \
+                 && [ "$g_cmp_pin" != "$g_cmp_hi" ]; then
+                continue   # upper bound is strictly below the pin
+              fi
             fi ;;
         esac
       fi
@@ -946,8 +954,16 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
       # module path, a bare repo URL with a trailing space, `owner/repo` and
       # just `repo`), so matching is intentionally loose and the result is
       # only ever a pointer for a human.
+      #
+      # The repo-element arm is ANCHORED to a path boundary. Unanchored, the
+      # bare element is a substring test: `.[2]` of github.com/go-chi/chi/v5
+      # is "chi", which matched an unrelated advisory for
+      # github.com/unrelated/archive. That direction of error is noise rather
+      # than a false clean, but it pushes verdict=attention and a ::warning::
+      # on records that have nothing to do with the pin, which is exactly how
+      # a reader is trained to ignore the report.
       | select((.package.name // "") | ascii_downcase
-               | (test($mod | ascii_downcase | split("/") | .[2] | gsub("\\."; "\\\\."))
+               | (test("(^|[/ ])" + ($mod | ascii_downcase | split("/") | .[2] | gsub("\\."; "\\\\.")) + "($|[/ @])")
                   or test($mod | ascii_downcase | gsub("\\."; "\\\\."))))
       | [ ($a.ghsa_id // ""), ($a.cve_id // ""), ($a.severity // ""),
           (.vulnerable_version_range // "") ]
@@ -1044,13 +1060,25 @@ while [ "$row_i" -lt "${#row_toks[@]}" ]; do
     # here would reach column 0 and could end the GITHUB_OUTPUT heredoc.
     # Sanitised even though OSV ids are observed to be [A-Za-z0-9-] only:
     # that is an observation about today's data, not an enforced contract.
-    if [ -n "$osv_version" ]; then
+    # `asked` must mean "this question reached OSV and OSV answered", not
+    # "we had a value we could have asked about". Deriving it from the field
+    # being non-empty made the two equivalent only by accident: the version
+    # query carries an extra `$3 != "unresolved"` guard the commit query does
+    # not, so the batch filters are already asymmetric, and any further drift
+    # would let a row that was never in the batch read asked=2 and render the
+    # clean em dash reserved for "both questions asked and clean". Presence of
+    # the key line in osv_hits is the only evidence that the question was put.
+    if [ -n "$osv_version" ] \
+       && awk -F'\t' -v m="$module" -v v="$osv_version" \
+            '$1=="v" && $2==m && $3==v {found=1} END{exit !found}' "$osv_hits"; then
       asked=$((asked+1))
       adv_v="$(clean_scalar "$(awk -F'\t' -v m="$module" -v v="$osv_version" \
         '$1=="v" && $2==m && $3==v {print $4; exit}' "$osv_hits")")"
       [ -n "$adv_v" ] && adv="$adv_v"
     fi
-    if [ -n "$osv_commit" ]; then
+    if [ -n "$osv_commit" ] \
+       && awk -F'\t' -v c="$osv_commit" \
+            '$1=="c" && $2==c {found=1} END{exit !found}' "$osv_hits"; then
       asked=$((asked+1))
       adv_c="$(clean_scalar "$(awk -F'\t' -v c="$osv_commit" \
         '$1=="c" && $2==c {print $4; exit}' "$osv_hits")")"
