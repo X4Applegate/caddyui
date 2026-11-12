@@ -108,6 +108,19 @@ FIXTURE=""
 # matches" — the exact inversion this script's header forbids, triggered by
 # something as ordinary as a Dockerfile reformat that breaks the parser. So
 # the verdict is emitted here too, before exiting.
+# The $GITHUB_OUTPUT heredoc delimiter is randomised per run. A fixed
+# `PINREPORT_EOF` is forgeable in principle: any untrusted text that reaches
+# column 0 of the report ends the heredoc early, and everything after it is
+# parsed as further job outputs — letting a hostile proxy or OSV response
+# write `verdict=ok` over a real finding. Today no such path exists, because
+# every line carrying upstream text is prefixed with `| ` or `- ` and the
+# scalars are sanitised; but that is an incidental property of the current
+# printf templates, not a designed one, and the next person to add an
+# unprefixed line to the report would silently re-open it. A delimiter the
+# attacker cannot know makes the breakout structurally impossible regardless.
+PINREPORT_DELIM="PINREPORT_EOF_$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n' \
+  || printf '%s%s' "$$" "$(date +%s%N 2>/dev/null || date +%s)")"
+
 die() {
   echo "check-pinned-modules: $*" >&2
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -116,13 +129,13 @@ die() {
       echo "behind=0"
       echo "advisories=0"
       echo "moved=0"
-      echo "report<<PINREPORT_EOF"
+      echo "report<<$PINREPORT_DELIM"
       echo "### Pinned xcaddy plugin watch"
       echo
       echo "**The check could not run:** $*"
       echo
       echo "No pin was checked. An unchecked pin is not a clean pin."
-      echo "PINREPORT_EOF"
+      echo "$PINREPORT_DELIM"
     } >> "$GITHUB_OUTPUT"
   fi
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -182,27 +195,75 @@ fi
 # non-comment lines are considered, and the argument must look like a Go
 # package path (a dotted host followed by at least one path element) before it
 # counts as a pin at all.
+#
+# BOTH SPELLINGS ARE ACCEPTED. xcaddy takes `--with X` and `--with=X`, and an
+# earlier version of this matched only the space form: a legal `--with=` pin
+# was dropped from pins.tsv AND from unpinned.txt, so the plugin vanished from
+# the watch entirely while the report still said every pin was current. A pin
+# that silently stops being watched is the same false clean this script exists
+# to prevent, so the equals form is normalised to the space form up front and
+# the parsed count is reconciled against the raw occurrence count below.
+#
+# A REPLACEMENT IS STRIPPED BEFORE SPLITTING. xcaddy also takes
+# `--with module@version=/local/path`. `${arg##*@}` would have taken the text
+# after the LAST @, yielding the version `v0.2.4=../local/fork`: OSV cannot
+# parse that, and an unparseable version makes OSV abandon range-matching and
+# return the module's entire advisory history (see the pseudo-version note
+# further down), so a local fork would have produced a spurious ADVISORY and
+# an alert issue. The replacement is recorded as a note instead, because
+# building a pinned image against a local path is itself worth a human's
+# attention.
 # ---------------------------------------------------------------------------
 pins_file="$OUT_DIR/pins.tsv"
 : > "$pins_file"
 unpinned_file="$OUT_DIR/unpinned.txt"
 : > "$unpinned_file"
+replaced_file="$OUT_DIR/replaced.txt"
+: > "$replaced_file"
 
 while IFS= read -r raw; do
+  # Normalise `--with=X` to `--with X` so one extraction handles both.
+  raw="${raw/--with=/--with }"
   arg="${raw#*--with }"
   arg="${arg%% *}"
   arg="${arg%\\}"
   [ -n "$arg" ] || continue
+  # `module@version=replacement` — keep the replacement out of the version.
+  replacement=""
+  case "$arg" in
+    *=*) replacement="${arg#*=}"; arg="${arg%%=*}" ;;
+  esac
   # Must look like <host-with-a-dot>/<path>; prose words never do.
   printf '%s' "$arg" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[^ ]+$' || continue
+  [ -n "$replacement" ] && printf '%s\t%s\n' "$arg" "$replacement" >> "$replaced_file"
   case "$arg" in
     *@*) printf '%s\t%s\n' "${arg%@*}" "${arg##*@}" >> "$pins_file" ;;
     *)   printf '%s\n' "$arg" >> "$unpinned_file" ;;
   esac
-done < <(grep -v '^[[:space:]]*#' "$DOCKERFILE" | grep -oE -- '--with [^ \\]+' || true)
+done < <(grep -v '^[[:space:]]*#' "$DOCKERFILE" | grep -oE -- '--with[= ][^ \\]+' || true)
 
 pin_count="$(wc -l < "$pins_file" | tr -d ' ')"
-[ "$pin_count" -gt 0 ] || die "parsed no --with pins out of $DOCKERFILE (did its format change?)"
+unpinned_count="$(wc -l < "$unpinned_file" | tr -d ' ')"
+# Zero pins AND zero unpinned arguments means the parser found nothing at all,
+# which is a format change rather than a finding. Zero pins with unpinned
+# arguments present is a real, reportable finding, so it must not die here:
+# dying would replace "these --with arguments lost their version" with
+# "did its format change?", hiding the exact regression T-0617 was about.
+if [ "$pin_count" -eq 0 ] && [ "$unpinned_count" -eq 0 ]; then
+  die "parsed no --with pins out of $DOCKERFILE (did its format change?)"
+fi
+
+# Reconcile what was parsed against what is actually in the file. The check
+# above only catches a parse yielding ZERO pins; this catches a parse that
+# drops SOME, which is the more dangerous shape because the report still looks
+# complete. Any future --with spelling this parser does not understand becomes
+# a loud `error` verdict here rather than a quietly unwatched plugin.
+raw_with_count="$(grep -v '^[[:space:]]*#' "$DOCKERFILE" \
+  | grep -oE -- '--with[= ][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[^ \\]+' | wc -l | tr -d ' ')"
+parsed_count=$(( pin_count + unpinned_count ))
+if [ "$raw_with_count" != "$parsed_count" ]; then
+  die "parsed $parsed_count pin(s) but $DOCKERFILE contains $raw_with_count --with argument(s); an unparsed pin would be silently unwatched"
+fi
 
 # ---------------------------------------------------------------------------
 # Untagged pins. Keyed by the --with argument so the table can say why a row
@@ -571,7 +632,19 @@ while IFS=$'\t' read -r arg pinned module latest latest_time kind osv_version no
     commit)
       case "$latest" in commit:*) state="moved"; moved=$((moved+1)) ;; esac ;;
     tag)
-      if [ "$latest" != "unknown" ] && [ "$pinned" != "$latest" ]; then
+      # An unresolved upstream version is NOT a pass. The staleness compare
+      # below is guarded on `!= unknown`, and for a long time that guard was
+      # the whole story: a pin whose version could not be established skipped
+      # the comparison, scored `ok`, and printed under "Every pin is at
+      # upstream's newest release" with exit 0 — the same false clean as a
+      # proxy outage, but silent because nothing was recorded. The implausible
+      # -version branch upstream records an error, so the remaining route here
+      # is a 200 whose body simply has no .Version field. Counted as
+      # unresolved so it reaches the `error` verdict.
+      if [ "$latest" = "unknown" ]; then
+        state="unresolved"; unresolved=$((unresolved+1))
+        echo "no upstream version could be established for '$arg'" >> "$errors"
+      elif [ "$pinned" != "$latest" ]; then
         # `sort -V` gets v1.9.0 < v1.10.0 right, which a string compare does
         # not, and correctly declines to flag a pin that is AHEAD of @latest.
         # It does get semver prereleases backwards — it ranks v1.0.0-rc1 above
@@ -624,6 +697,13 @@ done < "$rows"
     while IFS= read -r u; do echo "- \`$u\`"; done < "$unpinned_file"
     echo
   fi
+  if [ -s "$replaced_file" ]; then
+    echo "**A \`--with\` argument uses a local replacement.** The published module is not what gets built, so the version compared above and the advisory lookup describe upstream, not the code in the image:"
+    while IFS=$'\t' read -r rp_arg rp_to; do
+      echo "- \`$rp_arg\` → \`$rp_to\`"
+    done < "$replaced_file"
+    echo
+  fi
   if [ -s "$errors" ]; then
     echo "**The check could not complete for every pin.** An unchecked pin is not a clean pin:"
     while IFS= read -r e; do echo "- $e"; done < "$errors"
@@ -631,7 +711,8 @@ done < "$rows"
   fi
   if [ "$advisories" -eq 0 ] && [ "$behind" -eq 0 ] && [ "$moved" -eq 0 ] \
      && [ "$malformed_rows" -eq 0 ] \
-     && [ ! -s "$errors" ] && [ ! -s "$unpinned_file" ] && [ -z "$tag_now_ok" ]; then
+     && [ ! -s "$errors" ] && [ ! -s "$unpinned_file" ] \
+     && [ ! -s "$replaced_file" ] && [ -z "$tag_now_ok" ]; then
     echo "Every pin is at upstream's newest release and no advisory matches a pinned version."
   fi
   echo
@@ -658,7 +739,7 @@ if   [ "$advisories" -gt 0 ]; then verdict="advisory"; rc=2
 elif [ "$unresolved" -gt 0 ] || [ "$osv_failed" -eq 1 ] \
   || [ "$malformed_rows" -gt 0 ] || [ -s "$errors" ]; then verdict="error"; rc=3
 elif [ "$behind" -gt 0 ] || [ "$moved" -gt 0 ] || [ -n "$tag_now_ok" ] \
-  || [ -s "$unpinned_file" ]; then verdict="attention"; rc=1
+  || [ -s "$unpinned_file" ] || [ -s "$replaced_file" ]; then verdict="attention"; rc=1
 else verdict="ok"; rc=0
 fi
 
@@ -679,9 +760,9 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "behind=$behind"
     echo "advisories=$advisories"
     echo "moved=$moved"
-    echo "report<<PINREPORT_EOF"
+    echo "report<<$PINREPORT_DELIM"
     cat "$report"
-    echo "PINREPORT_EOF"
+    echo "$PINREPORT_DELIM"
   } >> "$GITHUB_OUTPUT"
 fi
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$report" >> "$GITHUB_STEP_SUMMARY"

@@ -396,6 +396,14 @@ jobs:
   watch-pins:
     name: Watch pinned plugin versions
     runs-on: ubuntu-latest
+    # Every failure mode in this job is a network call, and the default job
+    # timeout is six hours. A proxy that accepts the connection and then never
+    # answers would hold a runner for a whole working day and report nothing,
+    # which reads as "the watch is fine, it just hasn't finished". Ten minutes
+    # is ~20x the observed runtime of a full live run over fifteen pins; past
+    # that, a timeout is the honest answer and an absent verdict now reports a
+    # failure rather than an all-clear.
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
