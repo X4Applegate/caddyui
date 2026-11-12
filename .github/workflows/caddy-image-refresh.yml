@@ -25,13 +25,13 @@
 # produces its refreshes. Building main's file and labelling it "identical to
 # vX.Y.Z" would be a lie as soon as Dockerfile.caddy moved on main.
 #
-# "Only the base layer moved" is ENFORCED, not assumed. Dockerfile.caddy pins
-# only some of its --with arguments; nine plugins (the caddy-dns providers,
-# ratelimit, caddy-l4, coraza) resolve to latest on every build, which is the
-# very reason release-docker.yml refuses to rebuild this image blindly. A
-# timer-driven rebuild would silently ship a new DNS provider or WAF release
-# under everyone pulling :stable, and a CVE-ID comparison would not notice,
-# because a plugin bump with no new CVE looks clean. So the gate also diffs
+# "Only the base layer moved" is ENFORCED, not assumed. Every --with argument
+# in Dockerfile.caddy now carries a version (pinned in v2.68.9), so plugins no
+# longer resolve to latest on each build. That removes the drift at its source
+# but does not make the check redundant: a resolver, toolchain or xcaddy change
+# can still move a module without changing any CVE, and a CVE-ID comparison
+# would not notice, because a plugin bump with no new CVE looks clean. So the
+# gate independently diffs
 # `caddy list-modules --versions` between the published image and the rebuild
 # and BLOCKS on any difference. A plugin bump is then a deliberate act —
 # edit Dockerfile.caddy and cut a release, which is what release-docker.yml
@@ -497,7 +497,7 @@ jobs:
               echo
               echo "\`${{ needs.build-scan.outputs.patch_tag }}\` was pushed and is immutable, but it did NOT pass the gate when re-checked, so \`:stable\` and \`:latest\` were left where they were."
               echo
-              echo "This means the build made at approval time differs from the one that was scanned — expected occasionally, since \`apk upgrade\` and nine plugin versions are unpinned. Nothing that the six boxes pull has moved."
+              echo "This means the build made at approval time differs from the one that was scanned — expected occasionally, since \`apk upgrade\` moves the base layer between builds. Nothing that the six boxes pull has moved."
               echo
               echo "Delete the \`-pN\` tag from Docker Hub if you do not want it kept as a record."
             } >> "$GITHUB_STEP_SUMMARY"
