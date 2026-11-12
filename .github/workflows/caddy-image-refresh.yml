@@ -443,18 +443,28 @@ jobs:
       # exists for, so it is loud. Staleness is a notice: it is real work, but
       # it is not urgent, and an issue every week for a patch bump is how a
       # report gets ignored.
+      # `ok` is matched EXPLICITLY and the default arm is the failure message,
+      # not the success one. The obvious shape — success in `*)` — inverts the
+      # whole control: a precondition failure produces no verdict at all, and
+      # an empty string would then fall through to "every pin is current",
+      # announcing an all-clear for a run that checked nothing. Any verdict
+      # this job does not recognise is treated as a problem.
       - name: Flag the result
+        env:
+          VERDICT: ${{ steps.check.outputs.verdict }}
         shell: bash
         run: |
-          case "${{ steps.check.outputs.verdict }}" in
+          case "$VERDICT" in
             advisory)
               echo "::error::a published advisory matches a PINNED plugin version - see the job summary" ;;
             attention)
               echo "::notice::a pinned plugin is behind upstream - see the job summary" ;;
-            error)
-              echo "::warning::the pin check could not complete; an unchecked pin is not a clean pin" ;;
-            *)
+            ok)
               echo "::notice::every pin is current and no advisory matches a pinned version" ;;
+            '')
+              echo "::warning::the pin check produced no verdict, so nothing was verified; an unchecked pin is not a clean pin" ;;
+            *)
+              echo "::warning::the pin check could not complete (verdict: $VERDICT); an unchecked pin is not a clean pin" ;;
           esac
 
   # ---------------------------------------------------------------------------
