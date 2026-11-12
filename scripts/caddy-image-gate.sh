@@ -128,18 +128,23 @@ for arch in $ARCHES; do
       return 0
     fi
 
-    # Already a digest reference: pull it as-is, it is unambiguous.
-    if printf '%s' "$ref" | grep -q '@sha256:'; then
-      docker pull --quiet "$ref" >/dev/null 2>&1 || true
-      have="$(docker image inspect --format '{{.Architecture}}' "$ref" 2>/dev/null || true)"
-      [ "$have" = "$want" ] \
-        || die "cannot obtain $role image $ref for linux/$want (got: ${have:-absent}); refusing to compare against an unknown image"
-      printf '%s\n' "$ref"
-      return 0
-    fi
-
-    # A tag: resolve the manifest list to this arch's digest.
-    repo="${ref%%:*}"
+    # A DIGEST IS NOT NECESSARILY ONE ARTIFACT. A multi-arch push reports the
+    # INDEX digest, and an index names one child manifest per arch, so pulling
+    # it yields the host's native arch exactly like a tag does. Treating
+    # `@sha256:` as inherently unambiguous is what made the first real publish
+    # abort: the amd64 pass gated `improved`, then the arm64 pass pulled the
+    # same index digest, got amd64, and died with "cannot obtain rebuild image
+    # ... (got: amd64)" — after the -pN tag had already been pushed.
+    # So resolve through the manifest list for BOTH forms below, and only fall
+    # back to pulling the reference as given when it has no manifest list
+    # (a true single-arch image digest, or an unreachable registry).
+    #
+    # Reduce the reference to its repository before appending the child digest.
+    # Strip a trailing @digest first, then a trailing :tag — and only when that
+    # colon is in the LAST path segment, because `%%:*` would otherwise eat a
+    # registry port ("registry:5000/ns/img" -> "registry").
+    repo="${ref%%@*}"
+    case "${repo##*/}" in *:*) repo="${repo%:*}" ;; esac
     digest="$(docker manifest inspect "$ref" 2>/dev/null | jq -r --arg a "$want" '
       if .manifests then
         [ .manifests[]
