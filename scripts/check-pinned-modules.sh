@@ -28,10 +28,27 @@
 # absence degrades those two rows to "unknown" rather than failing the run.
 #
 # Exit status:
-#   0  ok        every pin is current, no advisory matches a pinned version
+#   0  ok        every pin is current (or deliberately floored, below), no
+#                advisory matches a pinned version
 #   1  attention at least one pin is behind, or an untagged pin has moved
 #   2  advisory  an advisory matches a PINNED version (the urgent case)
 #   3  the check could not run (treat as unknown, not as a pass)
+#
+# Intentional floors: a pin that is behind upstream ON PURPOSE is declared in
+# the Dockerfile, immediately above the pin it describes:
+#
+#   # pin-watch: floor against=v1.8.2 ref=T-0636 reason=<why, in prose>
+#   --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \
+#
+# Such a pin is reported under "Intentional floors" with its reason and is NOT
+# counted as behind, so a settled decision stops holding the verdict at
+# `attention` forever. `against=` is the upstream version the decision was
+# taken against and is REQUIRED, as is `reason=`: the acknowledgement expires
+# the moment upstream moves past `against`, and an advisory on the pinned
+# version outranks it regardless. This is an acknowledgement, not an
+# exclusion — there is no way to say "ignore this module", because the
+# distinction that matters is between "we looked and chose this" and "we have
+# not looked", and only the first is allowed to be quiet. See T-0651.
 #
 # Advisory beats behind: exit 2 is returned even if some pins are merely stale,
 # because the two call for different urgency and the caller should see the
@@ -176,6 +193,8 @@ die() {
       # verdict above is guarding against.
       echo "advisory_unknown=unknown"
       echo "advisory_partial=unknown"
+      echo "floors_acknowledged=unknown"
+      echo "floors_expired=unknown"
       echo "github_only=unknown"
       echo "report<<$PINREPORT_DELIM"
       echo "### Pinned xcaddy plugin watch"
@@ -211,7 +230,12 @@ while [ $# -gt 0 ]; do
     --out-dir)    need_value "$1" "${2+$2}"; OUT_DIR="$2";    shift; shift ;;
     --offline-fixture) need_value "$1" "${2+$2}"; FIXTURE="$2"; shift; shift ;;
     --json)       EMIT_JSON=1;         shift ;;
-    -h|--help)    sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Ends at the separator before the "three traps" essay, which is
+    # commentary for a maintainer rather than usage. A fixed upper bound was
+    # already one edit away from either truncating the exit-status list or
+    # printing half an essay, so the range is anchored on that separator and
+    # checked below.
+    -h|--help)    sed -n '2,/^# ----/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -262,6 +286,55 @@ fi
 # building a pinned image against a local path is itself worth a human's
 # attention.
 # ---------------------------------------------------------------------------
+# Every value taken from an HTTP response or from `git` crosses into a TSV
+# row, an awk field and finally a Markdown table cell. A tab or newline in
+# such a value therefore forges COLUMNS and ROWS, and that is not a cosmetic
+# problem -- it was a demonstrated false clean:
+#
+#   A proxy returning {"Version":"v9.9.9<newline>PINREPORT_EOF<newline>verdict=ok"}
+#   split the row so that `kind` landed on a later line. The first row then
+#   had too few fields, `kind` read empty, matched no `case` branch, so
+#   `behind` was never incremented -- and the script exited 0 with verdict=ok
+#   for a pin it had not actually compared. A watcher that reports "every pin
+#   is current" because it was deceived is worse than one that fails loudly.
+#
+#   The same newline also places text at column 0 of the GITHUB_OUTPUT
+#   heredoc, which forges arbitrary step outputs, since the delimiter alone on
+#   a line ends the block.
+#
+# So untrusted scalars are sanitised the moment they are read, before they can
+# reach a row: control characters are stripped and the value is length-capped.
+# Sanitising at the row-write site instead would be one refactor away from a
+# new unsanitised path, which is how this class of bug comes back.
+#
+# Defined here, above the parsers, rather than next to the HTTP helpers: the
+# floor-directive parser below is the first consumer, and a function defined
+# after its caller is a crash under `set -u` the moment the directive path is
+# taken — i.e. only on the runs that matter.
+clean_scalar() {
+  printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-120
+}
+
+# A floor's REASON is prose and is the entire point of the mechanism: a reason
+# cut off mid-sentence ("OSV is clean at v1.") is worse than useless, because
+# it reads as a complete thought that says something false. So it gets the same
+# control-character stripping — which is what defends the TSV rows and the
+# GITHUB_OUTPUT heredoc — with a cap wide enough for a sentence of reasoning.
+#
+# A pipe would forge a Markdown table column, so it is escaped rather than
+# stripped: the text is written by whoever edits the Dockerfile, i.e. it is as
+# trusted as the pins themselves, and silently deleting a character from a
+# human's stated reason is its own small lie.
+clean_reason() {
+  printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/|/\\|/g' | cut -c1-400
+}
+
+# The error log is created here, before any parser can need it. A parser
+# writing to an undefined path would be a `set -u` crash on the directive
+# path only, which is the shape of failure this file exists to avoid.
+errors="$OUT_DIR/errors.txt"
+: > "$errors"
+
 pins_file="$OUT_DIR/pins.tsv"
 : > "$pins_file"
 unpinned_file="$OUT_DIR/unpinned.txt"
@@ -374,6 +447,215 @@ if [ "$raw_with_count" != "$parsed_count" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Intentional floors — recording that a pin is deliberately behind upstream.
+#
+# T-0651. Before this, `behind` carried two different meanings: "nobody has
+# looked at this" and "we looked and chose this". The crowdsec floor is the
+# second kind — T-0636 settled that `crowdsec/pkg/apiclient` STAYS at v1.7.8,
+# because a floor states a MINIMUM and v1.7.8 is the exact version fixing all
+# four crowdsec advisories, while raising it would break the build for any
+# future bouncer needing 1.7.x and fix nothing (OSV is clean at both). With no
+# way to say that, the row reported `behind` on every weekly run forever, and a
+# permanent finding on the one job whose output is meant to be read is how the
+# GIT-range advisory in T-0634 gets skimmed past. A signal that is always on
+# carries no information.
+#
+# THIS IS AN ACKNOWLEDGEMENT, NOT AN EXCLUSION, and the difference is the whole
+# point. An "ignore these modules" list would also silence the case where
+# nobody has looked, and would keep silencing it after the reasoning expired.
+# So a declaration is required to carry:
+#
+#   # pin-watch: floor pin=<version> against=<version> reason=<text> [ref=<id>]
+#
+#   pin=      the PINNED version this decision was taken for. Required, and
+#             checked against the pin the directive sits above. Without it the
+#             directive is paired positionally and therefore matches whatever
+#             version the line happens to carry: re-pin the module and the new
+#             version SILENTLY INHERITS the old decision's silence, which is a
+#             floor outliving its reasoning in the most direct way possible.
+#             With it, a re-pin that does not update the directive is a loud
+#             error naming both versions.
+#   against=  the upstream version the decision was taken against. The
+#             acknowledgement covers upstream up to and including this
+#             version and RE-ARMS the moment upstream goes past it (see
+#             `floor_state` at the classification below). An acknowledgement
+#             that silently outlives its reasoning is worse than the noise it
+#             replaces — that is T-0646's failure mode in a different place.
+#   reason=   why, in prose, in the report. REQUIRED: an acknowledgement
+#             whose reason is "" is indistinguishable from an exclusion, so a
+#             declaration missing it is an error rather than a quiet floor.
+#   ref=      optional task/PR id for the decision's audit trail.
+#
+# An advisory on the pinned version also re-arms it, and that is enforced at
+# the classification rather than here: `advisories` is counted before the
+# floor is consulted, so exit 2 still beats an acknowledged floor.
+#
+# PARSED IN A SEPARATE PASS, over the RAW file. The pin parser above pipes the
+# Dockerfile through `grep -v '^#' | grep -oE -- '--with…'`, which discards
+# both the comments and the line association, so a directive is invisible to
+# it by construction — it cannot be bolted onto that loop. This pass reads the
+# file in order and attaches a pending directive to the NEXT `--with` line,
+# which is also the only arrangement a human reads correctly: the declaration
+# sits immediately above the pin it describes.
+#
+# A DIRECTIVE THAT MATCHES NO PIN IS AN ERROR, not a no-op. A floor whose pin
+# was renamed, re-pinned or deleted is a stale claim about a line that no
+# longer exists, and silently dropping it is how the untagged_repo() list in
+# T-0625 was able to rot into a lie. Same for a malformed one: a typo in a
+# directive must not read as "no floor declared", because that failure is
+# invisible — the row simply goes back to `behind` and looks like ordinary
+# drift.
+# ---------------------------------------------------------------------------
+floors_file="$OUT_DIR/floors.tsv"
+: > "$floors_file"
+
+# module \t pinned \t against \t ref \t reason  (reason last: free text)
+floor_pending=""
+floor_pending_line=0
+floor_lineno=0
+while IFS= read -r fl_raw; do
+  floor_lineno=$(( floor_lineno + 1 ))
+  case "$fl_raw" in
+    *pin-watch:*)
+      # A directive must be a comment whose text STARTS with the marker. This
+      # file documents its own syntax in prose ("carries a `# pin-watch:
+      # floor`"), and that prose is a comment too, so requiring only "a
+      # comment mentioning the string" made the header's explanation parse as
+      # a real declaration: its body after `floor` is a backtick, so `pin=`
+      # came out empty and the run reported the crowdsec floor as missing
+      # pin= while the actual directive below was never read. Same prose-
+      # harvesting trap the --with counter avoids by excluding comments;
+      # here the directive IS a comment, so anchor on position instead.
+      # Requiring the comment's first token to be the marker also means a
+      # NON-comment line declares nothing, so a `--with` line or an env value
+      # mentioning the string cannot acknowledge itself.
+      fl_trim="${fl_raw#"${fl_raw%%[![:space:]]*}"}"
+      case "$fl_trim" in '#'*) ;; *) continue ;; esac
+      fl_marker="${fl_trim#'#'}"
+      fl_marker="${fl_marker#"${fl_marker%%[![:space:]]*}"}"
+      case "$fl_marker" in
+        pin-watch:*) ;;
+        *) continue ;;
+      esac
+      if [ -n "$floor_pending" ]; then
+        echo "two \`# pin-watch:\` directives in a row at line $floor_lineno of $DOCKERFILE with no --with between them; the first declared no pin" >> "$errors"
+        floor_pending=""
+      fi
+      floor_pending="$fl_marker"
+      floor_pending_line="$floor_lineno"
+      continue ;;
+  esac
+  # A comment line that is not a directive must not break the pairing: the
+  # Dockerfile's pin block is full of explanatory prose, and treating any
+  # comment as a separator would make a declaration unreadable the moment
+  # someone wrote a note between it and its pin.
+  fl_trim="${fl_raw#"${fl_raw%%[![:space:]]*}"}"
+  case "$fl_trim" in '#'*) continue ;; esac
+  case "$fl_raw" in
+    *--with*) ;;
+    *) continue ;;
+  esac
+  [ -n "$floor_pending" ] || continue
+
+  # Extract the pin on this line with the SAME normalisation the pin parser
+  # uses, so a floor cannot be declared against a spelling the watch records
+  # differently (`--with=`, a tab, two spaces, quotes, a replacement).
+  fl_line="${fl_raw//$'\t'/ }"
+  fl_line="${fl_line/--with=/--with }"
+  while case "$fl_line" in *'--with  '*) true ;; *) false ;; esac; do
+    fl_line="${fl_line/--with  /--with }"
+  done
+  fl_arg="${fl_line#*--with }"
+  fl_arg="${fl_arg%% *}"
+  fl_arg="${fl_arg%\\}"
+  fl_arg="${fl_arg%\"}"; fl_arg="${fl_arg#\"}"
+  fl_arg="${fl_arg%\'}"; fl_arg="${fl_arg#\'}"
+  case "$fl_arg" in *=*) fl_arg="${fl_arg%%=*}" ;; esac
+  fl_mod="${fl_arg%@*}"
+  fl_ver="${fl_arg##*@}"
+  fl_dir="$floor_pending"
+  fl_dir_line="$floor_pending_line"
+  floor_pending=""
+  floor_pending_line=0
+
+  case "$fl_arg" in
+    *@*) ;;
+    *)
+      echo "the \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE sits above an UNPINNED --with argument; a floor can only acknowledge a pinned version" >> "$errors"
+      continue ;;
+  esac
+
+  # `floor` is the only kind today. An unknown kind is an error rather than a
+  # skip: a future `# pin-watch: something-else` must not read as "no floor
+  # declared" on a box running an older copy of this script.
+  fl_body="${fl_dir#*pin-watch:}"
+  fl_body="${fl_body#"${fl_body%%[![:space:]]*}"}"
+  case "$fl_body" in
+    floor|floor' '*|floor$'\t'*) ;;
+    *)
+      echo "unknown \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE: $(clean_scalar "$fl_body") (only \`floor\` is understood by this version)" >> "$errors"
+      continue ;;
+  esac
+  fl_body="${fl_body#floor}"
+
+  # key=value, in any order. `reason=` is taken to the end of the line because
+  # it is prose and the last thing a human writes; the scalars are matched
+  # individually so an unparsed one is empty and fails the checks below rather
+  # than swallowing the rest of the directive.
+  fl_pin="$(printf '%s' "$fl_body" | grep -oE '(^|[[:space:]])pin=[^[:space:]]+' | head -1 | cut -d= -f2-)"
+  fl_against="$(printf '%s' "$fl_body" | grep -oE 'against=[^[:space:]]+' | head -1 | cut -d= -f2-)"
+  fl_ref="$(printf '%s' "$fl_body" | grep -oE 'ref=[^[:space:]]+' | head -1 | cut -d= -f2-)"
+  fl_reason="$(printf '%s' "$fl_body" | sed -n 's/.*reason=//p')"
+  # Strip a trailing line-continuation backslash a Dockerfile comment may end
+  # with, and the trailing whitespace it leaves.
+  fl_reason="${fl_reason%\\}"
+  fl_reason="${fl_reason%"${fl_reason##*[![:space:]]}"}"
+  fl_pin="$(clean_scalar "$fl_pin")"
+  fl_against="$(clean_scalar "$fl_against")"
+  fl_ref="$(clean_scalar "$fl_ref")"
+  fl_reason="$(clean_reason "$fl_reason")"
+
+  # `pin=` must be present AND must match the pin this directive sits above.
+  # Missing is an error, not a fallback to the positional version: a silent
+  # fallback is exactly the inheritance this field exists to prevent, and it
+  # would make the protection depend on remembering to use the field.
+  if [ -z "$fl_pin" ]; then
+    echo "the \`# pin-watch: floor\` directive for \`$fl_mod\` at line $fl_dir_line of $DOCKERFILE is missing pin=; without it a re-pin would silently inherit this decision, so the floor is not honoured" >> "$errors"
+    continue
+  fi
+  if [ "$fl_pin" != "$fl_ver" ]; then
+    echo "the \`# pin-watch: floor\` directive at line $fl_dir_line of $DOCKERFILE was written for \`$fl_mod@$fl_pin\` but the pin below it is now \`$fl_ver\`; the pin moved and the acknowledgement did not follow it, so the floor is not honoured" >> "$errors"
+    continue
+  fi
+
+  if [ -z "$fl_against" ] || [ -z "$fl_reason" ]; then
+    echo "the \`# pin-watch: floor\` directive for \`$fl_mod\` at line $fl_dir_line of $DOCKERFILE is missing $( [ -z "$fl_against" ] && printf 'against='; [ -z "$fl_against" ] && [ -z "$fl_reason" ] && printf ' and '; [ -z "$fl_reason" ] && printf 'reason=' ); an acknowledgement without both is an exclusion, and this script does not do exclusions" >> "$errors"
+    continue
+  fi
+  if ! printf '%s' "$fl_against" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]+)?$'; then
+    echo "the \`# pin-watch: floor\` directive for \`$fl_mod\` at line $fl_dir_line of $DOCKERFILE has against=$fl_against, which is not a Go version; the re-arm comparison cannot be made, so the floor is not honoured" >> "$errors"
+    continue
+  fi
+
+  printf '%s\t%s\t%s\t%s\t%s\n' "$fl_mod" "$fl_ver" "$fl_against" "$fl_ref" "$fl_reason" >> "$floors_file"
+done < "$DOCKERFILE"
+
+if [ -n "$floor_pending" ]; then
+  echo "the \`# pin-watch:\` directive at line $floor_pending_line of $DOCKERFILE is not followed by any --with argument; it acknowledges nothing" >> "$errors"
+fi
+
+# A floor must name a pin that exists, at the version it was declared for. A
+# floor left behind by a re-pin is the dangerous case: the pin moved, the
+# acknowledgement did not, and without this check the new version would
+# inherit the old decision's silence.
+while IFS=$'\t' read -r fc_mod fc_ver _fc_against _fc_ref _fc_reason; do
+  [ -n "$fc_mod" ] || continue
+  if ! awk -F'\t' -v m="$fc_mod" -v v="$fc_ver" '$1==m && $2==v {found=1} END{exit !found}' "$pins_file"; then
+    echo "a \`# pin-watch: floor\` directive acknowledges \`$fc_mod@$fc_ver\`, but no such pin is in $DOCKERFILE; the pin moved or was removed and the acknowledgement did not follow it" >> "$errors"
+  fi
+done < "$floors_file"
+
+# ---------------------------------------------------------------------------
 # Untagged pins. Keyed by the --with argument so the table can say why a row
 # is compared by commit rather than by version. Extend this when a pin changes
 # shape; an entry that no longer matches any pin is reported, not ignored, so
@@ -412,30 +694,6 @@ proxy_get() {
   lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   curl -fsS --max-time 25 --retry 2 --retry-delay 2 \
     "$PROXY/$lower/$2" 2>/dev/null
-}
-
-# Every value taken from an HTTP response or from `git` crosses into a TSV
-# row, an awk field and finally a Markdown table cell. A tab or newline in
-# such a value therefore forges COLUMNS and ROWS, and that is not a cosmetic
-# problem -- it was a demonstrated false clean:
-#
-#   A proxy returning {"Version":"v9.9.9<newline>PINREPORT_EOF<newline>verdict=ok"}
-#   split the row so that `kind` landed on a later line. The first row then
-#   had too few fields, `kind` read empty, matched no `case` branch, so
-#   `behind` was never incremented -- and the script exited 0 with verdict=ok
-#   for a pin it had not actually compared. A watcher that reports "every pin
-#   is current" because it was deceived is worse than one that fails loudly.
-#
-#   The same newline also places text at column 0 of the GITHUB_OUTPUT
-#   heredoc, which forges arbitrary step outputs, since the delimiter alone on
-#   a line ends the block.
-#
-# So untrusted scalars are sanitised the moment they are read, before they can
-# reach a row: control characters are stripped and the value is length-capped.
-# Sanitising at the row-write site instead would be one refactor away from a
-# new unsanitised path, which is how this class of bug comes back.
-clean_scalar() {
-  printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-120
 }
 
 resolve_module() {
@@ -508,11 +766,12 @@ rows="$OUT_DIR/rows.tsv"
 # settling on a per-field NUL stream, which is the only form that preserves an
 # empty field positionally.
 row_reader() {
-  awk -F'\t' '{ printf "%d%c", NF, 0; for (i = 1; i <= NF; i++) printf "%s%c", $i, 0 }' "$1"
+  # NF>0 skips a blank line. A stray trailing newline in rows.tsv would
+  # otherwise be read as a 0-field row, trip the malformed branch and push the
+  # whole run to verdict=error -- a spurious failure, not a real one. No
+  # current writer emits a blank line; this keeps a future one from doing so.
+  awk -F'\t' 'NF>0 { printf "%d%c", NF, 0; for (i = 1; i <= NF; i++) printf "%s%c", $i, 0 }' "$1"
 }
-errors="$OUT_DIR/errors.txt"
-: > "$errors"
-
 if [ -n "$FIXTURE" ]; then
   [ -f "$FIXTURE" ] || die "no such fixture: $FIXTURE"
 fi
@@ -950,6 +1209,15 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
               # Pad the pin up to the bound's component count so that a
               # bound naming more components still compares correctly.
               g_cmp_pin="$g_pin_n"; g_cmp_hi="$g_hi"
+              # Leading zeros are stripped per component first. `sort -V`
+              # reads "0005.4.0" as NEWER than "5.4.0", so a zero-padded
+              # bound that in fact covers the pin compared as strictly above
+              # it and the row was dropped -- the advisory covers the pin and
+              # the filter hid it. Free-text ranges from a third party are
+              # exactly where that shows up, which is the threat model this
+              # filter already assumes.
+              g_cmp_pin="$(printf '%s' "$g_cmp_pin" | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
+              g_cmp_hi="$(printf '%s' "$g_cmp_hi" | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
               while [ "$(printf '%s' "$g_cmp_pin" | tr -cd '.' | wc -c)" \
                    -lt "$(printf '%s' "$g_cmp_hi" | tr -cd '.' | wc -c)" ]; do
                 g_cmp_pin="$g_cmp_pin.0"
@@ -1025,6 +1293,9 @@ fi
 # Verdict + report.
 # ---------------------------------------------------------------------------
 behind=0; advisories=0; unresolved=0; moved=0; adv_unknown=0; adv_partial=0
+floors_ack=0; floors_expired=0
+floors_report="$OUT_DIR/floors-report.tsv"
+: > "$floors_report"
 report="$OUT_DIR/report.md"
 {
   echo "### Pinned xcaddy plugin watch"
@@ -1151,8 +1422,65 @@ while [ "$row_i" -lt "${#row_toks[@]}" ]; do
     state="ADVISORY"
   fi
 
+  # -------------------------------------------------------------------------
+  # An acknowledged floor (T-0651). Consulted only for a row that is otherwise
+  # exactly `behind`, and only after the advisory count above has already been
+  # taken, so the ordering carries two guarantees:
+  #
+  #   - exit 2 still beats an acknowledged floor. `advisories` was incremented
+  #     before this block can run, and an ADVISORY row is excluded here by the
+  #     state test, so an acknowledged pin that turns out to be vulnerable
+  #     reports as an advisory with its floor noted — not quietly.
+  #   - nothing else is silenced. `unresolved`, `unknown`, `moved` and
+  #     `partial` rows pass through untouched: a floor says "this pin is behind
+  #     on purpose", which is a claim about staleness and about nothing else.
+  #
+  # RE-ARMING is the other half, and it is what separates this from an ignore
+  # list. The declaration records the upstream version the decision was taken
+  # against; once upstream moves PAST that version the decision was taken on
+  # facts that no longer hold, so the acknowledgement expires and the row goes
+  # back to `behind` with the expiry stated. An acknowledgement that silently
+  # outlives its reasoning is worse than the noise it replaces (T-0646).
+  floor_reason=""; floor_against=""; floor_ref=""; floor_state=""
+  if [ "$state" = "behind" ] && [ -s "$floors_file" ]; then
+    floor_hit="$(awk -F'\t' -v m="$arg" -v v="$pinned" \
+      '$1==m && $2==v {print; exit}' "$floors_file")"
+    if [ -n "$floor_hit" ]; then
+      floor_against="$(printf '%s' "$floor_hit" | cut -f3)"
+      floor_ref="$(printf '%s' "$floor_hit" | cut -f4)"
+      floor_reason="$(printf '%s' "$floor_hit" | cut -f5)"
+      # Has upstream gone past the version this was decided against? `sort -V`
+      # for the same reason the staleness compare uses it: v1.10.0 is newer
+      # than v1.9.0 and a string compare gets that backwards. Equality is NOT
+      # expiry — the decision covers `against` itself.
+      fl_newest="$(printf '%s\n%s\n' "$floor_against" "$latest" | sort -V | tail -1)"
+      if [ "$latest" != "$floor_against" ] && [ "$fl_newest" = "$latest" ]; then
+        floor_state="expired"
+        floors_expired=$((floors_expired+1))
+        # Stays `behind`: the row must look exactly like un-reviewed drift
+        # again, because that is what it now is.
+      else
+        floor_state="ack"
+        floors_ack=$((floors_ack+1))
+        behind=$((behind-1))
+        state="floor"
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$arg" "$pinned" "$latest" "$floor_against" "$floor_state" \
+        "${floor_ref:+[$floor_ref] }$floor_reason" >> "$floors_report"
+    fi
+  fi
+
   up="$latest"
-  [ "$latest_time" != "-" ] && [ "$state" = "behind" ] && up="$latest (tagged $latest_time)"
+  [ "$latest_time" != "-" ] && { [ "$state" = "behind" ] || [ "$state" = "floor" ]; } \
+    && up="$latest (tagged $latest_time)"
+  # An acknowledged row stays IN the table and says so. Dropping it would make
+  # the report describe fewer pins than the Dockerfile has, which is the
+  # silent-exclusion shape this change exists to avoid; the reader should see
+  # the pin, see that it is behind, and see that the gap is deliberate.
+  [ "$state" = "floor" ] && up="$up — intentional floor"
+  [ "$floor_state" = "expired" ] \
+    && up="$up — floor EXPIRED (decided against $floor_against)"
   [ -n "$note" ] && up="$up — $note"
 
   # An em dash in the advisory column must mean "OSV was asked and said no",
@@ -1194,6 +1522,26 @@ done
     echo
   fi
   [ "$behind" -gt 0 ] && { echo "**$behind pin(s) behind upstream's newest tag.**"; echo; }
+  if [ "$floors_expired" -gt 0 ]; then
+    echo "**$floors_expired intentional floor(s) have EXPIRED and are counted as behind again.** Upstream has moved past the version the decision was recorded against, so the reasoning was taken on facts that no longer hold. Re-take the decision and update \`against=\`, or move the pin."
+    echo
+  fi
+  if [ -s "$floors_report" ]; then
+    echo "**Intentional floors.** These pins are behind upstream *on purpose*: a decision was taken, recorded next to the pin as a \`# pin-watch: floor\` directive, and is reproduced here. An acknowledged floor is **not** counted as behind, so it cannot hold the verdict at \`attention\` forever — but it re-arms automatically if upstream moves past the version it was decided against, and an advisory on the pinned version always outranks it:"
+    echo
+    echo "| module | pinned | upstream | decided against | status | reason |"
+    echo "| --- | --- | --- | --- | --- | --- |"
+    while IFS=$'\t' read -r f_mod f_pin f_up f_against f_state f_reason; do
+      case "$f_state" in
+        ack)     f_show="acknowledged" ;;
+        expired) f_show="**EXPIRED**" ;;
+        *)       f_show="$f_state" ;;
+      esac
+      printf '| `%s` | `%s` | %s | `%s` | %s | %s |\n' \
+        "$f_mod" "$f_pin" "$f_up" "$f_against" "$f_show" "$f_reason"
+    done < "$floors_report"
+    echo
+  fi
   [ "$moved"  -gt 0 ] && { echo "**$moved untagged pin(s) no longer at upstream HEAD.** These are compared by commit because upstream has no usable tag."; echo; }
   [ -n "$tag_now_ok" ] && { echo "**A tagged release is now viable for the CrowdSec bouncer:** $tag_now_ok."; echo; }
   if [ -s "$unpinned_file" ]; then
@@ -1234,11 +1582,19 @@ done
   fi
   if [ "$advisories" -eq 0 ] && [ "$behind" -eq 0 ] && [ "$moved" -eq 0 ] \
      && [ "$malformed_rows" -eq 0 ] && [ "$adv_unknown" -eq 0 ] \
-     && [ "$adv_partial" -eq 0 ] \
+     && [ "$adv_partial" -eq 0 ] && [ "$floors_expired" -eq 0 ] \
      && [ ! -s "$errors" ] && [ ! -s "$unpinned_file" ] \
      && [ ! -s "$gh_extra" ] && [ -z "$gh_unavailable" ] \
      && [ ! -s "$replaced_file" ] && [ -z "$tag_now_ok" ]; then
-    echo "Every pin is at upstream's newest release, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report."
+    # The all-clear must not claim more than it checked. With an acknowledged
+    # floor present, "every pin is at upstream's newest release" is false, and
+    # a sentence a reader can catch being wrong is how a report loses its
+    # authority; so the acknowledged pins are named in the same breath.
+    if [ "$floors_ack" -gt 0 ]; then
+      echo "Every pin is at upstream's newest release except $floors_ack acknowledged intentional floor(s) listed above, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report."
+    else
+      echo "Every pin is at upstream's newest release, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report."
+    fi
   fi
   echo
   echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`.</sub>"
@@ -1270,11 +1626,19 @@ done
 # questions was asked and clean, the other was impossible — so it reaches
 # `attention` rather than `error`: something real was verified, but less than
 # this script claims to verify, and `ok` would overstate it.
+# An ACKNOWLEDGED floor is deliberately absent from this list: it is the one
+# finding this script is now allowed to be quiet about, which is the whole of
+# T-0651. An EXPIRED one is listed explicitly even though it is also counted
+# in `behind` — the two counters move independently, and a later change to
+# either must not be able to make an expired acknowledgement silent. A
+# malformed or orphaned directive reaches `error` through `-s "$errors"`
+# above, because a floor that cannot be READ must not read as no floor at all.
 if   [ "$advisories" -gt 0 ]; then verdict="advisory"; rc=2
 elif [ "$unresolved" -gt 0 ] || [ "$osv_failed" -eq 1 ] \
   || [ "$malformed_rows" -gt 0 ] || [ "$adv_unknown" -gt 0 ] \
   || [ -s "$errors" ]; then verdict="error"; rc=3
 elif [ "$behind" -gt 0 ] || [ "$moved" -gt 0 ] || [ -n "$tag_now_ok" ] \
+  || [ "$floors_expired" -gt 0 ] \
   || [ "$adv_partial" -gt 0 ] || [ -s "$gh_extra" ] || [ -n "$gh_unavailable" ] \
   || [ -s "$unpinned_file" ] || [ -s "$replaced_file" ]; then verdict="attention"; rc=1
 else verdict="ok"; rc=0
@@ -1287,10 +1651,12 @@ if [ "$EMIT_JSON" -eq 1 ]; then
   jq -n --arg v "$verdict" --argjson b "$behind" --argjson a "$advisories" \
         --argjson m "$moved" --argjson u "$unresolved" \
         --argjson au "$adv_unknown" --argjson ap "$adv_partial" \
+        --argjson fa "$floors_ack" --argjson fe "$floors_expired" \
         --argjson gx "$(wc -l < "$gh_extra" | tr -d ' ')" \
         --argjson gc "$gh_checked" \
         '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
           advisory_unknown:$au, advisory_partial:$ap,
+          floors_acknowledged:$fa, floors_expired:$fe,
           github_only:$gx, github_modules_checked:$gc}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
@@ -1304,6 +1670,8 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "moved=$moved"
     echo "advisory_unknown=$adv_unknown"
     echo "advisory_partial=$adv_partial"
+    echo "floors_acknowledged=$floors_ack"
+    echo "floors_expired=$floors_expired"
     echo "github_only=$(wc -l < "$gh_extra" | tr -d ' ')"
     echo "report<<$PINREPORT_DELIM"
     cat "$report"

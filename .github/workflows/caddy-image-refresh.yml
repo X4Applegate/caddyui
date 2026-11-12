@@ -485,6 +485,7 @@ jobs:
           VERDICT: ${{ steps.check.outputs.verdict }}
           ADV_UNKNOWN: ${{ steps.check.outputs.advisory_unknown }}
           ADV_PARTIAL: ${{ steps.check.outputs.advisory_partial }}
+          FLOORS_EXPIRED: ${{ steps.check.outputs.floors_expired }}
           GITHUB_ONLY: ${{ steps.check.outputs.github_only }}
         shell: bash
         run: |
@@ -517,6 +518,18 @@ jobs:
           case "$GITHUB_ONLY" in
             ''|0) ;;
             *) echo "::warning::GitHub's advisory database lists $GITHUB_ONLY advisory record(s) that OSV did not report for these pins; the ranges are free text and need a human read" ;;
+          esac
+
+          # An EXPIRED intentional floor is called out separately for the same
+          # reason as the unknowns above: it is already inside the `behind`
+          # count, so the verdict alone cannot distinguish "a pin drifted" from
+          # "a decision we recorded no longer rests on facts that hold". The
+          # second needs the decision re-taken, not a version bump, and a
+          # re-armed acknowledgement that reads as ordinary drift is the
+          # failure this mechanism exists to avoid (T-0651).
+          case "$FLOORS_EXPIRED" in
+            ''|0) ;;
+            *) echo "::warning::$FLOORS_EXPIRED intentional floor(s) have EXPIRED: upstream moved past the version the decision was recorded against, so the acknowledgement no longer holds and the pin counts as behind again" ;;
           esac
 
   # ---------------------------------------------------------------------------
