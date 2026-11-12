@@ -39,7 +39,20 @@
 #   1  blocked                (a human must look)
 #   2  the gate could not run (treat as blocked)
 #
-# TWO independent gates:
+# A COVERAGE PRECONDITION, then TWO independent gates:
+#
+#  0. Scan coverage. Before either gate runs, assert the new image's Trivy scan
+#     actually looked at the image: an OS was detected, it is not end-of-life,
+#     every scan target the baseline had is still present, and each shared
+#     target's package count has not collapsed. This is a precondition rather
+#     than a gate because it produces no verdict -- it exits 2 ("the gate could
+#     not run"), which all three call sites already treat as blocking.
+#
+#     It exists because gate 1 is set arithmetic, and set arithmetic reads an
+#     EMPTY findings list as a perfect score. That made this the ONE fail-open
+#     path in the script: an image Trivy cannot analyse has no findings to add,
+#     so the subset check passes and the verdict comes out `improved` precisely
+#     because nothing could be seen. See assert_scan_coverage below.
 #
 #  1. Vulnerability subset. The rebuild's findings must be a SUBSET of the
 #     published image's, per arch. Deliberately not "zero findings": every
@@ -98,6 +111,19 @@ command -v jq    >/dev/null || die "jq not found"
 command -v docker >/dev/null || die "docker not found"
 
 mkdir -p "$OUT"
+
+# Remove any verdict left by a PREVIOUS run in this directory, before anything
+# that can `die`.
+#
+# The refresh path reads the verdict FILE rather than the exit status
+# (`cat scan/verdict 2>/dev/null || echo error`) and turns a missing file into
+# verdict=error, which fails the job. That is what makes exit 2 blocking there.
+# A stale file from an earlier run in the same directory would be read as THIS
+# run's answer, so a gate that aborted at exit 2 would be reported as whatever
+# the last run concluded -- including `improved`. Deleting it up front means an
+# aborted gate always presents as an ABSENT verdict, never an old one.
+rm -f "$OUT/verdict"
+
 SEVERITY="${TRIVY_SEVERITY:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
 
 # Unset or empty means block: a caller that forgets this variable gets the
@@ -140,6 +166,143 @@ ids_from() {
   jq -r '[.Results[]?.Vulnerabilities[]?
           | "\(.VulnerabilityID)\t\(.PkgName)"]
          | unique | .[]' "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Scan coverage: did Trivy actually LOOK at the new image?
+#
+# Gate 1 is set arithmetic on two findings lists, so it reads an EMPTY findings
+# list as a perfect result. Every other failure mode in this script is
+# fail-closed; this one is fail-OPEN, and that is the dangerous direction. An
+# image Trivy cannot analyse produces no findings to add, so the subset check
+# passes and the verdict comes out `improved` *because* nothing could be seen.
+# Fewer findings is read as better rather than as blind, and the moving tags
+# then advance onto an unscanned image.
+#
+# Reachable without anything exotic. A release may edit Dockerfile.caddy
+# freely, and all of these produce it:
+#   - the base becomes scratch or distroless, so there is no OS package
+#     database to detect and the `alpine` result disappears
+#   - the Go build info is stripped (-ldflags, a trimmed binary, a different
+#     builder), so the `gobinary` result disappears and with it every Go
+#     module finding
+#   - the binary moves, so Trivy's language-file walk no longer finds it
+#   - a Trivy upgrade, a missing java-db, or an analyser error degrades one
+#     target silently and exits 0 anyway
+#
+# Measured on the real images to be sure this is not theoretical: the published
+# :stable scan yields exactly two results, `alpine` (32 packages) and
+# `gobinary` (236 packages). Delete the `gobinary` result alone and all 8
+# findings vanish; the gate then reports 8 removed, 0 added, verdict=improved,
+# exit 0 -- and :stable and :latest move.
+#
+# So before comparing, assert the new scan is actually a scan. Each check is a
+# hard stop (exit 2, "the gate could not run") rather than a verdict, because
+# "I could not see" is not a result and must never be averaged with one. Exit 2
+# is already blocking in all three call sites.
+#
+# Checked against the BASELINE rather than against hardcoded expectations: the
+# baseline is a real scan of the image the fleet is running, so it defines what
+# "looked at this image properly" means for this image, and it moves forward on
+# its own as the image changes. A hardcoded list of expected types would have
+# to be edited by the same release that is being gated -- which is precisely
+# the actor this check exists to constrain.
+scan_types() {
+  jq -r '[.Results[]?.Type | select(. != null and . != "")] | unique | .[]' "$1"
+}
+
+# Packages are present even under `--scanners vuln` (verified: 32 OS packages,
+# 236 Go modules on :stable), so a per-type package count is available without
+# a second scan. This is the check that catches a PARTIAL blinding, where the
+# result type still exists but has been reduced to almost nothing -- which set
+# arithmetic cannot distinguish from a genuine fix.
+pkg_count_for_type() {
+  jq -r --arg t "$2" '[.Results[]? | select(.Type == $t) | .Packages[]?] | length' "$1"
+}
+
+assert_scan_coverage() {
+  local new="$1" old="$2" arch="$3"
+  local os_family new_types old_types missing t new_pkgs old_pkgs floor eosl
+
+  # 1. The OS layer was identified.
+  #
+  # Absent Family means Trivy could not tell what the base was, so the `alpine`
+  # result and every OS package finding are missing by definition. jq prints
+  # the string "null" for a missing key, so test for that spelling too.
+  os_family="$(jq -r '.Metadata.OS.Family // ""' "$new")"
+  case "$os_family" in
+    ""|null)
+      die "no OS detected in the rebuild's scan of linux/$arch (.Metadata.OS.Family absent): Trivy could not analyse this image, so an empty findings list means BLIND, not clean. Refusing to read it as an improvement." ;;
+  esac
+
+  # 2. The OS is still supported by the vulnerability database.
+  #
+  # Trivy omits EOSL entirely when false and emits only `"EOSL": true`
+  # (verified on both alpine 3.23.6 and 3.23.7), so test for true rather than
+  # for presence -- `has("EOSL")` would be false on every healthy image and
+  # `// ""` would make absent indistinguishable from false.
+  #
+  # Past end-of-life the distro stops publishing advisories, so OS findings
+  # stop appearing while the packages stay just as vulnerable. That is the same
+  # fail-open shape as a missing scanner: the list shrinks because the data
+  # stopped, not because the image got better.
+  eosl="$(jq -r '.Metadata.OS.EOSL // false' "$new")"
+  if [ "$eosl" = true ]; then
+    die "the rebuild's base OS ($os_family) is flagged END-OF-LIFE in the vulnerability database for linux/$arch: advisories are no longer published for it, so a short findings list reflects missing DATA rather than a fixed image. Rebase onto a supported release."
+  fi
+
+  # 3. Every scan target the baseline had, the rebuild still has.
+  #
+  # This is the check that catches a vanished `gobinary`. A target that was
+  # scanned before and is not scanned now is an ERROR, not an improvement:
+  # whatever it used to report is now simply unobserved. Direction matters --
+  # the rebuild may ADD types (a new ecosystem is more coverage, which is
+  # fine), it may not LOSE them.
+  new_types="$(scan_types "$new")"
+  old_types="$(scan_types "$old")"
+  missing="$(comm -13 <(printf '%s\n' "$new_types" | sort) \
+                      <(printf '%s\n' "$old_types" | sort))"
+  if [ -n "$missing" ]; then
+    # tr-join each list onto one line, then trim the trailing separator, so the
+    # message reads as prose instead of "gobinary-- that target".
+    local missing_1l old_1l new_1l
+    missing_1l="$(printf '%s' "$missing"   | tr '\n' ' ')"; missing_1l="${missing_1l% }"
+    old_1l="$(printf '%s' "$old_types"    | tr '\n' ' ')"; old_1l="${old_1l% }"
+    new_1l="$(printf '%s' "$new_types"    | tr '\n' ' ')"; new_1l="${new_1l% }"
+    die "the rebuild's scan of linux/$arch lost scan target(s) the published image has: $missing_1l -- that target is now UNOBSERVED, not clean, so any finding it used to report would silently cancel out of the subset comparison. (published: $old_1l / rebuild: $new_1l)"
+  fi
+
+  # 4. A package-count floor per shared target.
+  #
+  # Checks 1-3 catch a target that disappeared; this catches one that is still
+  # present but has been gutted -- a stripped binary that still parses as
+  # `gobinary` but yields 3 modules instead of 236, or an OS database read
+  # partially. Set arithmetic cannot tell that from a real fix.
+  #
+  # The floor is deliberately loose (50% of baseline, rounded down), because a
+  # legitimate release really can remove packages: dropping a plugin removes
+  # its whole dependency subtree. The purpose is to catch a COLLAPSE in
+  # visibility, not to police ordinary churn -- a tight floor here would block
+  # real releases and get switched off, which is worse than a loose one that
+  # stays on. Measured for scale: the Go module count moved 213 -> 236 across
+  # v2.55.0 -> :stable, i.e. ~10% and upward, nowhere near this floor.
+  #
+  # Only types present on BOTH sides are compared. A type the rebuild added has
+  # no baseline to be measured against, and check 3 has already established
+  # nothing was lost.
+  for t in $new_types; do
+    printf '%s\n' "$old_types" | grep -qxF "$t" || continue
+    new_pkgs="$(pkg_count_for_type "$new" "$t")"
+    old_pkgs="$(pkg_count_for_type "$old" "$t")"
+    [ "$old_pkgs" -gt 0 ] 2>/dev/null || continue
+    floor=$(( old_pkgs / 2 ))
+    if [ "$new_pkgs" -lt "$floor" ]; then
+      die "the rebuild's '$t' scan of linux/$arch sees $new_pkgs package(s) where the published image has $old_pkgs (floor $floor): the target is present but its contents largely could not be read, so most of it is UNOBSERVED rather than fixed. A findings list this far short of the baseline's cannot be compared against it."
+    fi
+  done
+
+  printf 'scan coverage OK (linux/%s): os=%s, targets=%s\n' \
+    "$arch" "$os_family" "$(printf '%s' "$new_types" | tr '\n' ' ')"
 }
 
 # `caddy list-modules --versions` from inside the image. The image is
@@ -244,6 +407,12 @@ for arch in $ARCHES; do
     --format json --output "$OUT/new-$arch.json" "$new_ref"
   trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
     --format json --output "$OUT/old-$arch.json" "$base_ref"
+
+  # Before ANY comparison: prove the new scan actually looked at the image.
+  # Gate 1 cannot tell an image with no vulnerabilities from an image Trivy
+  # could not read, so that distinction has to be made here, against the
+  # baseline, while both scans are in hand. Hard-stops at exit 2 on failure.
+  assert_scan_coverage "$OUT/new-$arch.json" "$OUT/old-$arch.json" "$arch"
 
   ids_from "$OUT/new-$arch.json" | sort > "$OUT/new-$arch.ids"
   ids_from "$OUT/old-$arch.json" | sort > "$OUT/old-$arch.ids"
