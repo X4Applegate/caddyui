@@ -51,7 +51,7 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/caddy-dns/gandi@v1.2.1 \
     --with github.com/hslatman/caddy-crowdsec-bouncer/http@bdd7e516ec46fede2321a99d62ba63f9b9ebd857 \
     --with github.com/mholt/caddy-ratelimit@v0.1.0 \
-    --with github.com/mholt/caddy-l4@v0.1.2 \
+    --with github.com/mholt/caddy-l4@v0.1.3 \
     --with github.com/corazawaf/coraza-caddy/v2@v2.6.2 \
     2>&1 | tee /tmp/xcaddy.log \
     && if grep 'go: downgraded' /tmp/xcaddy.log; then echo 'a pin downgraded a module' >&2; exit 1; fi
