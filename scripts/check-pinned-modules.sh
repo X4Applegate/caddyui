@@ -335,9 +335,10 @@ clean_reason() {
 errors="$OUT_DIR/errors.txt"
 : > "$errors"
 # Housekeeping worth a human's attention but which does NOT invalidate the
-# run, kept separate from $errors on purpose: $errors means "these numbers
-# cannot be trusted" and forces verdict=error, which would bury a real
-# staleness finding under a could-not-run warning.
+# comparisons, kept separate from $errors on purpose: routing these to $errors
+# would force verdict=error/rc=3 ("these numbers cannot be trusted") and bury
+# genuine staleness findings behind a could-not-run warning, even though a
+# leftover entry invalidates nothing.
 notices="$OUT_DIR/notices.txt"
 : > "$notices"
 
@@ -883,14 +884,18 @@ while IFS=$'\t' read -r arg pinned; do
   note=""
   kind="tag"
   repo="$(untagged_repo "$arg")"
-  # The allowlist says WHERE to look for a commit pin's upstream, not THAT this
-  # pin is one. Only the pin's own shape decides that. A module can return to a
-  # tag -- the CrowdSec bouncer did, in v0.15.0 -- and treating a tag as a
-  # commit would compare it against upstream HEAD forever, reporting a current,
-  # tagged pin as "no longer at upstream HEAD". A leftover entry is surfaced as
-  # a housekeeping notice rather than silently forcing commit mode, so the list
-  # cannot rot. It is a notice and not an error on purpose: the pin is still
-  # resolved and compared correctly, so the run stays authoritative.
+  # Key this on the PIN's shape ALONE. This test used to read
+  # `is_untagged_pin "$pinned" || [ -n "$repo" ]`, which let the
+  # untagged_repo() allowlist decide THAT a pin is a commit when its only job
+  # is to say WHERE a commit pin's upstream lives. A module can return to a tag
+  # -- the CrowdSec bouncer did, in v0.15.0 -- and with the pin tagged but
+  # still listed, that `||` compared a current, tagged pin against upstream git
+  # HEAD forever and reported it as "no longer at upstream HEAD".
+  #
+  # So a leftover entry is surfaced as a housekeeping notice rather than
+  # silently forcing commit mode, and the list cannot rot. It is a notice and
+  # not an error on purpose: the pin is still resolved and compared correctly,
+  # so the run stays authoritative.
   if [ -n "$repo" ] && ! is_untagged_pin "$pinned"; then
     echo "\`$arg\` is in the untagged-pin allowlist but is pinned to \`$pinned\`, which is a tag; drop it from untagged_repo()" >> "$notices"
     repo=""
