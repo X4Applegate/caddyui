@@ -37,6 +37,16 @@
 # edit Dockerfile.caddy and cut a release, which is what release-docker.yml
 # is for — rather than something this workflow does by accident.
 #
+# PINNING HAS A SECOND HALF, and it is the watch-pins job below. A pin that
+# never moves also never receives a plugin's security fix: while a --with was
+# unpinned it at least picked one up by accident on the next rebuild. Nothing
+# else in this repo watches those pins — Dependabot's `docker` ecosystem sees
+# only `FROM` lines and its `gomod` ecosystem only `go.mod`, so neither parses
+# an xcaddy `--with` argument out of a `RUN` line. That gap was not
+# theoretical: caddy-l4 was already a release behind on the day it was pinned.
+# watch-pins reports staleness and advisories and deliberately changes
+# nothing, because a plugin bump belongs in a reviewed release (T-0622).
+#
 # NOT reproducible builds. `apk upgrade --no-cache` is unpinned by design, so
 # two runs a week apart produce different images from the same source. The
 # image is reproducible *by digest* — a digest names exactly one artifact —
@@ -44,8 +54,8 @@
 # stronger property needs explicit Alpine package pinning, which is separate
 # and much larger work.
 #
-# Three jobs, three concerns
-# --------------------------
+# Four jobs, four concerns
+# ------------------------
 #   build-scan  Scheduled. NO secrets, no registry credentials, no write
 #               permissions. Rebuilds both arches and runs Trivy on both.
 #               Clean + nothing new = ends silently. A workflow with no
@@ -60,6 +70,11 @@
 #               the immutable -pN tag behind if that build regressed. The
 #               moving tags are then only ever moved to bytes that passed the
 #               gate, which is the property that actually protects the boxes.
+#   watch-pins  Scheduled, NO secrets, independent of the build. Checks every
+#               pinned --with argument against proxy.golang.org and OSV. It
+#               never blocks publish: a stale plugin is not a reason to refuse
+#               an Alpine security fix, and conflating the two would mean one
+#               stale pin held every future refresh hostage.
 #   alert       Opens exactly ONE issue when a human is needed, and comments
 #               on it instead of opening a second.
 #
@@ -361,6 +376,88 @@ jobs:
           echo "::notice::rebuild closes findings and introduces none - run this workflow with publish=true to ship ${{ steps.plan.outputs.patch_tag }}"
 
   # ---------------------------------------------------------------------------
+  # 1b. watch-pins — the other half of pinning. No secrets, no build, and
+  #     deliberately NOT a dependency of publish.
+  #
+  # Independent of build-scan on purpose. The two answer different questions:
+  # build-scan asks "is the rebuilt image safe to ship", watch-pins asks "has
+  # upstream moved past what we pinned". Wiring the second into the first
+  # would mean a plugin being one release behind blocks an Alpine CVE fix from
+  # publishing, which inverts the priority — the stale plugin is the lesser
+  # problem and the one that is safe to leave until a human reviews it. Run as
+  # its own job it also still reports when the build is broken.
+  #
+  # It never opens a PR and never edits the Dockerfile. A plugin bump is a
+  # module-set change: caddy-l4 v0.1.3 needed Go 1.26, re-architected packet
+  # serving and pulled in a brand-new third-party module (T-0620). That is a
+  # reviewed release with the full e2e comparison, not something a timer does
+  # unattended.
+  # ---------------------------------------------------------------------------
+  watch-pins:
+    name: Watch pinned plugin versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.check.outputs.verdict }}
+      report: ${{ steps.check.outputs.report }}
+    steps:
+      # main's checkout, not the release tag's: this asks whether the pins we
+      # ship TODAY are current, and the script only exists on main. Checking
+      # the tag would also freeze the question to whatever the last release
+      # pinned, which is the opposite of a staleness watch.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check pins against proxy.golang.org and OSV
+        id: check
+        shell: bash
+        run: |
+          set -uo pipefail
+          [ -x scripts/check-pinned-modules.sh ] \
+            || { echo "::error::scripts/check-pinned-modules.sh is missing or not executable"; exit 1; }
+
+          # Exit status is a RESULT here (0 ok / 1 behind / 2 advisory /
+          # 3 could-not-run), so it must not fail the step; the verdict is
+          # read from the output instead. A status this script never emits
+          # would be a real crash, and is surfaced below.
+          set +e
+          ./scripts/check-pinned-modules.sh --out-dir pinwatch
+          rc=$?
+          set -e
+          case "$rc" in
+            0|1|2|3) ;;
+            *) echo "::error::check-pinned-modules.sh exited unexpectedly ($rc)"; exit 1 ;;
+          esac
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the pin report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: pinned-module-watch
+          path: pinwatch/
+          retention-days: 90
+
+      # An advisory against a version the fleet is running is the case this job
+      # exists for, so it is loud. Staleness is a notice: it is real work, but
+      # it is not urgent, and an issue every week for a patch bump is how a
+      # report gets ignored.
+      - name: Flag the result
+        shell: bash
+        run: |
+          case "${{ steps.check.outputs.verdict }}" in
+            advisory)
+              echo "::error::a published advisory matches a PINNED plugin version - see the job summary" ;;
+            attention)
+              echo "::notice::a pinned plugin is behind upstream - see the job summary" ;;
+            error)
+              echo "::warning::the pin check could not complete; an unchecked pin is not a clean pin" ;;
+            *)
+              echo "::notice::every pin is current and no advisory matches a pinned version" ;;
+          esac
+
+  # ---------------------------------------------------------------------------
   # 2. publish — gated, credential-holding, publishes by digest.
   # ---------------------------------------------------------------------------
   publish:
@@ -457,11 +554,14 @@ jobs:
       #
       # This is not belt-and-braces. build-scan scanned a DIFFERENT build: it
       # never pushes, and a reviewer may approve days later, by which time
-      # `apk upgrade` (unpinned, by design) can resolve differently and the
-      # unpinned plugins can re-resolve. Without this step the verdict a human
-      # approved would describe an image nobody ships, and :stable/:latest
-      # would move to an unscanned one. The script is the same file build-scan
-      # ran, so the standard cannot drift between the two.
+      # `apk upgrade` (unpinned, by design) can resolve differently. The plugin
+      # versions themselves are pinned now, so that is no longer the likeliest
+      # source of a difference, but the base image, the toolchain and every
+      # Alpine package still move underneath an unchanged Dockerfile. Without
+      # this step the verdict a human approved would describe an image nobody
+      # ships, and :stable/:latest would move to an unscanned one. The script
+      # is the same file build-scan ran, so the standard cannot drift between
+      # the two.
       - name: Install Trivy
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:
@@ -561,15 +661,23 @@ jobs:
   # ---------------------------------------------------------------------------
   alert:
     name: Alert
-    needs: build-scan
-    # Only when the gate blocked, when build-scan itself failed, or when
-    # explicitly testing the alert path. An improved-but-unpublished rebuild
-    # is a notice in the run summary, not an issue — otherwise this opens an
-    # issue most weeks and gets ignored, which is the state it exists to avoid.
+    needs: [build-scan, watch-pins]
+    # Only when the gate blocked, when build-scan itself failed, when a
+    # published advisory matches a PINNED plugin version, or when explicitly
+    # testing the alert path.
+    #
+    # watch-pins contributes ONLY its `advisory` verdict. Staleness is
+    # deliberately excluded: some plugin is behind most weeks, so alerting on
+    # that would open or comment on an issue nearly every run and train the
+    # reader to skip it — the exact failure this job's single-issue design
+    # exists to avoid. An improved-but-unpublished rebuild is excluded for the
+    # same reason. An advisory against a version the six boxes are running is
+    # the opposite case: rare, and worth interrupting someone for.
     if: >-
       always() && (
         needs.build-scan.result == 'failure' ||
         needs.build-scan.outputs.verdict == 'blocked' ||
+        needs.watch-pins.outputs.verdict == 'advisory' ||
         (github.event_name == 'workflow_dispatch' && inputs.force_alert)
       )
     runs-on: ubuntu-latest
@@ -584,27 +692,43 @@ jobs:
           RESULT: ${{ needs.build-scan.result }}
           PATCH_TAG: ${{ needs.build-scan.outputs.patch_tag }}
           SUMMARY: ${{ needs.build-scan.outputs.summary }}
+          PIN_VERDICT: ${{ needs.watch-pins.outputs.verdict }}
+          PIN_REPORT: ${{ needs.watch-pins.outputs.report }}
         with:
           script: |
             const LABEL = 'caddy-image-refresh';
             const TITLE = 'Caddy image refresh needs a look';
-            const { VERDICT, RESULT, PATCH_TAG, SUMMARY } = process.env;
+            const { VERDICT, RESULT, PATCH_TAG, SUMMARY, PIN_VERDICT, PIN_REPORT } = process.env;
             const runUrl =
               `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
               `/actions/runs/${context.runId}`;
 
-            const why = RESULT === 'failure'
-              ? 'The build-and-scan job **failed**, so nothing was compared and nothing can publish. The scheduled refresh is not running until this is fixed.'
-              : VERDICT === 'blocked'
-                ? 'The gate **blocked publish**: either the rebuild introduces a vulnerability the published image does not have, or the Caddy module set changed (a plugin re-resolved, which is a release-level change rather than a base-layer refresh). The per-arch detail is below.'
-                : 'Alert path exercised by hand (`force_alert`). Nothing is wrong.';
+            const pinAdvisory = PIN_VERDICT === 'advisory';
+
+            // More than one of these can be true at once, so they are
+            // collected rather than selected: an advisory must not hide a
+            // failed build, and a failed build must not hide an advisory.
+            const reasons = [];
+            if (RESULT === 'failure') {
+              reasons.push('The build-and-scan job **failed**, so nothing was compared and nothing can publish. The scheduled refresh is not running until this is fixed.');
+            }
+            if (VERDICT === 'blocked') {
+              reasons.push('The gate **blocked publish**: either the rebuild introduces a vulnerability the published image does not have, or the Caddy module set changed (a plugin re-resolved, which is a release-level change rather than a base-layer refresh). The per-arch detail is below.');
+            }
+            if (pinAdvisory) {
+              reasons.push('A **published advisory matches a pinned plugin version** — i.e. the version the six boxes are running, not merely something in that module\'s history. Pins do not move on their own, so this needs a deliberate bump in `Dockerfile.caddy` and a release. The pin table is below.');
+            }
+            if (reasons.length === 0) {
+              reasons.push('Alert path exercised by hand (`force_alert`). Nothing is wrong.');
+            }
 
             const body = [
               `**${PATCH_TAG || 'refresh'}** — [run](${runUrl})`,
               '',
-              why,
+              reasons.map((r) => `- ${r}`).join('\n'),
               '',
               SUMMARY || '_No scan summary was produced._',
+              ...(pinAdvisory && PIN_REPORT ? ['', PIN_REPORT] : []),
               '',
               '---',
               '',
