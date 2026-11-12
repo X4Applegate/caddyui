@@ -266,6 +266,22 @@ assert_scan_coverage() {
   local new="$1" old="$2" arch="$3"
   local os_family new_types old_types missing t new_pkgs old_pkgs floor eosl
 
+  # The baseline must be a readable scan before it can define the standard.
+  #
+  # Checks 3 and 4 are RELATIVE: they ask what the baseline could see and
+  # require the rebuild to still see it. A baseline that is empty or unreadable
+  # therefore demands nothing, and the whole coverage assertion degrades to
+  # check 1 alone -- which is the fail-open shape again, one more level out.
+  # A truncated download, a disk-full write or a Trivy crash produces exactly
+  # this: a zero-byte or partial JSON that jq reads as null without failing.
+  #
+  # Asserted on the BASELINE's own terms (it has results at all), not against
+  # anything else, since there is nothing further back to compare it to.
+  if ! jq -e 'has("Results") and (.Results | type) == "array" and (.Results | length) > 0' \
+       "$old" >/dev/null 2>&1; then
+    die "the published image's scan of linux/$arch has no usable results (empty, truncated or unparseable JSON): there is no baseline to compare against, and every coverage check below it is relative to one. Refusing to gate against an unreadable baseline."
+  fi
+
   # 1. The OS layer was identified.
   #
   # Absent Family means Trivy could not tell what the base was, so the `alpine`
@@ -338,6 +354,13 @@ assert_scan_coverage() {
   # Only types present on BOTH sides are compared. A type the rebuild added has
   # no baseline to be measured against, and check 3 has already established
   # nothing was lost.
+  # Globbing off for the unquoted expansion below. Trivy type names contain no
+  # whitespace, so word-splitting is what is wanted, but a `Type` of `*` comes
+  # from the image's own scan metadata and would otherwise expand against the
+  # working directory. `grep -qxF` already stops such a value from matching a
+  # real baseline type, so this is not a known bypass -- it is removing the
+  # expansion entirely rather than relying on the next check to absorb it.
+  set -f
   for t in $new_types; do
     printf '%s\n' "$old_types" | grep -qxF "$t" || continue
     new_pkgs="$(pkg_count_for_type "$new" "$t")"
@@ -366,6 +389,10 @@ assert_scan_coverage() {
       die "the rebuild's '$(safe_text "$t")' scan of linux/$arch sees $new_pkgs package(s) where the published image has $old_pkgs (floor $floor): the target is present but its contents largely could not be read, so most of it is UNOBSERVED rather than fixed. A findings list this far short of the baseline's cannot be compared against it."
     fi
   done
+  # Restore globbing: the rest of the script relies on it (the summary's
+  # `for _ in $ARCHES` and the module-diff paths), and a `die` above exits the
+  # whole script anyway, so this only needs to cover the success path.
+  set +f
 
   printf 'scan coverage OK (linux/%s): os=%s, targets=%s\n' \
     "$arch" "$(safe_text "$os_family")" "$(safe_text "$(printf '%s' "$new_types" | tr '\n' ' ')")"
