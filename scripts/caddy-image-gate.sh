@@ -42,13 +42,15 @@
 #     a DIFFERENT package is a new exposure, and comparing bare IDs would let
 #     it cancel out.
 #
-#  2. Module set. `caddy list-modules --versions` must be IDENTICAL. Nine of
-#     Dockerfile.caddy's --with arguments are unpinned and re-resolve on every
-#     build, so a rebuild can bump a DNS provider, caddy-l4 or Coraza with no
-#     CVE change at all — invisible to gate 1, and exactly the risk that makes
-#     release-docker.yml refuse to rebuild this image blindly. A refresh is
-#     allowed to change the OS layer and nothing else; bumping a plugin is a
-#     deliberate act that goes through a release.
+#  2. Module set. `caddy list-modules --versions` must be IDENTICAL. Every
+#     --with argument in Dockerfile.caddy now carries a version, so a rebuild
+#     should reproduce the same module set; this gate is the independent check
+#     that it actually did. It still catches what gate 1 cannot: a resolver,
+#     proxy or toolchain change that moves a DNS provider, caddy-l4 or Coraza
+#     with no CVE change at all, and a pin edit that reached the image without
+#     going through a release. A refresh is allowed to change the OS layer and
+#     nothing else; bumping a plugin is a deliberate act that goes through a
+#     release.
 set -euo pipefail
 
 die() { echo "::error::$*" >&2; exit 2; }
@@ -258,7 +260,7 @@ fi
   if [ "$moddrift" -eq 1 ]; then
     echo "**Gate 2 FAILED — the Caddy module set changed.** A refresh may change the OS layer and nothing else."
     echo
-    echo "Dockerfile.caddy leaves nine \`--with\` arguments unpinned, so a rebuild can re-resolve a DNS provider, caddy-l4 or Coraza. That is a Caddy change, not a base-layer refresh, and it must go through a normal release (edit \`Dockerfile.caddy\`, cut a tag) so it is reviewed and versioned rather than arriving on \`:stable\` via a timer."
+    echo "Every \`--with\` in Dockerfile.caddy is pinned, so a module-set change here means the build did not reproduce the pinned set — a re-resolved DNS provider, caddy-l4 or Coraza, or a pin edit that never went through a release. That is a Caddy change, not a base-layer refresh, and it must go through a normal release (edit \`Dockerfile.caddy\`, cut a tag) so it is reviewed and versioned rather than arriving on \`:stable\` via a timer."
     echo
     for arch in $ARCHES; do
       if [ -s "$OUT/mods-diff-$arch.txt" ]; then
