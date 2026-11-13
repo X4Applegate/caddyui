@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Staleness and advisory watch for Dockerfile.caddy's pinned xcaddy plugins.
 #
+# BOTH PINNING FLAGS ARE WATCHED: `--with` and `--replace` (T-0710). For its
+# whole life this script parsed `--with` only, so when T-0645 added two
+# `--replace` pins -- `github.com/smallstep/certificates` and
+# `go.step.sm/crypto`, the pair that keeps `go-jose/go-jose/v3` out of the
+# binary -- neither was ever seen. No staleness comparison, no OSV query, no
+# GitHub advisory query, and a report that listed every `--with` pin and read
+# as clean. For `--replace old=new@version` the module watched is the
+# RIGHT-hand side, because that is the code compiled in.
+#
 # T-0617 pinned every `--with` argument in Dockerfile.caddy. That removed the
 # silent-drift risk, but it also removed the only route by which a plugin
 # security fix reached this image at all: a pin never moves on its own. This
@@ -78,7 +87,7 @@
 # report and in GITHUB_OUTPUT.
 #
 # ---------------------------------------------------------------------------
-# Three traps this script exists to handle correctly
+# Six traps this script exists to handle correctly
 # ---------------------------------------------------------------------------
 #
 # 1. A `--with` ARGUMENT IS NOT ALWAYS A MODULE PATH. xcaddy takes a *package*
@@ -214,6 +223,32 @@
 #    one row and finds it already fixed stops believing the other seven. The
 #    range filter the GitHub cross-check already uses does this job, and is
 #    shared rather than reimplemented so the two reports cannot disagree.
+#
+# 6. A PIN CAN BE PRESENT AND HAVE NO EFFECT. Traps 1-5 assume that a pin in
+#    the file is a pin in the build. One case breaks that assumption, and only
+#    this script can see it (T-0710).
+#
+#    xcaddy v0.4.7 (environment.go:226-230) skips `go get` for any `--with`
+#    whose package path is prefixed by a replaced module path + "/":
+#
+#      for repl := range replaced {
+#          if strings.HasPrefix(p.PackagePath, repl+"/") { continue nextPlugin }
+#      }
+#
+#    `continue nextPlugin` emits NO ERROR AND NO LOG LINE, so the requested
+#    version is never applied while the `--with` line sits in Dockerfile.caddy
+#    looking enforced. Upstream's intent is lexical submodules
+#    (caddyserver/xcaddy#221); the cost is that a skipped pin is
+#    indistinguishable from a working one, including to the build's own
+#    `go: downgraded` guard.
+#
+#    Reading the Dockerfile cannot reveal this, because the skip happens
+#    inside xcaddy. Comparing the two flag sets can, and after parsing both
+#    this script already holds them -- so the check is a string comparison
+#    over data it has anyway, and it turns a silent skip into a reported
+#    finding. Latent at the time of writing: none of the 16 `--with` paths is
+#    under either replaced module. Asserted mechanically because the next
+#    `--with` is the one that would trip it.
 set -uo pipefail
 
 PROXY="${GOPROXY_BASE:-https://proxy.golang.org}"
@@ -463,11 +498,172 @@ unpinned_file="$OUT_DIR/unpinned.txt"
 : > "$unpinned_file"
 replaced_file="$OUT_DIR/replaced.txt"
 : > "$replaced_file"
+# The module paths named on the LEFT of a `--replace`, one per line. Distinct
+# from replaced_file (which records `--with` LOCAL replacements): this is the
+# set xcaddy builds its `replaced` map from, and the prefix check after the
+# parser needs it. See that check for why the left-hand side is the right
+# thing to record here, even though the right-hand side is what gets watched.
+replmods_file="$OUT_DIR/replaced-modules.txt"
+: > "$replmods_file"
 
+# THE PIN REGION IS THE `xcaddy build` INVOCATION, NOT THE WHOLE FILE (T-0710).
+#
+# Both the parser and the token counter below read this variable rather than
+# the raw Dockerfile, because the counter matches a FLAG TOKEN and a flag name
+# is an ordinary English-ish word that also appears in prose.
+#
+# Measured on the T-0645 tree, which is what made this necessary. That file
+# ends its build with a guard whose message mentions the flag:
+#
+#     echo 'go-jose/v3 is linked again: the --replace pins above no longer
+#            remove it' >&2; exit 1; \
+#
+# That line is NOT a comment, so the comment filter does not drop it, and the
+# quote-stripping that exists to make `--with="mod@ver"` visible turns its
+# quotes into spaces — leaving a bare `--replace ` token followed by prose.
+# The counter saw 19 tokens, the parser correctly rejected the prose as not a
+# module path and produced 18 pins, and the run died `error` on a file whose
+# pins were all fine.
+#
+# That is the right failure to have (loud, not silent), but it is a FALSE
+# alarm, and a weekly false alarm on the one job meant to be read is how a
+# real finding gets skimmed past. The `--with` spelling never hit it only by
+# luck: no message in this Dockerfile happened to contain the word `--with`.
+#
+# So the region is narrowed to xcaddy's ARGUMENT LIST: from the line carrying
+# `xcaddy build` up to the first shell operator that ends it -- a redirection
+# or a pipe (`2>&1`, `|`) or a command separator (`&&`, `||`, `;`). Tokens
+# after that point are arguments to some other command, not to xcaddy, so a
+# flag name appearing there is by construction not a pin.
+#
+# "Up to the first line without a trailing backslash" is NOT the right rule
+# and was tried first: this Dockerfile's whole RUN -- build, downgrade guard,
+# `go version -m`, and the two go-jose assertions -- is a SINGLE continuation,
+# so that rule included the guard prose and still counted 19. The continuation
+# is a line-joining device; the argument list is the thing with a meaning.
+#
+# Narrowing the region is safe for the thing the counter protects against.
+# The counter exists so an unreadable SPELLING of a real pin is loud rather
+# than unwatched; a real pin is by definition inside the invocation, so it is
+# still counted. What is excluded is text that could never have been a pin.
+#
+# Falls back to the whole file if no `xcaddy build` line is found, so a
+# reformat that moves the invocation degrades to the old behaviour (a
+# possible false alarm) rather than to zero pins (a silent unwatch).
+#
+# A COMMENT LINE DOES NOT END THE CONTINUATION. Docker strips comment lines
+# out of a RUN before the shell sees it, so a `# pin-watch:` directive sits
+# between two pins without a trailing backslash and is still inside the
+# invocation. Terminating on it cut the region after the first two pins and
+# reported the crowdsec floor as acknowledging a pin that was not there --
+# the same "an unchecked pin is not a clean pin" failure in a new place.
+# Comments are therefore skipped for the END TEST but kept in the region, and
+# dropped afterwards by the same comment filter as before.
+xcaddy_args="$(awk '
+  # The scan starts AFTER `xcaddy build` on its own line, not at the start of
+  # it: that line legitimately begins with shell (`RUN set -o pipefail && ...`)
+  # and searching the whole line for an operator matched that `&&` and ended
+  # the region before a single pin was read.
+  !inblock {
+    where = match($0, /xcaddy[ \t]+build/)
+    if (!where) next
+    inblock = 1
+    rest = substr($0, where + RLENGTH)
+    if (endop(rest)) exit
+    next
+  }
+  # A comment line interrupts the argument list without ending it (Docker
+  # strips comments before the shell sees the RUN), so `# pin-watch:`
+  # directives between pins must not terminate the region.
+  /^[[:space:]]*#/ { print; next }
+  # The argument list ends at the first shell operator. Everything printed
+  # before it is xcaddy argv; everything after belongs to another command.
+  { if (endop($0)) exit; print }
+  # A line with no operator and no trailing backslash ends the RUN outright.
+  !/\\[[:space:]]*$/ { exit }
+  function endop(line,   m) {
+    m = match(line, /2>&1|[|;]|&&/)
+    if (!m) return 0
+    line = substr(line, 1, m - 1)
+    if (line ~ /[^[:space:]]/) print line
+    return 1
+  }
+' "$DOCKERFILE" | grep -v '^[[:space:]]*#' | sed 's/["'"'"']/ /g')"
+if [ -z "$xcaddy_args" ]; then
+  xcaddy_args="$(grep -v '^[[:space:]]*#' "$DOCKERFILE" | sed 's/["'"'"']/ /g')"
+fi
+
+# `--replace` IS A PIN AND MUST BE WATCHED (T-0710).
+#
+# For its whole life this loop parsed `--with` only. T-0645 added two
+# `--replace` pins to Dockerfile.caddy — `smallstep/certificates` and
+# `go.step.sm/crypto` — and neither was ever seen by this script: no staleness
+# comparison, no OSV query, no GitHub advisory query. Measured on that tree:
+# the table listed every `--with` pin and neither `--replace` pin.
+#
+# That is the same silent-unwatch shape as the quoted-flag defect above, and
+# it is worse here for three reasons:
+#
+#   - Those two lines are what keep `go-jose/go-jose/v3` OUT of the binary.
+#     They materially determine what ships, so they are exactly the kind of
+#     pin T-0617 wanted to be a deliberate, reviewed edit.
+#   - The event this image is WAITING for is `smallstep/certificates` tagging
+#     its v3 removal, at which point both lines get deleted. An unwatched pin
+#     is silent on the one transition that retires it.
+#   - One of the two is an untagged PSEUDO-VERSION, the case least able to
+#     tolerate being unwatched, because `@latest` says nothing about it and
+#     only the HEAD comparison below can.
+#
+# Dependabot and Trivy cannot see an xcaddy argument at all, so nothing else
+# was looking either.
+#
+# THE SYNTAX DIFFERS AND THE RIGHT-HAND SIDE IS WHAT SHIPS:
+#
+#   --with    package@version                  -> check `package@version`
+#   --replace old=new@version                  -> check `new@version`
+#
+# The module whose advisories matter is the REPLACEMENT, not the module being
+# replaced: `old` is the import path that disappears, `new@version` is the
+# code that actually gets compiled in. So the left-hand side is dropped and
+# the right-hand side goes through the identical pin path below. For the
+# common self-replacement (`X=X@v`) the two names coincide, but that is a
+# coincidence of this Dockerfile, not something to rely on.
+#
+# ONE EXTRACTION, NOT TWO. The normalisation below is the quote/tab/`=`
+# handling that T-0657 arrived at after three silent-unwatch bugs; duplicating
+# it for a second flag would mean the next fix lands on one copy. So the two
+# flags are normalised into the SAME `--with `-separated shape, and everything
+# after that point — package-path validation, pin/unpinned split, the untagged
+# HEAD comparison, OSV, GitHub — is literally the same code.
+#
+# `--replace` ALSO CARRIES A `=` IN ITS ARGUMENT, which collides with the
+# `module@version=replacement` local-replacement form `--with` supports. They
+# are told apart by which flag the argument came from, recorded in `flag`
+# below, rather than by guessing from the text — guessing is how a legal
+# spelling becomes an unwatched pin.
 while IFS= read -r raw; do
-  # A TAB between `--with` and its argument is legal in a Dockerfile RUN line
+  # A TAB between the flag and its argument is legal in a Dockerfile RUN line
   # and the extraction below splits on spaces, so tabs are normalised first.
   raw="${raw//$'\t'/ }"
+  # Which flag produced this argument. `--replace` is checked FIRST because
+  # the two are distinguished by the longer, more specific spelling; a line
+  # carries one or the other, since the extraction below emits one match per
+  # occurrence.
+  flag=with
+  case "$raw" in
+    *--replace*) flag=replace ;;
+  esac
+  # Normalise `--replace=X` to `--replace X`, then rewrite the flag itself to
+  # `--with ` so the single extraction below handles both. Rewriting the flag
+  # (rather than adding a second `${raw#*--replace }` branch) is what keeps
+  # this to one code path: every quote, tab and double-space case that
+  # `--with` already survives is thereby survived by `--replace` too, and a
+  # future fix to that normalisation cannot land on only one of them.
+  raw="${raw/--replace=/--replace }"
+  while case "$raw" in *'--replace  '*) true ;; *) false ;; esac; do
+    raw="${raw/--replace  /--replace }"
+  done
+  raw="${raw/--replace /--with }"
   # Normalise `--with=X` to `--with X` so one extraction handles both, then
   # collapse a run of separators so `--with=  X` and `--with   X` reduce to
   # the same single-space form the extraction below expects.
@@ -507,11 +703,41 @@ while IFS= read -r raw; do
   # bottom of this loop, which removes quotes for the parser and the token
   # counter in the same place so the two cannot disagree about a pin.
   [ -n "$arg" ] || continue
-  # `module@version=replacement` — keep the replacement out of the version.
+  # BOTH flags put a `=` in the argument, and they mean OPPOSITE things:
+  #
+  #   --with    module@version=replacement   the LEFT side is what is checked;
+  #                                          the right side is a local override
+  #                                          and is reported as a caveat.
+  #   --replace old=new@version              the RIGHT side is what is checked;
+  #                                          the left side is the path being
+  #                                          removed and ships nothing.
+  #
+  # Deciding by `flag` rather than by inspecting the text is deliberate: the
+  # two forms are not reliably distinguishable by shape (`a=b@v` is legal for
+  # both), and a parser that guesses would pick the wrong side on one of them
+  # and then check a module that is not in the binary while reporting `ok`.
   replacement=""
-  case "$arg" in
-    *=*) replacement="${arg#*=}"; arg="${arg%%=*}" ;;
-  esac
+  if [ "$flag" = replace ]; then
+    # Record the LEFT side before discarding it: it is the module path xcaddy
+    # puts in its `replaced` map, and the prefix check below is about that map
+    # rather than about what gets compiled in.
+    case "$arg" in
+      *=*) printf '%s\n' "${arg%%=*}" >> "$replmods_file" ;;
+    esac
+    # Take the right-hand side. No `=` at all means the line is malformed for
+    # this flag (`--replace foo` replaces nothing), and dropping it silently
+    # would be the unwatch this whole block exists to prevent — so it falls
+    # through to the package-path test below, which rejects it, and the token
+    # reconciliation further down then reports it as an unparsed pin.
+    case "$arg" in
+      *=*) arg="${arg#*=}" ;;
+    esac
+  else
+    # `module@version=replacement` — keep the replacement out of the version.
+    case "$arg" in
+      *=*) replacement="${arg#*=}"; arg="${arg%%=*}" ;;
+    esac
+  fi
   # Must look like <host-with-a-dot>/<path>; prose words never do.
   printf '%s' "$arg" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[^ ]+$' || continue
   [ -n "$replacement" ] && printf '%s\t%s\n' "$arg" "$replacement" >> "$replaced_file"
@@ -528,9 +754,13 @@ while IFS= read -r raw; do
 # token counter alike. Doing it here rather than per-argument is what makes
 # the quoted-flag spellings (`"--with" "mod@ver"`, `"--with=mod@ver"`) visible
 # to both counters instead of invisible to both; see the note above.
-done < <(grep -v '^[[:space:]]*#' "$DOCKERFILE" \
-  | sed 's/["'"'"']/ /g' \
-  | grep -oE -- '--with[=[:space:]]+[^ \\]+' || true)
+# `--replace` is extracted by the SAME expression, as an alternation, so the
+# two flags cannot drift apart in what they accept (T-0710). A separate pass
+# for the second flag would be a second place to forget a spelling.
+# Both sides read `xcaddy_args`, NOT the raw file -- see its definition above
+# for why prose outside the build invocation must not reach either one.
+done < <(printf '%s\n' "$xcaddy_args" \
+  | grep -oE -- '--(with|replace)[=[:space:]]+[^ \\]+' || true)
 
 pin_count="$(wc -l < "$pins_file" | tr -d ' ')"
 unpinned_count="$(wc -l < "$unpinned_file" | tr -d ' ')"
@@ -560,12 +790,80 @@ fi
 # Same quote normalisation as the parser above, and for the same reason: if
 # only one of the two sides understood a spelling, the comparison would pass
 # while the pin went unwatched.
-raw_with_count="$(grep -v '^[[:space:]]*#' "$DOCKERFILE" \
-  | sed 's/["'"'"']/ /g' \
-  | grep -oE -- '(^|[[:space:]])--with([=[:space:]]|$)' | wc -l | tr -d ' ')"
+# Counts `--replace` too, and in the SAME expression as `--with` (T-0710).
+# This is the half of the `--replace` support that makes it stay working: the
+# card asked for a case that stops a `--replace` line silently falling out of
+# the count, and a reconciliation the parser cannot evade is stronger than any
+# single test, because it fires on spellings nobody has thought of yet. A
+# `--replace` the parser cannot read is now a loud `error` verdict rather than
+# an unwatched pin — which is exactly what did NOT happen for the two T-0645
+# pins, and why they went unseen from the day they were added.
+raw_with_count="$(printf '%s\n' "$xcaddy_args" \
+  | grep -oE -- '(^|[[:space:]])--(with|replace)([=[:space:]]|$)' | wc -l | tr -d ' ')"
 parsed_count=$(( pin_count + unpinned_count ))
 if [ "$raw_with_count" != "$parsed_count" ]; then
-  die "parsed $parsed_count pin(s) but $DOCKERFILE contains $raw_with_count --with argument(s); an unparsed pin would be silently unwatched"
+  die "parsed $parsed_count pin(s) but $DOCKERFILE contains $raw_with_count --with/--replace argument(s); an unparsed pin would be silently unwatched"
+fi
+
+# ---------------------------------------------------------------------------
+# A `--with` SHADOWED BY A `--replace` IS SILENTLY NOT FETCHED (T-0710).
+#
+# xcaddy v0.4.7, environment.go:226-230, decides whether to `go get` a plugin:
+#
+#     for repl := range replaced {
+#         if strings.HasPrefix(p.PackagePath, repl+"/") {
+#             continue nextPlugin
+#         }
+#     }
+#     err = env.execGoGet(ctx, p.PackagePath, p.Version, ...)
+#
+# `continue nextPlugin` skips the fetch with NO ERROR AND NO LOG LINE, so the
+# requested version is never applied while the `--with` line sits in the
+# Dockerfile looking enforced. The upstream intent is lexical submodules
+# (caddyserver/xcaddy#221); the cost is that a skipped pin is indistinguishable
+# from a working one.
+#
+# That is this card's own failure shape -- "a pin that reads as present has no
+# effect" -- and the watcher is the only thing that could ever notice, because
+# the skip happens inside xcaddy rather than in the file. Reading the
+# Dockerfile cannot reveal it; only comparing the two flag sets can, and after
+# the parsing above this script already holds both.
+#
+# Checked at the time of writing against the T-0645 pins: none of the 16
+# `--with` paths is prefixed by `github.com/smallstep/certificates/` or
+# `go.step.sm/crypto/`, so this is latent rather than live. It is asserted
+# mechanically anyway, because the next `--with` is the one that would trip it.
+#
+# An exact match is NOT a finding: xcaddy compares against `repl+"/"`, so
+# `--replace X` plus `--with X@v` does not take the skip branch. Only a
+# genuine submodule path does, which is what `case` below tests.
+#
+# This is an $errors finding, not a notice: a pin whose version is not applied
+# makes every version comparison and advisory answer for it describe code that
+# is not in the binary, which is precisely "these numbers cannot be trusted".
+if [ -s "$replmods_file" ]; then
+  while IFS= read -r shadow_mod; do
+    [ -n "$shadow_mod" ] || continue
+    while IFS=$'\t' read -r shadow_pin shadow_ver; do
+      [ -n "$shadow_pin" ] || continue
+      case "$shadow_pin" in
+        "$shadow_mod"/*)
+          echo "\`$shadow_pin@$shadow_ver\` is a \`--with\` pin whose package path is under the replaced module \`$shadow_mod\`; xcaddy SKIPS \`go get\` for it (environment.go, \`strings.HasPrefix(p.PackagePath, repl+\"/\")\`) with no error and no log line, so this pin is NOT applied to the build and the version compared above is not what ships" >> "$errors" ;;
+      esac
+    done < "$pins_file"
+    # An unpinned `--with` under a replaced module is the same skip, and it is
+    # reported through the same route: the argument is in the file, xcaddy
+    # ignores it, and nothing else would say so.
+    if [ -s "$unpinned_file" ]; then
+      while IFS= read -r shadow_unp; do
+        [ -n "$shadow_unp" ] || continue
+        case "$shadow_unp" in
+          "$shadow_mod"/*)
+            echo "\`$shadow_unp\` is a \`--with\` argument under the replaced module \`$shadow_mod\`; xcaddy SKIPS \`go get\` for it with no error and no log line, so it contributes nothing to the build" >> "$errors" ;;
+        esac
+      done < "$unpinned_file"
+    fi
+  done < "$replmods_file"
 fi
 
 # ---------------------------------------------------------------------------
@@ -660,7 +958,7 @@ while IFS= read -r fl_raw; do
         *) continue ;;
       esac
       if [ -n "$floor_pending" ]; then
-        echo "two \`# pin-watch:\` directives in a row at line $floor_lineno of $DOCKERFILE with no --with between them; the first declared no pin" >> "$errors"
+        echo "two \`# pin-watch:\` directives in a row at line $floor_lineno of $DOCKERFILE with no --with/--replace between them; the first declared no pin" >> "$errors"
         floor_pending=""
       fi
       floor_pending="$fl_marker"
@@ -673,8 +971,16 @@ while IFS= read -r fl_raw; do
   # someone wrote a note between it and its pin.
   fl_trim="${fl_raw#"${fl_raw%%[![:space:]]*}"}"
   case "$fl_trim" in '#'*) continue ;; esac
+  # A directive above a `--replace` line pairs with it too (T-0710). A
+  # `--replace` pushes a module FORWARD, past upstream's newest tag; that is
+  # the mirror image of a floor holding one back, and it wants the same
+  # acknowledgement rather than a permanent `behind`/`moved` finding nobody
+  # can silence. Both T-0645 pins are of that shape — one of them is a
+  # pseudo-version ahead of every tag — so without this the first thing the
+  # new parsing would produce is an un-acknowledgeable weekly finding, and a
+  # signal that is always on carries no information (T-0651).
   case "$fl_raw" in
-    *--with*) ;;
+    *--with*|*--replace*) ;;
     *) continue ;;
   esac
   [ -n "$floor_pending" ] || continue
@@ -683,6 +989,15 @@ while IFS= read -r fl_raw; do
   # uses, so a floor cannot be declared against a spelling the watch records
   # differently (`--with=`, a tab, two spaces, quotes, a replacement).
   fl_line="${fl_raw//$'\t'/ }"
+  fl_flag=with
+  case "$fl_line" in
+    *--replace*) fl_flag=replace ;;
+  esac
+  fl_line="${fl_line/--replace=/--replace }"
+  while case "$fl_line" in *'--replace  '*) true ;; *) false ;; esac; do
+    fl_line="${fl_line/--replace  /--replace }"
+  done
+  fl_line="${fl_line/--replace /--with }"
   fl_line="${fl_line/--with=/--with }"
   while case "$fl_line" in *'--with  '*) true ;; *) false ;; esac; do
     fl_line="${fl_line/--with  /--with }"
@@ -692,7 +1007,15 @@ while IFS= read -r fl_raw; do
   fl_arg="${fl_arg%\\}"
   fl_arg="${fl_arg%\"}"; fl_arg="${fl_arg#\"}"
   fl_arg="${fl_arg%\'}"; fl_arg="${fl_arg#\'}"
-  case "$fl_arg" in *=*) fl_arg="${fl_arg%%=*}" ;; esac
+  # Same side-selection as the pin parser, decided by the flag rather than by
+  # the text, so a floor names the module the watch recorded and the
+  # "floor names a pin that exists" check below cannot be defeated by the two
+  # sides disagreeing about which half of `a=b@v` is the module.
+  if [ "$fl_flag" = replace ]; then
+    case "$fl_arg" in *=*) fl_arg="${fl_arg#*=}" ;; esac
+  else
+    case "$fl_arg" in *=*) fl_arg="${fl_arg%%=*}" ;; esac
+  fi
   fl_mod="${fl_arg%@*}"
   fl_ver="${fl_arg##*@}"
   fl_dir="$floor_pending"
@@ -703,7 +1026,7 @@ while IFS= read -r fl_raw; do
   case "$fl_arg" in
     *@*) ;;
     *)
-      echo "the \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE sits above an UNPINNED --with argument; a floor can only acknowledge a pinned version" >> "$errors"
+      echo "the \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE sits above an UNPINNED --with/--replace argument; a floor can only acknowledge a pinned version" >> "$errors"
       continue ;;
   esac
 
@@ -763,7 +1086,7 @@ while IFS= read -r fl_raw; do
 done < "$DOCKERFILE"
 
 if [ -n "$floor_pending" ]; then
-  echo "the \`# pin-watch:\` directive at line $floor_pending_line of $DOCKERFILE is not followed by any --with argument; it acknowledges nothing" >> "$errors"
+  echo "the \`# pin-watch:\` directive at line $floor_pending_line of $DOCKERFILE is not followed by any --with/--replace argument; it acknowledges nothing" >> "$errors"
 fi
 
 # A floor must name a pin that exists, at the version it was declared for. A
@@ -2079,7 +2402,7 @@ report="$OUT_DIR/report.md"
 {
   echo "### Pinned xcaddy plugin watch"
   echo
-  echo "\`$DOCKERFILE\` — $pin_count pinned \`--with\` arguments."
+  echo "\`$DOCKERFILE\` — $pin_count pinned \`--with\`/\`--replace\` arguments."
   echo
   echo "| module | pinned | upstream | advisories |"
   echo "| --- | --- | --- | --- |"
