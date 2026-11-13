@@ -498,8 +498,21 @@ jobs:
           # flag would be visible in the verdict rather than silently halving
           # what the job checks.
           set +e
+          # `--gomod` adds the THIRD input (T-0676): caddyui's own Go
+          # dependencies. `--binary` above covers the published Caddy image,
+          # which is a different program built from Dockerfile.caddy; go.mod
+          # builds the caddyui server. Nothing asked the per-repository
+          # endpoint for it, so a CVE-less advisory there was invisible to
+          # every check -- go-jose/v4 sat at 4.1.6 with five live ones while
+          # Dependabot, OSV and govulncheck all reported clean.
+          #
+          # GITHUB_TOKEN is already exported for this step, which matters: the
+          # module set adds ~20 unique github.com repos to the sweep, and the
+          # unauthenticated 60/hour budget would leave the remainder reported
+          # as unswept.
           ./scripts/check-pinned-modules.sh --out-dir pinwatch \
-            --binary image:applegater/caddyui-caddy:stable
+            --binary image:applegater/caddyui-caddy:stable \
+            --gomod go.mod
           rc=$?
           set -e
           case "$rc" in
@@ -538,6 +551,9 @@ jobs:
           IMAGE_OUT_OF_SCOPE: ${{ steps.check.outputs.image_out_of_scope }}
           IMAGE_BASE: ${{ steps.check.outputs.image_base }}
           IMAGE_GRAPH: ${{ steps.check.outputs.image_graph }}
+          GOMOD: ${{ steps.check.outputs.gomod }}
+          GOMOD_FINDINGS: ${{ steps.check.outputs.gomod_findings }}
+          GOMOD_UNSWEPT: ${{ steps.check.outputs.gomod_unswept }}
         shell: bash
         run: |
           case "$VERDICT" in
@@ -614,6 +630,30 @@ jobs:
           # is a standing property of the index (~74 of 236 modules here), so
           # treating it as a problem would make every run look broken. Stated
           # every run so the sweep's coverage is never overstated by silence.
+          # CADDYUI'S OWN go.mod (T-0676). Stated in the log every run, for the
+          # same reason as the base image above: this is a THIRD program --
+          # `--binary` covers the published Caddy image, go.mod builds the
+          # caddyui server -- and nothing had ever asked the per-repository
+          # endpoint about it, which is how go-jose/v4 sat at 4.1.6 with five
+          # live CVE-less advisories while Dependabot, OSV and govulncheck all
+          # reported clean. A run that did not ask must say so rather than let
+          # silence read as a clean module set.
+          case "$GOMOD" in
+            ok) ;;
+            '') echo "::warning::the pin check reported nothing about caddyui's own go.mod, so its advisory status is unknown" ;;
+            not-run) echo "::warning::caddyui's own go.mod was NOT swept for advisories (no --gomod); a CVE-less advisory against a caddyui dependency is invisible to Dependabot, OSV and govulncheck, so an unswept go.mod is not a clean one" ;;
+            not-swept) echo "::warning::caddyui's go.mod was read but NOT ONE of its modules was actually queried (sweep disabled, or the GitHub budget was exhausted); the module list parsing is not the check, so this says nothing about advisories" ;;
+            *) echo "::warning::caddyui's own go.mod could not be read (state: $GOMOD); its dependencies were NOT checked for advisories" ;;
+          esac
+          case "$GOMOD_UNSWEPT" in
+            ''|0) ;;
+            *) echo "::warning::$GOMOD_UNSWEPT module(s) of caddyui's go.mod were NOT swept; an unswept module is not a clean module" ;;
+          esac
+          case "$GOMOD_FINDINGS" in
+            ''|0) ;;
+            *) echo "::warning::$GOMOD_FINDINGS advisory record(s) cover a version caddyui's own go.mod selects; the ranges are GitHub free text and need a human read - see the job summary" ;;
+          esac
+
           case "$IMAGE_OUT_OF_SCOPE" in
             ''|0) ;;
             *) echo "::notice::$IMAGE_OUT_OF_SCOPE module(s) are outside GitHub's repository-keyed advisory index (not on github.com, or no comparable version); they are covered by the OSV queries where pinned, and this is a known limit rather than a failed sweep" ;;

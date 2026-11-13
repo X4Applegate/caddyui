@@ -339,6 +339,22 @@ check "10 a partial sweep never claims no advisory covers a selected version" \
   "no" "$(grep -q 'No advisory on the per-repository endpoint covers a version `go.mod` selects' \
             "$WORK/o-partial/report.md" 2>/dev/null && echo yes || echo no)"
 
+# Case 11. The machine output must not say `ok` for a module set nobody
+# queried. `gomod_state` alone means "the module LIST was read", and with the
+# sweep disabled the list parses fine while nothing is checked -- so an `ok`
+# here would tell the workflow's `case ... ok) ;;` arm to stay silent. The
+# prose was fixed in case 10; this is the same false clean re-entering through
+# the job output, which is the surface the alerting actually reads.
+gho2="$WORK/gho-disabled.txt"
+: > "$gho2"
+GITHUB_OUTPUT="$gho2" PINWATCH_SKIP_GITHUB=1 "$SCRIPT" \
+  --dockerfile "$REPO_ROOT/Dockerfile.caddy" \
+  --gomod "$REPO_ROOT/go.mod" --out-dir "$WORK/o-gho2" >/dev/null 2>&1 || true
+check "11 a disabled sweep never reports \`gomod=ok\` to the workflow" \
+  "no" "$(grep -qx 'gomod=ok' "$gho2" && echo yes || echo no)"
+check "11b it reports \`not-swept\`, distinct from \`not-run\` and from an unreadable file" \
+  "yes" "$(grep -qx 'gomod=not-swept' "$gho2" && echo yes || echo no)"
+
 echo
 printf 'pass %d  fail %d  skip %d\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ] || exit 1

@@ -2668,7 +2668,19 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "image_swept=$img_swept"
     echo "image_graph=$img_graph_state"
     echo "image_base=$img_base_state"
-    echo "gomod=$gomod_state"
+    # `gomod_state` alone means "the module LIST was read", which is not the
+    # same as "the modules were ASKED about": with the sweep disabled, or with
+    # the GitHub budget exhausted before any go.mod row, the list parses fine
+    # and nothing is checked. Emitting `ok` there would tell the workflow's
+    # `case ... ok) ;;` arm to stay silent about a module set nobody queried --
+    # the false clean this whole input exists to remove, re-entering through
+    # the machine output after the prose had been fixed. So `ok` is reported
+    # only when the list was read AND at least one module was actually swept.
+    gomod_out="$gomod_state"
+    if [ "$gomod_state" = "ok" ] && [ "$gomod_seen" -eq 0 ]; then
+      gomod_out="not-swept"
+    fi
+    echo "gomod=$gomod_out"
     echo "gomod_findings=$gomod_hits_out"
     echo "gomod_unswept=$gomod_unswept"
     echo "report<<$PINREPORT_DELIM"
