@@ -324,7 +324,7 @@ echo "=== the graph cap is derived from the API budget, not fixed ==="
 # on every authenticated run, which made `image_unswept` an always-on signal
 # and made "an unswept component is not a clean component" vacuous. The cap is
 # for the unauthenticated 60/hour budget; a token lifts it to 5000/hour.
-cap_with_token="$(GH_TOKEN=x PINWATCH_GRAPH_CAP= bash -c '
+cap_with_token="$(GH_TOKEN=x PINWATCH_GRAPH_CAP='' bash -c '
   if [ -n "${PINWATCH_GRAPH_CAP:-}" ]; then echo "$PINWATCH_GRAPH_CAP";
   elif [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then echo 400; else echo 40; fi')"
 cap_without="$(env -u GH_TOKEN -u GITHUB_TOKEN -u PINWATCH_GRAPH_CAP bash -c '
