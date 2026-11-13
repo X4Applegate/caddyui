@@ -303,6 +303,39 @@ ARG TARGETARCH
 #     vs the unreplaced build, no downgrades, and `tls internal` + the
 #     acme_server directory verified working against a control build.
 #
+#     THE DOWNGRADE GUARD DOES NOT COVER --replace, so there is a second check
+#     after it. `go: downgraded` is printed only by `go get`; xcaddy applies
+#     replaces with `go mod edit -replace`, a pure text edit that does no MVS
+#     comparison and prints nothing. Measured: `go get x@v0.20.0` then
+#     `go mod edit -replace x=x@v0.3.8` leaves the module at v0.3.8 with ZERO
+#     `go: downgraded` lines, so the existing guard passes. It still fully
+#     protects every --with pin; it is blind to the two lines above. The added
+#     check asserts the OUTCOME instead of the mechanism -- v3 absent from the
+#     built binary -- which catches a silent lowering, a typo in either pin, and
+#     a future upstream change that reintroduces v3, in one test. It is also the
+#     exact close condition this work was given, enforced at build time rather
+#     than left to a reviewer.
+#
+#     WRITE THE MODULE LIST TO A FILE FIRST. Do not rewrite this as
+#     `go version -m /usr/bin/caddy | grep -q ...`. That is how the check was
+#     first written here and it was VACUOUSLY TRUE: `grep -q` exits on its
+#     first match, `go version -m` then dies on SIGPIPE, and under
+#     `set -o pipefail` (head of this RUN) the pipeline returns 141 -- which
+#     `if` reads as "no match". Measured on a binary that DOES link v3:
+#     `grep -c` found it while `grep -q` returned 141 and the build passed.
+#     Redirecting to a file first also makes a failed `go version -m` abort the
+#     `&&` chain, so a missing or unreadable binary fails CLOSED -- which
+#     `... | grep -q ... || true` would not do, since `|| true` masks exactly
+#     the case the guard exists for.
+#     The second `if` is a liveness check: it fails unless a v4 line is present,
+#     so an empty module list cannot make the v3 test pass by having nothing to
+#     match. Verified against three inputs inside this builder image: v3-free
+#     binary -> 0, v3-linked binary -> 1 with the message, missing binary -> 1.
+#     The NEGATIVE CONTROL is what caught the original defect, and is how to
+#     check these lines after touching them: build with the two --replace lines
+#     removed and this step MUST fail. With `grep -q` it did not. A guard that
+#     cannot go red is not a guard.
+#
 #     NOTE FOR THE PIN WATCHER: scripts/check-pinned-modules.sh parses --with
 #     only, so these two lines are NOT watched -- see T-0710.
 RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
@@ -332,6 +365,12 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     && if ! grep -qE '^[[:space:]]*dep[[:space:]]+github\.com/klauspost/compress[[:space:]]+v1\.20\.(4|[5-9]|[1-9][0-9])[[:space:]]' /tmp/mods.txt; then \
          echo 'klauspost/compress is not >= v1.20.4 in the built binary (GO-2026-6865)' >&2; \
          grep -E 'klauspost/compress' /tmp/mods.txt >&2 || true; exit 1; \
+       fi \
+    && if grep -q 'go-jose/go-jose/v3' /tmp/mods.txt; then \
+         echo 'go-jose/v3 is linked again: the --replace pins above no longer remove it' >&2; exit 1; \
+       fi \
+    && if ! grep -q 'go-jose/go-jose/v4' /tmp/mods.txt; then \
+         echo 'no go-jose/v4 line: the module list is unusable, so the v3 check above proved nothing' >&2; exit 1; \
        fi
 
 FROM caddy:2.11.9-alpine
