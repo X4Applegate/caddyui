@@ -326,7 +326,41 @@ esac
 # Overridable so a caller can widen it for a deliberate change without editing
 # this script, but it is NOT meant to grow casually: every addition is a class
 # of file the gate stops looking at.
-FS_ALLOW_RE="${FS_ALLOW_RE:-^(/?(etc/apk/|lib/apk/|var/cache/apk/|etc/machine-id|etc/resolv\.conf|etc/hostname|etc/hosts|\.dockerenv))}"
+#
+# EVERY ENTRY IS FULLY ANCHORED. Both halves of this were real bypasses, both
+# found in review, both reproduced end-to-end, and both are covered by
+# scripts/test-caddy-image-gate-fs-allow.sh:
+#
+#  1. Unbounded bare NAMES. With only a start anchor, `etc/machine-id` matched
+#     `etc/machine-id-EVIL/payload`, and `etc/hosts` -- a file -- matched
+#     `etc/hosts/subdir/evil.sh`, i.e. replace the file with a directory and
+#     get an unlimited allowlisted payload tree. Each file entry is now
+#     terminated with `$`.
+#
+#  2. Whole-SUBTREE prefixes. `etc/apk/`, `lib/apk/` and `var/cache/apk/` were
+#     allowlisted entire, so `etc/apk/.hook.sh`, `lib/apk/db/evilbin` and
+#     `var/cache/apk/payload.sh` were invisible to assertion (c) -- a planted
+#     executable in a directory excused as "package manager noise". The gate
+#     returned verdict=unchanged on an image carrying one.
+#     `etc/apk/protected_paths.d/` was the sharper half: it decides which paths
+#     apk protects, so it is trust-store POLICY, not churn.
+#
+# So the apk entries now name the specific files that actually move during an
+# `apk upgrade`, rather than the directories containing them. The rule for
+# extending this list: name a FILE, anchor it, and never allow a directory that
+# can contain an executable. Every addition is a class of file the gate stops
+# looking at, and these three directories are exactly where an attacker would
+# rather be than /usr/local/bin.
+# The default is assembled in SINGLE quotes so the trailing `$` is a literal
+# dollar in the variable's value, i.e. a real end-of-line anchor when grep reads
+# it. Writing the whole thing double-quoted needs `\$`, and bash then stores the
+# backslash-stripped form -- which works for this script but leaves the SOURCE
+# text reading `...)\$`, where a `\$` is a literal dollar sign and matches
+# nothing. That bit twice over: the regression suite extracts the pattern from
+# this line with sed, and a caller exporting FS_ALLOW_RE copies it from here, so
+# both would get the broken spelling while the script itself looked fine.
+FS_ALLOW_DEFAULT='^/?(lib/apk/db/(installed|scripts\.tar|triggers|lock)|etc/apk/world|var/cache/apk/[^/]*\.(index|tar\.gz)|etc/machine-id|etc/resolv\.conf|etc/hostname|etc/hosts|\.dockerenv)$'
+FS_ALLOW_RE="${FS_ALLOW_RE:-$FS_ALLOW_DEFAULT}"
 
 # A finding is identified by ID *and* package, and DELIBERATELY NOT by the
 # installed version.
@@ -1045,8 +1079,32 @@ for arch in $ARCHES; do
     #    The diff line is `+<path> <mode> <size>`, so the path follows the `+`
     #    directly. Anchored there rather than matched loosely, so a path that
     #    merely CONTAINS one of these strings further along cannot satisfy it.
+    #
+    #    THE PATH SET IS THE WHOLE ASSERTION, AND IT WAS WRONG ONCE. On this
+    #    image `/etc/ssl/certs/*.pem` are SYMLINKS; the certificate bytes live
+    #    in `/usr/share/ca-certificates/mozilla/` (237 entries, measured on
+    #    :stable). An earlier spelling covered only etc/ssl/certs,
+    #    usr/local/share/ca-certificates and etc/ca-certificates, so
+    #    overwriting a Mozilla root in place -- the real trust anchor, reached
+    #    through both `/etc/ssl/certs/ca-cert-<name>.pem` and the `<hash>.0`
+    #    links -- changed no watched path, added no path, and the gate returned
+    #    exit 0 / verdict=unchanged while the summary stated the filesystem was
+    #    unchanged. Found by security review with a working end-to-end fixture.
+    #    That is worse than having no gate, because the summary affirms a
+    #    property that does not hold.
+    #
+    #    So: enumerate every location that can supply a trust anchor to this
+    #    image, not the ones a cert is conventionally INSTALLED to.
+    #      usr/share/ca-certificates/        where the bytes actually are
+    #      etc/ssl/certs/                    the symlink farm + the bundle
+    #      etc/ssl/cert.pem                  symlink, in Go's x509 fallback list
+    #      etc/ssl/ca-bundle.pem, etc/ssl1.1/, etc/pki/   other distro spellings
+    #      usr/local/share/ca-certificates/  the admin drop-in dir
+    #      etc/ca-certificates.conf, etc/ca-certificates/  which certs are TRUSTED
+    #    The last pair is policy rather than material: editing the .conf alone
+    #    changes what the bundle is rebuilt from.
     grep -E '^\+' "$OUT/fs-diff-$arch.txt" | grep -v '^+++' \
-      | grep -E '^\+/?(etc/ssl/certs/|usr/local/share/ca-certificates/|etc/ca-certificates)' \
+      | grep -E '^\+/?(usr/share/ca-certificates/|usr/local/share/ca-certificates/|etc/ssl/certs/|etc/ssl/cert\.pem|etc/ssl/ca-bundle\.pem|etc/ssl1\.1/|etc/pki/|etc/ca-certificates\.conf|etc/ca-certificates/)' \
       > "$OUT/fs-ca-$arch.txt" || true
 
     # b) Any setuid/setgid bit on the new side that the baseline does not have
