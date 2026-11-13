@@ -362,6 +362,33 @@ esac
 FS_ALLOW_DEFAULT='^/?(lib/apk/db/(installed|scripts\.tar|triggers|lock)|etc/apk/world|var/cache/apk/[^/]*\.(index|tar\.gz)|etc/machine-id|etc/resolv\.conf|etc/hostname|etc/hosts|\.dockerenv)$'
 FS_ALLOW_RE="${FS_ALLOW_RE:-$FS_ALLOW_DEFAULT}"
 
+# VALIDATE IT HERE, because an invalid regex fails OPEN further down.
+#
+# Assertion (c) ends in `grep -Ev "$FS_ALLOW_RE" > file || true`. `grep -E` exits
+# 2 on an invalid pattern, the `|| true` swallows that, the output file is empty,
+# and empty means "0 new paths outside the allowlist" means clean. Measured: with
+# FS_ALLOW_RE='^(unclosed[' an image carrying an added CA passed as exit 0 /
+# verdict=unchanged.
+#
+# That is the same fail-open shape as gate 1 reading an empty findings list as a
+# perfect score -- the thing assert_scan_coverage exists to prevent -- recreated
+# one level down, and reachable by a TYPO in a caller override rather than only
+# by malice. The `|| true` cannot simply be dropped: grep legitimately exits 1
+# when nothing matches, which is the common case.
+#
+# So distinguish grep's exit codes once, up front, where it is still a
+# configuration error rather than a silent clean verdict. Exit 1 (no match) on
+# empty input is the expected answer; only 2+ means the pattern itself is bad.
+# Written as `if ! …; then` rather than running the grep bare and testing `$?`
+# on the next line: `set -e` aborts on the failing grep BEFORE the test runs, so
+# the bare form exits 2 with no message at all -- the right code for the wrong
+# reason, and silent. A command inside `if` is exempt from `set -e`, so this
+# keeps the diagnosis.
+fs_allow_rc=0
+printf '' | grep -Eq "$FS_ALLOW_RE" 2>/dev/null || fs_allow_rc=$?
+[ "$fs_allow_rc" -le 1 ] \
+  || die "FS_ALLOW_RE is not a valid POSIX extended regex (grep exit $fs_allow_rc): $FS_ALLOW_RE"
+
 # A finding is identified by ID *and* package, and DELIBERATELY NOT by the
 # installed version.
 #
@@ -1130,7 +1157,17 @@ for arch in $ARCHES; do
     }
     suid_of "$OUT/fs-new-$arch.txt" > "$OUT/fs-suid-new-$arch.txt" || true
     suid_of "$OUT/fs-old-$arch.txt" > "$OUT/fs-suid-old-$arch.txt" || true
-    comm -23 "$OUT/fs-suid-new-$arch.txt" "$OUT/fs-suid-old-$arch.txt" \
+    # LC_ALL=C ON THE COMM, NOT JUST THE SORT. The inputs above are built with
+    # `LC_ALL=C sort`, but `comm` inherits the runner's locale, and it requires
+    # input sorted in ITS OWN collation. C and en_US.UTF-8 order real paths from
+    # this image differently (punctuation-leading names such as `.dockerenv`
+    # move), and on mis-ordered input comm SILENTLY DROPS entries rather than
+    # failing -- so a genuinely new setuid entry can vanish from the difference.
+    # Not hypothetical: runs of this gate emitted "comm: file 1 is not in sorted
+    # order" / "comm: input is not in sorted order" to stderr, where the `|| true`
+    # meant nothing acted on it. Pinning both sides to C makes the sort that
+    # produces the file and the comm that reads it agree by construction.
+    LC_ALL=C comm -23 "$OUT/fs-suid-new-$arch.txt" "$OUT/fs-suid-old-$arch.txt" \
       > "$OUT/fs-suid-$arch.txt" || true
 
     # c) New paths outside the allowlist. Compared on PATH only, so a file the
@@ -1147,7 +1184,8 @@ for arch in $ARCHES; do
     }
     paths_of "$OUT/fs-new-$arch.txt" > "$OUT/fs-paths-new-$arch.txt"
     paths_of "$OUT/fs-old-$arch.txt" > "$OUT/fs-paths-old-$arch.txt"
-    comm -23 "$OUT/fs-paths-new-$arch.txt" "$OUT/fs-paths-old-$arch.txt" \
+    # Same collation pinning as (b) above, for the same reason.
+    LC_ALL=C comm -23 "$OUT/fs-paths-new-$arch.txt" "$OUT/fs-paths-old-$arch.txt" \
       | grep -Ev "$FS_ALLOW_RE" > "$OUT/fs-newpaths-$arch.txt" || true
 
     echo "filesystem delta (linux/$arch): $(wc -l < "$OUT/fs-newpaths-$arch.txt" | tr -d ' ') new path(s) outside the allowlist, $(wc -l < "$OUT/fs-suid-$arch.txt" | tr -d ' ') new setuid/setgid entr(ies), $(wc -l < "$OUT/fs-ca-$arch.txt" | tr -d ' ') trust-store change(s)"

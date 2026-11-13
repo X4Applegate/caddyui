@@ -135,6 +135,46 @@ echo "== 5. anchoring =="
 check blocked 'usr/local/etc/machine-id'
 check blocked 'opt/.dockerenv'
 
+echo "== 6. an INVALID FS_ALLOW_RE must hard-stop, not read as clean =="
+# `grep -E` exits 2 on a bad pattern and assertion (c) ends in `|| true`, so
+# without an up-front check the output file is empty, empty means "0 new paths",
+# and a poisoned image passes as verdict=unchanged. Measured before the fix.
+# This runs the real gate far enough to hit the validation; it needs no images,
+# because the check sits above any docker work.
+bad_out=$(FS_DELTA=on FS_ALLOW_RE='^(unclosed[' "$gate" \
+            no-such-image:test no-such-base:test "${TMPDIR:-/tmp}/t0641-fsallow-$$" amd64 2>&1 || true)
+bad_rc=$(FS_DELTA=on FS_ALLOW_RE='^(unclosed[' "$gate" \
+            no-such-image:test no-such-base:test "${TMPDIR:-/tmp}/t0641-fsallow-$$" amd64 >/dev/null 2>&1; echo $?)
+rm -rf "${TMPDIR:-/tmp}/t0641-fsallow-$$"
+if [ "$bad_rc" = 2 ]; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); rc=1
+  printf 'FAIL: invalid FS_ALLOW_RE exited %s, want 2\n' "$bad_rc"
+fi
+# Exit 2 alone is not enough -- `set -e` aborting on the failing grep also exits
+# 2, silently, which is the right code for the wrong reason. Require the
+# diagnosis too.
+if printf '%s' "$bad_out" | grep -q 'FS_ALLOW_RE is not a valid'; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); rc=1
+  echo 'FAIL: invalid FS_ALLOW_RE produced no diagnostic (set -e aborted before the check?)'
+fi
+
+echo "== 7. comm is collation-pinned, so it agrees with the LC_ALL=C sort feeding it =="
+# comm requires input sorted in ITS OWN collation and silently drops entries
+# otherwise. The inputs are built with `LC_ALL=C sort`, so an unpinned comm can
+# disagree -- real runs of this gate emitted "comm: input is not in sorted order".
+# Gate 1's comm calls sort and compare in the same inherited locale, so they are
+# self-consistent and out of scope here; only gate 4's fs-* pair must be pinned.
+if grep -E '^[[:space:]]*comm -' "$gate" | grep -q 'fs-'; then
+  fail=$((fail+1)); rc=1
+  echo 'FAIL: a gate-4 comm over fs-* files is not LC_ALL=C pinned'
+else
+  pass=$((pass+1))
+fi
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$rc" -eq 0 ] && echo "OK: FS_ALLOW_RE bounds both ends and the negative control reproduces the bug"
