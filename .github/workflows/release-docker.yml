@@ -303,6 +303,62 @@ jobs:
                 exit 1 ;;
             esac
           fi
+
+          # NO OUTPUT MAY CONTAIN THE DOCKER HUB USERNAME (T-0760).
+          #
+          # GitHub silently DROPS any job output whose value contains the value
+          # of a secret. The comment above already relies on that rule - it is
+          # why image names never cross between jobs - but it was only ever
+          # applied to the image NAMES, never to these values.
+          #
+          # `pre_re` allows LETTERS in the prerelease suffix, so a tag such as
+          # v1.0.0-applegater contains the DOCKERHUB_USERNAME secret verbatim,
+          # and so does the refs/tags/<version> built from it. Both outputs
+          # would then arrive EMPTY at the build jobs.
+          #
+          # The two blanked values fail in OPPOSITE ways, which is why BOTH are
+          # checked here rather than just `$version`:
+          #
+          #   version=""  fails CLOSED. The build jobs construct
+          #               "applegater/caddyui:$VERSION" -> "applegater/caddyui:",
+          #               a MALFORMED tag rather than an absent one, which
+          #               docker rejects at argument-parse as "invalid
+          #               reference format" - before login or push. Verified on
+          #               docker 29.9.3 / buildx v0.38.1, for both `build
+          #               --tag` and `imagetools create --tag`. A trailing
+          #               colon is NOT an alias for :latest: the tag is
+          #               optional only when the colon is absent, and the empty
+          #               string fails Docker's [\w][\w.-]{0,127} tag grammar.
+          #               So it cannot collide with :stable or :latest either.
+          #               KIND carries no secret so it survives, but kind=pre
+          #               keeps MOVE_TAGS=false regardless.
+          #
+          #   ref=""      fails OPEN and SILENTLY, which is worse. An empty
+          #               `ref` is not an error in actions/checkout - it is the
+          #               documented default meaning "the ref that triggered the
+          #               workflow, otherwise the default branch". So a
+          #               build-only dispatch of a branch whose name contains
+          #               the username would quietly build the DEFAULT BRANCH
+          #               and report green, telling whoever dispatched it that
+          #               their branch passed when it was never built.
+          #
+          # That second case is reachable ONLY on the kind=none path, where
+          # `version` has already been reassigned to the literal "dev" and so
+          # can never catch it: `ref_out` is built from the raw INPUT_VERSION
+          # independently. Checking the values actually WRITTEN, once both are
+          # final, is what closes it. This sits after kind-resolution, so a
+          # future loosening of stable_re cannot bypass it either.
+          #
+          # The `-n` test matters: an unset DH_USER (a fork, or this repo before
+          # the secrets exist) must not make the empty string match everything.
+          # "$DH_USER" is quoted inside the case pattern, so any glob
+          # metacharacter in it matches literally rather than as a pattern.
+          for guarded in "$version" "$ref_out"; do
+            if [ -n "${DH_USER:-}" ] && case "$guarded" in *"$DH_USER"*) true;; *) false;; esac; then
+              echo "::error::'$guarded' contains the Docker Hub username, so GitHub would silently drop this job's version/ref outputs: the build would either fail later with 'tag is needed when pushing to registry', or silently build the default branch instead of the ref you asked for. Rename the tag or branch."
+              exit 1
+            fi
+          done
           {
             echo "ref=$ref_out"
             echo "version=$version"
@@ -346,6 +402,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # Defence in depth against a DROPPED job output (T-0760). The plan
+          # job refuses a release name containing the DOCKERHUB_USERNAME
+          # secret, because GitHub silently blanks any output whose value
+          # contains a secret. This asserts the same property at the consumer,
+          # where it covers any future cause the plan job cannot anticipate -
+          # a new secret, or a new output added above.
+          #
+          # Without it an empty VERSION builds the tag "applegater/caddyui:",
+          # which docker rejects as "invalid reference format" - so it does
+          # fail closed, but several steps later and with the one word that
+          # explains it masked out of the log.
+          [ -n "$VERSION" ] || {
+            echo "::error::the plan job's 'version' output arrived EMPTY. GitHub drops any job output containing a secret value, so this usually means the release name contains the Docker Hub username. Rename the tag."
+            exit 1
+          }
+          [ -n "$KIND" ] || { echo "::error::the plan job's 'kind' output arrived EMPTY"; exit 1; }
+
           repo=applegater/caddyui
           {
             echo "TAGS<<EOF"
@@ -462,6 +536,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # Defence in depth against a DROPPED job output (T-0760) - see the
+          # same assertion in the caddyui job. Here an empty VERSION would
+          # build VERSION_TAG="applegater/caddyui-caddy:", which the later
+          # `imagetools create --tag` rejects as "invalid reference format":
+          # fail-closed, but only after the image has been built, pushed by
+          # digest and gated, and with the explanation masked from the log.
+          [ -n "$VERSION" ] || {
+            echo "::error::the plan job's 'version' output arrived EMPTY. GitHub drops any job output containing a secret value, so this usually means the release name contains the Docker Hub username. Rename the tag."
+            exit 1
+          }
+          [ -n "$KIND" ] || { echo "::error::the plan job's 'kind' output arrived EMPTY"; exit 1; }
+
           repo=applegater/caddyui-caddy
           {
             echo "IMAGE=$repo"
