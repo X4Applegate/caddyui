@@ -82,6 +82,87 @@ jobs:
       - name: Only release TAGS may publish, and the built ref must be that tag
         run: ./scripts/test-release-plan-version-input.sh
 
+  # govulncheck is here for ONE property nothing else in this repo reports:
+  # REACHABILITY. It distinguishes an advisory against a linked module from one
+  # against a function this code actually calls, and on its first run it found
+  # a *called* stdlib finding (GO-2026-6859, in `http.maxBytesReader`) that
+  # neither Dependabot nor the image gate can see -- Dependabot does not track
+  # the toolchain, and the image gate compares against the previous image
+  # rather than upstream.
+  #
+  # WHAT IT IS NOT. It is NOT the fix for the CVE-less advisory gap, and must
+  # not be read as one. `vuln.go.dev` is CVE-keyed like OSV and like GitHub's
+  # global index, and measured against it govulncheck reports NONE of the five
+  # CVE-less go-jose advisories that were live in this module set. That gap is
+  # closed by `scripts/check-pinned-modules.sh --gomod`, on GitHub's
+  # per-repository endpoint. Two checks, two different blind spots; neither
+  # substitutes for the other, and a green run here is not evidence about
+  # CVE-less advisories.
+  #
+  # REPORT-ONLY, DELIBERATELY. A called finding in the stdlib is fixed by a
+  # toolchain bump, which is not always available the moment the advisory
+  # lands -- GO-2026-6859 would have failed this job until Go 1.27.4 shipped.
+  # A gate that fails on something the repo cannot act on gets disabled, and a
+  # disabled gate reports nothing at all. So the findings are surfaced in the
+  # step summary and the log, and the step does not fail the build. Promote to
+  # failing once the toolchain-bump path is routine.
+  #
+  # `govulncheck` IS BUILT WITH THE REPO'S OWN TOOLCHAIN, not a pinned older
+  # one. A govulncheck binary built with an older Go cannot analyse a newer
+  # toolchain: locally, a go1.26-built binary refused a go1.27 module with a
+  # load error, which is a check that silently stops checking. `setup-go` with
+  # `go-version-file: go.mod` then `go install` guarantees they match.
+  govulncheck:
+    name: Reachability (govulncheck, report-only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        id: govulncheck
+        run: |
+          set -o pipefail
+          # Exit status is deliberately captured rather than propagated: 3
+          # means findings, and findings are reported here, not fatal.
+          govulncheck ./... > govulncheck.txt 2>&1 && rc=0 || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat govulncheck.txt
+
+          {
+            echo "### govulncheck (reachability, report-only)"
+            echo
+            if [ "$rc" = "0" ]; then
+              echo "No vulnerability is reachable from this module's code."
+              echo
+              echo "This says nothing about advisories with no CVE id: \`vuln.go.dev\` is CVE-keyed, and the five CVE-less go-jose advisories that were live in this module set are absent from it. Those are covered by \`scripts/check-pinned-modules.sh --gomod\`."
+            else
+              echo "govulncheck exited \`$rc\`. Findings below; a **called** finding is reachable from this code and worth acting on, an uncalled one is present but not reached."
+              echo
+              echo '```'
+              # Bounded: a long report must not blow the 1 MB summary limit.
+              head -c 60000 govulncheck.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload govulncheck report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: govulncheck-report
+          path: govulncheck.txt
+          if-no-files-found: warn
+
   mariadb:
     name: MariaDB integration
     runs-on: ubuntu-latest

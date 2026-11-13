@@ -18,6 +18,7 @@
 #
 # Usage:
 #   check-pinned-modules.sh [--dockerfile PATH] [--out-dir DIR] [--json]
+#                           [--gomod PATH|auto]
 #                           [--offline-fixture FILE]
 #                           [--binary PATH|image:REF] [--also module@version]...
 #
@@ -28,6 +29,18 @@
 #             which reaches `attention` -- an unswept graph is not a clean one.
 #   --also    sweep this `module@version` too, for a one-off check or a test
 #             fixture. Not a place to maintain a list of engines; use --binary.
+#   --gomod   ALSO sweep CaddyUI's OWN Go module set (T-0676). A path to a
+#             go.mod, or `auto` to use the one beside this script. This is a
+#             THIRD program, distinct from both inputs above: `--with` pins
+#             and `--binary` describe the xcaddy-built *Caddy* binary, while
+#             go.mod builds the *caddyui server* (`Dockerfile` -> `go build`).
+#             Nothing asked the repo-scoped endpoint for it, so a CVE-less
+#             advisory against a caddyui dependency was invisible — which is
+#             not hypothetical: go-jose/v4 sat at 4.1.6 with five live
+#             CVE-less advisories while Dependabot raised nothing.
+#             Prefers `go list -m all` (the transitive graph, which go.mod's
+#             own require block cannot express) and falls back to parsing
+#             go.mod when the toolchain is unavailable.
 #
 # Environment:
 #   GITHUB_OUTPUT   When set, verdict/counts are appended for CI consumption.
@@ -238,6 +251,11 @@ BINARY=""
 # acceptance fixture (trap 5's disproof) and for a one-off check. This is NOT
 # a maintained list of engines-behind-wrappers: that is what the graph is for.
 EXTRA_TARGETS=""
+# CaddyUI's own go.mod (T-0676). Empty means not requested, which is reported
+# as not-run rather than as an empty module set — the same discipline the
+# graph sweep uses, and for the same reason: "nobody asked" and "asked and
+# found nothing" must never render alike.
+GOMOD=""
 
 # A precondition failure must not be able to read as a clean report.
 #
@@ -284,6 +302,12 @@ die() {
       echo "image_out_of_scope=unknown"
       echo "image_graph=unknown"
       echo "image_base=unknown"
+      # Not 0, for the third time and the same reason: nothing was established
+      # about caddyui's own module set either, and a 0 would read as "go.mod
+      # was swept and was clean".
+      echo "gomod=unknown"
+      echo "gomod_findings=unknown"
+      echo "gomod_unswept=unknown"
       echo "report<<$PINREPORT_DELIM"
       echo "### Pinned xcaddy plugin watch"
       echo
@@ -319,6 +343,7 @@ while [ $# -gt 0 ]; do
     --offline-fixture) need_value "$1" "${2+$2}"; FIXTURE="$2"; shift; shift ;;
     --binary)     need_value "$1" "${2+$2}"; BINARY="$2";  shift; shift ;;
     --also)       need_value "$1" "${2+$2}"; EXTRA_TARGETS="${EXTRA_TARGETS:+$EXTRA_TARGETS }$2"; shift; shift ;;
+    --gomod)      need_value "$1" "${2+$2}"; GOMOD="$2";   shift; shift ;;
     --json)       EMIT_JSON=1;         shift ;;
     # Ends at the separator before the "three traps" essay, which is
     # commentary for a maintainer rather than usage. A fixed upper bound was
@@ -1631,6 +1656,18 @@ img_graph_state="not-run"
 img_graph_total=0
 img_graph_seen=0
 img_unavailable=""
+# --- caddyui's own module set (T-0676) ------------------------------------
+# Tracked separately from the image counters on purpose. The image sweep
+# answers "what does the published Caddy image contain"; this answers "what
+# does the caddyui server link". Folding them into one counter would let a
+# clean image hide a vulnerable server, and the report has to be able to say
+# which of the two was swept.
+gomod_state="not-run"
+gomod_total=0
+gomod_seen=0
+gomod_source=""
+gomod_unswept=0
+gomod_out_of_scope=0
 # Derived from the available GitHub budget, not fixed. A token lifts the
 # advisory API from 60 requests/hour/IP to 5000, and this image's graph has
 # ~162 sweepable modules: one number cannot serve both. A fixed 60 left >=102
@@ -1680,6 +1717,80 @@ for t in $EXTRA_TARGETS; do
     *) die "--also expects module@version, got: $t" ;;
   esac
 done
+
+# --- caddyui's own go.mod / module graph (T-0676) -------------------------
+# THE GAP THIS CLOSES. Dependabot's `gomod` ecosystem is configured here and
+# does work: 19 Go advisories have been raised against this repo and all were
+# fixed, including one against an indirect dependency. But it keys on GitHub's
+# GLOBAL advisory index, and that index omits CVE-less advisories. Measured on
+# this exact module set: the global `/advisories?ecosystem=go` endpoint returns
+# 6 advisories for go-jose/v4 and EVERY ONE carries a CVE id, while the
+# repo-scoped endpoint carries six more that carry none, five of which covered
+# the 4.1.6 that go.mod pinned. OSV agrees with the global index (zero at
+# 4.1.6; all five a 404 by id), and so does govulncheck. So the per-repository
+# endpoint is not a nicety here, it is the only index that answers at all.
+#
+# WHY `go list -m all` AND NOT THE require BLOCK. go.mod's require block is
+# the declared set; `go list -m all` is the selected build list including the
+# transitive graph, which is where go-jose actually sat (an `// indirect`
+# entry reached through go-oidc). Parsing go.mod is the FALLBACK, used only
+# when the toolchain is unavailable, and it says which route it took — a
+# narrower input must not be reported as the wider one.
+if [ -n "$GOMOD" ] && [ -z "$FIXTURE" ]; then
+  gomod_path="$GOMOD"
+  [ "$GOMOD" = "auto" ] && gomod_path="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/go.mod"
+
+  if [ ! -f "$gomod_path" ]; then
+    gomod_state="error"
+    echo "--gomod '$(clean_scalar "$gomod_path")' does not exist; caddyui's own module set was NOT swept for advisories" >> "$errors"
+  else
+    gomod_list="$OUT_DIR/gomod-modules.txt"
+    : > "$gomod_list"
+    # `go list -m all` must run in the module's own directory, and it can fail
+    # for ordinary reasons (no network for a missing dependency, a broken
+    # replace). A failure falls back to go.mod rather than aborting, but the
+    # fallback is NAMED in the report so nobody reads the narrower input as
+    # the full graph.
+    if command -v go >/dev/null 2>&1 \
+       && ( cd "$(dirname "$gomod_path")" && go list -m all 2>/dev/null ) > "$gomod_list.raw" \
+       && [ -s "$gomod_list.raw" ]; then
+      gomod_source="go list -m all"
+      # Field 1 is the module path, field 2 the selected version. A `=>`
+      # replacement line is excluded from version comparison for the same
+      # reason the binary graph excludes it: the version describes upstream,
+      # not the code that gets built.
+      awk 'NF>=2 && $0 !~ /=>/ { print $1 "\t" $2 }' "$gomod_list.raw" > "$gomod_list"
+    else
+      gomod_source="go.mod require block (go list unavailable; TRANSITIVE GRAPH NOT INCLUDED)"
+      # Both the single-line and the block `require` forms, direct and
+      # `// indirect`. The main `module` line is deliberately not a target.
+      awk '
+        /^require[[:space:]]+\(/ { inblock=1; next }
+        inblock && /^\)/         { inblock=0; next }
+        inblock && NF>=2 && $1 !~ /^\/\// { print $1 "\t" $2; next }
+        /^require[[:space:]]+[^(]/ && NF>=3 { print $2 "\t" $3 }
+      ' "$gomod_path" > "$gomod_list"
+    fi
+    rm -f "$gomod_list.raw"
+
+    if [ ! -s "$gomod_list" ]; then
+      gomod_state="error"
+      echo "read no modules out of '$(clean_scalar "$gomod_path")'; caddyui's own module set was NOT swept" >> "$errors"
+    else
+      gomod_state="ok"
+      gomod_total="$(wc -l < "$gomod_list" | tr -d ' ')"
+      # Same two-part filter as the binary graph, and the same split between
+      # "out of scope forever" and "unswept": only a github.com path has a
+      # per-repository endpoint, and only a plain semver version can be
+      # range-compared.
+      awk -F'\t' '$1 ~ /^github\.com\// && $2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ \
+           { printf "%s\t%s\tgo.mod\n", $1, $2 }' "$gomod_list" >> "$img_targets"
+      gomod_out_of_scope=$(awk -F'\t' '
+        !($1 ~ /^github\.com\// && $2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {n++}
+        END{print n+0}' "$gomod_list")
+    fi
+  fi
+fi
 
 # --- the built binary's module graph --------------------------------------
 # `image:<ref>` extracts the binary from a built image. `docker create` +
@@ -1775,6 +1886,11 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
   # clean -- but a sweep whose most important target is the one it drops is
   # not much better. Rate limiting is normal here, so what gets dropped must
   # be the least important thing, by construction.
+  # go.mod rows sort WITH the named targets (class 0), not with the graph
+  # bulk: caddyui's own dependency set is a named request and is small (57
+  # modules, 20 unique github.com repos — measured, not estimated), so it is
+  # never the thing a budget cap drops. Dropping it is precisely the gap this
+  # input exists to close, so letting the cap re-open it would be circular.
   sort -u "$img_targets" \
     | awk -F'\t' '{ print ($3 == "module graph" ? 1 : 0) "\t" $0 }' \
     | sort -s -k1,1n | cut -f2- > "$img_targets.sorted" \
@@ -1819,11 +1935,19 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
     # list would say "no advisories" — the inversion this file exists against.
     if [ -z "$i_body" ] || ! jq -e 'type == "array"' <<<"$i_body" >/dev/null 2>&1; then
       img_unswept=$((img_unswept+1))
+      # A go.mod module that could not be asked about is counted on its OWN
+      # unswept tally too. Without this, an exhausted rate limit would leave
+      # `gomod=ok` with zero findings — "asked and clean" — for a module set
+      # nothing actually answered for. That is the exact false clean this
+      # input was added to remove, so it must not be reintroduced by the
+      # failure path.
+      [ "$i_src" = "go.mod" ] && gomod_unswept=$((gomod_unswept+1))
       [ -z "$img_unavailable" ] && img_unavailable="GitHub's advisory API did not return a list for at least one module of the image (rate limit, or no token), so the image sweep is incomplete"
       continue
     fi
     img_swept=$((img_swept+1))
     [ "$i_src" = "module graph" ] && img_graph_seen=$((img_graph_seen+1))
+    [ "$i_src" = "go.mod" ] && gomod_seen=$((gomod_seen+1))
 
     while IFS= read -r -d '' i_rec; do
       case "$i_rec" in *$'\037'*) ;; *) continue ;; esac
@@ -1912,6 +2036,26 @@ elif [ "${PINWATCH_SKIP_GITHUB:-0}" = "1" ] && [ -z "$FIXTURE" ]; then
   img_unavailable="the image advisory sweep was disabled via PINWATCH_SKIP_GITHUB, so neither the base image nor the module graph was checked"
 fi
 
+# go.mod findings, counted once and used by both the report and the machine
+# output, so the two cannot disagree. Joined on module+version against the
+# target rows whose source is `go.mod`.
+#
+# COUNTED HERE, after the sweep's de-duplication and before the report. Two
+# orderings are wrong and both fail as a ZERO, which is the false-clean shape
+# this file is written against: counting before the dedup double-counts, and
+# re-initialising it later (as a first draft of this change did) resets it to
+# 0 while seven findings render in the table -- a paragraph saying "no
+# advisory covers a version go.mod selects" directly above the five it found.
+# Caught by the acceptance test, which is why that test asserts the paragraph
+# and not only the row count.
+gomod_hits_out=0
+if [ -s "$img_extra" ] && [ -s "$img_targets" ]; then
+  gomod_hits_out="$(awk -F'\t' '
+    NR==FNR { if ($3=="go.mod") k[$1 FS $2]=1; next }
+    ($1 FS $2) in k { n++ }
+    END { print n+0 }' "$img_targets" "$img_extra" 2>/dev/null || echo 0)"
+fi
+
 # The base image is the core of this image, so "was it swept" must be a fact in
 # the output and not something a reader infers from the absence of a row.
 img_base_state="not-swept"
@@ -1926,6 +2070,9 @@ fi
 # ---------------------------------------------------------------------------
 behind=0; advisories=0; unresolved=0; moved=0; adv_unknown=0; adv_partial=0
 floors_ack=0; floors_expired=0
+# Set only when the all-clear is actually entitled to mention go.mod.
+gomod_clause=""
+
 floors_report="$OUT_DIR/floors-report.tsv"
 : > "$floors_report"
 report="$OUT_DIR/report.md"
@@ -2289,6 +2436,59 @@ done
     echo
   fi
   [ -n "$img_unavailable" ] && { echo "**$img_unavailable.**"; echo; }
+
+  # --- caddyui's own module set (T-0676) ----------------------------------
+  # Its own paragraph, not a row in the image table, because it is a
+  # different program: the table above describes the published Caddy image,
+  # this describes the caddyui server binary.
+  if [ "$gomod_state" != "not-run" ] || [ -n "$GOMOD" ]; then
+    echo "#### CaddyUI's own Go dependencies (\`go.mod\`)"
+    echo
+    echo "A third input, and a third program: the \`--with\` pins and the module graph above describe the **Caddy** binary, while \`go.mod\` builds the **caddyui server**. Dependabot's \`gomod\` ecosystem does watch this file and does work — 19 Go advisories have been raised on this repo and all were fixed — but it keys on GitHub's **global** advisory index, and that index omits advisories with no CVE id. Measured on this very module set: the global \`ecosystem=go\` endpoint returns 6 advisories for \`go-jose/v4\` and **every one carries a CVE**, while the per-repository endpoint carries six that carry none — five of which covered the \`4.1.6\` this file pinned. OSV and \`govulncheck\` agree with the global index (zero at 4.1.6; each of the five a 404 by id), so the per-repository endpoint is the only index that answers here at all."
+    echo
+    printf -- '- **Module set:** '
+    case "$gomod_state" in
+      ok)      printf '%s modules via `%s`; %s swept' "$gomod_total" "$gomod_source" "$gomod_seen" ;;
+      error)   printf '**could not be read** — see the errors below' ;;
+      not-run) printf '**not run** (no `--gomod` supplied)' ;;
+    esac
+    [ "$gomod_unswept" -gt 0 ] && printf ', **%s not swept**' "$gomod_unswept"
+    [ "$gomod_out_of_scope" -gt 0 ] \
+      && printf ', %s outside this index (not on github.com, or no comparable version)' "$gomod_out_of_scope"
+    echo
+    echo
+    # Findings themselves render in the image table above, which already
+    # carries a `source` column -- so a go.mod row is visible there as
+    # `go.mod`. Pointing at it beats duplicating the table and risking two
+    # renderings that disagree.
+    if [ "$gomod_state" = "ok" ] && [ "$gomod_seen" -gt 0 ]; then
+      if [ "$gomod_hits_out" -gt 0 ]; then
+        echo "**$gomod_hits_out advisory finding(s) against \`go.mod\` modules** — listed in the table above with source \`go.mod\`."
+      elif [ "$gomod_unswept" -gt 0 ]; then
+        # "Nothing found in what we managed to ask about" is TRUE here and
+        # still reads as an all-clear, so it is not said. Measured on a real
+        # exhausted-rate-limit run: 11 of 29 modules swept, and the plain
+        # sentence below printed "No advisory ... covers a version go.mod
+        # selects" while 18 modules had been asked about by nobody -- one of
+        # which, on a full run, carried five. The counters were right and the
+        # verdict was right; the prose was the last place the false clean
+        # could still live.
+        echo "**Nothing was found among the $gomod_seen module(s) that were swept — but $gomod_unswept were not swept at all, so this is not an all-clear for \`go.mod\`.** A partial sweep says nothing about the modules it never asked about."
+      else
+        echo "No advisory on the per-repository endpoint covers a version \`go.mod\` selects, across all $gomod_seen module(s) swept."
+      fi
+      echo
+    fi
+    if [ "$gomod_unswept" -gt 0 ]; then
+      echo "**$gomod_unswept module(s) of \`go.mod\` COULD have been swept and were NOT** (an endpoint that did not answer, or an exhausted rate limit). An unswept module is not a clean module — this is the same class of gap \`go.mod\` was added to close, so it is reported rather than absorbed."
+      echo
+    fi
+    case "$gomod_source" in
+      *"TRANSITIVE GRAPH NOT INCLUDED"*)
+        echo "**This run read the \`require\` block, not \`go list -m all\`,** so the transitive graph was not included. That is a narrower input than intended: \`go-jose/v4\` was reached as an \`// indirect\` dependency, exactly the shape a \`require\`-only read is weakest on."
+        echo ;;
+    esac
+  fi
   if [ "$adv_unknown" -gt 0 ]; then
     echo "**Advisory status could not be established for $adv_unknown pin(s).** Neither the version-scoped nor the commit-scoped query could be asked, so those rows say nothing about whether an advisory applies. An unchecked pin is not a clean pin."
     echo
@@ -2311,15 +2511,22 @@ done
      && [ ! -s "$img_extra" ] && [ "$img_unswept" -eq 0 ] \
      && [ "$img_out_of_scope" -eq 0 ] \
      && [ -z "$img_unavailable" ] && [ "$img_graph_state" = "ok" ] \
-     && [ "$img_base_state" = "swept" ]; then
+     && [ "$img_base_state" = "swept" ] \
+     && [ "$gomod_unswept" -eq 0 ] && [ "$gomod_state" = "ok" ]; then
+    # `gomod_state = ok` is required, not "ok or not requested". A run that
+    # never asked about caddyui's own dependencies has no business printing an
+    # all-clear, which is the whole finding of T-0676: for its entire life
+    # this report could say everything was checked while go.mod carried five
+    # live advisories nothing had ever asked about.
+    gomod_clause=" CaddyUI's own $gomod_total Go modules were swept on the same endpoint ($gomod_seen checked via \`$gomod_source\`), with no advisory covering a selected version."
     # The all-clear must not claim more than it checked. With an acknowledged
     # floor present, "every pin is at upstream's newest release" is false, and
     # a sentence a reader can catch being wrong is how a report loses its
     # authority; so the acknowledged pins are named in the same breath.
     if [ "$floors_ack" -gt 0 ]; then
-      echo "Every pin is at upstream's newest release except $floors_ack acknowledged intentional floor(s) listed above, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report. The image itself was swept too: the \`caddy:${base_builder:-$base_runtime}\` base and all $img_graph_total modules of the built binary ($img_swept component(s) checked on the per-repository endpoint), with no advisory covering a shipped version."
+      echo "Every pin is at upstream's newest release except $floors_ack acknowledged intentional floor(s) listed above, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report. The image itself was swept too: the \`caddy:${base_builder:-$base_runtime}\` base and all $img_graph_total modules of the built binary ($img_swept component(s) checked on the per-repository endpoint), with no advisory covering a shipped version.$gomod_clause"
     else
-      echo "Every pin is at upstream's newest release, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report. The image itself was swept too: the \`caddy:${base_builder:-$base_runtime}\` base and all $img_graph_total modules of the built binary ($img_swept component(s) checked on the per-repository endpoint), with no advisory covering a shipped version."
+      echo "Every pin is at upstream's newest release, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report. The image itself was swept too: the \`caddy:${base_builder:-$base_runtime}\` base and all $img_graph_total modules of the built binary ($img_swept component(s) checked on the per-repository endpoint), with no advisory covering a shipped version.$gomod_clause"
     fi
   fi
   echo
@@ -2394,12 +2601,14 @@ if   [ "$advisories" -gt 0 ]; then verdict="advisory"; rc=2
 elif [ "$unresolved" -gt 0 ] || [ "$osv_failed" -eq 1 ] \
   || [ "$malformed_rows" -gt 0 ] || [ "$adv_unknown" -gt 0 ] \
   || [ "$img_unswept" -gt 0 ] || [ "$img_graph_state" = "error" ] \
+  || [ "$gomod_unswept" -gt 0 ] || [ "$gomod_state" = "error" ] \
   || [ -s "$errors" ]; then verdict="error"; rc=3
 elif [ "$behind" -gt 0 ] || [ "$moved" -gt 0 ] || [ -n "$tag_now_ok" ] \
   || [ "$floors_expired" -gt 0 ] \
   || [ "$adv_partial" -gt 0 ] || [ -s "$gh_extra" ] || [ -n "$gh_unavailable" ] \
   || [ -s "$img_extra" ] || [ -n "$img_unavailable" ] \
   || [ "$img_graph_state" = "not-run" ] \
+  || [ "$gomod_state" = "not-run" ] \
   || [ -s "$unpinned_file" ] || [ -s "$replaced_file" ] \
   || [ -s "$notices" ]; then verdict="attention"; rc=1
 else verdict="ok"; rc=0
@@ -2422,6 +2631,9 @@ if [ "$EMIT_JSON" -eq 1 ]; then
         --argjson igt "$img_graph_total" \
         --arg ig "$img_graph_state" --arg ib "$img_base_state" \
         --arg ibv "${base_builder:-${base_runtime:-}}" \
+        --arg gm "$gomod_state" --argjson gmt "$gomod_total" \
+        --argjson gms "$gomod_seen" --argjson gmu "$gomod_unswept" \
+        --argjson gmo "$gomod_out_of_scope" --arg gmsrc "$gomod_source" \
         '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
           advisory_unknown:$au, advisory_partial:$ap,
           floors_acknowledged:$fa, floors_expired:$fe,
@@ -2430,7 +2642,9 @@ if [ "$EMIT_JSON" -eq 1 ]; then
           image_findings:$ix, image_unswept:$iu, image_swept:$isw,
           image_out_of_scope:$ios,
           image_graph:$ig, image_graph_modules:$igt,
-          image_base:$ib, image_base_version:$ibv}' \
+          image_base:$ib, image_base_version:$ibv,
+          gomod:$gm, gomod_modules:$gmt, gomod_swept:$gms,
+          gomod_unswept:$gmu, gomod_out_of_scope:$gmo, gomod_source:$gmsrc}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
 fi
@@ -2454,6 +2668,9 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "image_swept=$img_swept"
     echo "image_graph=$img_graph_state"
     echo "image_base=$img_base_state"
+    echo "gomod=$gomod_state"
+    echo "gomod_findings=$gomod_hits_out"
+    echo "gomod_unswept=$gomod_unswept"
     echo "report<<$PINREPORT_DELIM"
     cat "$report"
     echo "$PINREPORT_DELIM"
