@@ -515,11 +515,59 @@ assert_scan_coverage() {
 # `caddy list-modules --versions` from inside the image. The image is
 # distroless-ish with caddy as its entrypoint, so --entrypoint is required;
 # without it the binary boots a server instead of answering.
+#
+# THIS EXECUTES THE ARTEFACT UNDER TEST, so it runs sandboxed (T-0632).
+# ---------------------------------------------------------------------
+# Gate 2 has to run the image to read its module set, which means every
+# plugin's `init()` runs -- on a runner holding Docker Hub WRITE credentials.
+# Those credentials are not reachable from inside the container (nothing is
+# bind-mounted, no socket is passed, and ~/.docker/config.json lives on the
+# runner filesystem), but a default `docker run` still grants outbound network
+# and the default capability set. That is far more than printing a list needs.
+#
+#   --network none          no egress; the listing is computed in-process
+#   --read-only             no writes to the container filesystem
+#   --cap-drop ALL          empties the effective capability set (CapEff: 0)
+#   --security-opt no-new-privileges   no privilege gain through exec
+#   --user 65534            nobody, not root
+#
+# WHY --cap-add NET_BIND_SERVICE IS REQUIRED, AND WHY IT GRANTS NOTHING
+# ---------------------------------------------------------------------
+# Do not "simplify" this to a bare --cap-drop ALL: that makes the gate fail
+# closed on EVERY run, on both paths. /usr/bin/caddy carries the file
+# capability `cap_net_bind_service=ep` so Caddy can bind :80/:443 as non-root.
+# The `e` (effective) bit means the KERNEL refuses to exec the file at all
+# unless that capability is in the container's bounding set, so dropping it
+# fails before any Caddy code runs:
+#
+#   exec /usr/bin/caddy: operation not permitted
+#
+# Re-adding it restores only the BOUNDING set entry the exec check needs. The
+# process still runs with no effective capabilities, confirmed against the
+# published image:
+#
+#   CapEff: 0000000000000000    CapBnd: 0000000000000400
+#
+# So this keeps the whole point of --cap-drop ALL while letting the binary
+# start. Because the failure is an exec-time kernel refusal rather than a
+# Caddy error, stderr is captured to $out and surfaced in the die message
+# below; discarding it (the previous 2>/dev/null) would have reported this
+# class of breakage as an unexplained "cannot list modules".
+#
+# LIMIT OF THIS FIX: a hostile image can still print any module list it likes,
+# because the list comes from the image's own binary. Sandboxing bounds the
+# blast radius of running it; it does not make gate 2's output trustworthy
+# against a deliberately malicious Dockerfile.caddy. That remains code review
+# of the tagged commit.
 modules_from() {
   local ref="$1" arch="$2" out="$3"
-  if ! docker run --rm --platform "linux/$arch" --entrypoint /usr/bin/caddy \
-        "$ref" list-modules --versions >"$out" 2>/dev/null; then
-    die "cannot list modules in $ref ($arch); refusing to guess the module set"
+  if ! docker run --rm --platform "linux/$arch" \
+        --network none --read-only \
+        --cap-drop ALL --cap-add NET_BIND_SERVICE \
+        --security-opt no-new-privileges --user 65534 \
+        --entrypoint /usr/bin/caddy \
+        "$ref" list-modules --versions >"$out" 2>&1; then
+    die "cannot list modules in $ref ($arch); refusing to guess the module set: $(safe_text "$(head -3 "$out" | tr '\n' ' ')")"
   fi
   # Drop blank lines and the "Standard modules"/"Non-standard" headings so the
   # diff is module lines only.
