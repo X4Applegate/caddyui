@@ -987,6 +987,13 @@ fi
 # ---------------------------------------------------------------------------
 floors_file="$OUT_DIR/floors.tsv"
 : > "$floors_file"
+# `# pin-watch: security` pins — security MINIMUMS asserted against the built
+# binary by assert-floor-versions.sh (T-0667). Recorded here so the report can
+# state how many there are, and so an unknown-kind error cannot be the only
+# thing standing between a new directive and the weekly run. Not floors: a
+# security pin is still subject to the staleness comparison.
+security_file="$OUT_DIR/security-pins.tsv"
+: > "$security_file"
 
 # module \t pinned \t against \t ref \t reason  (reason last: free text)
 floor_pending=""
@@ -1089,15 +1096,41 @@ while IFS= read -r fl_raw; do
       continue ;;
   esac
 
-  # `floor` is the only kind today. An unknown kind is an error rather than a
-  # skip: a future `# pin-watch: something-else` must not read as "no floor
-  # declared" on a box running an older copy of this script.
+  # An unknown kind is an error rather than a skip: a future
+  # `# pin-watch: something-else` must not read as "no floor declared" on a
+  # box running an older copy of this script.
+  #
+  # TWO kinds are understood, and they say different things:
+  #
+  #   floor     this pin is deliberately BEHIND upstream. Reported under
+  #             "Intentional floors", not counted as behind, re-arms when
+  #             upstream passes `against=`.
+  #   security  this pin is a SECURITY MINIMUM, asserted against the BUILT
+  #             BINARY by assert-floor-versions.sh (T-0667). It says nothing
+  #             about staleness, so this script records it and moves on: a
+  #             `security` pin that is behind upstream is still behind, and
+  #             must still produce that finding.
+  #
+  # `security` exists as a separate kind rather than as another `floor`
+  # because the two are not the same claim and conflating them would corrupt
+  # both reports. Three of this Dockerfile's four security pins (x/net, chi,
+  # go-jose) are AT current upstream: marking them `floor` would file them
+  # under "Intentional floors" and exempt them from the staleness check they
+  # should be subject to, which is the "acknowledgement outliving its
+  # reasoning" failure in a new place. Marking them `security` asserts the
+  # artefact without touching staleness. A pin may legitimately be both; the
+  # two directives then stack, one per line.
   fl_body="${fl_dir#*pin-watch:}"
   fl_body="${fl_body#"${fl_body%%[![:space:]]*}"}"
   case "$fl_body" in
     floor|floor' '*|floor$'\t'*) ;;
+    security|security' '*|security$'\t'*)
+      # Recorded for the report, then skipped: it is not a floor, and the
+      # assertion that consumes it reads the Dockerfile itself.
+      printf '%s\t%s\n' "$fl_mod" "$fl_ver" >> "$security_file"
+      continue ;;
     *)
-      echo "unknown \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE: $(clean_scalar "$fl_body") (only \`floor\` is understood by this version)" >> "$errors"
+      echo "unknown \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE: $(clean_scalar "$fl_body") (only \`floor\` and \`security\` are understood by this version)" >> "$errors"
       continue ;;
   esac
   fl_body="${fl_body#floor}"

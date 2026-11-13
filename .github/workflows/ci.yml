@@ -90,6 +90,24 @@ jobs:
       - name: The base-drift check never reports an unearned all-clear
         run: ./scripts/test-caddy-base-drift.sh
 
+      # scripts/assert-floor-versions.sh runs inside Dockerfile.caddy's builder
+      # stage and FAILS THE BUILD when a declared security floor is linked below
+      # its pin (T-0667/T-0816). Its suite is wired here for the same reason the
+      # image-gate suites below are: until this step existed the file was reached
+      # by nothing but `shellcheck`, and it matches neither
+      # `test-caddy-image-gate-*` nor `test-pinned-module-*`, so neither existing
+      # runner nor either on-disk cross-check could see it. The guard's own
+      # review found two silent-disarm routes and a wrong semver answer, each of
+      # which exited 0 -- the shape that only a test actually being run catches.
+      #
+      # No Docker and no network for 19 of its cases; case 19 runs the real file
+      # under the builder image's busybox ash and self-skips when docker is
+      # unavailable, which it is on this runner. That skip is the reason this is
+      # not the whole guarantee: the ash case is exercised on a developer box and
+      # by any build of the image.
+      - name: The floor assertion never certifies a breached floor
+        run: ./scripts/test-floor-versions.sh
+
       # The caddy-image-gate.sh regression suites (T-0821).
       #
       # That script decides whether a rebuilt image may replace the published
@@ -155,11 +173,26 @@ jobs:
       - name: Every image-gate suite on disk is actually run
         run: |
           missing=0
-          for f in scripts/test-caddy-image-gate-*.sh scripts/test-image-gate-*.sh; do
+          # The globs named the two image-gate families and nothing else, so
+          # scripts/test-floor-versions.sh sat on disk, run by no workflow, and
+          # THIS CHECK REPORTED GREEN -- a guard on the guards that could not
+          # see the file. Any `scripts/test-*.sh` is now in scope, with the
+          # `pinned-module` family excluded by name because it is deliberately
+          # wired elsewhere (T-0712: offline half on PRs via
+          # run-pinwatch-suites.sh, network half on the weekly refresh).
+          #
+          # Excluding by an explicit name rather than by not matching a glob
+          # matters: an unlisted suite now has to be named here to be skipped,
+          # which is a decision someone writes down, instead of disappearing
+          # because nobody thought to widen a pattern.
+          for f in scripts/test-*.sh; do
             [ -e "$f" ] || continue
             b="$(basename "$f")"
+            case "$b" in
+              test-pinned-module-*.sh) continue ;;   # run by run-pinwatch-suites.sh
+            esac
             grep -q "$b" .github/workflows/ci.yml || {
-              echo "::error::$b exists but is not run by ci.yml; add it to the Image-gate regression suites step"
+              echo "::error::$b exists but is not run by ci.yml; add it to a suite step, or exclude it here with the reason"
               missing=1
             }
           done

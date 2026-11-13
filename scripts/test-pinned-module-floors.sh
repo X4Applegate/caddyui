@@ -165,13 +165,35 @@ check "floors_acknowledged=0" "0"     "$(j .floors_acknowledged "$J")"
 
 echo
 echo "=== 9. an unknown directive kind is an ERROR, not a skip ==="
+# `ignore` is deliberately the example: an exclusion is the one thing this
+# mechanism must never grow, so the kind a future maintainer is most likely
+# to reach for is the kind that must fail loudest.
 mk_dockerfile "$WORK/Dockerfile.unknown" '# pin-watch: ignore reason=nope'
 J="$(run "$WORK/Dockerfile.unknown" "$WORK/fx.ack")"
 check "floors_acknowledged=0" "0" "$(j .floors_acknowledged "$J")"
 check "crowdsec still behind"  "1" "$(j .behind "$J")"
 check "rc=3"                   "3" "$(rc)"
-grep -q 'only .*floor.* is understood' "$(lastout)/report.md" \
+# Matches the message's STABLE half ("understood by this version") rather than
+# the list of kinds, which grew a second entry in T-0667 and will grow again.
+# A test pinned to the exact list fails on every new kind without anything
+# being wrong, which trains the next person to edit the assertion rather than
+# read it.
+grep -qE 'understood by this version' "$(lastout)/report.md" \
   && check "report names the unknown kind" y y || check "report names the unknown kind" y n
+
+echo
+echo "=== 9b. \`security\` is a KNOWN kind: recorded, not an error (T-0667) ==="
+# A security pin is asserted against the built binary by
+# assert-floor-versions.sh. It is not a floor and must not become one: the pin
+# stays subject to the staleness comparison it would otherwise escape.
+mk_dockerfile "$WORK/Dockerfile.seckind" '# pin-watch: security ref=T-0667 reason=CVE floor'
+J="$(run "$WORK/Dockerfile.seckind" "$WORK/fx.ack")"
+check "not counted as a floor"  "0" "$(j .floors_acknowledged "$J")"
+check "STILL counted as behind" "1" "$(j .behind "$J")"
+grep -qE 'understood by this version' "$(lastout)/report.md" \
+  && check "no unknown-kind error" n y || check "no unknown-kind error" n n
+check "recorded as a security pin" "1" \
+  "$(wc -l < "$(lastout)/security-pins.tsv" | tr -d ' ')"
 
 echo
 echo "=== 10. a directive matching no pin is an ERROR (stale after a re-pin) ==="
