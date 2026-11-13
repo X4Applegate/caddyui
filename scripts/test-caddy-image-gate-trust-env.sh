@@ -38,21 +38,49 @@ gate="$here/caddy-image-gate.sh"
 [ -r "$gate" ] || { echo "FAIL: cannot read $gate" >&2; exit 2; }
 
 # Pull the pattern out of the shipped grep, so this tests the real thing.
-# The line is:   { grep -E $'^Env\t(SSL_CERT_FILE=|...)' "$1" || true; } \
+# The line is:   { grep -E $'^Env\t(SSL_CERT_FILE|...|GODEBUG)=' "$1" || true; } \
 #
-# Extract the ALTERNATION ONLY -- what is inside the parentheses -- rather than
-# the whole pattern. The shipped pattern is spelled with a $'...' quote so its
-# tab is a literal tab after bash processing; sed sees the SOURCE text, where
-# the tab is still the two characters \t. Re-using that source text as a regex
-# here would test `Envt`, i.e. nothing, and pass vacuously. Matching the
-# variable NAMES is what this suite is actually about.
-ALT=$(sed -n "s/.*grep -E \\\$'\\^Env\\\\t(\\(.*\\))' .*/\\1/p" "$gate")
-[ -n "$ALT" ] || {
-  echo "FAIL: could not extract the trust-env alternation from $gate." >&2
+# Extract everything AFTER the `^Env\t` prefix -- the parenthesised name list
+# and the `=` terminator that follows it -- rather than the whole pattern. The
+# shipped pattern is spelled with a $'...' quote so its tab is a literal tab
+# after bash processing; sed sees the SOURCE text, where the tab is still the
+# two characters \t. Re-using that source text as a regex here would test
+# `Envt`, i.e. nothing, and pass vacuously.
+#
+# The `=` is captured rather than re-appended here, so that a change to where
+# the terminator lives -- inside the group, outside it, or removed -- is
+# exercised by this suite instead of silently papered over by the test's own
+# copy of it. Dropping it is what would let `MY_SSL_CERT_FILE_NOTE` through.
+PAT=$(sed -n "s/.*grep -E \\$'\\^Env\\\\t\\([^']*\\)'.*/\\1/p" "$gate")
+[ -n "$PAT" ] || {
+  echo "FAIL: could not extract the trust-env pattern from $gate." >&2
   echo "      The grep was probably reformatted; fix this extraction rather" >&2
   echo "      than inlining a copy of the pattern." >&2
   exit 2
 }
+
+# It must still be anchored on a `=` terminator, or every variable merely
+# CONTAINING one of these names starts matching.
+case "$PAT" in
+  *'=') ;;
+  *)
+    echo "FAIL: the trust-env pattern no longer ends in '=' (got: $PAT)." >&2
+    echo "      Without that terminator MY_SSL_CERT_FILE_NOTE matches." >&2
+    exit 2 ;;
+esac
+
+# And it must match on NAMES, not on values. A `.*` inside the name list means
+# some part of the VALUE has to survive config_from's 400-char truncation for
+# the check to fire -- the exact fail-open this suite exists to prevent, and
+# the bug a code review reproduced end-to-end against the first spelling
+# (`GODEBUG=.*x509`). Refuse it here rather than discovering it in a release.
+case "$PAT" in
+  *'.*'*)
+    echo "FAIL: the trust-env pattern contains '.*', so it depends on the" >&2
+    echo "      VALUE surviving clean()'s 400-char truncation. Match the" >&2
+    echo "      variable NAME only; see the truncation cases below." >&2
+    exit 2 ;;
+esac
 
 # The shipped pattern must keep its tab LITERAL. POSIX ERE has no \t escape and
 # GNU grep -E does not add one: in a plain-quoted '^Env\t...' the backslash is
@@ -70,7 +98,7 @@ grep -q "grep -E \$'^Env\\\\t(" "$gate" || {
 }
 
 # Reconstruct the pattern the way the gate's grep will see it: a literal tab.
-RE="^Env$(printf '\t')($ALT)"
+RE="^Env$(printf '\t')$PAT"
 
 # The pre-fix behaviour, kept ONLY so the suite can prove it catches the bug.
 # Before T-0786 there was no trust-env extract at all: the variables landed in
@@ -97,16 +125,32 @@ check() {
 
 T=$(printf '\t')
 
-# --- the three variables the task names, in their attack spellings -----------
+# --- the trust-redirecting variables, in their attack spellings --------------
 check blocking "Env${T}SSL_CERT_FILE=/data/evil-roots.pem"
 check blocking "Env${T}SSL_CERT_DIR=/data/evil-certs"
 check blocking "Env${T}GODEBUG=x509usefallbackroots=1"
 check blocking "Env${T}GODEBUG=x509negativeserial=1"
 check blocking "Env${T}GODEBUG=x509sha256skid=0"
 
+# AWS_CA_BUNDLE is LOAD-BEARING, not prophylactic. Dockerfile.caddy links
+# caddy-dns/route53, whose AWS SDK reads this variable to override the CA bundle
+# for its own HTTP client -- the DNS-01 credential path that issues this fleet's
+# certificates. Go's crypto/x509 reads only the two SSL_CERT_* names, so this is
+# a separate trust path rather than a duplicate. The first spelling of the gate
+# missed it; a security review found it.
+check blocking "Env${T}AWS_CA_BUNDLE=/data/evil-roots.pem"
+check blocking "Env${T}AWS_CA_BUNDLE="
+
+# The conventional CA-bundle overrides of the other runtimes a future `--with`
+# could pull in. None can false-positive against the published environment.
+check blocking "Env${T}CURL_CA_BUNDLE=/data/evil.pem"
+check blocking "Env${T}REQUESTS_CA_BUNDLE=/data/evil.pem"
+check blocking "Env${T}GIT_SSL_CAINFO=/data/evil.pem"
+check blocking "Env${T}NODE_EXTRA_CA_CERTS=/data/evil.pem"
+
 # An EMPTY value is not harmless: SSL_CERT_DIR= drops the default search path,
-# and SSL_CERT_FILE= is a trust change in its own right. Matched on the NAME up
-# to the first `=`, so the value is irrelevant by construction.
+# and SSL_CERT_FILE= is a trust change in its own right. The name is matched up
+# to the `=`, so the value is irrelevant by construction.
 check blocking "Env${T}SSL_CERT_FILE="
 check blocking "Env${T}SSL_CERT_DIR="
 
@@ -114,14 +158,37 @@ check blocking "Env${T}SSL_CERT_DIR="
 check blocking "Env${T}GODEBUG=http2client=0,x509usefallbackroots=1"
 check blocking "Env${T}GODEBUG=x509usefallbackroots=1,madvdontneed=1"
 
-# --- must NOT fire: this is the over-broad rule the check avoids being -------
+# --- THE TRUNCATION BYPASS, which is why the match is on NAMES ---------------
 #
-# GODEBUG is matched only for its x509 settings. Blocking the whole variable
-# would forbid the ordinary settings a release could legitimately set, which is
-# the over-broad rule this check exists to avoid being.
-check quiet "Env${T}GODEBUG=http2client=0"
-check quiet "Env${T}GODEBUG=madvdontneed=1"
-check quiet "Env${T}GODEBUG="
+# config_from's `clean` truncates each entry to 400 characters BEFORE the gate
+# reads it, and GODEBUG is a comma-separated list whose entries reorder freely.
+# The first spelling of this check was `GODEBUG=.*x509`, so padding the list
+# pushed `x509usefallbackroots=1` past the cut: the gate reported "TLS trust
+# env: none" while the container received the variable in full. Reproduced
+# end-to-end before this was fixed.
+#
+# Built here the same way the PoC was, and asserted at BOTH lengths: the
+# pre-truncation line (what the Dockerfile sets) and the post-truncation line
+# (what the gate actually sees). Matching on the name makes both block; any
+# value-dependent pattern passes the second one.
+godebug_pad="$(printf 'http2client=0,%.0s' $(seq 29))"
+check blocking "Env${T}GODEBUG=${godebug_pad}x509usefallbackroots=1"
+check blocking "$(printf 'Env%s%s' "$T" "$(printf 'GODEBUG=%sx509usefallbackroots=1' "$godebug_pad" | cut -c1-400)")"
+
+# The same shape for a CA-bundle variable, where truncation eats the path.
+check blocking "Env${T}AWS_CA_BUNDLE=/data/$(printf 'a%.0s' $(seq 500))/evil.pem"
+
+# --- GODEBUG now blocks WHOLE, deliberately ----------------------------------
+#
+# The x509 narrowing is gone because it depended on the value surviving
+# truncation, i.e. on a filter the attacker chooses whether to satisfy. The
+# accepted cost is that an ordinary GODEBUG blocks and needs a reviewed
+# decision. GODEBUG is absent from the published image, so this costs nothing
+# today, and a legitimate future one cancels through the baseline diff rather
+# than by re-narrowing this pattern.
+check blocking "Env${T}GODEBUG=http2client=0"
+check blocking "Env${T}GODEBUG=madvdontneed=1"
+check blocking "Env${T}GODEBUG="
 
 # A variable merely CONTAINING one of these names must not match: the pattern
 # is anchored immediately after the `Env<TAB>` prefix.
@@ -172,23 +239,92 @@ fi
 #
 # The whole point of T-0786 is that this one class blocks under BOTH policies.
 # If a later edit folds it back under the strictness dial, the release path
-# silently reverts to printing it. Assert the shape of that code directly.
-if grep -q 'trustenv_blocks=0' "$gate" \
-   && grep -A2 'trustenv_blocks=0' "$gate" | grep -q 'DRIFT_POLICY'; then
-  fail=$((fail+1)); rc=1
-  echo "FAIL trustenv_blocks is gated on DRIFT_POLICY; it must block under BOTH" >&2
-  echo "     policies. That is the entire finding of T-0786." >&2
-else
-  pass=$((pass+1))
-fi
+# silently reverts to merely printing it -- the exact bug, restored.
+#
+# TESTED BEHAVIOURALLY, by EXECUTING the shipped verdict logic, not by grepping
+# for the shape of the source. The first spelling of this check was
+#
+#   grep -A2 'trustenv_blocks=0' "$gate" | grep -q 'DRIFT_POLICY'
+#
+# and a security review was right to call it theatre. It is a line-PROXIMITY
+# heuristic over source text, so it failed in both directions, and both were
+# reproduced rather than supposed:
+#
+#   - FALSE PASS. The identical regression written across three lines instead
+#     of one puts `DRIFT_POLICY` outside the -A2 window. Measured: the suite
+#     reported 29/29 green on a gate that no longer blocked releases.
+#   - FALSE FAILURE. The explanatory comment above the assignment mentions
+#     $DRIFT_POLICY twice; reflowing it so a mention lands within two lines
+#     AFTER the assignment turns the suite red on correct code.
+#
+# So extract the real verdict block and RUN it against both policies with a
+# non-zero trust-env count. That constrains behaviour, is indifferent to
+# formatting, and catches the regression however it is spelled.
+#
+# The extraction is anchored on the two assignments the verdict actually reads,
+# and fails CLOSED (exit 2) if it cannot find them -- a silently-empty extract
+# would make every assertion below vacuous, which is the one thing a regression
+# test must not do.
+verdict_block="$(sed -n '/^trustenv_blocks=0$/,/^  verdict=unchanged$/p' "$gate")
+fi"
+case "$verdict_block" in
+  *trustenv_blocks=1*verdict=*|*trustenv_blocks=1*)
+    case "$verdict_block" in
+      *'$trustenv_blocks" -eq 1'*) ;;
+      *)
+        echo "FAIL trustenv_blocks is computed but never read by the verdict." >&2
+        echo "     Extracted block:" >&2
+        printf '%s\n' "$verdict_block" | sed 's/^/       /' >&2
+        exit 2 ;;
+    esac ;;
+  *)
+    echo "FAIL could not extract the verdict block from $gate (anchors:" >&2
+    echo "     'trustenv_blocks=0' .. 'if [ \"\$added_total\"'). It was probably" >&2
+    echo "     restructured; fix this extraction rather than deleting the test." >&2
+    exit 2 ;;
+esac
 
-# And it must actually reach the verdict.
-if grep -q '\$trustenv_blocks" -eq 1' "$gate"; then
-  pass=$((pass+1))
-else
-  fail=$((fail+1)); rc=1
-  echo "FAIL trustenv_blocks is computed but never read by the verdict." >&2
-fi
+# Run the extracted block under both policies. Only the inputs the block reads
+# are defined, so anything else it depends on surfaces as an unbound-variable
+# failure rather than as a quiet pass.
+verdict_under() {
+  local policy="$1" trustenv="$2"
+  bash -u -c '
+    DRIFT_POLICY="$1"; trustenv_total="$2"
+    added_total=0; removed_total=0
+    moddrift=0; cfgdrift=0; fsdrift=0
+    FS_DELTA=off
+    drift_blocks=0; cfg_blocks=0
+    '"$verdict_block"'
+    echo "$verdict"
+  ' _ "$policy" "$trustenv" 2>/dev/null
+}
+
+# A trust-env finding must produce `blocked` under BOTH policies. `report` is
+# the release path and is the entire point of T-0786.
+for policy in block report; do
+  got="$(verdict_under "$policy" 1)"
+  if [ "$got" = blocked ]; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); rc=1
+    echo "FAIL a trust-env finding under MODULE_DRIFT_POLICY=$policy yields" >&2
+    echo "     verdict='$got', expected 'blocked'. Under 'report' this is T-0786" >&2
+    echo "     itself: the variable is printed and the release publishes." >&2
+  fi
+done
+
+# And with no finding it must NOT block, or the gate blocks every clean run.
+for policy in block report; do
+  got="$(verdict_under "$policy" 0)"
+  if [ "$got" = unchanged ]; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); rc=1
+    echo "FAIL a clean image under MODULE_DRIFT_POLICY=$policy yields" >&2
+    echo "     verdict='$got', expected 'unchanged'." >&2
+  fi
+done
 
 printf '\n%s: %d passed, %d failed\n' \
   "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "$pass" "$fail"

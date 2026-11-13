@@ -132,10 +132,26 @@
 #     if that changes rather than carrying a field that is always empty).
 #
 #     ONE CLASS OF CONFIG CHANGE IS BLOCKING UNDER BOTH POLICIES: a variable
-#     that redirects the Caddy binary's outbound TLS TRUST. A newly-added or
-#     modified SSL_CERT_FILE, SSL_CERT_DIR or GODEBUG=x509… is asserted on
-#     regardless of MODULE_DRIFT_POLICY, the way gate 4's trust-store rows are
-#     blocking while ordinary file modification is only reported.
+#     that redirects the binary's outbound TLS TRUST. A newly-added or modified
+#     SSL_CERT_FILE, SSL_CERT_DIR, AWS_CA_BUNDLE, CURL_CA_BUNDLE,
+#     REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO, NODE_EXTRA_CA_CERTS or GODEBUG is
+#     asserted on regardless of MODULE_DRIFT_POLICY, the way gate 4's
+#     trust-store rows are blocking while ordinary file modification is only
+#     reported.
+#
+#     MATCHED ON THE NAME, NEVER ON THE VALUE, because config_from's `clean`
+#     truncates each entry to 400 characters before this check reads it. A
+#     pattern needing part of the VALUE to survive that cut is fail-open by
+#     construction: the first spelling used GODEBUG=.*x509, and padding the
+#     list with ordinary settings pushed x509usefallbackroots=1 past the cut so
+#     the gate reported "TLS trust env: none" over an image whose container got
+#     the variable in full. GODEBUG therefore blocks WHOLE; see trust_env_of.
+#
+#     AWS_CA_BUNDLE is load-bearing, not prophylactic: Dockerfile.caddy links
+#     caddy-dns/route53, and the AWS SDK reads that variable to override the CA
+#     bundle for its own HTTP client. Go's crypto/x509 reads only the two
+#     SSL_CERT_* names, so it is a separate trust path -- guarding the Route53
+#     DNS-01 credential that issues this fleet's certificates.
 #
 #     Why this one class and not all config drift on releases: making every
 #     config change blocking would forbid the deliberate EXPOSE/WORKDIR edit
@@ -150,10 +166,12 @@
 #     merely be PRINTED into the summary while gate 1, seeing no new CVE,
 #     passed the release.
 #
-#     None of the three is present in the published image today, so this
-#     asserts on keeping it that way: there is no legitimate existing value to
-#     accommodate, which is why any appearance of one is blocking rather than
-#     compared against an allowed setting.
+#     None of them is present in the published image today, so this asserts on
+#     keeping it that way. Nothing in the CODE depends on that, though: the
+#     comparison is a whole-line diff against the baseline, so a legitimately
+#     introduced value cancels once published and only a CHANGE to it blocks
+#     thereafter. Accommodate such a value through the diff, never by narrowing
+#     the pattern back toward matching on values.
 #
 #     Otherwise the same two policies as gate 2, for the same reason, so the
 #     caller's existing MODULE_DRIFT_POLICY choice governs the REST of this
@@ -172,7 +190,11 @@
 #               release is the control, and this gate's job is to make sure the
 #               change is in front of them rather than invisible.
 #               EXCEPT for the trust-redirecting variables above, which block
-#               under this policy too.
+#               under this policy too. That includes an ordinary GODEBUG: the
+#               variable is matched whole because its value cannot be trusted
+#               to survive truncation, so a release setting one needs a
+#               reviewed decision. Deliberate -- a filter an attacker chooses
+#               whether to satisfy is worse than a slightly broad one.
 #
 #  4. Filesystem delta, from `docker export` of a created (never started)
 #     container. OPT-IN via FS_DELTA=on; see that variable for why this one
@@ -1159,36 +1181,70 @@ for arch in $ARCHES; do
   #
   # Read from the two cfg-*.txt files rather than from a fresh inspect, so this
   # sees exactly the values gate 3 compared -- already sanitized and already
-  # one-variable-per-line by config_from.
+  # one-variable-per-line by config_from. Note what that view COSTS, and why
+  # the match below is on names only: `clean` truncates each entry to 400
+  # characters, so the value is not reliable evidence here.
   #
-  # Matched on the NAME, i.e. up to the first `=`, so a variable is caught
-  # whatever its value: an empty SSL_CERT_DIR= is not harmless, it drops the
-  # default search path. Anchored after the `Env\t` prefix so a variable merely
-  # CONTAINING one of these names (`MY_SSL_CERT_FILE_NOTE`) does not match, and
-  # so a value mentioning one cannot satisfy it either.
+  # MATCHED ON THE VARIABLE NAME ALONE, never on the value.
   #
-  # GODEBUG is matched only for its x509 settings. The knob that matters is
-  # x509negativeserial / x509sha256skid / x509usefallbackroots and relatives:
-  # `x509usefallbackroots=1` makes Go fall back to its BUNDLED roots when the
-  # system pool fails to load, which is the same trust redirection by another
-  # name. GODEBUG carries dozens of unrelated settings (http2client, madvdontneed)
-  # that a release could set for ordinary reasons, so blocking the whole
-  # variable would be the over-broad rule this check exists to avoid being.
+  # The name is the only part of the line truncation cannot reach, and that is
+  # load-bearing rather than tidy. A pattern needing a substring of the VALUE
+  # to survive the cut is fail-open by construction. The first spelling of this
+  # check used `GODEBUG=.*x509`, and a code review broke it end-to-end: GODEBUG
+  # is a comma-separated list whose entries reorder freely, so
   #
-  # ONE grep producing ONE globally sorted stream, deliberately, not two
-  # greps appended. `comm` below requires its inputs to be sorted as a WHOLE,
-  # and two separately-sorted groups are not: `Env\tGODEBUG=` sorts before
-  # `Env\tSSL_CERT_FILE=`, so emitting the SSL group first would hand comm an
-  # out-of-order file and it would silently miss lines rather than fail.
+  #   GODEBUG=<29x "http2client=0,">x509usefallbackroots=1
   #
-  # `|| true` on the grep because no match is the NORMAL case here -- these
-  # variables are absent from the published image -- and grep exits 1 for it.
-  # Under `set -e` an unguarded non-match would abort the whole gate on every
-  # healthy run, which is the opposite of what this check is for.
+  # cuts at char 400 with the `x509` gone. Measured on this host: trustenv
+  # lines 0, trustenv_total 0, summary printing "TLS trust env: none" and the
+  # quiet line claiming the trust environment was unchanged -- over an image
+  # whose container gets the variable in full, because `clean` only truncates
+  # the GATE'S VIEW. That is T-0786 reproduced against the fix for T-0786.
   #
-  # GODEBUG is filtered to its x509 settings in the same expression rather
-  # than by a second grep in a pipe, so the `|| true` covers the whole match
-  # and there is no intermediate exit status to lose.
+  # So GODEBUG blocks WHOLE and the x509 narrowing is gone. The cost is
+  # accepted deliberately: a release setting an ordinary GODEBUG (http2client,
+  # madvdontneed) now blocks and needs a reviewed decision. That is the right
+  # trade, because the alternative is a filter an attacker chooses whether to
+  # satisfy. GODEBUG is absent from the published image, so it costs nothing
+  # today, and a legitimate future one is accommodated the same way every other
+  # value is -- it lands on both sides and cancels (see the comm note below) --
+  # not by narrowing the match again.
+  #
+  # Anchored after the `Env\t` prefix and terminated by `=`, so a variable
+  # merely CONTAINING one of these names (`MY_SSL_CERT_FILE_NOTE`) does not
+  # match, and so a value mentioning one cannot satisfy it either. An empty
+  # value still matches, which is correct: `SSL_CERT_DIR=` is not harmless, it
+  # drops the default search path.
+  #
+  # AWS_CA_BUNDLE is here because Dockerfile.caddy links
+  # caddy-dns/route53@v1.6.2, and the AWS SDK for Go reads that variable to
+  # override the CA bundle for ITS OWN HTTP client, on top of Go's defaults.
+  # Go's crypto/x509 loadSystemRoots() consults only SSL_CERT_FILE and
+  # SSL_CERT_DIR (root_unix.go), so the SDK's knob is a genuinely separate
+  # trust path, not a duplicate of them -- and the credential it protects is
+  # the Route53 DNS-01 API key that issues this fleet's certificates, i.e.
+  # exactly the asset this whole check exists for. Found by security review;
+  # the first spelling missed it.
+  #
+  # The remaining four are prophylactic, for a future `--with`: CURL_CA_BUNDLE,
+  # REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO and NODE_EXTRA_CA_CERTS are the
+  # conventional CA-bundle overrides of the other runtimes a plugin could pull
+  # in. None can false-positive: the published image's entire environment is
+  # PATH, CADDY_VERSION, XDG_CONFIG_HOME and XDG_DATA_HOME.
+  #
+  # ONE grep producing ONE globally sorted stream, deliberately, not several
+  # appended. `comm` below requires its inputs sorted as a WHOLE, and
+  # separately-sorted groups are not: `Env\tAWS_CA_BUNDLE=` sorts before
+  # `Env\tSSL_CERT_FILE=`, so emitting groups in pattern order would hand comm
+  # an out-of-order file and it would silently miss lines rather than fail.
+  #
+  # `|| true` on the grep because no match is the NORMAL case here -- none of
+  # these is present in the published image -- and grep exits 1 for it. Under
+  # `set -e` an unguarded non-match would abort the gate on every healthy run.
+  # Note this also swallows grep's exit 2 for a BAD PATTERN, which would be
+  # fail-open; that is why the pattern is a literal here and not caller-
+  # overridable, unlike FS_ALLOW_RE, which needed an explicit validation step
+  # for exactly that reason.
   #
   # A LITERAL TAB, via $'...', NOT the two characters \t. POSIX ERE has no \t
   # escape and GNU grep -E does not add one: in a `grep -E '^Env\t…'` pattern
@@ -1206,18 +1262,30 @@ for arch in $ARCHES; do
   # reports rather than enforces. Pinning both ends keeps them in agreement
   # whatever locale the runner has.
   trust_env_of() {
-    { grep -E $'^Env\t(SSL_CERT_FILE=|SSL_CERT_DIR=|GODEBUG=.*x509)' "$1" || true; } \
+    { grep -E $'^Env\t(SSL_CERT_FILE|SSL_CERT_DIR|AWS_CA_BUNDLE|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE|GIT_SSL_CAINFO|NODE_EXTRA_CA_CERTS|GODEBUG)=' "$1" || true; } \
       | LC_ALL=C sort -u
   }
   trust_env_of "$OUT/cfg-new-$arch.txt" > "$OUT/cfg-trustenv-new-$arch.txt" || true
   trust_env_of "$OUT/cfg-old-$arch.txt" > "$OUT/cfg-trustenv-old-$arch.txt" || true
 
-  # Compared on the WHOLE line (name and value), not on the name alone, so a
-  # MODIFIED value is caught as well as a newly-added variable. The task names
-  # both: these are absent from the published image today, so in practice any
-  # line here is an addition -- but if one is ever legitimately introduced, the
-  # check must not then stop looking at changes to it. `comm -23` therefore
-  # reports any line present on the new side and not on the baseline's.
+  # COMPARED on the whole line (name and value), even though the MATCH above is
+  # on the name alone. The two are deliberately different: matching on the name
+  # is what makes the check un-evadable by truncation, while diffing the whole
+  # line is what catches a MODIFIED value as well as a newly-added variable.
+  # `comm -23` reports any line present on the new side and not on the
+  # baseline's.
+  #
+  # This is also what makes the check survive its own premise changing. Nothing
+  # in the CODE depends on these variables being absent: the day one is
+  # legitimately introduced and published, it sits on both sides, cancels, and
+  # only a CHANGE to it blocks thereafter. Do not re-narrow the pattern to
+  # accommodate such a value; let the diff do it.
+  #
+  # A truncated value is compared truncated on BOTH sides, since both come
+  # through the same `clean`. So truncation can no longer hide a variable (the
+  # name is matched), and it cannot make an unchanged one look changed either
+  # -- only a change within the first 400 characters is visible, which is a
+  # reporting limit of gate 3 as a whole rather than of this check.
   LC_ALL=C comm -23 "$OUT/cfg-trustenv-new-$arch.txt" "$OUT/cfg-trustenv-old-$arch.txt" \
     > "$OUT/cfg-trustenv-$arch.txt" || true
 
@@ -1597,11 +1665,26 @@ fi
   if [ "$trustenv_blocks" -eq 1 ]; then
     echo "**Gate 3 FAILED — the image introduces or changes a variable that redirects TLS trust.** This blocks under BOTH drift policies, including on the release path."
     echo
-    echo "\`SSL_CERT_FILE\` and \`SSL_CERT_DIR\` decide where this binary looks for its trust roots, and \`GODEBUG=…x509…\` changes how it builds that pool. Pointed at a path an attacker controls, they redirect **every outbound TLS connection this image makes** — ACME issuance and the DNS provider's API — with **no filesystem delta at all**, because the file named can be one the image already legitimately contains. Gate 1 sees no new CVE, gate 2 sees no module change, and gate 4 sees no added file, so nothing else here reports it."
+    echo "\`SSL_CERT_FILE\` and \`SSL_CERT_DIR\` decide where this binary looks for its trust roots; \`AWS_CA_BUNDLE\` does the same for the AWS SDK linked by \`caddy-dns/route53\`, which holds the DNS-01 credential that issues this fleet's certificates; and \`GODEBUG\` can change how the root pool is built at all. Pointed at a path an attacker controls, they redirect **every outbound TLS connection this image makes** — ACME issuance and the DNS provider's API — with **no filesystem delta at all**, because the file named can be one the image already legitimately contains. Gate 1 sees no new CVE, gate 2 sees no module change, and gate 4 sees no added file, so nothing else here reports it."
     echo
     echo "That is the same silent-interception outcome the trust-store rows of gate 4 exist to prevent, reached through configuration instead of through files — so it is asserted on the same way, rather than merely printed. A release is allowed to change \`EXPOSE\`, \`WORKDIR\` or an ordinary \`ENV\`; it is not allowed to change who the binary trusts."
     echo
-    echo "**None of these variables is present in the published image**, so there is no legitimate existing value being compared against: any line below is new. If this was deliberate, it needs a reviewed decision of its own and a change to this gate — not a tag move."
+    # DERIVED, not asserted. The code deliberately outlives the claim that
+    # these variables are absent: `comm -23` compares whole lines, so a
+    # legitimately-introduced and published variable lands on both sides,
+    # cancels, and only a CHANGE to it blocks thereafter. A hardcoded "none of
+    # these is present" would keep printing after that day and tell the
+    # approver a modification was an addition -- in the one artifact they
+    # approve the release from. So ask the baseline extract instead.
+    baseline_had_any=no
+    for arch in $ARCHES; do
+      [ -s "$OUT/cfg-trustenv-old-$arch.txt" ] && baseline_had_any=yes
+    done
+    if [ "$baseline_had_any" = no ]; then
+      echo "**None of these variables is present in the published image**, so there is no legitimate existing value being compared against: any line below is new. If this was deliberate, it needs a reviewed decision of its own and a change to this gate — not a tag move."
+    else
+      echo "The published image already carries at least one of these variables, so a line below is either a NEW variable or a CHANGE to an existing one — check which against the baseline extract in the artifacts. Either way it needs a reviewed decision of its own, not a tag move."
+    fi
     echo
     for arch in $ARCHES; do
       if [ -s "$OUT/cfg-trustenv-$arch.txt" ]; then
@@ -1625,7 +1708,7 @@ fi
     echo
     echo "Read this one closely even so. Gates 1 and 2 cover the image's *contents* — its packages and its linked Go modules — and neither sees how those contents are **executed**. \`USER root\`, an \`ENTRYPOINT\` repointed at a wrapper that runs something before exec'ing caddy, or an added \`HTTP_PROXY\` passes both of them untouched: same packages, same modules, no CVE moved. If you did not intend a line below, do not move \`:stable\`."
     echo
-    echo "The trust-redirecting variables (\`SSL_CERT_FILE\`, \`SSL_CERT_DIR\`, \`GODEBUG=…x509…\`) are the exception to this section: they are **blocking** on this path too, and are reported separately above rather than left in this diff for a reader to notice."
+    echo "The trust-redirecting variables (\`SSL_CERT_FILE\`, \`SSL_CERT_DIR\`, \`AWS_CA_BUNDLE\`, \`CURL_CA_BUNDLE\`, \`REQUESTS_CA_BUNDLE\`, \`GIT_SSL_CAINFO\`, \`NODE_EXTRA_CA_CERTS\`, \`GODEBUG\`) are the exception to this section: they are **blocking** on this path too, and are reported separately above rather than left in this diff for a reader to notice."
     echo
   fi
 
