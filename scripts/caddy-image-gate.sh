@@ -1146,10 +1146,19 @@ for arch in $ARCHES; do
     #    The line is "<path> <mode> <size>" and a path may contain spaces, so
     #    mode and size are the LAST two fields: read them from the end, and
     #    rebuild the path from everything before them.
+    #
+    #    MATCHES BOTH MODE RENDERINGS. GNU tar prints symbolic modes
+    #    (-rwsr-xr-x) and that is what ubuntu-latest gives us, but a `[sS]`
+    #    test against a tar that prints the NUMERIC permission word (04755)
+    #    matches nothing -- and an assertion that matches nothing reports zero
+    #    setuid entries, i.e. it reads as clean rather than as broken. That is
+    #    the silent-empty-assertion shape this script is hardened against
+    #    elsewhere, so the numeric form is matched too: a leading 2, 4 or 6 in
+    #    the four/five-digit word is setgid/setuid/both.
     suid_of() {
       awk '{
         mode = $(NF-1)
-        if (mode !~ /[sS]/) next
+        if (mode !~ /[sS]/ && mode !~ /^0?[2467][0-7][0-7][0-7]$/) next
         path = $1
         for (i = 2; i <= NF-2; i++) path = path " " $i
         print path " " mode

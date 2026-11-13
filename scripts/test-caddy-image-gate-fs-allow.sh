@@ -175,6 +175,39 @@ else
   pass=$((pass+1))
 fi
 
+echo "== 8. assertion (b) matches BOTH tar mode renderings =="
+# GNU tar prints symbolic modes and that is what ubuntu-latest gives us, but a
+# `[sS]`-only test against a tar printing the numeric permission word (04755)
+# matches nothing -- and an assertion matching nothing reports zero setuid
+# entries, i.e. reads as clean rather than broken. Extracted from the shipped
+# script so this tests the real predicate.
+suid_pred=$(sed -n 's/.*if (mode !~ \(.*\)) next.*/\1/p' "$gate" | head -1)
+if [ -z "$suid_pred" ]; then
+  fail=$((fail+1)); rc=1
+  echo 'FAIL: could not extract the suid_of mode predicate from the gate'
+else
+  suid_check() { # want(yes|no) mode
+    local want=$1 mode=$2 got=no
+    printf 'some/path %s 100\n' "$mode" \
+      | awk "{ mode=\$(NF-1); if (mode !~ $suid_pred) next; print }" \
+      | grep -q . && got=yes
+    if [ "$got" = "$want" ]; then
+      pass=$((pass+1))
+    else
+      fail=$((fail+1)); rc=1
+      printf 'FAIL: mode %-12s flagged=%s want=%s\n' "$mode" "$got" "$want"
+    fi
+  }
+  suid_check yes '-rwsr-xr-x'   # symbolic setuid
+  suid_check yes '-rwxr-sr-x'   # symbolic setgid
+  suid_check yes '04755'        # numeric setuid
+  suid_check yes '02755'        # numeric setgid
+  suid_check yes '06755'        # numeric both
+  suid_check no  '-rwxr-xr-x'   # ordinary executable
+  suid_check no  '0755'         # ordinary, numeric
+  suid_check no  '00755'        # ordinary, numeric, 5-digit
+fi
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$rc" -eq 0 ] && echo "OK: FS_ALLOW_RE bounds both ends and the negative control reproduces the bug"
