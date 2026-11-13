@@ -131,8 +131,33 @@
 #     and NOT Healthcheck/StopSignal (absent on both sides today; add them here
 #     if that changes rather than carrying a field that is always empty).
 #
-#     Same two policies as gate 2, for the same reason, so the caller's
-#     existing MODULE_DRIFT_POLICY choice governs both:
+#     ONE CLASS OF CONFIG CHANGE IS BLOCKING UNDER BOTH POLICIES: a variable
+#     that redirects the Caddy binary's outbound TLS TRUST. A newly-added or
+#     modified SSL_CERT_FILE, SSL_CERT_DIR or GODEBUG=x509… is asserted on
+#     regardless of MODULE_DRIFT_POLICY, the way gate 4's trust-store rows are
+#     blocking while ordinary file modification is only reported.
+#
+#     Why this one class and not all config drift on releases: making every
+#     config change blocking would forbid the deliberate EXPOSE/WORKDIR edit
+#     that `report` exists to allow. But a release may change configuration
+#     without being allowed to change WHO THE BINARY TRUSTS. SSL_CERT_FILE
+#     pointed at an attacker-controlled path redirects ALL outbound TLS trust
+#     for this binary -- ACME issuance and the DNS provider's API -- with no
+#     filesystem delta at all, so gate 4 cannot see it either: the file it
+#     names can be one the image already legitimately contains. It is the same
+#     silent-MITM outcome gate 4 exists to prevent, reached through
+#     configuration rather than through files. Under `report` alone it would
+#     merely be PRINTED into the summary while gate 1, seeing no new CVE,
+#     passed the release.
+#
+#     None of the three is present in the published image today, so this
+#     asserts on keeping it that way: there is no legitimate existing value to
+#     accommodate, which is why any appearance of one is blocking rather than
+#     compared against an allowed setting.
+#
+#     Otherwise the same two policies as gate 2, for the same reason, so the
+#     caller's existing MODULE_DRIFT_POLICY choice governs the REST of this
+#     gate:
 #
 #       block   (the refresh path) A refresh rebuilds an UNCHANGED
 #               Dockerfile.caddy from a release tag, so the config must come
@@ -146,6 +171,8 @@
 #               and gate 1 decides the verdict. The reviewer approving the
 #               release is the control, and this gate's job is to make sure the
 #               change is in front of them rather than invisible.
+#               EXCEPT for the trust-redirecting variables above, which block
+#               under this policy too.
 #
 #  4. Filesystem delta, from `docker export` of a created (never started)
 #     container. OPT-IN via FS_DELTA=on; see that variable for why this one
@@ -252,6 +279,12 @@ rm -f "$OUT/verdict" "$OUT/summary.md" \
       "$OUT"/added-*.ids "$OUT"/removed-*.ids \
       "$OUT"/new-*.ids "$OUT"/old-*.ids \
       "$OUT"/mods-*.txt "$OUT"/cfg-*.txt "$OUT"/fs-*.txt 2>/dev/null || true
+# cfg-trustenv-*.txt is covered by the cfg-*.txt glob above, and the verdict
+# reads its LINE COUNT rather than merely testing the diff, so a stale copy
+# would be counted as this run's finding -- i.e. it would BLOCK a clean image
+# on evidence from a previous run. That makes the clearing above load-bearing
+# for it in a way it is not for the diffs: keep the name prefixed `cfg-` if it
+# is ever renamed.
 
 command -v trivy >/dev/null || die "trivy not found"
 command -v jq    >/dev/null || die "jq not found"
@@ -1110,6 +1143,88 @@ for arch in $ARCHES; do
   diff -u "$OUT/cfg-old-$arch.txt" "$OUT/cfg-new-$arch.txt" \
     > "$OUT/cfg-diff-$arch.txt" || true
 
+  # The ONE class of config change that blocks under BOTH policies: a variable
+  # that redirects where the Caddy binary looks for its TLS trust roots.
+  #
+  # Extracted SEPARATELY from the diff above, and asserted on, for exactly the
+  # reason gate 4 extracts its trust-store rows rather than leaning on the raw
+  # diff: under `report` the diff is only PRINTED, and a reader approving a
+  # release that legitimately moved EXPOSE has no reason to treat one more
+  # added Env line as different in kind. It is different in kind. Pointed at an
+  # attacker-controlled path, SSL_CERT_FILE redirects every outbound TLS
+  # connection this binary makes -- ACME issuance and the DNS provider's API --
+  # and does it with NO filesystem delta, because the file it names can be one
+  # the image already legitimately contains. Gates 1, 2 and 4 are all blind to
+  # it: same packages, same modules, no CVE moved, no file added.
+  #
+  # Read from the two cfg-*.txt files rather than from a fresh inspect, so this
+  # sees exactly the values gate 3 compared -- already sanitized and already
+  # one-variable-per-line by config_from.
+  #
+  # Matched on the NAME, i.e. up to the first `=`, so a variable is caught
+  # whatever its value: an empty SSL_CERT_DIR= is not harmless, it drops the
+  # default search path. Anchored after the `Env\t` prefix so a variable merely
+  # CONTAINING one of these names (`MY_SSL_CERT_FILE_NOTE`) does not match, and
+  # so a value mentioning one cannot satisfy it either.
+  #
+  # GODEBUG is matched only for its x509 settings. The knob that matters is
+  # x509negativeserial / x509sha256skid / x509usefallbackroots and relatives:
+  # `x509usefallbackroots=1` makes Go fall back to its BUNDLED roots when the
+  # system pool fails to load, which is the same trust redirection by another
+  # name. GODEBUG carries dozens of unrelated settings (http2client, madvdontneed)
+  # that a release could set for ordinary reasons, so blocking the whole
+  # variable would be the over-broad rule this check exists to avoid being.
+  #
+  # ONE grep producing ONE globally sorted stream, deliberately, not two
+  # greps appended. `comm` below requires its inputs to be sorted as a WHOLE,
+  # and two separately-sorted groups are not: `Env\tGODEBUG=` sorts before
+  # `Env\tSSL_CERT_FILE=`, so emitting the SSL group first would hand comm an
+  # out-of-order file and it would silently miss lines rather than fail.
+  #
+  # `|| true` on the grep because no match is the NORMAL case here -- these
+  # variables are absent from the published image -- and grep exits 1 for it.
+  # Under `set -e` an unguarded non-match would abort the whole gate on every
+  # healthy run, which is the opposite of what this check is for.
+  #
+  # GODEBUG is filtered to its x509 settings in the same expression rather
+  # than by a second grep in a pipe, so the `|| true` covers the whole match
+  # and there is no intermediate exit status to lose.
+  #
+  # A LITERAL TAB, via $'...', NOT the two characters \t. POSIX ERE has no \t
+  # escape and GNU grep -E does not add one: in a `grep -E '^Env\t…'` pattern
+  # the backslash is dropped and it matches the literal letter `t`, i.e.
+  # `Envt…`, which matches NOTHING against config_from's `Env<TAB>NAME=VALUE`
+  # lines. That failure is SILENT and fail-open -- the extract comes out empty,
+  # comm reports nothing, and the gate prints "TLS trust env: none" over an
+  # image that just added SSL_CERT_FILE. Verified on this host before fixing.
+  # If this pattern is ever rewritten, keep the tab literal; do not "tidy" it
+  # into \t.
+  #
+  # LC_ALL=C on BOTH the sort here and the comm below, for the reason T-0785
+  # established for gate 4: comm only WARNS about disorder, so an input sorted
+  # under one collation and validated under another is a correctness problem it
+  # reports rather than enforces. Pinning both ends keeps them in agreement
+  # whatever locale the runner has.
+  trust_env_of() {
+    { grep -E $'^Env\t(SSL_CERT_FILE=|SSL_CERT_DIR=|GODEBUG=.*x509)' "$1" || true; } \
+      | LC_ALL=C sort -u
+  }
+  trust_env_of "$OUT/cfg-new-$arch.txt" > "$OUT/cfg-trustenv-new-$arch.txt" || true
+  trust_env_of "$OUT/cfg-old-$arch.txt" > "$OUT/cfg-trustenv-old-$arch.txt" || true
+
+  # Compared on the WHOLE line (name and value), not on the name alone, so a
+  # MODIFIED value is caught as well as a newly-added variable. The task names
+  # both: these are absent from the published image today, so in practice any
+  # line here is an addition -- but if one is ever legitimately introduced, the
+  # check must not then stop looking at changes to it. `comm -23` therefore
+  # reports any line present on the new side and not on the baseline's.
+  LC_ALL=C comm -23 "$OUT/cfg-trustenv-new-$arch.txt" "$OUT/cfg-trustenv-old-$arch.txt" \
+    > "$OUT/cfg-trustenv-$arch.txt" || true
+
+  if [ -s "$OUT/cfg-trustenv-$arch.txt" ]; then
+    echo "::warning::trust-redirecting environment variable introduced or changed (linux/$arch): $(wc -l < "$OUT/cfg-trustenv-$arch.txt" | tr -d ' ') line(s) -- blocking under both drift policies"
+  fi
+
   # Gate 4: the filesystem delta. Off by default -- it costs a full image
   # export per side per arch, which is why T-0641 scoped it to the weekly
   # refresh rather than to every release. Same resolved per-arch refs as the
@@ -1275,6 +1390,7 @@ added_total=0
 removed_total=0
 moddrift=0
 cfgdrift=0
+trustenv_total=0
 fsdrift=0
 fs_newpaths_total=0
 fs_suid_total=0
@@ -1284,6 +1400,7 @@ for arch in $ARCHES; do
   removed_total=$(( removed_total + $(wc -l < "$OUT/removed-$arch.ids") ))
   [ -s "$OUT/mods-diff-$arch.txt" ] && moddrift=1
   [ -s "$OUT/cfg-diff-$arch.txt" ] && cfgdrift=1
+  trustenv_total=$(( trustenv_total + $(wc -l < "$OUT/cfg-trustenv-$arch.txt") ))
   # Gate 4 keys on the three ASSERTIONS, not on the raw diff being non-empty.
   # A base-layer refresh legitimately rewrites hundreds of files, so a raw-diff
   # trigger would fire on every single run and the gate would be switched off
@@ -1312,13 +1429,28 @@ cfg_blocks=0
 if [ "$cfgdrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
   cfg_blocks=1
 fi
+
+# The trust-redirecting subset of gate 3 blocks under BOTH policies, so it is
+# NOT gated on $DRIFT_POLICY. This is the only assertion in the script that
+# ignores the caller's strictness dial, and it does so deliberately: `report`
+# exists to let a release change configuration, not to let it change who the
+# binary trusts. See the trust_env_of block above and gate 3's header.
+#
+# Kept as its own variable rather than folded into cfg_blocks so the verdict
+# reason stays legible in the summary below -- a reader needs to know that the
+# block came from this specific class and not from config drift generally,
+# because the remedy is completely different.
+trustenv_blocks=0
+if [ "$trustenv_total" -gt 0 ]; then
+  trustenv_blocks=1
+fi
 fs_blocks=0
 if [ "$fsdrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
   fs_blocks=1
 fi
 
 if [ "$added_total" -gt 0 ] || [ "$drift_blocks" -eq 1 ] || [ "$cfg_blocks" -eq 1 ] \
-   || [ "$fs_blocks" -eq 1 ]; then
+   || [ "$trustenv_blocks" -eq 1 ] || [ "$fs_blocks" -eq 1 ]; then
   verdict=blocked
 elif [ "$removed_total" -gt 0 ]; then
   verdict=improved
@@ -1371,6 +1503,20 @@ fi
       # leave User/Entrypoint/Env alone. So it is flagged for review under
       # report rather than labelled "expected".
       if [ "$DRIFT_POLICY" = block ]; then row+=' **yes** |'; else row+=' yes (review) |'; fi
+    else
+      row+=' none |'
+    fi
+  done
+  echo "$row"
+  # The trust-redirecting subset gets its OWN row rather than being folded into
+  # the config row above, because it carries a different verdict rule: that row
+  # reads "yes (review)" under `report`, and this one never does. A reader
+  # scanning the table must not have to know that one of the lines inside a
+  # "review" diff was in fact blocking.
+  row='| TLS trust env |'
+  for arch in $ARCHES; do
+    if [ -s "$OUT/cfg-trustenv-$arch.txt" ]; then
+      row+=' **yes (blocking)** |'
     else
       row+=' none |'
     fi
@@ -1443,6 +1589,32 @@ fi
     done
   fi
 
+  # Printed BEFORE the general config section, and unconditionally on both
+  # policies, because it is the one config finding whose verdict does not
+  # depend on the path. Under `report` the section below it opens with "this is
+  # allowed to ship", and a reader who met that sentence first would carry the
+  # wrong frame into this one.
+  if [ "$trustenv_blocks" -eq 1 ]; then
+    echo "**Gate 3 FAILED — the image introduces or changes a variable that redirects TLS trust.** This blocks under BOTH drift policies, including on the release path."
+    echo
+    echo "\`SSL_CERT_FILE\` and \`SSL_CERT_DIR\` decide where this binary looks for its trust roots, and \`GODEBUG=…x509…\` changes how it builds that pool. Pointed at a path an attacker controls, they redirect **every outbound TLS connection this image makes** — ACME issuance and the DNS provider's API — with **no filesystem delta at all**, because the file named can be one the image already legitimately contains. Gate 1 sees no new CVE, gate 2 sees no module change, and gate 4 sees no added file, so nothing else here reports it."
+    echo
+    echo "That is the same silent-interception outcome the trust-store rows of gate 4 exist to prevent, reached through configuration instead of through files — so it is asserted on the same way, rather than merely printed. A release is allowed to change \`EXPOSE\`, \`WORKDIR\` or an ordinary \`ENV\`; it is not allowed to change who the binary trusts."
+    echo
+    echo "**None of these variables is present in the published image**, so there is no legitimate existing value being compared against: any line below is new. If this was deliberate, it needs a reviewed decision of its own and a change to this gate — not a tag move."
+    echo
+    for arch in $ARCHES; do
+      if [ -s "$OUT/cfg-trustenv-$arch.txt" ]; then
+        echo "Introduced or changed, linux/$arch:"
+        echo
+        echo '```'
+        cat "$OUT/cfg-trustenv-$arch.txt"
+        echo '```'
+        echo
+      fi
+    done
+  fi
+
   if [ "$cfgdrift" -eq 1 ] && [ "$DRIFT_POLICY" = block ]; then
     echo "**Gate 3 FAILED — the image's execution configuration changed.** A refresh may change the OS layer and nothing else."
     echo
@@ -1451,7 +1623,9 @@ fi
   elif [ "$cfgdrift" -eq 1 ]; then
     echo "**Image configuration changed — reported, not blocked.** This is the release path, where a deliberate \`EXPOSE\`, \`WORKDIR\` or \`ENV\` edit is allowed to ship."
     echo
-    echo "Read this one closely even so. Gates 1 and 2 cover the image's *contents* — its packages and its linked Go modules — and neither sees how those contents are **executed**. \`USER root\`, an \`ENTRYPOINT\` repointed at a wrapper that runs something before exec'ing caddy, or an added \`HTTP_PROXY\`/\`SSL_CERT_FILE\` passes both of them untouched: same packages, same modules, no CVE moved. If you did not intend a line below, do not move \`:stable\`."
+    echo "Read this one closely even so. Gates 1 and 2 cover the image's *contents* — its packages and its linked Go modules — and neither sees how those contents are **executed**. \`USER root\`, an \`ENTRYPOINT\` repointed at a wrapper that runs something before exec'ing caddy, or an added \`HTTP_PROXY\` passes both of them untouched: same packages, same modules, no CVE moved. If you did not intend a line below, do not move \`:stable\`."
+    echo
+    echo "The trust-redirecting variables (\`SSL_CERT_FILE\`, \`SSL_CERT_DIR\`, \`GODEBUG=…x509…\`) are the exception to this section: they are **blocking** on this path too, and are reported separately above rather than left in this diff for a reader to notice."
     echo
   fi
 
@@ -1547,6 +1721,17 @@ fi
     # the whole basis for approving the release.
     quiet=""
     [ "$moddrift" -eq 0 ] && quiet="$quiet the module set,"
+    # Named separately from "the image configuration" because it is checked
+    # separately: under `report` the config diff can be non-empty (so not
+    # listed as quiet) while this assertion still passed, and that IS a
+    # reassurance worth stating -- the release changed config but did not touch
+    # TLS trust. Only claimed when the assertion actually came out empty.
+    #
+    # Not mirrored on the `noisy` side below: this block only runs when the
+    # verdict is NOT blocked, and a non-empty trust-env extract forces
+    # `blocked` under both policies, so trustenv_total is necessarily 0 here.
+    # A `noisy` entry for it would be unreachable rather than merely redundant.
+    [ "$trustenv_total" -eq 0 ] && quiet="$quiet the TLS trust environment,"
     [ "$cfgdrift" -eq 0 ] && quiet="$quiet the image configuration,"
     [ "$FS_DELTA" = on ] && [ "$fsdrift" -eq 0 ] && quiet="$quiet the filesystem,"
     noisy=""
@@ -1651,6 +1836,12 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "removed_count=$removed_total"
     echo "module_drift=$moddrift"
     echo "config_drift=$cfgdrift"
+    # A COUNT, not a 0/1 flag, and reported separately from config_drift: a
+    # caller must be able to tell "config changed but trust did not" from
+    # "trust was redirected", because only the second one is blocking under
+    # `report`. Folding it into config_drift would lose exactly the
+    # distinction this check exists to draw.
+    echo "trust_env_changes=$trustenv_total"
     echo "fs_delta=$FS_DELTA"
     echo "fs_drift=$fsdrift"
     echo "fs_new_paths=$fs_newpaths_total"
