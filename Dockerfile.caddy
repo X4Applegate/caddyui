@@ -4,7 +4,10 @@
 # which needs QEMU for arm64 (release-docker.yml sets it up).
 #
 # Security pins:
-#   - The first FOUR --with lines are version floors. xcaddy runs `go get` once
+#   - The FLOOR --with lines (crowdsec/pkg/apiclient, x/net/http2, chi/v5,
+#     go-jose/v4, klauspost/compress -- currently the first FIVE) are version
+#     floors. Keep every floor above the plugin lines, and update this list
+#     when one is added. xcaddy runs `go get` once
 #     per --with, in order, and `go get pkg@ver` sets exactly that version, so
 #     they must come first: a plugin fetched after them can still raise these
 #     modules but never lowers them.
@@ -111,6 +114,74 @@
 #     caddy-dns/digitalocean has never been tagged upstream, so its pin is the
 #     pseudo-version of master@04bde286 (2025-06-06) — the exact commit the
 #     published image already contains, not a new choice.
+#   - klauspost/compress @v1.20.4 lifts the module past GO-2026-6865 /
+#     CVE-2026-116591 / GHSA-fpmh-frq8-7rj8 (HIGH, CWE-190): a crafted ~27 KB
+#     two-block zstd frame panics DecodeAll and the streaming decoder with an
+#     out-of-range slice index instead of returning a decode error. Vulnerable
+#     <= v1.20.1, patched v1.20.2. The published image shipped v1.20.1.
+#     THIS PIN IS LOAD-BEARING, NOT SLACK. MVS resolves to exactly v1.20.1 on
+#     its own -- caddy 2.11.9, caddy-l4 v0.1.3, caddy-crowdsec-bouncer v0.15.0
+#     and prometheus/client_golang v1.25.0 each require v1.20.1 and nothing in
+#     the graph requires higher -- so without this line the build stays on the
+#     vulnerable version. Unlike the crowdsec floor above, removing it
+#     regresses the image. The module ROOT carries a Go package
+#     (compressible.go), so a plain `--with <module>@ver` links and no
+#     `--replace` is needed.
+#     TRIVY IS BLIND TO THIS ONE, and NOT for the CVE-less reason seen with
+#     go-jose and crowdsec -- this advisory HAS a CVE id and IS in OSV. The
+#     cause is a package-vs-module NAMING MISMATCH: OSV/GHSA name the affected
+#     package `github.com/klauspost/compress/zstd` (the subpackage), while Go
+#     binaries and go.mod record the MODULE `github.com/klauspost/compress`.
+#     Trivy matches the recorded name, finds no advisory under the module path
+#     and reports nothing -- while still listing the package at v1.20.1 in its
+#     own Packages output. Measured: a probe go.mod requiring the module gives
+#     0 findings and one requiring the zstd subpackage path gives the HIGH,
+#     same scanner and same DB. govulncheck is unaffected because the Go
+#     advisory names the module correctly and matches on symbols. So a THIRD
+#     distinct mechanism can hide a finding from Trivy, after CVE-less
+#     advisories (T-0646) and `--replace` invisibility (T-0710): a scanner's
+#     silence is not evidence (T-0729).
+#     Reachability, re-derived against the ARTIFACT rather than a hand-built
+#     probe -- and that distinction mattered here. The build runs with
+#     `-tags nobadger,nomysql,nopgx` (recorded in the binary's build info), so
+#     dgraph-io/badger is NOT LINKED AT ALL: 0 strings for `dgraph-io/badger`
+#     in the shipped binary. A first probe that omitted those tags and most
+#     --with plugins produced a confident but WRONG badger/smallstep-nosql
+#     route; a probe rebuilt with all 13 plugins, `modules/standard` and the
+#     real tags reproduces the binary's klauspost package set exactly. Use
+#     `go mod why -vendor` as well: WITHOUT -vendor it reports a prometheus
+#     promhttp route that runs through `prometheus/client_golang/
+#     prometheus.test` and is TEST-ONLY.
+#     The real non-test importers are Caddy's OWN
+#     modules/caddyhttp/encode/zstd and DeRuina/timberjack (log rotation) --
+#     so this IS the HTTP compression stack.
+#     IT IS STILL NOT REACHABLE WITH HOSTILE INPUT, for a sharper reason:
+#     GO-2026-6865 is a DECODER bug, and Caddy's encode/zstd is ENCODER-ONLY.
+#     zstd.go calls zstd.NewWriter and nothing else; zstd_precompressed.go
+#     merely declares the `.zst` suffix so the file server can serve
+#     pre-compressed files as-is. Caddy compresses RESPONSES; it never
+#     decompresses a zstd REQUEST body. A sweep of the whole 1274-package
+#     shipped closure for non-test `zstd.NewReader` / `.DecodeAll(` finds hits
+#     only inside klauspost/compress/zstd itself, with a NEGATIVE CONTROL
+#     confirming the same sweep DOES fire for zstd.NewWriter (on encode/zstd
+#     and timberjack) -- so the silence is a measurement, not a broken scan.
+#     govulncheck names fse.Compress/Decompress and huff0.Compress1X/
+#     Compress4X/ReadTable/EstimateSizes/AppendTable as reachable because they
+#     are present and linked; the *Compress* ones are genuinely live via the
+#     encoder. So `reachable` here means LINKED, not EXPLOITABLE.
+#     Bumped anyway: the fix is free, the pin is cheap, and any future config
+#     or plugin that decodes zstd would make it live.
+#     v1.20.4 (not the minimum v1.20.2) because v1.20.2/.3/.4 are all clean at
+#     both the module and zstd-subpackage paths in OSV, repo-level GitHub
+#     advisories show only two ever (both fixed at or below v1.20.2), and
+#     v1.20.4 is the current release.
+#     THE ASSERTION BELOW IS DELIBERATELY NARROW. It accepts only v1.20.x for
+#     x >= 4, and the trailing [[:space:]] matters: without it a PRE-RELEASE
+#     pseudo-version such as v1.20.4-0.2026... would match while sorting BELOW
+#     v1.20.4. So a future legitimate bump to v1.21.0 or beyond FAILS THE
+#     BUILD until this pattern is widened. That is intended -- it fails closed,
+#     and re-taking the decision is the point -- but it is a build break to
+#     expect, not a mystery. Widen the pattern in the same commit as the bump.
 #   - A pin that is behind upstream ON PURPOSE carries a `# pin-watch: floor`
 #     comment immediately above it, read by scripts/check-pinned-modules.sh.
 #     Such a pin is reported under "Intentional floors" with its reason rather
@@ -132,6 +203,7 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with golang.org/x/net/http2@v0.62.0 \
     --with github.com/go-chi/chi/v5@v5.5.0 \
     --with github.com/go-jose/go-jose/v4@v4.1.7 \
+    --with github.com/klauspost/compress@v1.20.4 \
     --with github.com/caddy-dns/cloudflare@v0.2.4 \
     --with github.com/caddy-dns/porkbun@v0.3.1 \
     --with github.com/caddy-dns/namecheap@v1.0.0 \
@@ -145,7 +217,12 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/mholt/caddy-l4@v0.1.3 \
     --with github.com/corazawaf/coraza-caddy/v2@v2.6.2 \
     2>&1 | tee /tmp/xcaddy.log \
-    && if grep 'go: downgraded' /tmp/xcaddy.log; then echo 'a pin downgraded a module' >&2; exit 1; fi
+    && if grep 'go: downgraded' /tmp/xcaddy.log; then echo 'a pin downgraded a module' >&2; exit 1; fi \
+    && go version -m /usr/bin/caddy > /tmp/mods.txt \
+    && if ! grep -qE '^[[:space:]]*dep[[:space:]]+github\.com/klauspost/compress[[:space:]]+v1\.20\.(4|[5-9]|[1-9][0-9])[[:space:]]' /tmp/mods.txt; then \
+         echo 'klauspost/compress is not >= v1.20.4 in the built binary (GO-2026-6865)' >&2; \
+         grep -E 'klauspost/compress' /tmp/mods.txt >&2 || true; exit 1; \
+       fi
 
 FROM caddy:2.11.9-alpine
 # The caddy base image only gets Alpine fixes when it is rebuilt upstream;
