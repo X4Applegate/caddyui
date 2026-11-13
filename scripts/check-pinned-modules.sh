@@ -1111,6 +1111,25 @@ gh_extra="$OUT_DIR/gh-extra.tsv"
 : > "$gh_extra"
 gh_checked=0
 gh_unavailable=""
+# Which modules the cross-check actually COVERED, and which it could not reach.
+#
+# Why per-module and not just the `gh_checked` count: a GitHub-only row that
+# vanishes between two runs is ambiguous. It means either "the advisory was
+# withdrawn or its range moved past the pin" (a real all-clear) or "this
+# module's request was rate-limited this time" (nothing learned). Both looked
+# identical in the report -- the global caveat said the cross-check had not run
+# for *every* module but never said for WHICH, so a reader could not tell a
+# cleared row from an unasked one. Observed on two runs minutes apart: five chi
+# rows and zero crowdsec rows, then no GitHub-only table at all (T-0664).
+#
+# Unauthenticated the advisory API allows 60 requests/hour/IP, so on a busy
+# runner the skipped set is routinely non-empty and this is the common case,
+# not an edge case. Naming both sets costs one line each and makes a missing
+# row readable.
+gh_covered="$OUT_DIR/gh-covered.tsv"
+: > "$gh_covered"
+gh_skipped="$OUT_DIR/gh-skipped.tsv"
+: > "$gh_skipped"
 
 # The skip switch is a local/test escape hatch and is set by no workflow, but
 # it must not be able to produce a report that CLAIMS the cross-check ran. It
@@ -1152,10 +1171,12 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
     # list would read as "no advisories" — the exact inversion this script
     # exists to prevent.
     if [ -z "$g_body" ] || ! jq -e 'type == "array"' <<<"$g_body" >/dev/null 2>&1; then
-      [ -z "$gh_unavailable" ] && gh_unavailable="GitHub's advisory API did not return a list (rate limit, or no token); the cross-check did not run for every module"
+      [ -z "$gh_unavailable" ] && gh_unavailable="GitHub's advisory API did not return a list for at least one module (rate limit, or no token); the modules it could not reach are named below"
+      printf '%s\t%s\n' "$g_module" "$g_pinned" >> "$gh_skipped"
       continue
     fi
     gh_checked=$((gh_checked+1))
+    printf '%s\t%s\n' "$g_module" "$g_pinned" >> "$gh_covered"
 
     # Report only GHSA ids OSV did not already give us for this pin, by GHSA
     # id and by CVE alias — OSV returns CVE ids for the converted records, so
@@ -1606,7 +1627,33 @@ done
     done < "$gh_extra"
     echo
   fi
-  [ -n "$gh_unavailable" ] && { echo "**$gh_unavailable.** The OSV result above still stands on its own; only the independent second opinion is missing."; echo; }
+  # Name the two sets. A row's ABSENCE above only means something for a module
+  # in the covered list; for a skipped one it means the question was never put.
+  if [ -s "$gh_skipped" ]; then
+    echo "**The GitHub cross-check did not cover every pin, so a missing row above is not automatically a cleared one.** ${gh_unavailable:-At least one module could not be reached}. For the modules below the second index was NOT consulted on this run — treat them as unanswered, not clean. The OSV result above is unaffected and still stands on its own for every pin:"
+    echo
+    echo "| module | pinned | GitHub cross-check |"
+    echo "| --- | --- | --- |"
+    while IFS=$'\t' read -r s_mod s_pin; do
+      printf '| `%s` | `%s` | **skipped** — not asked |\n' "$s_mod" "$s_pin"
+    done < "$gh_skipped"
+    echo
+  elif [ -n "$gh_unavailable" ]; then
+    echo "**$gh_unavailable.** The OSV result above still stands on its own; only the independent second opinion is missing."
+    echo
+  fi
+  if [ -s "$gh_covered" ]; then
+    echo "<details><summary>Modules the GitHub cross-check did cover ($gh_checked)</summary>"
+    echo
+    echo "For these the second index answered, so the absence of a row above is a real result from it — the advisory list was read and nothing in it outranked the pin."
+    echo
+    while IFS=$'\t' read -r c_mod c_pin; do
+      printf -- '- `%s` `%s`\n' "$c_mod" "$c_pin"
+    done < "$gh_covered"
+    echo
+    echo "</details>"
+    echo
+  fi
   if [ "$adv_unknown" -gt 0 ]; then
     echo "**Advisory status could not be established for $adv_unknown pin(s).** Neither the version-scoped nor the commit-scoped query could be asked, so those rows say nothing about whether an advisory applies. An unchecked pin is not a clean pin."
     echo
@@ -1690,10 +1737,12 @@ if [ "$EMIT_JSON" -eq 1 ]; then
         --argjson fa "$floors_ack" --argjson fe "$floors_expired" \
         --argjson gx "$(wc -l < "$gh_extra" | tr -d ' ')" \
         --argjson gc "$gh_checked" \
+        --argjson gs "$(wc -l < "$gh_skipped" | tr -d ' ')" \
         '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
           advisory_unknown:$au, advisory_partial:$ap,
           floors_acknowledged:$fa, floors_expired:$fe,
-          github_only:$gx, github_modules_checked:$gc}' \
+          github_only:$gx, github_modules_checked:$gc,
+          github_modules_skipped:$gs}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
 fi
@@ -1709,6 +1758,8 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "floors_acknowledged=$floors_ack"
     echo "floors_expired=$floors_expired"
     echo "github_only=$(wc -l < "$gh_extra" | tr -d ' ')"
+    echo "github_modules_checked=$gh_checked"
+    echo "github_modules_skipped=$(wc -l < "$gh_skipped" | tr -d ' ')"
     echo "report<<$PINREPORT_DELIM"
     cat "$report"
     echo "$PINREPORT_DELIM"

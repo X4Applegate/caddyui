@@ -24,17 +24,9 @@
 #     x/net/http2 @v0.62.0 lifts golang.org/x/net past CVE-2026-78669,
 #     CVE-2026-78661 and CVE-2026-97045.
 #     chi/v5 @v5.5.0 lifts go-chi past CVE-2026-114437 and CVE-2026-118681
-#     (auth bypass in chi middleware.SupressNotFound) but NOT past
-#     CVE-2026-122132 (open redirect in middleware.RedirectSlashes, affecting
-#     5.2.2 through 5.5.0 inclusive -- no fixed tag exists yet, so there is
-#     nothing to bump to; see T-0652). chi itself IS linked -- Caddy requires
-#     it directly and uses it in caddypki/acmeserver, and smallstep/certificates
-#     imports it in acme/api, api, scep/api and authority/admin/api -- but the
-#     chi/v5/middleware package is not, so NEITHER middleware CVE is reachable
-#     here today and this floor is prophylactic. It is worth keeping:
-#     smallstep/certificates ca/ca.go already imports chi/v5/middleware, so a
-#     future import of that package would link it, and the floor makes such a
-#     build take a fixed chi.
+#     (auth bypass in chi middleware.SupressNotFound). It does NOT clear
+#     CVE-2026-122132 -- and the reason that is easy to miss is the subject of
+#     the chi block below, which is where a reader checking this pin should go.
 #     go-jose/v4 @v4.1.7 lifts go-jose past SIX live advisories, not one:
 #     CVE-2026-116587 (HIGH, = GHSA-mgcc-cww5-fp2q, fixed in 4.1.6) PLUS five
 #     published 2026-10-30 with NO CVE id -- v6h2, c67m, p9j4, r39w, 27pc --
@@ -91,6 +83,77 @@
 #     range leads with `>=`. Conservative by design, not a bug.
 #     Re-check if the bouncer ever links acquisition or notification code, or
 #     if the splunk advisory gets a fixed release (T-0661).
+#   - chi/v5 @v5.5.0 carries SEVEN GitHub advisories on the go-chi/chi repo.
+#     FOUR survive this pin's range filter and recur in the weekly report as
+#     "GitHub-only" rows; they are listed here so a reader who checks this pin
+#     finds the answer instead of re-deriving it every week. NONE is linked.
+#     Measured, not assumed (T-0652, re-measured T-0655, PoC re-run 2026-11-12
+#     against v5.5.0, report re-run same day):
+#       GHSA-mqqf-5wvp-8fh8  medium  >=5.2.2      NO FIX   open redirect in
+#                            middleware.RedirectSlashes -- see the FALSE FIX
+#                            note below, which is the important part
+#       GHSA-3fxj-6jh8-hvhx  medium  >= 5.2.1     NO FIX   IP spoofing in
+#                            middleware.RealIP
+#       GHSA-9g5q-2w5x-hmxf  medium  since 0.9.0  NO FIX   IP spoofing via
+#                            X-Forwarded-For in Request.RemoteAddr
+#       GHSA-vrw8-fxc6-2r93  medium  v5.2.1       -        host-header
+#                            injection -> open redirect in RedirectSlashes.
+#                            Bounded below this pin, but the range is a BARE
+#                            VERSION with no comparator, which the textual
+#                            filter cannot prove excludes 5.5.0, so it is
+#                            reported. Conservative by design, as with the
+#                            crowdsec `>=` row above.
+#     Two more are correctly filtered out and should NOT be expected in the
+#     report: GHSA-rqrp-8cg2-5958 (<=5.4.0, = CVE-2026-118681, SupressNotFound
+#     auth bypass) is genuinely CLEARED by this pin -- it is the advisory
+#     v5.5.0 was taken for -- and GHSA-rjr7-jggh-pgcp (<=5.2.1) and
+#     GHSA-j6qf-3m9c-vwj3 (<= 5.3.2) are bounded below it.
+#     EVERY ONE of these lives in go-chi/chi/v5/middleware. That package is
+#     NOT linked into this image: chi's core router is (105 string refs in the
+#     v2.68.11 candidate binary, against 4250 for caddyserver/caddy/v2 as a
+#     control) because Caddy uses it in caddypki/acmeserver and
+#     smallstep/certificates imports it in acme/api, api, scep/api and
+#     authority/admin/api -- but the middleware package has ZERO refs and the
+#     symbols RedirectSlashes and SupressNotFound do not appear at all. The
+#     binary is stripped, so `go tool nm` reports no symbols for anything
+#     including Caddy itself; these counts come from `strings` with
+#     known-present modules as controls, because the nm reading looks like a
+#     clean answer while measuring nothing. So no middleware advisory is
+#     reachable here and this floor is prophylactic -- worth keeping, because
+#     smallstep/certificates ca/ca.go already imports chi/v5/middleware (for
+#     GetHead only, never SupressNotFound) and that `ca` package is one import
+#     away from being linked; the floor makes such a build take a fixed chi.
+#     Note this is the IMAGE. The CaddyUI server binary is a separate program
+#     that DOES import chi/v5/middleware (internal/server/server.go), but it
+#     mounts only RequestLogger and Recoverer -- neither RedirectSlashes nor
+#     SupressNotFound appears anywhere in this repo's Go source. Re-check that
+#     if either is ever mounted.
+#     *** THE CHI GATE IS A KNOWN-FALSE GREEN -- do not read it as clean. ***
+#     GHSA-mqqf-5wvp-8fh8 covers TWO CVEs under one id: `gh api
+#     /advisories/GHSA-mqqf-5wvp-8fh8` gives cve_id CVE-2025-69725 with
+#     `>= 5.2.2, < 5.2.4`. v5.2.4 fixed the BACKSLASH variant; CVE-2026-122132
+#     is the TAB bypass OF that fix, and GitHub kept only the first boundary.
+#     OSV mirrors that truncated range (`introduced 5.2.2, fixed 5.2.4`), so
+#     WHICH OSV QUESTION YOU ASK DECIDES THE ANSWER -- measured 2026-11-12:
+#       package+version  chi/v5 @5.5.0            -> 0 vulns   (FALSE CLEAN)
+#       by the tag's commit 3a33ba578e0d          -> CVE-2026-122132
+#     The package+version query is the one an SBOM scanner asks, so Trivy and
+#     caddy-image-gate.sh report chi clean. check-pinned-modules.sh asks BOTH
+#     -- that second, commit-scoped query is exactly why this pin still shows
+#     an advisory in the weekly report when Trivy shows none, and the report is
+#     the one that is right. Do not "reconcile" them by dropping the commit
+#     query. The standalone CVE-2026-122132 OSV record (package field null,
+#     GIT range, 9 affected versions) and NVD both still list 5.2.2 through
+#     5.5.0 affected, and the TAB bypass is live on the newest tag: running
+#     scripts/poc/redirectslashes-tab.go (usage in its header) against v5.5.0 returns
+#     `Location: "/\t/evil.com"` for a request to `/%09/evil.com/` (301).
+#     RedirectSlashes is byte-identical between v5.2.4 and v5.5.0. A browser
+#     strips the TAB, resolves //evil.com and follows it off-site.
+#     This is strictly stronger than the T-0628 / T-0646 "OSV is blind to
+#     CVE-less advisories" caveat: there the index held nothing, here it holds
+#     a positive clean answer that is false. Settle it with the PoC, not with a
+#     version query. There is no fixed tag to bump to; go-chi/chi#1238 is open.
+#     Re-check when a tag lands that makes that PoC print no raw TAB (T-0664).
 #   - caddy-crowdsec-bouncer is back on a tag. It was pinned to raw commit
 #     bdd7e516 because it was the only upstream code supporting CrowdSec 1.7
 #     (v0.14.1, the newest tag then, needed 1.6). v0.15.0 (2026-10-30) requires
