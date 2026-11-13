@@ -111,20 +111,35 @@ What neither check covers is the **Caddy base image's own** module set, which is
 
 Development is assisted by Claude (Anthropic). No secrets, credentials, database contents, or user data are shared with Claude — only code structure and logic.
 
-### Caddy base advisories (fixed upstream; not yet in the published image)
+### Caddy base advisories (resolved in the published image as of v2.68.12)
 
 Five CVE-less advisories published 2026-11-04 affected Caddy **2.11.7** and earlier, including one
 **high** (`GHSA-r766-rf9f-588h`: `Host`/`:authority` values with dot segments escaping a
-`{host}`-based document root). **All five are fixed in Caddy 2.11.8. This repository's `Dockerfile.caddy` now builds on
+`{host}`-based document root). **All five are fixed in Caddy 2.11.8. This repository's `Dockerfile.caddy` builds on
 2.11.9**, which no Caddy advisory affects.
 
-> **The published image has not caught up yet.** `applegater/caddyui-caddy:stable` currently
-> serves the v2.68.11 artifact (`sha256:abdb5b0a4737…`), whose binary links **caddy v2.11.7** —
-> verified with `go version -m` on the extracted binary, not inferred from the tag. So the five
-> advisories, including the high, **still apply to the image you pull today**, and the
-> preconditions listed below therefore still matter — in particular, do not build a document
-> root from `{host}` until the next release is published. This note is removed when
-> `go version -m` on the extracted `:stable` binary reports caddy v2.11.9.
+> **The published image now carries the fix.** `applegater/caddyui-caddy:stable` resolves to the
+> v2.68.12 artifact, whose binary reports **caddy v2.11.9** — verified by running `caddy version`
+> out of the pulled image, not inferred from the tag. So none of the five apply to the image you
+> pull today.
+>
+> **Pulling a fixed image is not the same as running one.** A container keeps executing the image
+> it was created from, and because the tag *string* never changes, `docker compose pull` followed
+> by `up -d` can exit successfully having replaced nothing — a container will report
+> `applegater/caddyui-caddy:stable` in its configuration while still running an older build. If
+> your proxy has not been recreated since v2.68.12 published, treat it as still affected and keep
+> the preconditions below — in particular, do not build a document root from `{host}`. The only
+> check that settles it is reading the version back out of the *running* container:
+>
+> ```sh
+> docker compose pull caddy && docker compose up -d caddy
+> docker exec <container> sh -c 'caddy version'    # expect v2.11.9
+> ```
+>
+> `--force-recreate` without a `pull` is not sufficient: if the local `:stable` tag is itself a
+> stale pull, the recreate reuses the cached image and reports success while changing nothing. In
+> Portainer use **Re-pull image** rather than a plain Recreate. Use `sh -c` because `caddy` is not
+> at a fixed path on every image.
 
 None carried a CVE id, so none appeared in OSV or in CVE-keyed scanners — they were visible only
 through GitHub's repository advisory endpoint. That blind spot is why the pinned-module watcher

@@ -92,6 +92,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.68.12] - 2026-11-12 - Caddy base 2.11.7 → 2.11.9 clears five advisories, one of them a HIGH that escapes a `{host}` document root
+
+### Security
+
+- **The Caddy base image moves `2.11.7` → `2.11.9`, clearing all five advisories that affected 2.11.7 — including `GHSA-r766-rf9f-588h` (HIGH), where `Host`/`:authority` values containing dot segments can escape a `{host}`-based document root.** The four plugin pins from 2.68.11 are unchanged and were checked for disturbance rather than assumed: `go-chi/chi/v5@v5.5.0`, `go-jose/go-jose/v4@v4.1.7`, `caddy-crowdsec-bouncer/http@v0.15.0`, `caddy-l4@v0.1.3`. Verified against the published artifact rather than the tag — `caddy version` and `caddy build-info` run out of the pulled image report `v2.11.9` and `chi/v5 v5.5.0`.
+  - **None of the five carried a CVE id, so none appeared in OSV or in any CVE-keyed scanner.** They were visible only through GitHub's *per-repository* advisory endpoint; the global advisory index did not list them either. A pins-only sweep is therefore not sufficient on its own — the base image's own module set needs the same per-repository check, which is why the pinned-module watcher now cross-checks that endpoint.
+  - **The jump went to 2.11.9 rather than 2.11.8, which is where the five were fixed.** Going to the newer patch cleared the whole set rather than resting on a single `patched_versions` value; 0 advisories affect 2.11.9 against 5 affecting 2.11.7. The advisories were also read with both range fields together, since `first_patched_version` was `null` on rows that were in fact fixed — the usable signal lived in `patched_versions`, and an unfixable row returns an **empty string** there rather than `null`, so a null-check alone reports a false clean.
+  - **`go-jose/v3 v3.0.5` is still linked and still has no fix at any version.** It arrives through `smallstep/certificates`, which is a Caddy dependency, so no pin in this repository can move it; the exit exists only on that project's `master`. Tracked separately — a Caddy base bump does not and cannot clear it.
+  - **Publishing the image does not patch a running proxy.** A container can report `applegater/caddyui-caddy:stable` in its configuration while executing an older image, and because the tag *string* never changes, `docker compose pull` followed by `up -d` can exit 0 having replaced nothing. Recreating with `--force-recreate` and then reading the version back out of the running container (`docker exec <ctr> caddy version`) is the only check that distinguishes a patched proxy from a successful pull.
+
+---
+
 ## [2.68.11] - 2026-11-12 - Caddy image: go-jose v4.1.7 clears a JWK DoS, the go-chi v5.5.0 floor clears an auth bypass, and the CrowdSec bouncer returns to a tag
 
 ### Security
