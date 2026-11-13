@@ -148,11 +148,40 @@ out="$(run_plan "$d5" feature/x)"
 [ "$(field "$out" ref)" = feature/x ]            && ok "feature/x -> ref left unqualified (build-only)" \
                                                  || bad "feature/x -> ref=$(field "$out" ref)"
 
+# 7b. $GITHUB_OUTPUT INJECTION. A workflow_dispatch input may contain newlines,
+#     and every output is written as a bare name=value line, so a crafted
+#     non-release input could append forged `kind=stable` / `push=true` lines.
+#     Two accidents defused it: a newline cannot satisfy the $-anchored regexes
+#     (bash has no multiline flag), and `ref=` is written before the legitimate
+#     keys so last-writer-wins overwrites the forgeries. The second is the
+#     undocumented duplicate-key precedence the gate step further down the
+#     workflow deliberately refuses to depend on, so the value is validated
+#     instead. Assert the run FAILS, rather than that the forged keys lost a race.
+inj_nl="$(printf 'feature/x\nkind=stable\npush=true')"
+out="$(run_plan "$d5" "$inj_nl")"
+[ "$(field "$out" rc)" != 0 ]                    && ok "newline-injecting ref FAILS the plan job" \
+                                                 || bad "newline-injecting ref should fail, got rc=0"
+[ "$(field "$out" kind)" != stable ]             && ok "newline-injecting ref never yields kind=stable" \
+                                                 || bad "newline-injecting ref forged kind=stable"
+for inj in 'feature/x;id' 'feature/$(id)' '--upload-pack=evil' 'a..b' '-leading'; do
+  out="$(run_plan "$d5" "$inj")"
+  [ "$(field "$out" rc)" != 0 ] && ok "rejected build-only ref '$inj'" \
+                                || bad "build-only ref '$inj' accepted (rc=0, ref=$(field "$out" ref))"
+done
+# a legitimate branch name with a slash and a dot must STILL be accepted: the
+# build-only branch dispatch is a documented path and must not regress.
+d7="$(make_repo)"
+git -C "$d7" branch release/2.x
+out="$(run_plan "$d7" release/2.x)"
+{ [ "$(field "$out" rc)" = 0 ] && [ "$(field "$out" ref)" = release/2.x ]; } \
+  && ok "ordinary branch 'release/2.x' still accepted for a build-only run" \
+  || bad "release/2.x rejected: rc=$(field "$out" rc) ref=$(field "$out" ref)"
+
 # 8. a tag-push run (no dispatch input) still works off GITHUB_REF_NAME
 d6="$(make_repo)"
 rc=0; outf="$tmp/gh-push"; : > "$outf"
 ( cd "$d6" && GITHUB_OUTPUT="$outf" GITHUB_STEP_SUMMARY=/dev/null \
-  GITHUB_REF_NAME=v1.0.1 GITHUB_REF=refs/tags/v1.0.1 INPUT_VERSION= \
+  GITHUB_REF_NAME=v1.0.1 GITHUB_REF=refs/tags/v1.0.1 INPUT_VERSION='' \
   WANT_PUSH=true WANT_CADDY=false DH_USER=u DH_TOKEN=t \
   bash "$tmp/plan.sh" >/dev/null 2>&1 ) || rc=$?
 pout="$(cat "$outf")"

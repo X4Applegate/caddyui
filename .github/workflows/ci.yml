@@ -58,6 +58,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Every script in scripts/ passes `shellcheck -S warning`, and that was
+      # an unenforced convention until now: nothing checked it, so the one
+      # script that broke it (SC1007, caught in review) would have reached main
+      # green. Lint the directory, not just the extracted step, so the
+      # invariant is a gate rather than a habit.
+      - name: Shellcheck scripts/
+        run: shellcheck -S warning scripts/*.sh
+
       - name: Lint the release workflow's plan script
         run: |
           python3 - .github/workflows/release-docker.yml /tmp/plan-step.sh <<'PY'

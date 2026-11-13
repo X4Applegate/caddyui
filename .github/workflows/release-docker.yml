@@ -265,10 +265,43 @@ jobs:
           # kind=none keeps the old value: that is the build-only branch
           # dispatch the header documents, where a branch ref is the point and
           # nothing publishes ($push stays false).
+          #
+          # THE kind=none VALUE IS VALIDATED BEFORE IT IS WRITTEN, because it is
+          # the one output on this path that is still raw dispatch input. A
+          # workflow_dispatch string may contain NEWLINES (the REST API and
+          # `gh workflow run -f x=$'a\nb'` both accept them), and every key here
+          # is written as a bare `name=value` line, so an input of
+          #
+          #     feature/x\nkind=stable\npush=true
+          #
+          # appends forged `kind` and `push` lines to $GITHUB_OUTPUT. Two
+          # accidents currently defuse it: a newline can never satisfy the
+          # `$`-anchored regexes above (bash has no multiline flag), so such an
+          # input always lands on kind=none/push=false; and `ref=` is written
+          # FIRST, so the legitimate keys below overwrite the forgeries under
+          # last-writer-wins.
+          #
+          # Neither is a guarantee worth standing on. The second is exactly the
+          # dependency the gate step further down this file refuses to accept -
+          # it uses an EXIT trap specifically so a key is never "written twice
+          # (which would depend on GitHub's undocumented duplicate-key
+          # precedence)". The same standard applies here: reject the value
+          # rather than rely on statement order, so adding an output above this
+          # line, or reordering the block, cannot turn a latent primitive into a
+          # live one.
+          #
+          # Git's own ref-name rules are stricter than this, and `checkout` will
+          # reject anything malformed anyway; this only has to exclude the
+          # characters that let a value forge a line or an argument.
           if [ "$kind" != none ]; then
             ref_out="refs/tags/$version"
           else
             ref_out="${INPUT_VERSION:-$GITHUB_REF}"
+            case "$ref_out" in
+              -*|*..*|*[!A-Za-z0-9._/-]*)
+                echo "::error::ref '${ref_out}' is not a valid git ref name for a build-only run (allowed: letters, digits, dot, underscore, slash, hyphen; no leading hyphen, no '..')"
+                exit 1 ;;
+            esac
           fi
           {
             echo "ref=$ref_out"
