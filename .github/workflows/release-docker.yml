@@ -1085,3 +1085,53 @@ jobs:
               || { echo "::error::${IMAGE}:${tag} is $got, expected $DIGEST"; exit 1; }
             echo "ok  ${IMAGE}:${tag}  $got"
           done
+
+  # Publish the Docker Hub repository overviews.
+  #
+  # WHY THIS JOB EXISTS (T-0708): the overview used to be a MANUAL tail on an automated
+  # pipeline. `dockerhub-description.yml` is `workflow_dispatch:` only and was never invoked
+  # from here, so every release left the registry page showing the previous version until a
+  # human remembered to dispatch it. Nothing reported the omission — the release was green,
+  # the tags moved, and the page silently disagreed with the image it described. v2.68.12
+  # shipped that way and the page was only corrected by a manual run afterwards.
+  #
+  # Mirrors the image jobs' gating: the caddy overview publishes only when the caddy image
+  # was rebuilt, so a CaddyUI-only release does not claim a new Caddy base.
+  overview:
+    name: Publish Docker Hub overviews
+    runs-on: ubuntu-latest
+    needs: [plan, caddyui, caddy]
+    # `caddy` is conditional, so tolerate it being skipped; fail if an upstream job failed.
+    if: always() && needs.caddyui.result == 'success' && needs.caddy.result != 'failure'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Publish caddyui overview
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_REPO: applegater/caddyui
+        run: scripts/dockerhub-description.sh publish
+
+      - name: Publish caddyui-caddy overview
+        if: needs.caddy.result == 'success'
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_REPO: applegater/caddyui-caddy
+        run: scripts/dockerhub-description.sh publish
+
+      # Report the outcome rather than trusting the publish step. A silent skip is the defect
+      # this job fixes, so say explicitly which pages were published and which were not.
+      - name: Confirm no drift remains
+        env:
+          CADDY_BUILT: ${{ needs.caddy.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOCKERHUB_REPO=applegater/caddyui scripts/dockerhub-description.sh diff
+          if [ "$CADDY_BUILT" = success ]; then
+            DOCKERHUB_REPO=applegater/caddyui-caddy scripts/dockerhub-description.sh diff
+          else
+            echo "caddy image not rebuilt this release; caddyui-caddy overview left unchanged"
+          fi
