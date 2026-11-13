@@ -43,10 +43,18 @@
 #
 # Setup, once, by a repo admin (Settings -> Secrets and variables -> Actions):
 #   DOCKERHUB_USERNAME  Docker Hub account that owns applegater/*  (applegater)
+#                       -> the VARIABLES tab, not Secrets. It is a public
+#                       namespace: it is in every image name users pull, in the
+#                       README and in this file's own comments. Classifying it
+#                       as a secret made GitHub's masking rule apply to it, and
+#                       that rule DROPS any job output containing a secret
+#                       value - which is the only reason the output traps
+#                       documented below exist at all (T-0777).
 #   DOCKERHUB_TOKEN     Docker Hub access token, scope "Read & Write"
+#                       -> the SECRETS tab. This one genuinely is a secret.
 #                       (Docker Hub -> Account settings -> Personal access tokens)
-# Until both secrets exist the workflow still builds both architectures, so a
-# broken multi-arch build is caught, but it pushes nothing.
+# Until both exist the workflow still builds both architectures, so a broken
+# multi-arch build is caught, but it pushes nothing.
 #
 # Manual run (Actions -> Release Docker images -> Run workflow):
 #   version  an existing tag such as v2.56.3 (blank = the branch you ran it on,
@@ -137,7 +145,7 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           WANT_PUSH: ${{ github.event_name == 'push' || inputs.push }}
           WANT_CADDY: ${{ inputs.caddy }}
-          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_USER: ${{ vars.DOCKERHUB_USERNAME }}
           DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         shell: bash
         run: |
@@ -211,7 +219,7 @@ jobs:
             if [ -n "$DH_USER" ] && [ -n "$DH_TOKEN" ]; then
               push=true
             else
-              echo "::notice::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set - building both architectures but not pushing."
+              echo "::notice::DOCKERHUB_USERNAME (variable) / DOCKERHUB_TOKEN (secret) are not set - building both architectures but not pushing."
             fi
           fi
 
@@ -250,10 +258,16 @@ jobs:
 
           # Only the version and release kind cross to the build jobs — never the
           # image names. GitHub silently DROPS any job output that contains the
-          # value of a secret, and "applegater" is the DOCKERHUB_USERNAME secret,
-          # so a tag list like applegater/caddyui:v1.2.3 would arrive empty
-          # ("tag is needed when pushing to registry"). Each build job builds its
-          # own tags from these two values instead.
+          # value of a secret. "applegater" USED TO BE the DOCKERHUB_USERNAME
+          # SECRET, so a tag list like applegater/caddyui:v1.2.3 arrived empty
+          # ("tag is needed when pushing to registry"). It is now a repository
+          # VARIABLE (T-0777) and variables are never masked, so that specific
+          # trap is disarmed.
+          #
+          # The split is KEPT anyway, and is not merely historical: the rule
+          # still applies to DOCKERHUB_TOKEN and to any secret added later, and
+          # a build job that derives its own tags cannot be handed a blank one.
+          # Each build job builds its own tags from these two values instead.
           #
           # `ref` is FULLY QUALIFIED for a release (T-0755). Every kind other
           # than `none` has just been asserted to be a tag, so name it as one:
@@ -307,14 +321,21 @@ jobs:
           # NO OUTPUT MAY CONTAIN THE DOCKER HUB USERNAME (T-0760).
           #
           # GitHub silently DROPS any job output whose value contains the value
-          # of a secret. The comment above already relies on that rule - it is
-          # why image names never cross between jobs - but it was only ever
-          # applied to the image NAMES, never to these values.
+          # of a secret. That rule is why image names never cross between jobs
+          # (see the comment above), but it was only ever applied to the image
+          # NAMES, never to these values.
           #
           # `pre_re` allows LETTERS in the prerelease suffix, so a tag such as
-          # v1.0.0-applegater contains the DOCKERHUB_USERNAME secret verbatim,
-          # and so does the refs/tags/<version> built from it. Both outputs
-          # would then arrive EMPTY at the build jobs.
+          # v1.0.0-applegater contains the Docker Hub username verbatim, and so
+          # does the refs/tags/<version> built from it. While that username was
+          # a SECRET, both outputs arrived EMPTY at the build jobs.
+          #
+          # It is a repository VARIABLE since T-0777, so this guard is now
+          # belt-and-braces rather than load-bearing. It is KEPT deliberately:
+          # it costs one string comparison, it documents the trap, and it still
+          # fires if the value is ever reclassified as a secret again. DH_USER
+          # below reads `vars.`, so an empty DH_USER now means "variable not
+          # set" and the `-n` test skips the check entirely.
           #
           # The two blanked values fail in OPPOSITE ways, which is why BOTH are
           # checked here rather than just `$version`:
@@ -392,7 +413,7 @@ jobs:
         if: needs.plan.outputs.push == 'true'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Work out image tags
@@ -403,12 +424,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Defence in depth against a DROPPED job output (T-0760). The plan
-          # job refuses a release name containing the DOCKERHUB_USERNAME
-          # secret, because GitHub silently blanks any output whose value
-          # contains a secret. This asserts the same property at the consumer,
-          # where it covers any future cause the plan job cannot anticipate -
-          # a new secret, or a new output added above.
+          # Defence in depth against a DROPPED job output (T-0760). GitHub
+          # silently blanks any output whose value contains a secret. The plan
+          # job refuses a release name containing the Docker Hub username for
+          # that reason; since T-0777 that username is a VARIABLE, so it is no
+          # longer the live cause. This consumer-side assertion is what still
+          # earns its keep: it covers any future cause the plan job cannot
+          # anticipate - a new secret, or a new output added above - and it
+          # does not care which of them blanked the value.
           #
           # Without it an empty VERSION builds the tag "applegater/caddyui:",
           # which docker rejects as "invalid reference format" - so it does
@@ -496,7 +519,7 @@ jobs:
         if: needs.plan.outputs.push == 'true'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # NO tag is pushed by the build. The build uploads the manifest under its
@@ -721,9 +744,11 @@ jobs:
           # COMBINED summary instead, so send the script's copies elsewhere:
           # otherwise each arch prints twice, and the two calls' identical
           # output keys would append after (and conflict with) baseline_digest
-          # above. The gate's `summary` output also embeds the image name, and
-          # "applegater" IS the DOCKERHUB_USERNAME secret, so keeping those
-          # writes out of this step's real output file avoids that trap too.
+          # above. The gate's `summary` output also embeds the image name, which
+          # contained the DOCKERHUB_USERNAME SECRET until T-0777 made it a
+          # variable; keeping those writes out of this step's real output file
+          # avoided that trap too, and still isolates the key collision above,
+          # which is reason enough on its own.
           SUMMARY_OUT="$GITHUB_STEP_SUMMARY"
           export GITHUB_STEP_SUMMARY=/dev/null
           export GITHUB_OUTPUT="$RUNNER_TEMP/gate-output.discard"

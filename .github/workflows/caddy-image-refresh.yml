@@ -96,8 +96,16 @@
 #   Name:              caddy-image-publish
 #   Required reviewers: @X4Applegate  (tick "Required reviewers")
 #   Secrets (on the environment, not the repo):
-#     DOCKERHUB_USERNAME   applegater
 #     DOCKERHUB_TOKEN      Docker Hub PAT, scope "Read & Write"
+#
+# DOCKERHUB_USERNAME is NOT here. It is a repository VARIABLE
+# (Settings -> Secrets and variables -> Actions -> Variables), shared with
+# release-docker.yml, because a public namespace is not a secret and
+# classifying it as one is what made GitHub mask it - see the `IMAGE` note
+# below and T-0777. A repo variable resolves inside an environment job, so the
+# publish job below reads it with no per-environment copy; keeping one copy
+# also removes the chance of the two drifting apart.
+#
 # Until the environment exists, build-scan still runs and scans on schedule;
 # publish is never reachable without a manual dispatch, and would fail at the
 # login step rather than push anything.
@@ -135,10 +143,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Not a secret — it is the published image name, and it must not be built
-  # from DOCKERHUB_USERNAME: GitHub drops any job output containing a secret
-  # value, and "applegater" IS that secret, so a tag list built from it
-  # arrives empty in the next job. release-docker.yml documents this trap.
+  # The published image name, spelled out literally rather than built from
+  # DOCKERHUB_USERNAME. The original reason was that GitHub drops any job
+  # output containing a secret value and "applegater" WAS that secret, so a
+  # tag list built from it arrived empty in the next job; T-0777 made the
+  # username a variable, so that no longer applies. Kept literal anyway: it
+  # is a constant that belongs in one obvious place, and it keeps this value
+  # independent of whether a variable happens to be set on a given run.
+  # release-docker.yml documents the original trap.
   IMAGE: applegater/caddyui-caddy
   TRIVY_SEVERITY: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
 
@@ -591,7 +603,7 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Push the -pN tag ONLY. :stable and :latest are moved in the next step

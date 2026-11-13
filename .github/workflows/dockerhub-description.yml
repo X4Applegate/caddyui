@@ -1,6 +1,8 @@
 # Publish docs/dockerhub.md as the Docker Hub repository overview.
 # Manual only (Actions -> Publish Docker Hub overview -> Run workflow). Uses the
-# same DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets as release-docker.yml.
+# same Docker Hub credentials as release-docker.yml: DOCKERHUB_USERNAME is a
+# repository VARIABLE (a public namespace, not a secret - T-0777) and
+# DOCKERHUB_TOKEN is a repository secret.
 name: Publish Docker Hub overview
 
 on:
@@ -24,7 +26,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Publish overview
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           DOCKERHUB_REPO: ${{ inputs.repo }}
         run: scripts/dockerhub-description.sh publish
