@@ -117,6 +117,29 @@ mkscan() {
                                  then "example.com/mod-" + (. | tostring)
                                  else $prefix + "/mod-" + (. | tostring) end) } ],
           Vulnerabilities: []
+        },
+        {
+          # The Dockerfile misconfiguration result. Present in EVERY real scan
+          # since T-0642 turned the misconfig scanner on, because it is not
+          # finding-dependent: Trivy emits it whenever the image config is a
+          # scan target, and measured on the real :stable it survives even
+          # `--severity CRITICAL`. Check 3b requires it OUTRIGHT, so a fixture
+          # without it is not a realistic scan -- it is a scan the misconfig
+          # scanner never ran on, and the gate is supposed to refuse that.
+          #
+          # No `secret` result here on purpose: that class appears only when a
+          # secret is actually found, so a clean image has none, and 3b
+          # excludes it for exactly that reason.
+          Target: "Dockerfile",
+          Class: "config",
+          Type: "dockerfile",
+          Packages: null,
+          Misconfigurations: [
+            { ID: "DS-0002", AVDID: null,
+              Namespace: "builtin.dockerfile.DS0002", Status: "FAIL" },
+            { ID: "DS-0026", AVDID: null,
+              Namespace: "builtin.dockerfile.DS0026", Status: "FAIL" }
+          ]
         }
       ]
     }' > "$out"
@@ -310,7 +333,7 @@ jq '(.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
 jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
       ([ .[] | select(.Name != "example.com/mod-5" and .Name != "example.com/mod-9") ][0:119]
        + [ range(0;118) | { Name: ("attacker.invalid/pad-" + (. | tostring)) } ])
-    | (.Results[] | .Vulnerabilities) |= []' "$BV" > "$WORK/t18.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BV" > "$WORK/t18.json"
 run_cov "$WORK/t18.json" "$BV"
 check "dropping only the findings-bearing packages blocks under block policy" block
 
@@ -342,7 +365,7 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
       ([ { Name: "caddy" } ]
        + [ range(0;118) | { Name: ("attacker.invalid/pad-" + (. | tostring)) } ]
        + [ range(0;118) | { Name: ("attacker.invalid/pad2-" + (. | tostring)) } ])
-    | (.Results[] | .Vulnerabilities) |= []' "$BV" > "$WORK/t21.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BV" > "$WORK/t21.json"
 run_cov "$WORK/t21.json" "$BV"
 check "carried-over fabricated names cannot satisfy the floor (ratchet step 2)" block
 
@@ -376,8 +399,8 @@ check "identical rebuild with versions passes" pass
 #     satisfied outright), every version replaced, findings zeroed. This is
 #     the gap T-0810 was filed for, reproduced against the real :stable scan
 #     before being closed. 5d catches it at 0/237 name@version retention.
-jq '(.Results[] | .Packages) |= [ .[] | .Version = "v0.0.0-attacker" ]
-    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t23.json"
+jq '(.Results[] | select(.Packages != null) | .Packages) |= [ .[] | .Version = "v0.0.0-attacker" ]
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BVV" > "$WORK/t23.json"
 run_cov "$WORK/t23.json" "$BVV"
 check "every name retained but every version replaced blocks" block
 
@@ -389,7 +412,7 @@ check "every name retained but every version replaced blocks" block
 jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
       [ .[] | if (.Name == "example.com/mod-5" or .Name == "example.com/mod-9")
               then .Version = "v9.9.9-swapped" else . end ]
-    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t24.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BVV" > "$WORK/t24.json"
 run_cov "$WORK/t24.json" "$BVV"
 check "swapping only the findings-bearing versions blocks (5c, ratio cannot see it)" block
 
@@ -472,7 +495,7 @@ jq '(.Results[] | select(.Type == "alpine") | .Vulnerabilities) |=
           InstalledVersion: "1.0-r0" } ]' "$BVV" > "$WORK/t29-base.json"
 jq '(.Results[] | select(.Type == "alpine") | .Packages) |=
       [ .[] | if .Name == "alpkg-3" then .Version = "1.1-r0" else . end ]
-    | (.Results[] | .Vulnerabilities) |= []' "$WORK/t29-base.json" > "$WORK/t29.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$WORK/t29-base.json" > "$WORK/t29.json"
 run_cov "$WORK/t29.json" "$WORK/t29-base.json"
 check "OS package upgraded to fix its finding passes under block (apk is unpinned by design)" pass
 
@@ -480,7 +503,7 @@ check "OS package upgraded to fix its finding passes under block (apk is unpinne
 #     ratio. Scoping 5c away from alpine must not leave the OS layer with no
 #     version check at all.
 jq '(.Results[] | select(.Type == "alpine") | .Packages) |= [ .[] | .Version = "99.9-r0" ]
-    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t30.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BVV" > "$WORK/t30.json"
 run_cov "$WORK/t30.json" "$BVV"
 check "wholesale OS version replacement still blocks via the ratio floor" block
 
@@ -494,8 +517,8 @@ check "baseline without versions skips the version checks, does not die" pass
 # 32. A rebuild that drops versions while the BASELINE had them is caught:
 #     the name@version intersection collapses to zero. Otherwise stripping
 #     version metadata would be a way to opt out of the check entirely.
-jq '(.Results[] | .Packages) |= [ .[] | del(.Version) ]
-    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t32.json"
+jq '(.Results[] | select(.Packages != null) | .Packages) |= [ .[] | del(.Version) ]
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BVV" > "$WORK/t32.json"
 run_cov "$WORK/t32.json" "$BVV"
 check "rebuild that strips versions a versioned baseline had blocks" block
 
@@ -580,7 +603,7 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages) += [ { Name: "example
       [ { VulnerabilityID: "CVE-T", PkgName: "example.com/mod~x", InstalledVersion: "v1.0.0" } ]' \
    "$BVV" > "$WORK/t37-base.json"
 jq '(.Results[] | select(.Type == "gobinary") | .Packages) += [ { Name: "example.com/mod~x", Version: "v9.9.9-swapped" } ]
-    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t37.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BVV" > "$WORK/t37.json"
 run_cov "$WORK/t37.json" "$WORK/t37-base.json"
 check "5c fires for a package name needing sanitization (no raw-vs-sanitized gap)" block
 
@@ -597,7 +620,7 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages) |= [ .[] | del(.Name)
       [ { VulnerabilityID: "CVE-N", PkgName: "example.com/mod-5", InstalledVersion: "v1.0.0" } ]' \
    "$B" > "$WORK/t38-base.json"
 jq '(.Results[] | select(.Type == "gobinary") | .Packages) |= [ .[] | del(.Name) | .Version = "v0-swapped" ]
-    | (.Results[] | .Vulnerabilities) |= []' "$B" > "$WORK/t38.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$B" > "$WORK/t38.json"
 run_cov "$WORK/t38.json" "$WORK/t38-base.json"
 check "nameless baseline does not disable the version checks" block
 
@@ -695,7 +718,7 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
 jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
       [ .[] | if .Name == "example.com/mod-5" then del(.Version)
               else (if (.Version // "") != "" then .Version = (.Version + "@1") else . end) end ]
-    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t44.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BVV" > "$WORK/t44.json"
 run_cov "$WORK/t44.json" "$WORK/t44-base.json"
 check "an '@' in the baseline version cannot hide a dropped version (5d ratchet)" block
 
@@ -707,7 +730,7 @@ jq '(.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
           InstalledVersion: "v1.0.0" } ]' "$BVV" > "$WORK/t45-base.json"
 jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
       [ .[] | if .Name == "example.com/mod-5" then del(.Version) else . end ]
-    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t45.json"
+    | (.Results[] | select(.Packages != null) | .Vulnerabilities) |= []' "$BVV" > "$WORK/t45.json"
 run_cov "$WORK/t45.json" "$WORK/t45-base.json"
 check "the same drop with a plain version blocks (control for 44)" block
 
@@ -1067,6 +1090,229 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages)
 mkscan "$WORK/t76.json" 32 40 real usr/bin/caddy
 run_cov "$WORK/t76.json" "$WORK/t76-base.json"
 check "nameless baseline + collapsed count blocks (check 4 alone)" block
+
+# ---------------------------------------------------------------------------
+# T-0642: the SECRET and MISCONFIG scanners. The gate now runs
+# `--scanners vuln,secret,misconfig` with `--image-config-scanners
+# misconfig,secret`, so `.Results[]` carries classes that have no package list
+# BY DESIGN:
+#
+#   Class=os-pkgs    Type=alpine      Packages: array   <- measurable
+#   Class=lang-pkgs  Type=gobinary    Packages: array   <- measurable
+#   Class=config     Type=dockerfile  Packages: null    <- NOT measurable
+#   Class=secret     Type: ABSENT     Packages: null    <- NOT measurable
+#
+# Two opposite failure modes, so both directions are tested here. Scoping the
+# coverage floor too WIDE kills every run (a config result reaches
+# pkg_count_for_type and comes back unmeasurable); scoping the coverage
+# ASSERTION too narrow leaves the two new scanners with no coverage check at
+# all, so turning them off makes their findings cancel out of gate 1 as fixed.
+#
+# T-0642 was hand-verified against real images because these suites did not
+# exist when it was written. These are the cases that were missing.
+
+# The Dockerfile misconfiguration result lives in mkscan, not here: a real
+# scan always carries one, check 3b requires it outright, and a fixture
+# without it is not a realistic scan but a scan the misconfig scanner never
+# ran on. Case 79 builds that fixture deliberately, by deleting it.
+#
+# A secret result, which carries NO .Type key at all and puts the in-image
+# path in .Target. Kept local to these cases because a clean image has none.
+secres='{ "Target": "root/.netrc", "Class": "secret", "Packages": null,
+          "Secrets": [ { "RuleID": "github-pat", "Severity": "CRITICAL",
+                         "Title": "GitHub Personal Access Token" } ] }'
+
+# 77. THE REGRESSION GUARD FOR THE SCOPING ITSELF. mkscan emits a config
+#     result on every fixture (a real scan always has one), so EVERY case
+#     above is already exercising the scoping. This case adds the secret
+#     result alongside it: two classes carrying no package list, on both
+#     sides, must not be measured as package-bearing targets. Before T-0642
+#     scoped the floor to os-pkgs/lang-pkgs they reached pkg_count_for_type,
+#     came back `unmeasurable` and died -- i.e. the gate would have blocked
+#     EVERY release the moment the scanners were turned on. A check that
+#     blocks everything is as useless as one that blocks nothing.
+jq --argjson s "$secres" '.Results += [ $s ]' "$B" > "$WORK/t77.json"
+run_cov "$WORK/t77.json" "$WORK/t77.json"
+check "config + secret results on both sides are not package targets" pass
+
+# 78. A secret result has no .Type AT ALL. It was already being dropped
+#     incidentally by the `select(. != null)` on .Type; the class filter makes
+#     that deliberate. Tested so a future edit that keys on .Type again does
+#     not resurrect the incidental behaviour by accident.
+jq --argjson s "$secres" '.Results += [ $s ]' "$B" > "$WORK/t78.json"
+run_cov "$WORK/t78.json" "$B"
+check "a secret result present on one side only passes (not a lost class)" pass
+
+# 79. CHECK 3b, THE ABSOLUTE HALF. A scan with no `config` result is a scan
+#     the misconfig scanner did not run on, and that is a hard stop on
+#     EITHER side.
+#
+#     THIS IS THE CASE AN INDEPENDENT REVIEW ADDED, and it is the one that
+#     matters. The first spelling of 3b was baseline-RELATIVE in both halves,
+#     and a relative check cannot see this at all: both scans in the gate's
+#     arch loop are issued from ONE hardcoded flag set, so every cause 3b's
+#     own message named -- `--scanners` edited, `--image-config-scanners`
+#     dropped, a trivy.yaml in the working directory, a Trivy default change
+#     -- removes the class from BOTH sides at once, `comm` finds nothing, and
+#     the run reports `scan coverage OK`. Measured by the reviewer against
+#     the real :stable with the flag dropped on both sides: classes
+#     `lang-pkgs os-pkgs`, rc=0. Symmetric loss is the only kind one flag set
+#     can produce, so the assertion has to be absolute.
+jq 'del(.Results[] | select(.Class == "config"))' "$B" > "$WORK/t79-nocfg.json"
+run_cov "$WORK/t79-nocfg.json" "$WORK/t79-nocfg.json"
+check "both scans missing the config class blocks (symmetric loss)" block
+
+# 80. ...and the message must name the MISCONFIG SCANNER, not a lost class.
+#     A reader told "the rebuild lost a class" goes looking at the image; the
+#     cause is the flags the gate itself ran with.
+if printf '%s' "$COV_OUT" | grep -q 'misconfig) scanner did not run'; then
+  printf 'ok   ...and names the scanner, not the image\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ...and names the scanner, not the image\n     %s\n' "$COV_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# 81. The rebuild alone missing it blocks too, under the same absolute rule.
+run_cov "$WORK/t79-nocfg.json" "$B"
+check "the rebuild missing the config class blocks" block
+
+# 82. LOSING THE SECRET CLASS PASSES, AND MUST. `secret` appears only when a
+#     secret is actually FOUND, so a baseline carrying one and a rebuild
+#     reporting none is the shape of a FIX -- someone removed a baked-in
+#     credential. The first spelling of 3b asserted this class relatively and
+#     therefore hard-stopped on exactly that improvement, reporting it as "a
+#     scanner was disabled". Found in review and reproduced; this case is the
+#     guard against it coming back.
+#
+#     The cost is recorded rather than hidden: there is no positive signal in
+#     the JSON for "the secret scanner ran and found nothing", so this check
+#     cannot establish that it ran. What stands in for it is that both scans
+#     are issued from the same two variables a few lines apart, plus review of
+#     any diff that changes them.
+jq --argjson s "$secres" '.Results += [ $s ]' "$B" > "$WORK/t82-base.json"
+run_cov "$B" "$WORK/t82-base.json"
+check "a rebuild that fixed the last secret passes (not a lost class)" pass
+
+# 83. An ASYMMETRIC difference in any OTHER class still blocks -- the narrowed
+#     relative half. With one flag set this should be unreachable, which is
+#     the point: it fires when the two scans were not run the same way, and
+#     its message no longer asserts a cause the gate has not established.
+jq '.Results += [ { "Target": "x", "Class": "license", "Packages": null } ]' \
+   "$B" > "$WORK/t83-base.json"
+run_cov "$B" "$WORK/t83-base.json"
+check "an asymmetric non-secret class difference blocks" block
+if printf '%s' "$COV_OUT" | grep -q 'do not cover the same finding class'; then
+  printf 'ok   ...and reports it as an asymmetry, not as a disabled scanner\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL ...and reports it as an asymmetry, not as a disabled scanner\n     %s\n' "$COV_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# 84. An EMPTY or absent .Class must not be counted as a class. Trivy omits
+#     the key on some result shapes, and `comm` over a list containing a blank
+#     line would make a baseline with one unmatchable against a rebuild
+#     without -- a block nobody could act on.
+jq '.Results += [ { "Target": "x", "Packages": null } ]' "$B" > "$WORK/t84.json"
+run_cov "$WORK/t84.json" "$B"
+check "a result with no .Class does not fabricate a lost class" pass
+
+# ---------------------------------------------------------------------------
+# T-0642: ids_from's THREE-CLASS KEYSPACE. Gate 1 is set arithmetic over the
+# lines ids_from emits, so every property below decides whether a real finding
+# cancels out as "fixed". ids_from is in this harness's sourced range already,
+# so these cost nothing extra to run and were the other half missing from
+# T-0642's hand verification.
+
+idline() { printf '%s\n' "$1" | jq '.' > "$WORK/ids-in.json"; ids_from "$WORK/ids-in.json"; }
+
+# 85. The three classes are PREFIXED, so they share one keyspace without
+#     colliding. A secret rule id and a CVE id are both opaque strings; an
+#     unprefixed keyspace lets one cancel the other.
+got="$(idline '{ "Results": [
+  { "Target": "usr/bin/caddy", "Class": "lang-pkgs", "Type": "gobinary",
+    "Vulnerabilities": [ { "VulnerabilityID": "GO-2026-1", "PkgName": "m" } ] },
+  { "Target": "root/.netrc", "Class": "secret",
+    "Secrets": [ { "RuleID": "github-pat" } ] },
+  { "Target": "Dockerfile", "Class": "config", "Type": "dockerfile",
+    "Misconfigurations": [ { "ID": "DS-0002", "AVDID": null,
+      "Namespace": "builtin.dockerfile.DS0002", "Status": "FAIL" } ] } ] }')"
+if printf '%s' "$got" | grep -q '^vuln:GO-2026-1' \
+   && printf '%s' "$got" | grep -q '^secret:github-pat' \
+   && printf '%s' "$got" | grep -q '^misconfig:DS-0002'; then
+  printf 'ok   ids_from emits all three classes, each prefixed\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ids_from emits all three classes, each prefixed\n     %s\n' "$got"
+  FAIL=$((FAIL + 1))
+fi
+
+# 86. A PASSING misconfiguration is NOT a finding. Trivy reports PASS rows in
+#     the same array, so counting them would make a rebuild that FIXES a
+#     misconfiguration look like it removed one and then -- on the next
+#     release, with the PASS row now on both sides -- like it added one.
+got="$(idline '{ "Results": [
+  { "Target": "Dockerfile", "Class": "config", "Type": "dockerfile",
+    "Misconfigurations": [
+      { "ID": "DS-0002", "Namespace": "ns", "Status": "FAIL" },
+      { "ID": "DS-0031", "Namespace": "ns", "Status": "PASS" } ] } ] }')"
+if printf '%s' "$got" | grep -q 'DS-0002' \
+   && ! printf '%s' "$got" | grep -q 'DS-0031'; then
+  printf 'ok   a PASSing misconfiguration is not counted as a finding\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL a PASSing misconfiguration is not counted as a finding\n     %s\n' "$got"
+  FAIL=$((FAIL + 1))
+fi
+
+# 87. TWO MISCONFIGURATIONS WITH EMPTY AVDIDs MUST STAY TWO. Every Dockerfile
+#     finding this image produces reports `AVDID: null` (DS-0002, DS-0026,
+#     DS-0031 all do), so keying on AVDID would collapse them to one blank id
+#     and three findings would read as one. Keyed on ID + Namespace instead,
+#     and this is the regression guard for that choice.
+got="$(idline '{ "Results": [
+  { "Target": "Dockerfile", "Class": "config", "Type": "dockerfile",
+    "Misconfigurations": [
+      { "ID": "DS-0002", "AVDID": null, "Namespace": "ns", "Status": "FAIL" },
+      { "ID": "DS-0026", "AVDID": null, "Namespace": "ns", "Status": "FAIL" } ] } ] }')"
+if [ "$(printf '%s' "$got" | grep -c '^misconfig:')" -eq 2 ]; then
+  printf 'ok   two AVDID-less misconfigurations stay two findings\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL two AVDID-less misconfigurations stay two findings\n     %s\n' "$got"
+  FAIL=$((FAIL + 1))
+fi
+
+# 88. A SECRET KEYS ON ITS IN-IMAGE PATH, NOT ON StartLine. The line number
+#     moves when anything above it changes, so keying on it would report the
+#     same baked-in credential as removed-and-re-added on an unrelated edit --
+#     noise that trains a reviewer to wave the class through. Two secrets of
+#     the same rule at different paths must still be two findings.
+got="$(idline '{ "Results": [
+  { "Target": "root/.netrc", "Class": "secret",
+    "Secrets": [ { "RuleID": "github-pat", "StartLine": 3 } ] },
+  { "Target": "etc/creds", "Class": "secret",
+    "Secrets": [ { "RuleID": "github-pat", "StartLine": 99 } ] } ] }')"
+if [ "$(printf '%s' "$got" | grep -c '^secret:github-pat')" -eq 2 ] \
+   && printf '%s' "$got" | grep -q 'root/.netrc' \
+   && printf '%s' "$got" | grep -q 'etc/creds'; then
+  printf 'ok   secrets key on path, and two paths stay two findings\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL secrets key on path, and two paths stay two findings\n     %s\n' "$got"
+  FAIL=$((FAIL + 1))
+fi
+
+# 89. ...and the SAME rule at the SAME path is ONE finding, so a StartLine
+#     change alone cannot manufacture an added finding. This is the other
+#     direction of case 83 and the reason StartLine is excluded.
+got="$(idline '{ "Results": [
+  { "Target": "root/.netrc", "Class": "secret",
+    "Secrets": [ { "RuleID": "github-pat", "StartLine": 3 },
+                 { "RuleID": "github-pat", "StartLine": 41 } ] } ] }')"
+if [ "$(printf '%s' "$got" | grep -c '^secret:')" -eq 1 ]; then
+  printf 'ok   one rule at one path is one finding regardless of StartLine\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL one rule at one path is one finding regardless of StartLine\n     %s\n' "$got"
+  FAIL=$((FAIL + 1))
+fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

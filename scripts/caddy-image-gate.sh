@@ -174,7 +174,7 @@
 #     so the subset check passes and the verdict comes out `improved` precisely
 #     because nothing could be seen. See assert_scan_coverage below.
 #
-#  1. Vulnerability subset. The rebuild's findings must be a SUBSET of the
+#  1. Finding subset. The rebuild's findings must be a SUBSET of the
 #     published image's, per arch. Deliberately not "zero findings": every
 #     image to date carries GO-2026-5932 (x/crypto/openpgp unmaintained, no
 #     fix, not reached by the binary), so a zero-findings rule could never
@@ -186,6 +186,26 @@
 #     Compared as ID+package, not ID alone: the same CVE ID appearing against
 #     a DIFFERENT package is a new exposure, and comparing bare IDs would let
 #     it cancel out.
+#
+#     THREE scanners feed this gate, not one: `vuln`, `secret` and
+#     `misconfig`. A credential baked into a layer and a Dockerfile-level
+#     misconfiguration are both things a rebuild must not introduce, and both
+#     come free from a scan that was already running. They are keyed into the
+#     same set arithmetic under `vuln:`/`secret:`/`misconfig:` prefixes so
+#     the three classes cannot collide -- see ids_from.
+#
+#     The misconfig scanner needs `--image-config-scanners` as well as
+#     `--scanners` to see an image's build configuration at all; the
+#     measurement behind that is at the trivy call site.
+#
+#     Baseline-relative here too, and for the same reason as everywhere else
+#     in this script: the published image already FAILS two Dockerfile checks
+#     (DS-0002 "Image user should not be 'root'" and DS-0026 "No HEALTHCHECK
+#     defined"). Both sit on both sides, so both cancel out, and the gate's
+#     question stays "is the rebuild worse than what the fleet runs" rather
+#     than "is the image perfect" -- a standard that would block every
+#     release from the first run. Fixing those two is separate work, not this
+#     gate's job to force.
 #
 #  2. Module set, from `caddy list-modules --versions`. Every --with argument
 #     in Dockerfile.caddy now carries a version, so a rebuild should reproduce
@@ -486,6 +506,59 @@ readonly SUMMARY_DELIM
 
 SEVERITY="${TRIVY_SEVERITY:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
 
+# The misconfig scanner needs a REGO CHECKS BUNDLE, which is a second cache,
+# fetched from a different place, on a different flag from the vulnerability
+# DB -- and the callers pre-download only the DB.
+#
+# Measured on Trivy 0.76.1:
+#   - `trivy image --download-db-only` (what all three call sites run once,
+#     before any scan) does NOT create the checks cache.
+#   - `--skip-db-update` does NOT cover checks either; the separate flag is
+#     `--skip-check-update`.
+#   - Without a cache, a misconfig scan silently fetches the bundle from
+#     `mirror.gcr.io/aquasec/trivy-checks:2` at scan time.
+#
+# Two reasons that fetch must not happen inside the gate's scan loop:
+#
+#  - It is an UNPINNED NETWORK DEPENDENCY in the middle of the comparison.
+#    The whole reason this script never updates the vulnerability DB is that
+#    a subset comparison across two data versions is meaningless; a check
+#    bundle that moves between the baseline scan and the rebuild scan is the
+#    same bug with a different data source, and it would land as phantom
+#    added or removed `misconfig:` rows.
+#  - A registry hiccup would turn into either a failed step or, worse, a scan
+#    that quietly reports no misconfigurations -- the exact fail-open shape
+#    the coverage precondition exists to catch.
+#
+# So fetch it ONCE here, before the loop, and pin both scans to that copy
+# with `--skip-check-update`. `trivy image --download-db-only` already
+# established network access by this point in every call site, so this adds
+# a fetch, not a new requirement.
+#
+# CHECKS_BUNDLE_REPOSITORY lets a caller point at an internal mirror; the
+# default is Trivy's own. Set TRIVY_SKIP_CHECK_PREFETCH=1 to skip the
+# prefetch when the cache is known to be warm (the local docker image ships
+# one, so a local dry-run does not need it).
+CHECKS_PREFETCH_ARGS=()
+if [ "${TRIVY_SKIP_CHECK_PREFETCH:-0}" != 1 ]; then
+  checks_repo_args=()
+  [ -n "${CHECKS_BUNDLE_REPOSITORY:-}" ] \
+    && checks_repo_args=(--checks-bundle-repository "$CHECKS_BUNDLE_REPOSITORY")
+  # `trivy config` on an empty dir is the cheapest way to populate the checks
+  # cache: it downloads the bundle and scans nothing. Failure is NOT fatal --
+  # a warm cache makes it unnecessary, and the coverage precondition will
+  # catch a genuinely absent misconfig result regardless. But say so, because
+  # a silent skip here is how an unpinned mid-loop fetch sneaks back in.
+  _checks_tmp="$(mktemp -d)"
+  if trivy config --quiet "${checks_repo_args[@]}" "$_checks_tmp" >/dev/null 2>&1; then
+    CHECKS_PREFETCH_ARGS=(--skip-check-update)
+    echo "misconfig checks bundle pre-fetched; both scans pinned to it (--skip-check-update)"
+  else
+    echo "::warning::could not pre-fetch the Trivy checks bundle; the misconfig scanner will fetch it during the first scan. Both scans still run with identical flags, and a missing misconfig result is caught by the coverage precondition, but the fetch is unpinned."
+  fi
+  rm -rf "$_checks_tmp"
+fi
+
 # Unset or empty means block: a caller that forgets this variable gets the
 # strict refresh behaviour. Only the two spellings are accepted — a typo such
 # as MODULE_DRIFT_POLICY=Report must not silently fall through to the weaker
@@ -670,12 +743,56 @@ printf '' | grep -Eq "$FS_ALLOW_RE" 2>/dev/null || fs_allow_rc=$?
 # rather than dropped, keeping the row readable and visibly tampered. Field
 # order is preserved by sanitizing inside jq, so the tab-separated structure
 # the readers rely on cannot be broken by embedding a tab either.
+#
+# THREE FINDING CLASSES, ONE KEYSPACE. Since the gate also runs the `secret`
+# and `misconfig` scanners, three differently-shaped finding lists have to
+# land in one sorted id file that `comm` can difference. They live under
+# different keys with different id fields, measured on Trivy 0.76.1:
+#
+#   .Results[].Vulnerabilities[]   .VulnerabilityID + .PkgName
+#   .Results[].Secrets[]           .RuleID          + .Target (the FILE)
+#   .Results[].Misconfigurations[] .ID              + .Namespace
+#
+# Each class is prefixed (`vuln:`, `secret:`, `misconfig:`) so the three
+# cannot collide in the shared keyspace. Without a prefix a Trivy secret rule
+# and a CVE id are both bare tokens in the same column, and a crafted rule
+# name could cancel a real vulnerability out of the subset arithmetic. The
+# prefix also makes every row in `added-*.ids` self-describing, which is what
+# the summary prints.
+#
+# WHY EACH SECOND FIELD:
+#
+#  - Secrets. A secret result's `.Target` is the path INSIDE the image
+#    (`/app/.env`), not the image reference, so unlike a vulnerability result
+#    it does not differ between the two sides by construction and is safe to
+#    key on. It is also the only thing distinguishing two hits of the same
+#    rule, and `the same rule firing in a NEW file` is a new exposure that
+#    must not cancel out. StartLine is deliberately excluded: a line number
+#    moves when anything above it changes, which would report an unchanged
+#    credential as removed+added and block a clean refresh.
+#
+#  - Misconfigurations. `.AVDID` is EMPTY on every Dockerfile finding this
+#    image produces -- measured: DS-0002, DS-0026 and DS-0031 all report
+#    `AVDID: null` -- so keying on it would collapse every misconfiguration
+#    to one indistinguishable blank id. `.ID` (`DS-0002`) is the populated
+#    field, and `.Namespace` (`builtin.dockerfile.DS002`) distinguishes the
+#    same rule id arriving from a different check bundle.
+#
+# Only FAILING misconfigurations are emitted. Trivy reports PASS results in
+# the same array, and counting a passed check as a finding would make a
+# rebuild that FIXES a misconfiguration look like it added one (the PASS row
+# appears where no row was before).
 ids_from() {
-  jq -r '[.Results[]?.Vulnerabilities[]?
-          | ((.VulnerabilityID // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120]) as $id
-          | ((.PkgName // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) as $pkg
-          | "\($id)\t\($pkg)"]
-         | unique | .[]' "$1"
+  jq -r '
+    def clean($n): (. // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:$n];
+    [ ( .Results[]?.Vulnerabilities[]?
+        | "vuln:\(.VulnerabilityID | clean(120))\t\(.PkgName | clean(160))" ),
+      ( .Results[]? | .Target as $t | .Secrets[]?
+        | "secret:\(.RuleID | clean(120))\t\($t | clean(160))" ),
+      ( .Results[]?.Misconfigurations[]?
+        | select((.Status // "") != "PASS")
+        | "misconfig:\(.ID | clean(120))\t\(.Namespace | clean(160))" )
+    ] | unique | .[]' "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -717,8 +834,50 @@ ids_from() {
 # its own as the image changes. A hardcoded list of expected types would have
 # to be edited by the same release that is being gated -- which is precisely
 # the actor this check exists to constrain.
+#
+# PACKAGE-BEARING RESULTS ONLY. With the secret and misconfig scanners on,
+# `.Results[]` contains classes that carry no package list by design, and the
+# coverage checks below are all about package visibility. Measured on Trivy
+# 0.76.1 against the real image:
+#
+#   Class=os-pkgs    Type=alpine      Packages: array (32)   <- measurable
+#   Class=lang-pkgs  Type=gobinary    Packages: array (237)  <- measurable
+#   Class=config     Type=dockerfile  Packages: null         <- NOT measurable
+#   Class=secret     Type: ABSENT     Packages: null         <- NOT measurable
+#
+# So coverage is asserted over `os-pkgs` and `lang-pkgs` only. Selecting on
+# CLASS rather than on "does Packages happen to be an array" is the load-
+# bearing choice: the whole point of check 4 is to catch a package-bearing
+# target whose package list went missing, and a predicate that skips results
+# with no package list would skip exactly the failure it exists to detect.
+# Class is Trivy's own statement of what KIND of result this is, so a gutted
+# `lang-pkgs` result is still required to be measurable and still dies.
+#
+# A secret result has NO `.Type` at all (verified: the key is absent, with
+# `Class: "secret"` and the file path in `.Target`), so it was already being
+# dropped by the `select(. != null)` here. The class filter makes that
+# explicit rather than incidental, and additionally excludes the misconfig
+# result, which DOES have `Type: "dockerfile"` and would otherwise reach the
+# check-4 loop and die as `unmeasurable` on every single run.
 scan_types() {
-  jq -r '[.Results[]?.Type | select(. != null and . != "")] | unique | .[]' "$1"
+  jq -r '[.Results[]?
+          | select((.Class // "") == "os-pkgs" or (.Class // "") == "lang-pkgs")
+          | .Type | select(. != null and . != "")] | unique | .[]' "$1"
+}
+
+# The finding CLASSES a scan produced, independent of coverage. Check 3 asks
+# "did we lose a package-bearing target"; this asks the companion question for
+# the two scanners that have no packages to count: "did we stop LOOKING for
+# secrets or misconfigurations at all?"
+#
+# Needed because those two scanners can be silently disabled in ways that
+# produce no error: `--scanners` edited, `--image-config-scanners` dropped, a
+# `trivy.yaml` in the build context, or a Trivy upgrade that changes a
+# default. Each one removes the whole result class, which gate 1 reads as
+# "every secret finding was fixed" -- the same fail-open shape the rest of
+# this function exists to close, through a different door.
+scan_classes() {
+  jq -r '[.Results[]?.Class | select(. != null and . != "")] | unique | .[]' "$1"
 }
 
 # Scan-derived strings are UNTRUSTED. .Metadata.OS.Family and .Results[].Type
@@ -982,6 +1141,7 @@ assert_scan_coverage() {
   local old_nv_f new_nv_f old_nv nv_retained nv_floor
   local nv_names_f nv_newnames_f dropped_ver long_old long_new
   local old_gotargets new_gotargets lost_go old_gocount
+  local new_classes old_classes missing_classes
 
   # The baseline must be a readable scan before it can define the standard.
   #
@@ -1045,6 +1205,75 @@ assert_scan_coverage() {
     old_1l="$(safe_text "$(printf '%s' "$old_types"    | tr '\n' ' ')")"; old_1l="${old_1l% }"
     new_1l="$(safe_text "$(printf '%s' "$new_types"    | tr '\n' ' ')")"; new_1l="${new_1l% }"
     die "the rebuild's scan of linux/$arch lost scan target(s) the published image has: $missing_1l -- that target is now UNOBSERVED, not clean, so any finding it used to report would silently cancel out of the subset comparison. (published: $old_1l / rebuild: $new_1l)"
+  fi
+
+  # 3b. The MISCONFIG scanner must have run -- asserted absolutely, on both
+  #     scans -- and no other finding class may be present on one side only.
+  #
+  # Check 3 compares package-bearing TYPES, which by construction says nothing
+  # about the secret and misconfig scanners: they produce no packages and are
+  # excluded from `scan_types` on purpose. Without something here they are the
+  # one part of the scan with no coverage assertion at all -- turn a scanner
+  # off and its findings vanish from BOTH the added and removed sets, and the
+  # gate reports `improved` over an image nobody looked for credentials in.
+  #
+  # WHY THE MISCONFIG HALF IS ABSOLUTE AND NOT BASELINE-RELATIVE. An
+  # independent review of the first spelling, which was relative in both
+  # halves, measured it detecting NONE of the causes its own message named.
+  # Both scans in this loop run from ONE hardcoded flag set, so every stated
+  # cause -- `--scanners` edited, `--image-config-scanners` dropped, a
+  # trivy.yaml in the context, a Trivy default change -- removes the class
+  # from both sides at once and a relative comparison finds nothing. Measured
+  # against the real :stable with `--image-config-scanners` dropped on both
+  # sides: classes `lang-pkgs os-pkgs`, rc=0, `scan coverage OK`. A relative
+  # check cannot see a symmetric loss, and symmetric is the only kind a single
+  # flag set can produce.
+  #
+  # So `config` is required OUTRIGHT. That is safe because it is not
+  # finding-dependent: Trivy emits the Dockerfile result whenever the image
+  # config is a scan target, and this image fails DS-0002 and DS-0026
+  # permanently. Measured present even under `--severity CRITICAL`.
+  #
+  # WHY THE SECRET CLASS IS EXCLUDED FROM BOTH HALVES, AND WHAT THAT COSTS.
+  # `secret` appears ONLY when a secret is actually found, so there is no
+  # positive signal in the JSON for "the secret scanner ran and found
+  # nothing". That cuts both ways and the first spelling got the wrong half:
+  # asserting it RELATIVELY made a rebuild that FIXED the last secret -- the
+  # class legitimately disappears -- a hard stop, reported as "a scanner was
+  # disabled". Reproduced by review. It cannot be asserted absolutely either,
+  # because a clean image has no secret result at all.
+  #
+  # BE HONEST ABOUT THE RESULT: nothing in this function establishes that the
+  # secret scanner ran. What stands in for it is that both scans are issued
+  # from the same two variables a few lines apart, so an asymmetric edit is
+  # not expressible, plus review of the diff that would have to change them.
+  # A trivy.yaml in the build context or a Trivy default change WOULD turn it
+  # off invisibly, and the summary says so rather than implying coverage.
+  new_classes="$(scan_classes "$new")"
+  old_classes="$(scan_classes "$old")"
+
+  local side_name side_classes
+  for side_name in rebuild published; do
+    if [ "$side_name" = rebuild ]; then side_classes="$new_classes"
+    else                                side_classes="$old_classes"; fi
+    printf '%s\n' "$side_classes" | grep -qx config \
+      || die "the $side_name scan of linux/$arch reports no 'config' result, so the image-configuration (misconfig) scanner did not run on it -- a whole class of finding is UNSEARCHED rather than clean, and anything it would have reported cancels out of the subset comparison on both sides at once. Trivy emits this result whenever the image config is a scan target, so its absence means the scanner was disabled: \`--scanners\`, a missing \`--image-config-scanners\`, a trivy.yaml in the working directory, or a Trivy default change. Required outright rather than compared against the other scan, because one flag set drives both scans and a symmetric loss is invisible to any comparison. (classes seen: $(safe_text "$(printf '%s' "$side_classes" | tr '\n' ' ')"))"
+  done
+
+  # The relative half, now narrowed to what it can actually mean: a class on
+  # one side and not the other. `secret` is excluded for the reason above --
+  # losing it is the shape of a FIX. With the flags identical this should be
+  # unreachable, which is the point: it fires on an ASYMMETRIC difference, and
+  # the message does not assert a cause the gate has not established.
+  missing_classes="$(comm -13 \
+      <(printf '%s\n' "$new_classes" | grep -vx secret | sort) \
+      <(printf '%s\n' "$old_classes" | grep -vx secret | sort))"
+  if [ -n "$missing_classes" ]; then
+    local mc_1l oc_1l nc_1l
+    mc_1l="$(safe_text "$(printf '%s' "$missing_classes" | tr '\n' ' ')")"; mc_1l="${mc_1l% }"
+    oc_1l="$(safe_text "$(printf '%s' "$old_classes"     | tr '\n' ' ')")"; oc_1l="${oc_1l% }"
+    nc_1l="$(safe_text "$(printf '%s' "$new_classes"     | tr '\n' ' ')")"; nc_1l="${nc_1l% }"
+    die "the two scans of linux/$arch do not cover the same finding class(es): $mc_1l present for the published image and absent for the rebuild. Both scans are issued from one flag set here, so an asymmetric difference is not something this gate can explain -- it means the two scans were not run the same way, or Trivy read one image differently from the other. Either way that class is unsearched on one side and anything it reported cancels out as fixed. (published: $oc_1l / rebuild: $nc_1l)"
   fi
 
   # 4. A package-count floor per shared target.
@@ -2526,10 +2755,47 @@ for arch in $ARCHES; do
     "$(docker image inspect --format '{{.Created}}' "$base_ref" 2>/dev/null || true)" \
     "$arch"
 
-  trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
+  # THREE SCANNERS, and the second flag is not optional.
+  #
+  # `--scanners misconfig` alone finds NOTHING in an image: measured on the
+  # real :stable, it logs `Detected config files num=0` and emits no config
+  # result, because in image mode the misconfig scanner only reads config
+  # files found in the filesystem -- it does not look at the image's own
+  # build configuration. `--image-config-scanners misconfig,secret` is what
+  # turns the image CONFIG into a scan target, and with it the same image
+  # yields a `Class=config Type=dockerfile` result carrying DS-0002 ("Image
+  # user should not be 'root'") and DS-0026 ("No HEALTHCHECK defined").
+  #
+  # So the pair is what the card asked for; `--scanners` on its own would
+  # have shipped a gate that reports misconfig coverage it does not have --
+  # the precise fail-open shape the coverage precondition exists to prevent.
+  #
+  # Both sides get identical flags. They must: every gate here is set
+  # arithmetic between the two scans, so a flag present on one side and not
+  # the other manufactures a whole class of phantom added or removed findings.
+  TRIVY_SCANNERS='vuln,secret,misconfig'
+  TRIVY_IMAGE_CONFIG_SCANNERS='misconfig,secret'
+
+  trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
+    --scanners "$TRIVY_SCANNERS" \
+    --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
+    --severity "$SEVERITY" \
     --format json --output "$OUT/new-$arch.json" "$new_ref"
-  trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
+  trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
+    --scanners "$TRIVY_SCANNERS" \
+    --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
+    --severity "$SEVERITY" \
     --format json --output "$OUT/old-$arch.json" "$base_ref"
+
+  # Trivy writes NO output file at all when a scan produces zero results
+  # (verified on 0.76.1: exit 0, no file). Every check below reads these
+  # paths with jq, which would report `Could not open file` and -- under the
+  # `|| true` idioms further down -- could degrade into an empty findings
+  # list, i.e. a clean verdict over a scan that did not land. Assert the
+  # files exist before anything reads them.
+  for f in "$OUT/new-$arch.json" "$OUT/old-$arch.json"; do
+    [ -s "$f" ] || die "trivy produced no scan output at $f for linux/$arch (exit status was 0, but the file is missing or empty): the scan did not land, so there is nothing to compare and an empty findings list must not be read as a clean image."
+  done
 
   # Before ANY comparison: prove the new scan actually looked at the image.
   # Gate 1 cannot tell an image with no vulnerabilities from an image Trivy
@@ -3004,6 +3270,8 @@ fi
   if [ "$added_total" -gt 0 ]; then
     echo "**Gate 1 FAILED — the rebuild introduces findings the published image does not have:**"
     echo
+    echo "Rows are prefixed by class: \`vuln:\` a vulnerability (id + package), \`secret:\` a credential detected in a layer (rule + file), \`misconfig:\` a failing image-configuration check (id + namespace)."
+    echo
     echo '```'
     for arch in $ARCHES; do
       while IFS=$'\t' read -r id pkg; do
@@ -3016,7 +3284,7 @@ fi
     if [ "$DRIFT_POLICY" = block ]; then
       echo "A refresh must only ever remove findings. Investigate before publishing."
     else
-      echo "A release may change the module set, but it must not introduce a vulnerability the published image does not already have. The immutable \`:vX.Y.Z\` tag exists; \`:stable\` and \`:latest\` were NOT moved. Investigate before moving them."
+      echo "A release may change the module set, but it must not introduce a vulnerability, an embedded secret or a failing image-configuration check that the published image does not already have. The immutable \`:vX.Y.Z\` tag exists; \`:stable\` and \`:latest\` were NOT moved. Investigate before moving them."
     fi
     echo
   fi
@@ -3193,6 +3461,13 @@ fi
     # a blanket "nothing changed" printed over an unmentioned change is a
     # reassurance the gate has not earned, and under `report` this summary is
     # the whole basis for approving the release.
+    #
+    # "finding" here spans all THREE scanners -- vulnerabilities, embedded
+    # secrets and failing image-configuration checks (T-0642). Saying "every
+    # vulnerability" understates what was actually compared, and on a gate
+    # whose summary is the reviewer's whole basis for approval, understating
+    # the scope of the comparison is the same class of unearned reassurance
+    # as the blanket wording above.
     quiet=""
     [ "$moddrift" -eq 0 ] && quiet="$quiet the module set,"
     # Named separately from "the image configuration" because it is checked
@@ -3215,7 +3490,36 @@ fi
     quiet="${quiet# }"; quiet="${quiet%,}"
     noisy="${noisy# }"; noisy="${noisy%,}"
 
-    printf '%s' "No new findings: every vulnerability in the rebuilt image is already present in the published image, against the same package."
+    # WHAT THIS SENTENCE MAY CLAIM, AND WHY IT IS NOT ONE FIXED STRING.
+    #
+    # The first wording after the secret and misconfig scanners were added
+    # asserted all three classes unconditionally -- "every vulnerability,
+    # embedded secret and failing image-configuration check". An independent
+    # review pointed out that this is the same unearned reassurance the
+    # quiet/noisy assembly above exists to avoid, one class down: the
+    # misconfig claim is safe because coverage check 3b now requires a
+    # `config` result on both scans outright, but NOTHING establishes that
+    # the SECRET scanner ran. It emits a result only when it finds something,
+    # so a clean scan and a disabled scanner are the same document.
+    #
+    # So the secret clause is printed only when a secret result actually
+    # appeared on one of the two scans, which is the only positive evidence
+    # available; otherwise the sentence says what was compared and the limit
+    # is stated rather than papered over. Read from the scan JSON the gates
+    # already used -- no extra scan, and it cannot describe a different run.
+    secret_seen=no
+    for a in $ARCHES; do
+      for f in "$OUT/new-$a.json" "$OUT/old-$a.json"; do
+        [ -s "$f" ] || continue
+        if scan_classes "$f" | grep -qx secret; then secret_seen=yes; fi
+      done
+    done
+
+    if [ "$secret_seen" = yes ]; then
+      printf '%s' "No new findings: every vulnerability, embedded secret and failing image-configuration check in the rebuilt image is already present in the published image, against the same package, file or rule."
+    else
+      printf '%s' "No new findings: every vulnerability and failing image-configuration check in the rebuilt image is already present in the published image, against the same package or rule. Neither scan reported an embedded secret — and because the secret scanner emits nothing at all when it finds nothing, that is **not** the same as having established that it ran; see below."
+    fi
     [ -n "$quiet" ] && printf ' Unchanged: %s.' "$quiet"
     [ -n "$noisy" ] && printf ' **Changed and diffed above, needs reading: %s.**' "$noisy"
     if [ "$FS_DELTA" != on ]; then
@@ -3271,6 +3575,8 @@ fi
     echo "  - For the \`--with\` plugin pins, the weekly pin watcher (\`check-pinned-modules.sh\`) asks that endpoint — read it, not this gate, for \"are there known advisories\"."
     echo "  - For CaddyUI's own \`go.mod\`, **nothing currently asks it.** Dependabot covers \`go.mod\` but keys on GitHub's *global* advisory index, which omits CVE-less records the same way OSV does. See \`SECURITY.md\` → \"How \`go.mod\` is watched for advisories\"."
     echo "- **This gate is a difference, not an audit.** A finding present on both images cancels out by construction, because a zero-findings standard could never publish anything. \`$verdict\` means *no worse than the image the fleet already runs* — which is the question it asks, and the only one it answers."
+    echo "  - That applies to the \`secret\` and \`misconfig\` scanners too, and they currently cancel something real: the published image **fails** \`DS-0002\` (\"Image user should not be 'root'\") and \`DS-0026\` (\"No HEALTHCHECK defined\"). Both sit on both sides, so neither blocks — a standing finding, not a clean bill. Fixing them is separate work."
+    echo "- **A quiet \`secret\` scanner and a clean one produce the same output, and this gate cannot tell them apart.** Trivy emits a \`secret\` result only when it finds a credential, so there is no positive signal for \"it ran and found nothing\" — unlike the misconfig scanner, whose \`config\` result is always present and is now required outright by the coverage precondition (check 3b). What stands in for it is that both scans are issued from the same two variables a few lines apart in this script, so an asymmetric edit is not expressible; a \`trivy.yaml\` in the working directory or a change to Trivy's defaults would turn it off for both scans at once and nothing here would notice. Read \"no embedded secret\" as \"neither scan reported one\"."
     echo
     echo "</details>"
     echo
