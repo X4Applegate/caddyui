@@ -316,6 +316,21 @@ jobs:
       - name: Gate — vulnerability subset and module set
         id: gate
         shell: bash
+        env:
+          # Gate 4, the filesystem delta (T-0641). ON for the refresh and off by
+          # default everywhere else: it is the only gate that costs a full image
+          # export per side per arch, and a refresh is weekly while a release is
+          # not. It is also where the gate is most meaningful — a refresh
+          # rebuilds an UNCHANGED Dockerfile.caddy, so a new file, a new setuid
+          # bit or a changed trust store is impossible-unless-something-is-wrong
+          # rather than merely unexpected.
+          #
+          # Measured noise on exactly these two shapes, so it does not get
+          # switched off for crying wolf: a simulated `apk upgrade` refresh
+          # asserts 0/0/0 (11 raw diff lines, all modifications), and a real
+          # v2.68.11 -> v2.68.12 bump asserts only a benign libnghttp2 soname
+          # pair. The raw diff is still carried into the summary either way.
+          FS_DELTA: "on"
         run: |
           set -euo pipefail
           gate="$RUNNER_TEMP/caddy-image-gate.sh"
@@ -781,6 +796,12 @@ jobs:
         id: regate
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
+          # Must match the scan job's setting exactly. The whole point of one
+          # gate script is that the check giving a reviewer their verdict is the
+          # check guarding the moving tags; leaving gate 4 off here would mean
+          # approving on a filesystem-checked verdict and publishing on an
+          # unchecked one.
+          FS_DELTA: "on"
         shell: bash
         run: |
           set -euo pipefail
