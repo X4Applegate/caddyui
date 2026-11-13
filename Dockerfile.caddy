@@ -299,7 +299,10 @@ ARG TARGETARCH
 #     v3 out. Verify on the artifact, never on this file:
 #       go version -m /usr/bin/caddy | grep go-jose    # only a v4 line
 #     Measured on this build: v3 absent from the binary AND from the import
-#     closure (`go list -deps`), `caddy list-modules` identical at 199 modules
+#     closure (`go list -deps`), `caddy list-modules` identical at 194 modules
+#     (136 standard + 58 non-standard; `wc -l` of that command reads 199 because
+#     it counts two section headers and two blank lines, so re-measure by
+#     summing the two totals, not by counting output lines)
 #     vs the unreplaced build, no downgrades, and `tls internal` + the
 #     acme_server directory verified working against a control build.
 #
@@ -338,6 +341,18 @@ ARG TARGETARCH
 #
 #     NOTE FOR THE PIN WATCHER: scripts/check-pinned-modules.sh parses --with
 #     only, so these two lines are NOT watched -- see T-0710.
+#
+#     BEFORE ADDING A --with UNDER EITHER REPLACED MODULE PATH: xcaddy SILENTLY
+#     SKIPS IT. environment.go:226-230 (v0.4.7) tests each plugin package path
+#     against every replaced module with `strings.HasPrefix(p.PackagePath,
+#     repl+"/")` and does `continue nextPlugin`, so `go get` never runs for it
+#     -- no error, no log line, and the requested version is simply not applied.
+#     That makes a pin look present in this file while having no effect, which
+#     is the same shape as the vacuous-grep defect described above. Checked at
+#     the time of writing: all 16 --with paths below, and none is prefixed by
+#     `github.com/smallstep/certificates/` or `go.step.sm/crypto/`. Re-run that
+#     comparison when adding a --with; e.g. `--with go.step.sm/crypto/foo@vX`
+#     would be accepted here and then ignored.
 RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --replace github.com/smallstep/certificates=github.com/smallstep/certificates@v0.30.3-0.20261105213751-6d5a251fbe01 \
     --replace go.step.sm/crypto=go.step.sm/crypto@v0.92.0 \
