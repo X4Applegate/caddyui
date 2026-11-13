@@ -888,6 +888,40 @@ fs_from() {
   # Symlink and hardlink TARGETS are kept on the line, because a link repointed
   # at a different file is precisely the kind of change this gate exists to see.
   #
+  # OUTPUT IS TAB-SEPARATED COLUMNS: path<TAB>mode<TAB>size<TAB>linktarget.
+  # The separator is the whole point, so it is a contract rather than a format
+  # choice, and every consumer below splits on tab instead of counting fields.
+  #
+  # It used to be space-separated with tar's ` -> target` suffix left inside
+  # the path field, and both downstream helpers rebuilt "the path" as
+  # all-but-the-last-two fields. That made the comparison key for a symlink
+  # `path + target`, with three consequences, all measured (T-0784):
+  #
+  #  1. REPOINTING AN EXISTING SYMLINK READ AS ONE REMOVED PATH PLUS ONE ADDED
+  #     PATH. On this image that is not a corner case: 236 of the 237 entries
+  #     under `etc/ssl/certs/` are symlinks, so the trust store is almost
+  #     entirely links. Assertion (c) is the one that catches the `COPY`/`ADD`
+  #     row, and teaching a reviewer that add+remove pairs are ordinary churn
+  #     in the one directory that matters most is how (c) stops being read.
+  #     With columns, a repoint is a changed TARGET on one path: (c) sees no
+  #     new path, and the raw diff shows one changed line at the path it
+  #     happened to.
+  #
+  #  2. A path containing a literal ` -> ` could forge a benign-looking key.
+  #     A tab cannot be smuggled in: it is outside the path character class
+  #     below and is replaced with `?`, which is what makes splitting on it
+  #     safe rather than merely tidier.
+  #
+  #  3. The sharper half was in `suid_of`. A path with a space before the mode
+  #     (`bin/evil tool\t-rwsr-xr-x\t1234` in the old spelling, i.e. the
+  #     space-separated `bin/evil tool -rwsr-xr-x 1234 -rwsr-xr-x 1234`) put a
+  #     forged `-rwsr-xr-x 1234` INSIDE the rebuilt path, so the setuid
+  #     comparison key was partly attacker-controlled. Columns end that: the
+  #     mode is read from its own column and cannot be spelled into a filename.
+  #
+  # A LINK TARGET IS ITS OWN COLUMN, not a suffix, so it is compared as data
+  # rather than as part of the name. Non-links get an empty fourth column.
+  #
   # SIZE IS ON THE LINE, and it is load-bearing rather than informational.
   # Without it the list is (mode, path) only, so MODIFYING an existing file
   # changes nothing: the path already existed and the mode did not move.
@@ -929,10 +963,20 @@ fs_from() {
          size = $3
          path = $6
          for (i = 7; i <= NF; i++) path = path " " $i
+         # Split tar s ` -> target` suffix off into its own column. Only tar
+         # produces this separator, and only for a link, so it is matched at
+         # the LAST occurrence: a path may legitimately contain the string.
+         target = ""
+         if (match(path, /^.* -> /)) {
+           target = substr(path, RLENGTH + 1)
+           path   = substr(path, 1, RLENGTH - 4)
+         }
          gsub(/[^A-Za-z0-9._:\/@+=,() \[\]{}"'"'"'*?!#$^&~`|<>-]/, "?", path)
+         gsub(/[^A-Za-z0-9._:\/@+=,() \[\]{}"'"'"'*?!#$^&~`|<>-]/, "?", target)
          gsub(/[^A-Za-z0-9.+-]/, "?", mode)
          gsub(/[^0-9]/, "?", size)
-         print substr(path, 1, 300) " " substr(mode, 1, 16) " " substr(size, 1, 20)
+         printf "%s\t%s\t%s\t%s\n", substr(path, 1, 300), substr(mode, 1, 16), \
+                                    substr(size, 1, 20), substr(target, 1, 300)
        }' \
      | LC_ALL=C sort -u > "$out"
   st="${PIPESTATUS[*]}"
@@ -1130,8 +1174,23 @@ for arch in $ARCHES; do
     #      etc/ca-certificates.conf, etc/ca-certificates/  which certs are TRUSTED
     #    The last pair is policy rather than material: editing the .conf alone
     #    changes what the bundle is rebuilt from.
+    #
+    #    THE THREE WHOLE-FILE ENTRIES ARE TERMINATED WITH A TAB, the directory
+    #    prefixes are not. Since fs_from emits `path<TAB>mode<TAB>size<TAB>target`
+    #    (T-0784), the tab is the end of the path, so `etc/ssl/cert\.pem\t`
+    #    cannot also be satisfied by `etc/ssl/cert.pem.attacker-suffix`. Under
+    #    the old space-separated format these three were unterminated, which is
+    #    the same unbounded-bare-name shape that was a real bypass in
+    #    FS_ALLOW_DEFAULT above -- harmless in an allowlist's mirror image
+    #    (it over-matches INTO the assertion, i.e. toward blocking) but wrong,
+    #    and worth fixing while the format is changing anyway.
+    #    The tab is spelled as a LITERAL via $'...' so this stays `grep -E`.
+    #    `\t` is a PCRE escape, not a POSIX ERE one: `grep -E '\t'` matches a
+    #    literal `t` on a GNU grep, so the pattern would have silently matched
+    #    nothing after the path -- a quietly empty assertion, which is the one
+    #    failure shape this gate is most carefully hardened against.
     grep -E '^\+' "$OUT/fs-diff-$arch.txt" | grep -v '^+++' \
-      | grep -E '^\+/?(usr/share/ca-certificates/|usr/local/share/ca-certificates/|etc/ssl/certs/|etc/ssl/cert\.pem|etc/ssl/ca-bundle\.pem|etc/ssl1\.1/|etc/pki/|etc/ca-certificates\.conf|etc/ca-certificates/)' \
+      | grep -E $'^\\+/?(usr/share/ca-certificates/|usr/local/share/ca-certificates/|etc/ssl/certs/|etc/ssl/cert\\.pem\t|etc/ssl/ca-bundle\\.pem\t|etc/ssl1\\.1/|etc/pki/|etc/ca-certificates\\.conf\t|etc/ca-certificates/)' \
       > "$OUT/fs-ca-$arch.txt" || true
 
     # b) Any setuid/setgid bit on the new side that the baseline does not have
@@ -1143,9 +1202,12 @@ for arch in $ARCHES; do
     #    would make that read as "a new setuid entry" every time -- the
     #    always-on signal that gets a check ignored. Mode+path is the question
     #    being asked here; the size change is still in the raw diff.
-    #    The line is "<path> <mode> <size>" and a path may contain spaces, so
-    #    mode and size are the LAST two fields: read them from the end, and
-    #    rebuild the path from everything before them.
+    #
+    #    PATH AND MODE ARE READ AS TAB COLUMNS ($1 and $2), not reconstructed
+    #    by counting fields from the end. The field-counting spelling put a
+    #    forged mode inside the rebuilt path on any filename containing a
+    #    space -- see the contract note on fs_from (T-0784). A tab cannot
+    #    appear in either column, so the split is unambiguous.
     #
     #    MATCHES BOTH MODE RENDERINGS. GNU tar prints symbolic modes
     #    (-rwsr-xr-x) and that is what ubuntu-latest gives us, but a `[sS]`
@@ -1156,12 +1218,11 @@ for arch in $ARCHES; do
     #    elsewhere, so the numeric form is matched too: a leading 2, 4 or 6 in
     #    the four/five-digit word is setgid/setuid/both.
     suid_of() {
-      awk '{
-        mode = $(NF-1)
-        if (mode !~ /[sS]/ && mode !~ /^0?[2467][0-7][0-7][0-7]$/) next
+      awk -F'\t' '{
         path = $1
-        for (i = 2; i <= NF-2; i++) path = path " " $i
-        print path " " mode
+        mode = $2
+        if (mode !~ /[sS]/ && mode !~ /^0?[2467][0-7][0-7][0-7]$/) next
+        printf "%s\t%s\n", path, mode
       }' "$1" | LC_ALL=C sort -u
     }
     suid_of "$OUT/fs-new-$arch.txt" > "$OUT/fs-suid-new-$arch.txt" || true
@@ -1185,11 +1246,15 @@ for arch in $ARCHES; do
     #    raw diff and by assertion (a) when it is a trust-store file.
     #    A genuinely NEW path is the `COPY`/`ADD`/`curl | sh` row.
     #
-    #    The line is "<path> <mode> <size>", so drop the last two fields to
-    #    leave the path -- which may itself contain spaces.
+    #    The path is the FIRST TAB COLUMN. It is taken as a column rather than
+    #    rebuilt from all-but-the-last-two fields, because the latter folded a
+    #    symlink's target into the key: repointing one of the 236 symlinks
+    #    under etc/ssl/certs/ then read as one removed path plus one added
+    #    path, which trains a reviewer to skim exactly this assertion. A
+    #    repoint is now a target-column change on an unchanged path, so it is
+    #    correctly absent here and visible in the raw diff (T-0784).
     paths_of() {
-      awk '{ path = $1; for (i = 2; i <= NF-2; i++) path = path " " $i; print path }' "$1" \
-        | LC_ALL=C sort -u
+      awk -F'\t' '{ print $1 }' "$1" | LC_ALL=C sort -u
     }
     paths_of "$OUT/fs-new-$arch.txt" > "$OUT/fs-paths-new-$arch.txt"
     paths_of "$OUT/fs-old-$arch.txt" > "$OUT/fs-paths-old-$arch.txt"
@@ -1419,11 +1484,20 @@ fi
 
   if [ "$fsdrift" -eq 1 ]; then
     for arch in $ARCHES; do
+      # fs_from emits tab-separated columns (T-0784), so these two extracts
+      # carry tabs. Rendered through `column -t` with an explicit header, since
+      # a raw tab inside a code fence lands wherever the next tab stop happens
+      # to be and the whole point of the column format is that a reviewer can
+      # see WHICH field moved. `column` is from util-linux and is present on
+      # ubuntu-latest; if it is ever missing, `|| cat` keeps the rows rather
+      # than emitting an empty block over a non-empty assertion.
       if [ -s "$OUT/fs-ca-$arch.txt" ]; then
         echo "**Trust store changed, linux/$arch** — an added or replaced CA here is trusted by every outbound TLS connection this proxy makes:"
         echo
         echo '```'
-        cat "$OUT/fs-ca-$arch.txt"
+        { printf '%s\t%s\t%s\t%s\n' 'PATH' 'MODE' 'SIZE' 'LINK-TARGET'
+          cat "$OUT/fs-ca-$arch.txt"
+        } | column -t -s $'\t' 2>/dev/null || cat "$OUT/fs-ca-$arch.txt"
         echo '```'
         echo
       fi
@@ -1431,7 +1505,9 @@ fi
         echo "**New setuid/setgid entries, linux/$arch** — present in the rebuild, absent from the published image at the same path and mode:"
         echo
         echo '```'
-        cat "$OUT/fs-suid-$arch.txt"
+        { printf '%s\t%s\n' 'PATH' 'MODE'
+          cat "$OUT/fs-suid-$arch.txt"
+        } | column -t -s $'\t' 2>/dev/null || cat "$OUT/fs-suid-$arch.txt"
         echo '```'
         echo
       fi

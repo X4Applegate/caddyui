@@ -188,8 +188,12 @@ if [ -z "$suid_pred" ]; then
 else
   suid_check() { # want(yes|no) mode
     local want=$1 mode=$2 got=no
-    printf 'some/path %s 100\n' "$mode" \
-      | awk "{ mode=\$(NF-1); if (mode !~ $suid_pred) next; print }" \
+    # TAB-SEPARATED, and the mode read from column 2 -- the format fs_from
+    # actually emits since T-0784. This used to synthesise the old
+    # space-separated line and read `$(NF-1)`, so it kept passing while
+    # testing a format the gate no longer produces.
+    printf 'some/path\t%s\t100\t\n' "$mode" \
+      | awk -F'\t' "{ mode=\$2; if (mode !~ $suid_pred) next; print }" \
       | grep -q . && got=yes
     if [ "$got" = "$want" ]; then
       pass=$((pass+1))
@@ -206,6 +210,86 @@ else
   suid_check no  '-rwxr-xr-x'   # ordinary executable
   suid_check no  '0755'         # ordinary, numeric
   suid_check no  '00755'        # ordinary, numeric, 5-digit
+fi
+
+echo "== 9. the comparison key is COLUMNS, not path+target (T-0784) =="
+# fs_from emits `path<TAB>mode<TAB>size<TAB>target`. Both helpers must read
+# columns. The old spelling rebuilt "the path" from all-but-the-last-two
+# SPACE-separated fields, which folded a symlink's target into the key: on this
+# image 236 of 237 etc/ssl/certs/ entries are symlinks, so repointing one read
+# as one removed path plus one added path -- ordinary-looking churn in the one
+# directory assertion (a) exists for. Extracted from the shipped script.
+fs_paths_of=$(sed -n "/^    paths_of() {/,/^    }/p" "$gate")
+fs_suid_of=$(sed  -n "/^    suid_of() {/,/^    }/p"  "$gate")
+
+# 9a. both helpers must split on tab, not count fields from the end.
+for h in "paths_of:$fs_paths_of" "suid_of:$fs_suid_of"; do
+  name=${h%%:*} body=${h#*:}
+  if [ -z "$body" ]; then
+    fail=$((fail+1)); rc=1; echo "FAIL: could not extract $name from the gate"
+  elif printf '%s' "$body" | grep -q 'NF-2\|NF-1'; then
+    fail=$((fail+1)); rc=1
+    echo "FAIL: $name still rebuilds the path by counting fields from the end"
+  elif ! printf '%s' "$body" | grep -q "awk -F"; then
+    fail=$((fail+1)); rc=1
+    echo "FAIL: $name does not split on an explicit separator"
+  else
+    pass=$((pass+1))
+  fi
+done
+
+# 9b. behavioural: a repointed symlink must add NO path and remove NO path.
+t0784_old=$(printf 'etc/ssl/certs/002c0b4f.0\tlrwxrwxrwx\t0\tca-cert-GlobalSign_Root_R46.pem\n')
+t0784_new=$(printf 'etc/ssl/certs/002c0b4f.0\tlrwxrwxrwx\t0\t/tmp/evil.pem\n')
+key_of() { awk -F'\t' '{ print $1 }' | LC_ALL=C sort -u; }
+added=$(LC_ALL=C comm -23 <(printf '%s\n' "$t0784_new" | key_of) \
+                          <(printf '%s\n' "$t0784_old" | key_of) | wc -l)
+removed=$(LC_ALL=C comm -13 <(printf '%s\n' "$t0784_new" | key_of) \
+                            <(printf '%s\n' "$t0784_old" | key_of) | wc -l)
+if [ "$added" -eq 0 ] && [ "$removed" -eq 0 ]; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); rc=1
+  echo "FAIL: a symlink repoint reads as $added added + $removed removed path(s); want 0 + 0"
+fi
+
+# 9c. negative control: the OLD key must reproduce the add+remove pair, so this
+#     section would actually have caught the bug rather than passing vacuously.
+oldkey_of() { awk -F'\t' '{ if ($4 != "") print $1 " -> " $4; else print $1 }' | LC_ALL=C sort -u; }
+old_added=$(LC_ALL=C comm -23 <(printf '%s\n' "$t0784_new" | oldkey_of) \
+                              <(printf '%s\n' "$t0784_old" | oldkey_of) | wc -l)
+if [ "$old_added" -eq 1 ]; then
+  pass=$((pass+1))
+  echo '  old path+target key reported the repoint as an ADDED path  <- the bug, reproduced'
+else
+  fail=$((fail+1)); rc=1
+  echo 'FAIL: the negative control did not reproduce the old add+remove shape'
+fi
+
+# 9d. a tab cannot be smuggled into a path: fs_from's character class must
+#     exclude it, which is what makes splitting on tab safe rather than tidier.
+if grep -q 'gsub(/\[\^A-Za-z0-9._:' "$gate" \
+   && ! printf 'a\tb' | awk '{ gsub(/[^A-Za-z0-9._:\/@+=,() \[\]{}"'"'"'*?!#$^&~`|<>-]/, "?"); print }' | grep -q "$(printf '\t')"; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); rc=1
+  echo 'FAIL: a tab survives the path character class, so the column split is forgeable'
+fi
+
+# 9e. assertion (a)'s whole-file entries must be tab-terminated, so an
+#     extended name (etc/ssl/cert.pem.attacker) cannot satisfy them.
+ca_re=$(sed -n "s/.*| grep -E \\\$'\(\^.*\)' \\\\\$/\1/p" "$gate" | head -1)
+if [ -z "$ca_re" ]; then
+  fail=$((fail+1)); rc=1; echo 'FAIL: could not extract assertion (a) from the gate'
+else
+  ca_hits=$(printf '+etc/ssl/cert.pem.attacker\t-rw-r--r--\t1\t\n+etc/ssl/cert.pem\t-rw-r--r--\t1\t\n' \
+    | grep -E "$(printf '%b' "$ca_re")" | wc -l)
+  if [ "$ca_hits" -eq 1 ]; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); rc=1
+    echo "FAIL: assertion (a) matched $ca_hits of 2 lines; want 1 (the exact name only)"
+  fi
 fi
 
 echo
