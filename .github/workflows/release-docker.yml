@@ -54,6 +54,13 @@
 #   push     off by default; on = publish to Docker Hub
 #   caddy    also rebuild applegater/caddyui-caddy
 #
+# "An existing tag" is ENFORCED, not just advised (T-0755). A release-shaped
+# name that is not a tag in this repository fails the plan job, and a verified
+# release is passed downstream as refs/tags/<version> so no same-named branch
+# can be built in its place. A non-release name is still the documented
+# build-only check and is unaffected. scripts/test-release-plan-version-input.sh
+# covers both, and CI runs it.
+#
 # The build jobs hold the read/write DOCKERHUB_TOKEN, so every action and
 # image this file names is pinned: actions to a full commit SHA (the release
 # in the trailing comment), and the BuildKit, binfmt and SBOM-scanner images
@@ -76,7 +83,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag to build, e.g. v2.56.3 (blank = this branch, build only)"
+        description: "Release TAG to build, e.g. v2.56.3 — must be a real tag (blank = this branch, build only)"
         required: false
         type: string
       push:
@@ -109,6 +116,15 @@ jobs:
       caddy: ${{ steps.p.outputs.caddy }}
       caddy_changed: ${{ steps.p.outputs.caddy_changed }}
     steps:
+      # Deliberately UNQUALIFIED, unlike the `ref` this job hands downstream.
+      # This job must also accept a branch, because a branch dispatch is the
+      # documented build-only check, and it cannot qualify a name it has not
+      # verified yet - the verification is the step below. Which commit is in
+      # this working tree does not affect that step: fetch-depth: 0 brings the
+      # complete tag set either way, and `require_tag` and `git tag --list`
+      # read refs, not the checkout. Once a release name IS verified, the `ref`
+      # output is qualified to refs/tags/<version> so the build jobs cannot be
+      # steered to a same-named branch (T-0755).
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,15 +147,62 @@ jobs:
           stable_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
           pre_re='^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$'
 
+          # A RELEASE-SHAPED NAME MUST BE A TAG, AND THE TAG IS WHAT GETS BUILT.
+          #
+          # Everything below decides `kind` from `$version` as a STRING, and
+          # `kind=stable` is what authorises :stable and :latest. So the string
+          # has to be tied to a fact about this repository before it is trusted,
+          # and the ref handed to the build jobs has to be the same object the
+          # decision was made about. Two separate holes, both open (T-0755):
+          #
+          #   1. NOT CHECKED TO BE A TAG. The regexes match any string of the
+          #      right shape. `git tag --list` only ever lists real tags, so a
+          #      BRANCH named vX.Y.Z higher than every tag lands on kind=older
+          #      rather than kind=stable - but a branch named EXACTLY the
+          #      newest release tag compares equal to it and reaches
+          #      kind=stable, with no tag of its own required.
+          #
+          #   2. THE CHECKOUT PREFERS THE BRANCH. `ref:` was an unqualified
+          #      name, and actions/checkout resolves one BRANCH-FIRST --
+          #      getCheckoutInfo() tries refs/remotes/origin/<ref> and only
+          #      falls back to refs/tags/<ref> (actions/checkout src/ref-
+          #      helper.ts). That is the OPPOSITE of plain `git rev-parse`,
+          #      which prefers refs/tags/. So where refs/heads/v2.68.12 and
+          #      refs/tags/v2.68.12 both exist, this shell reads the tag while
+          #      the build jobs check out the branch.
+          #
+          # Together: `refs/heads/<newest release tag>` pushed once is
+          # kind=stable computed from the real tag, applied to branch content.
+          # The caddy job's compare-and-swap re-reads origin's tags at move
+          # time and would still refuse, but applegater/caddyui has no such
+          # second check - it trusts `kind` - so :stable and :latest would be
+          # built from the branch. It needs push access, so it is hardening,
+          # not an incident; it is closed because this was the one guard rail
+          # that was a string match rather than a fact about the repository.
+          #
+          # Hole 1 is closed here. Hole 2 is closed by emitting a FULLY
+          # QUALIFIED refs/tags/<version> as the `ref` output below, which
+          # takes actions/checkout's unqualified branch-first path out of play
+          # for every downstream job. fetch-depth: 0 is already set, so the
+          # tags are present to verify against.
+          require_tag() {
+            git rev-parse -q --verify "refs/tags/$1^{commit}" >/dev/null && return 0
+            echo "::error::'$1' matches a release tag pattern but is not a tag in this repository. Release-shaped names must be tags; a branch of that name is not a release. Push the tag, or dispatch without a version to run a build-only check."
+            exit 1
+          }
+
           # Only a real release tag may publish. :stable and :latest move only
           # for a plain vX.Y.Z that is the newest release, so re-running an old
           # tag by hand can never roll them backwards; anything else gets just
           # its own :vX.Y.Z tag.
           kind=none
           if [[ "$version" =~ $stable_re ]]; then
+            require_tag "$version"
             newest="$(git tag --list 'v*' | grep -E "$stable_re" | sort -V | tail -1)"
             if [ "$version" = "$newest" ]; then kind=stable; else kind=older; fi
-          elif [[ "$version" =~ $pre_re ]]; then kind=pre
+          elif [[ "$version" =~ $pre_re ]]; then
+            require_tag "$version"
+            kind=pre
           else version=dev
           fi
 
@@ -191,8 +254,24 @@ jobs:
           # so a tag list like applegater/caddyui:v1.2.3 would arrive empty
           # ("tag is needed when pushing to registry"). Each build job builds its
           # own tags from these two values instead.
+          #
+          # `ref` is FULLY QUALIFIED for a release (T-0755). Every kind other
+          # than `none` has just been asserted to be a tag, so name it as one:
+          # refs/tags/<version> sends actions/checkout down its explicit
+          # refs/tags/ branch instead of the unqualified path that prefers
+          # refs/remotes/origin/<name>. Without this the plan job can verify a
+          # tag and the build jobs still check out a same-named branch.
+          #
+          # kind=none keeps the old value: that is the build-only branch
+          # dispatch the header documents, where a branch ref is the point and
+          # nothing publishes ($push stays false).
+          if [ "$kind" != none ]; then
+            ref_out="refs/tags/$version"
+          else
+            ref_out="${INPUT_VERSION:-$GITHUB_REF}"
+          fi
           {
-            echo "ref=${INPUT_VERSION:-$GITHUB_REF}"
+            echo "ref=$ref_out"
             echo "version=$version"
             echo "kind=$kind"
             echo "push=$push"

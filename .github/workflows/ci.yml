@@ -42,6 +42,38 @@ jobs:
       - name: Build binary
         run: go build ./cmd/caddyui
 
+  # The release workflow's plan job decides, in shell, which names may publish
+  # and which ref the build jobs check out. That logic protects :stable and
+  # :latest on both images and is not covered by `go test`, so it gets its own
+  # guard here (T-0755). The test extracts the step straight out of
+  # release-docker.yml rather than restating it, so the two cannot drift.
+  #
+  # It needs no Go toolchain, no services and no release credentials: it builds
+  # throwaway git repositories in $TMPDIR and runs the extracted script against
+  # them. A shallow checkout is therefore fine.
+  workflow-guards:
+    name: Release workflow guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Lint the release workflow's plan script
+        run: |
+          python3 - .github/workflows/release-docker.yml /tmp/plan-step.sh <<'PY'
+          import sys, yaml
+          wf, out = sys.argv[1], sys.argv[2]
+          steps = [s for s in yaml.safe_load(open(wf))["jobs"]["plan"]["steps"]
+                   if s.get("id") == "p"]
+          if len(steps) != 1:
+              sys.exit(f"expected one plan step with id 'p', found {len(steps)}")
+          open(out, "w").write("#!/usr/bin/env bash\n" + steps[0]["run"])
+          PY
+          shellcheck -S warning /tmp/plan-step.sh
+
+      - name: Only release TAGS may publish, and the built ref must be that tag
+        run: ./scripts/test-release-plan-version-input.sh
+
   mariadb:
     name: MariaDB integration
     runs-on: ubuntu-latest
