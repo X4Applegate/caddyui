@@ -1,0 +1,393 @@
+[
+  {
+    "ghsa_id": "GHSA-jf74-f69g-hcj9",
+    "cve_id": null,
+    "severity": "medium",
+    "summary": "file_server exposes private keys when the data directory falls back to ./caddy",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<= 2.11.7",
+        "patched_versions": "2.11.8"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-r766-rf9f-588h",
+    "cve_id": null,
+    "severity": "high",
+    "summary": "Host and :authority values with dot segments or slashes escape a {host}-based root",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<= 2.11.7",
+        "patched_versions": "2.11.8"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-25cw-38mq-q7m6",
+    "cve_id": null,
+    "severity": "medium",
+    "summary": "file matcher resolves /file/./ to a regular file, bypassing suffix path rules",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<= 2.11.7",
+        "patched_versions": "2.11.8"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-69hv-5jfc-mvmv",
+    "cve_id": null,
+    "severity": "medium",
+    "summary": "rewrite re-decodes {http.matchers.file.remainder}, bypassing path-based deny rules",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<= 2.11.7",
+        "patched_versions": "2.11.8"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-f278-mgc7-46j3",
+    "cve_id": null,
+    "severity": "medium",
+    "summary": "php_fastcgi authorization bypass via dot-segments in the request path",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": ">= 2.4.6, <= 2.11.7",
+        "patched_versions": "v2.11.8"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-6365-7ppr-5r92",
+    "cve_id": null,
+    "severity": "medium",
+    "summary": "Connection created for the wrong upstream for forward_auth + reverse_proxy",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "< v2.11.5",
+        "patched_versions": "v.2.11.5"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-8qx7-j2v2-x6q5",
+    "cve_id": "CVE-2026-55458",
+    "severity": "low",
+    "summary": "RFC 7230 §6.1 compliance issue / Hop-by-hop headers that leak through",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<=v2.11.4",
+        "patched_versions": "v2.11.5"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-qrp7-cvwr-j2c6",
+    "cve_id": "CVE-2026-52844",
+    "severity": "high",
+    "summary": "Windows `file_server` path authorization bypass via encoded backslash",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "",
+          "ecosystem": ""
+        },
+        "vulnerable_version_range": "< v2.11.4",
+        "patched_versions": "v2.11.4"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-f59h-q822-g45g",
+    "cve_id": "CVE-2026-52845",
+    "severity": "high",
+    "summary": "FastCGI header normalization bypass in `forward_auth copy_headers`",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "< v2.11.4",
+        "patched_versions": "v2.11.4"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-j8px-rmrx-76h9",
+    "cve_id": "CVE-2026-77281",
+    "severity": "medium",
+    "summary": "Three vulnerabilities in Caddy v2.11.3: rewrite placeholder re-expansion, unbounded body buffer DoS, and fileHidden case-sensitivity bypass",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<= 2.11.3",
+        "patched_versions": "v2.11.4"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-vcc4-2c75-vc9v",
+    "cve_id": "CVE-2026-52846",
+    "severity": "medium",
+    "summary": "stripHTML template function bypass in github.com/caddyserver/caddy",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<= 2.11.3",
+        "patched_versions": "v2.11.4"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-m675-2p33-xv9g",
+    "cve_id": "CVE-2026-45135",
+    "severity": "high",
+    "summary": "Unsafe Unicode Handling in FastCGI splitPos Allows Execution of Non-PHP Files",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": ">= 2.7.0, <= 2.10.2",
+        "patched_versions": "v2.11.3"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-wwhq-w58m-w29c",
+    "cve_id": null,
+    "severity": "high",
+    "summary": "Caddy CVE-2026-30852 Fix Bypass",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "<=2.11.2",
+        "patched_versions": ""
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-x5w9-xh9r-mvfc",
+    "cve_id": "CVE-2026-45692",
+    "severity": "medium",
+    "summary": "Remote Admin Authorization Bypass in `/config` API via Array Index Normalization",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "v2.4.0 and later",
+        "patched_versions": "v2.11.3"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-gx7w-56w6-g48x",
+    "cve_id": null,
+    "severity": "medium",
+    "summary": "Remote Admin Authorization Bypass on PKI Endpoints via Prefix-Based Path Matching",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "< v2.11.3",
+        "patched_versions": "v2.11.3"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-7r4p-vjf4-gxv4",
+    "cve_id": "CVE-2026-30851",
+    "severity": "high",
+    "summary": "Caddy forward_auth copy_headers Does Not Strip Client-Supplied Headers, Allowing Identity Injection and Privilege Escalation",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": ">= 2.10.0, < v2.11.2",
+        "patched_versions": "v2.11.2"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-m2w3-8f23-hxxf",
+    "cve_id": "CVE-2026-30852",
+    "severity": "medium",
+    "summary": "vars_regexp double-expands user input, leaking env vars and files",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": ">= v2.7.5, <= v2.11.1",
+        "patched_versions": "v2.11.2"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-4xrr-hq4w-6vf4",
+    "cve_id": "CVE-2026-27585",
+    "severity": "medium",
+    "summary": "Improper sanitization of glob characters in file matcher may lead to bypassing security protections",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp/fileserver",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "< v2.11.0",
+        "patched_versions": "v2.11.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-hffm-g8v7-wrv7",
+    "cve_id": "CVE-2026-27586",
+    "severity": "high",
+    "summary": "mTLS client authentication silently fails open when CA certificate file is missing or malformed",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddytls",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "v2.10.2",
+        "patched_versions": "v2.11.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-g7pc-pc7g-h8jh",
+    "cve_id": "CVE-2026-27587",
+    "severity": "medium",
+    "summary": "Caddy: MatchPath %xx (escaped-path) branch skips case normalization, enabling path-based route/auth bypass",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "2.10.2",
+        "patched_versions": "v2.11.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-x76f-jf84-rqj8",
+    "cve_id": "CVE-2026-27588",
+    "severity": "medium",
+    "summary": "Caddy: MatchHost becomes case-sensitive for large host lists (>100), enabling host-based route/auth bypass",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "2.10.2",
+        "patched_versions": "v2.11.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-879p-475x-rqh2",
+    "cve_id": "CVE-2026-27589",
+    "severity": "medium",
+    "summary": "cross-origin config application via local admin API /load (caddy)",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "(confirmed on main @ e0f8d9b2047af417d8faf354b675941f3dac9891)",
+        "patched_versions": "v2.11.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-5r3v-vc8m-m96g",
+    "cve_id": "CVE-2026-27590",
+    "severity": "high",
+    "summary": "Unicode case-folding length expansion causes incorrect split_path index (SCRIPT_NAME/PATH_INFO confusion) in FastCGI transport",
+    "first_patched_version": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "name": "github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy/fastcgi",
+          "ecosystem": "go"
+        },
+        "vulnerable_version_range": "< v2.11.0",
+        "patched_versions": "v2.11.0"
+      }
+    ]
+  }
+]

@@ -19,6 +19,15 @@
 # Usage:
 #   check-pinned-modules.sh [--dockerfile PATH] [--out-dir DIR] [--json]
 #                           [--offline-fixture FILE]
+#                           [--binary PATH|image:REF] [--also module@version]...
+#
+#   --binary  the built caddy binary (or `image:<ref>` to extract one from a
+#             container image) whose module graph is swept for advisories, in
+#             addition to the `--with` pins. See trap 5: the `--with` list is
+#             not the image. Without it the graph sweep is reported as NOT RUN,
+#             which reaches `attention` -- an unswept graph is not a clean one.
+#   --also    sweep this `module@version` too, for a one-off check or a test
+#             fixture. Not a place to maintain a list of engines; use --binary.
 #
 # Environment:
 #   GITHUB_OUTPUT   When set, verdict/counts are appended for CI consumption.
@@ -150,14 +159,85 @@
 #
 #    A pin for which NEITHER question could be asked must not render like a
 #    pin that was asked and came back clean — see `adv_cell` near the end.
+#
+# 5. THE `--with` LIST IS NOT THE IMAGE. Traps 1-4 are each about asking the
+#    right QUESTION about a pin. This one is about the SET being asked, and it
+#    is the older bug: for its whole life this script took its input from
+#    `--with` arguments and nothing else, so two parts of the image were swept
+#    by nothing at all (T-0669, from T-0660):
+#
+#      - `caddyserver/caddy` ITSELF, the `FROM caddy:<ver>-builder` /
+#        `FROM caddy:<ver>-alpine` base. It is the core of the image and was
+#        never a `--with` argument, so it was never checked. Measured at the
+#        2.11.7 the image shipped: FIVE live advisories, all CVE-less, all
+#        invisible to OSV (a package+version query at that version returns 0,
+#        and every one of the five is a 404 on OSV by GHSA id). Five unpatched
+#        findings in the single most important component, behind a report that
+#        said every pin was current -- true, and irrelevant.
+#
+#      - THE TRANSITIVE GRAPH behind a thin module pin.
+#        `corazawaf/coraza-caddy` is the `--with` pin and has 0 advisories;
+#        `corazawaf/coraza`, the WAF ENGINE it exists to wrap, has 14, three of
+#        them CVE-less. The pin was clean and the code doing the work was not.
+#
+#    So the sweep's input is now THE BUILT BINARY'S MODULE GRAPH, read with
+#    `go version -m`, plus the Dockerfile's base-image tag. The graph is
+#    preferred over extending a list by hand for one reason: a hand-maintained
+#    extra list is exactly the thing that drifted here. Adding
+#    `corazawaf/coraza` to a list would have closed this case and nothing
+#    else, and the next engine behind the next thin wrapper would repeat it.
+#    The graph is 235 modules and is by construction what shipped.
+#
+#    AN UNAVAILABLE GRAPH IS UNSWEPT, NOT CLEAN. The graph needs a built image,
+#    which a given run may not have; the base-image tag is parsed from the
+#    Dockerfile and is always available. So the two inputs degrade differently
+#    and are reported differently -- a run with no graph says so rather than
+#    printing an all-clear that silently covers one module.
+#
+#    AND THE COUNT MUST NOT INFLATE. Of Caddy's 23 advisories, 8 are CVE-less;
+#    of those 8, THREE are bounded strictly below the shipped version
+#    (`< 2.11.5`, `<= 2.11.2`, `< 2.11.3`) and do not apply. Reporting 8 where
+#    5 apply is as wrong as reporting 0 (T-0645, T-0660): a reader who checks
+#    one row and finds it already fixed stops believing the other seven. The
+#    range filter the GitHub cross-check already uses does this job, and is
+#    shared rather than reimplemented so the two reports cannot disagree.
 set -uo pipefail
 
 PROXY="${GOPROXY_BASE:-https://proxy.golang.org}"
 OSV="${OSV_BASE:-https://api.osv.dev}"
+# ---------------------------------------------------------------------------
+# DESIGN RULE, earned three times in this script: WHEN ONE OUTPUT CARRIES TWO
+# MEANINGS, SAY WHICH ONE YOU MEAN -- do not change the behaviour, add the
+# distinction.
+#   1. `behind` conflated "we have not looked" with "we looked and chose this"
+#      -> fixed by the `# pin-watch: floor` acknowledgement, which reports an
+#         intentional floor separately and re-arms if upstream passes the
+#         version the decision was taken against.
+#   2. a leftover untagged-pin allowlist entry was routed to $errors, which
+#      means "these numbers cannot be trusted" -> fixed by $notices, rendering
+#      a Housekeeping section at attention/rc=1 instead of error/rc=3.
+#   3. the report did not say WHICH TREE it read. This script reads
+#      $DOCKERFILE by plain path, so a local run in a shared clone can grade
+#      an uncommitted pin set while reading identically to a CI run. The fix
+#      is disclosure, NOT reading HEAD: the weekly job must grade the
+#      checked-out ref (pristine after actions/checkout) and a deliberate
+#      pre-commit run is legitimate. So state the path and whether it is dirty.
+# Before adding any new verdict, counter or row, ask what it reports when its
+# own input is missing, and whether a reader can tell the two cases apart.
+# ---------------------------------------------------------------------------
 DOCKERFILE="Dockerfile.caddy"
 OUT_DIR=""
 EMIT_JSON=0
 FIXTURE=""
+# The built binary whose module graph is the sweep's real input (trap 5). May
+# be a path to a caddy binary, or `image:<ref>` to extract one from a built
+# container image. Empty means no graph is available for this run, which is
+# reported as not-run rather than treated as an empty graph.
+BINARY=""
+# Extra advisory-sweep targets supplied directly as `module@version`, for the
+# acceptance fixture (trap 5's disproof) and for a one-off check. This is NOT
+# a maintained list of engines-behind-wrappers: that is what the graph is for.
+EXTRA_TARGETS=""
 
 # A precondition failure must not be able to read as a clean report.
 #
@@ -196,6 +276,14 @@ die() {
       echo "floors_acknowledged=unknown"
       echo "floors_expired=unknown"
       echo "github_only=unknown"
+      # Not 0 for the same reason as advisory_unknown above: nothing about the
+      # image was established either, and a 0 here would read as "the base
+      # image and the module graph were swept and were clean".
+      echo "image_findings=unknown"
+      echo "image_unswept=unknown"
+      echo "image_out_of_scope=unknown"
+      echo "image_graph=unknown"
+      echo "image_base=unknown"
       echo "report<<$PINREPORT_DELIM"
       echo "### Pinned xcaddy plugin watch"
       echo
@@ -229,6 +317,8 @@ while [ $# -gt 0 ]; do
     --dockerfile) need_value "$1" "${2+$2}"; DOCKERFILE="$2"; shift; shift ;;
     --out-dir)    need_value "$1" "${2+$2}"; OUT_DIR="$2";    shift; shift ;;
     --offline-fixture) need_value "$1" "${2+$2}"; FIXTURE="$2"; shift; shift ;;
+    --binary)     need_value "$1" "${2+$2}"; BINARY="$2";  shift; shift ;;
+    --also)       need_value "$1" "${2+$2}"; EXTRA_TARGETS="${EXTRA_TARGETS:+$EXTRA_TARGETS }$2"; shift; shift ;;
     --json)       EMIT_JSON=1;         shift ;;
     # Ends at the separator before the "three traps" essay, which is
     # commentary for a maintainer rather than usage. A fixed upper bound was
@@ -692,6 +782,146 @@ is_untagged_pin() {
       [ -z "${1//[0-9a-f]/}" ] && return 0 || return 1 ;;
   esac
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Does a GitHub free-text version range plainly EXCLUDE this version?
+#
+# Returns 0 ("drop the row") only when the range's highest upper bound sorts
+# strictly BELOW the version. Everything it cannot confidently place is KEPT,
+# because a failure to understand a range must never look like the absence of
+# an advisory -- a dropped row is invisible, and this is the one place in this
+# script where being wrong produces a false CLEAN.
+#
+# This was the inline filter inside the GitHub cross-check loop and is now a
+# function because the base-image and graph sweeps (trap 5) need exactly the
+# same judgement, and the count-inflation guard has to be ONE implementation:
+# three of Caddy's eight CVE-less advisories are bounded below the shipped
+# version, and a second copy of this logic is a second chance to get that
+# wrong in only one of the two reports. It decides nothing but the range
+# question; the callers keep their own de-duplication and rendering.
+#
+# Every subtlety below is load-bearing and each was a demonstrated bug:
+#
+#   - THE BOUND IS THE HIGHEST ONE IN THE STRING, NOT THE LAST. `tail -1` on
+#     textual order drops a row on a trailing low bound: `"<= 1.7.8, <= 1.0.0"`
+#     against a 1.7.8 pin, or `"affects <= 9.9.9 and <= 1.0.0"` against 5.4.0.
+#     A range listing several bounds is legal free text, and an advisory author
+#     -- or anyone controlling the response -- could append a low bound to hide
+#     a real finding. Taking the maximum means an extra bound can only ever
+#     make the row MORE likely to be kept.
+#   - A LOWER BOUND IS NOT A REASON TO IGNORE THE UPPER ONE. This test used
+#     to bail out on any range whose text STARTS with `>`, which on a
+#     two-sided range throws away the only bound that can settle the
+#     question: `>= 2.10.0, < v2.11.2` against 2.11.9 is plainly excluded by
+#     its upper bound, and the early return kept it. That is harmless on a
+#     pin with few advisories; on `caddyserver/caddy`, which has 23, it
+#     turned the correct answer of ZERO live advisories at 2.11.9 into NINE
+#     -- the exact count-inflation this sweep carries a guard against
+#     (T-0645/T-0660), produced by the guard itself. Reproduced before
+#     fixing. A range with no upper bound at all is still kept: there is
+#     then nothing to compare it against.
+#   - AN EXCLUSIVE BOUND (`<`) EXCLUDES ITS OWN VALUE, an inclusive one
+#     (`<=`) does not. Reading `< 2.11.2` as `<= 2.11.2` keeps a row for a
+#     version the advisory itself says is fixed, which is the same inflation
+#     one release further on. So the operator travels with its bound and the
+#     equality case consults it, rather than only the number being compared.
+#   - A NON-NUMERIC version (pseudo-version, SHA) cannot be compared: kept.
+#   - A BOUND WITH FEWER COMPONENTS than the version names a release SERIES,
+#     not a point release. Padding `<= 1.7` to 1.7.0 dropped a row whose pin
+#     was v1.7.8 -- an advisory that most likely covers 1.7.x, hidden. Kept.
+#   - LEADING ZEROS are stripped per component first: `sort -V` reads
+#     "0005.4.0" as NEWER than "5.4.0", so a zero-padded bound that in fact
+#     covers the version compared as above it and the row was dropped.
+#   - COMPONENT COUNTS are reconciled before comparing: `sort -V` ranks "5.4"
+#     below "5.4.0", so a bound of `<= 5.4` dropped a row whose pin was exactly
+#     v5.4.0 -- the advisory covers the pin and the filter hid it.
+# ---------------------------------------------------------------------------
+# Is this advisory's own stated fix already in the shipped version?
+#
+# A SECOND, INDEPENDENT exclusion beside the range filter, and the two are
+# deliberately different in kind: the range filter reads the AFFECTED range
+# (free text, conservative, keeps what it cannot place), this one reads the
+# advisory's own FIX. `patched_versions` naming a release at or below the
+# shipped version means the image already carries the fix, whatever its range
+# text happens to say.
+#
+# This exists because conservatism has a cost on a repo with many advisories.
+# Caddy has 23 and its ranges are mostly free text: at 2.11.9 five CVE-bearing
+# rows survived the range filter because their ranges are a bare "2.10.2", a
+# commit hash, or "v2.4.0 and later" -- unplaceable by any parser -- while
+# every one of them states a fix at or below v2.11.3. OSV, which CAN see them
+# (they carry CVE ids), reports zero. Rendering five already-fixed rows is the
+# count-inflation this sweep carries a guard against (T-0645/T-0660), and a
+# reader who checks one and finds it fixed stops believing the rest.
+#
+# THE FIELD IS `patched_versions`, NOT `first_patched_version` (T-0660). The
+# authoritative-looking one is frequently null -- on all five of the Caddy
+# 2.11.7 advisories it is null while `patched_versions` carries the real fix --
+# and reading the null one filed an available HIGH fix as an unfixable
+# residual.
+#
+# IT CAN ONLY EVER REMOVE A ROW IT HAS POSITIVE EVIDENCE FOR. Empty, null,
+# unparseable or non-numeric excludes nothing, so a missing field cannot make
+# a row disappear; that direction is the false clean this file is written
+# against. Only the LOWEST version in the field is used: a multi-branch fix
+# ("2.11.8, 3.0.1") is only evidence for the branch the image is on, and
+# taking the lowest means a stated fix can only clear a version at or above it.
+patch_already_in_version() { # $1 = patched_versions text, $2 = version
+  local p_txt="$1" p_ver="$2" p_lo p_n p_cmp_v p_cmp_lo
+  [ -n "$p_txt" ] || return 1
+  p_n="${p_ver#v}"
+  case "$p_n" in *[!0-9.]*) return 1 ;; esac
+  # Lowest stated fix. A fix must have all three components to be comparable:
+  # "2.11" names a series and says nothing about which patch release fixed it.
+  p_lo="$(printf '%s' "$p_txt" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' \
+          | sed 's/^v//' | sort -V | head -1 || true)"
+  [ -n "$p_lo" ] || return 1
+  p_cmp_v="$(printf '%s' "$p_n"  | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
+  p_cmp_lo="$(printf '%s' "$p_lo" | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
+  # Fixed at or below the shipped version -> the image has the fix.
+  [ "$p_cmp_v" = "$p_cmp_lo" ] && return 0
+  [ "$(printf '%s\n%s\n' "$p_cmp_v" "$p_cmp_lo" | sort -V | tail -1)" = "$p_cmp_v" ]
+}
+
+range_excludes_version() { # $1 = range text, $2 = version; 0 = plainly older
+  local r_range="$1" r_ver="$2" r_hi r_op r_n r_hi_dots r_ver_dots r_cmp_v r_cmp_hi r_tok
+  [ -n "$r_range" ] || return 1
+  r_n="${r_ver#v}"
+  case "$r_n" in *[!0-9.]*) return 1 ;; esac
+
+  # Collect every upper bound in the string as "<op> <number>", then take the
+  # HIGHEST number. `sort -V` on the number field, so the operator travels
+  # with its own bound and `< 2.11.2` is never conflated with `<= 2.11.2`.
+  r_tok="$(printf '%s' "$r_range" \
+    | grep -oiE '<=?[[:space:]]*v?[0-9]+(\.[0-9]+)*' \
+    | sed -E 's/^(<=?)[[:space:]]*v?/\1 /' \
+    | sort -t' ' -k2,2V | tail -1 || true)"
+  [ -n "$r_tok" ] || return 1
+  r_op="${r_tok%% *}"
+  r_hi="${r_tok##* }"
+  [ -n "$r_hi" ] || return 1
+
+  # A bound with FEWER components than the version names a release SERIES,
+  # not a point release: keep rather than guess at the bottom of that series.
+  r_hi_dots="$(printf '%s' "$r_hi" | tr -cd '.' | wc -c)"
+  r_ver_dots="$(printf '%s' "$r_n" | tr -cd '.' | wc -c)"
+  [ "$r_hi_dots" -ge "$r_ver_dots" ] || return 1
+
+  r_cmp_v="$(printf '%s' "$r_n"  | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
+  r_cmp_hi="$(printf '%s' "$r_hi" | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
+  while [ "$(printf '%s' "$r_cmp_v" | tr -cd '.' | wc -c)" \
+       -lt "$(printf '%s' "$r_cmp_hi" | tr -cd '.' | wc -c)" ]; do
+    r_cmp_v="$r_cmp_v.0"
+  done
+
+  if [ "$r_cmp_v" = "$r_cmp_hi" ]; then
+    # Equal to the bound: `< X` excludes X, `<= X` includes it.
+    [ "$r_op" = "<" ]
+    return
+  fi
+  # Strictly above the highest upper bound, under either operator.
+  [ "$(printf '%s\n%s\n' "$r_cmp_v" "$r_cmp_hi" | sort -V | tail -1)" = "$r_cmp_v" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1210,81 +1440,31 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
       fi
 
       # Drop advisories that are plainly OLDER than the pin. GitHub's range is
-      # free text, so this is a conservative TEXTUAL filter, not a comparator:
-      # it only discards a range whose upper bound sorts strictly below the
-      # pinned version. Anything it cannot confidently place is KEPT, because
-      # the failure to understand a range must not look like the absence of an
-      # advisory — a dropped row is invisible, and this is the one place in
-      # this script where being wrong produces a false CLEAN.
+      # free text, so this is a conservative TEXTUAL filter, not a comparator;
+      # every subtlety is documented on `range_excludes_version` above, which
+      # is shared with the base-image and graph sweeps so the count-inflation
+      # guard is one implementation rather than two.
       #
       # Without any filter the cross-check reported 12 "GitHub-only" findings
       # for this Dockerfile, mostly advisories fixed long before the pinned
       # release — exactly the history noise trap 3 above exists to keep out of
       # this report, re-entering through the second index.
-      #
-      # THE BOUND IS THE HIGHEST ONE IN THE STRING, NOT THE LAST. An earlier
-      # version used `tail -1`, which takes the textually last `<=` match, and
-      # that is a false-clean generator on three observed-plausible shapes:
-      #
-      #   "<= 1.7.8, <= 1.0.0"             pin 1.7.8 -> dropped on 1.0.0
-      #   "affects <= 9.9.9 and <= 1.0.0"  pin 5.4.0 -> dropped on 1.0.0
-      #
-      # A range listing several bounds is legal free text, and an attacker who
-      # controls GitHub's response (or simply a sloppy advisory author) could
-      # append a low bound to hide a real finding. Taking the maximum means an
-      # extra bound can only ever make the row MORE likely to be kept.
-      #
-      # Component counts are reconciled before comparing. `sort -V` ranks
-      # "5.4" below "5.4.0", so a truncated bound of `<= 5.4` dropped a row
-      # whose pin was exactly v5.4.0 — the advisory covers the pin and the
-      # filter hid it. A bound with FEWER components than the pin is kept
-      # outright (see below); otherwise the pin is zero-padded up to the
-      # bound's length so equality is seen.
-      g_hi="$(printf '%s' "$g_range" | grep -oiE '<=?[[:space:]]*v?[0-9]+(\.[0-9]+)*' \
-              | grep -oE '[0-9]+(\.[0-9]+)*' | sort -V | tail -1 || true)"
-      if [ -n "$g_hi" ] && ! printf '%s' "$g_range" | grep -qE '^[[:space:]]*(>|>=)' ; then
-        g_pin_n="${g_pinned#v}"
-        case "$g_pin_n" in
-          *[!0-9.]*) ;;   # pseudo-version or SHA: cannot compare, keep
-          *)
-            # A bound with FEWER components than the pin names a release
-            # series, not a point release, and padding it with .0 silently
-            # picks the bottom of that series: `<= 1.7` against a v1.7.8 pin
-            # padded to 1.7.0 and DROPPED the row, hiding an advisory that
-            # most likely covers 1.7.x. GitHub's ranges are free text, so a
-            # short bound is precisely the case this filter cannot
-            # confidently place — keep the row instead of guessing.
-            g_hi_dots="$(printf '%s' "$g_hi" | tr -cd '.' | wc -c)"
-            g_pin_dots="$(printf '%s' "$g_pin_n" | tr -cd '.' | wc -c)"
-            if [ "$g_hi_dots" -ge "$g_pin_dots" ]; then
-              # Pad the pin up to the bound's component count so that a
-              # bound naming more components still compares correctly.
-              g_cmp_pin="$g_pin_n"; g_cmp_hi="$g_hi"
-              # Leading zeros are stripped per component first. `sort -V`
-              # reads "0005.4.0" as NEWER than "5.4.0", so a zero-padded
-              # bound that in fact covers the pin compared as strictly above
-              # it and the row was dropped -- the advisory covers the pin and
-              # the filter hid it. Free-text ranges from a third party are
-              # exactly where that shows up, which is the threat model this
-              # filter already assumes.
-              g_cmp_pin="$(printf '%s' "$g_cmp_pin" | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
-              g_cmp_hi="$(printf '%s' "$g_cmp_hi" | sed 's/\(^\|\.\)0*\([0-9]\)/\1\2/g')"
-              while [ "$(printf '%s' "$g_cmp_pin" | tr -cd '.' | wc -c)" \
-                   -lt "$(printf '%s' "$g_cmp_hi" | tr -cd '.' | wc -c)" ]; do
-                g_cmp_pin="$g_cmp_pin.0"
-              done
-              if [ "$(printf '%s\n%s\n' "$g_cmp_pin" "$g_cmp_hi" | sort -V | tail -1)" = "$g_cmp_pin" ] \
-                 && [ "$g_cmp_pin" != "$g_cmp_hi" ]; then
-                continue   # upper bound is strictly below the pin
-              fi
-            fi ;;
-        esac
-      fi
+      range_excludes_version "$g_range" "$g_pinned" && continue
 
       printf '%s\t%s\t%s\t%s\t%s\n' \
         "$g_module" "$g_pinned" "$(clean_scalar "$g_ghsa")" \
         "$(clean_scalar "${g_sev:-?}")" "$(clean_scalar "${g_range:-?}")" >> "$gh_extra"
     done < <(jq -j --arg mod "$g_module" '
+      # Defined at the top of the program: jq `def`s are declarations, not
+      # pipeline stages, so one placed mid-pipeline after a `|` is a syntax
+      # error — and inside a single-quoted shell argument that surfaces as a
+      # BASH parse error pointing at the jq line, which is a confusing way to
+      # learn it. See the match discussion below for what they are for.
+      def pw_norm: ascii_downcase | gsub("\\s+$"; "") | sub("^https?://"; "") | sub("/+$"; "");
+      def pw_is_modpath: test("^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]+)?/[^ ]+$");
+      def pw_demaj: sub("/v[0-9]+$"; "");
+      def pw_hasmaj: test("/v[0-9]+$");
+
       .[]
       | . as $a
       | (.vulnerabilities // [])[]
@@ -1294,16 +1474,74 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
       # just `repo`), so matching is intentionally loose and the result is
       # only ever a pointer for a human.
       #
-      # The repo-element arm is ANCHORED to a path boundary. Unanchored, the
-      # bare element is a substring test: `.[2]` of github.com/go-chi/chi/v5
-      # is "chi", which matched an unrelated advisory for
-      # github.com/unrelated/archive. That direction of error is noise rather
-      # than a false clean, but it pushes verdict=attention and a ::warning::
-      # on records that have nothing to do with the pin, which is exactly how
-      # a reader is trained to ignore the report.
-      | select((.package.name // "") | ascii_downcase
-               | (test("(^|[/ ])" + ($mod | ascii_downcase | split("/") | .[2] | gsub("\\."; "\\\\.")) + "($|[/ @])")
-                  or test($mod | ascii_downcase | gsub("\\."; "\\\\."))))
+      # BUT LOOSE ONLY WHERE IT HAS TO BE. The match is split in two by
+      # whether `package.name` is itself a full module path, because a full
+      # module path is not free text — it is the one spelling that can be
+      # compared exactly, and comparing it loosely produced a false ADVISORY
+      # on a correctly-patched pin (T-0666):
+      #
+      #   go-jose/go-jose publishes v3 and v4 side by side. Each of its five
+      #   CVE-less advisories carries TWO vulnerability entries — v4 with
+      #   `<= v4.1.6` / patched v4.1.7, and v3 with range `all` and no patch.
+      #   The old repo-element arm took `.[2]` of github.com/go-jose/go-jose/v4,
+      #   i.e. "go-jose", which matches a package named `.../go-jose/v3`, so
+      #   the v3 rows attached to the v4 pin. The range filter below cannot
+      #   drop them either: `all` carries no upper bound to compare against,
+      #   and "keep what you cannot place" is the right default there. Result:
+      #   a permanent verdict=advisory naming `go-jose/v4@v4.1.7` — the exact
+      #   version that PATCHES all five. The one job whose output is meant to
+      #   be read was crying wolf about the pin that had just been fixed,
+      #   which is the alert-fatigue failure T-0651 exists to remove.
+      #
+      # So for a full module path the WHOLE path is compared, major-version
+      # suffix included, and two different `/vN` suffixes never match. The
+      # three relations that DO still match are kept deliberately, because
+      # each is the same code under a different spelling:
+      #
+      #   - identical paths;
+      #   - one side omitting `/vN` where the other carries it, which is legal
+      #     only for v0/v1 and is how a pre-v2 module is named — at most one
+      #     side may carry a suffix, so v3-vs-v4 is still excluded;
+      #   - one path being a PACKAGE INSIDE the other. Three of the pins in
+      #     this image are packages within a larger module (see trap 1), so
+      #     an advisory naming `crowdsec/pkg/apiclient` against the resolved
+      #     module `crowdsec` must keep matching. Dropping that containment
+      #     arm was tried first and silently hid that row — a false clean on
+      #     one of the two CVE floors, i.e. a worse bug than the one being
+      #     fixed.
+      #
+      # NO APOSTROPHES IN THE COMMENTS BELOW, up to the closing quote. These
+      # comments sit INSIDE a single-quoted shell argument, so one apostrophe
+      # ends the jq program and bash parses the remainder of the filter as
+      # shell. It surfaces as a bash syntax error pointing at a jq line, which
+      # reads as a jq problem and is not one. Cost an edit cycle here.
+      #
+      # The free-text arm below is unchanged and still reached for every
+      # other spelling. Its repo-element test is ANCHORED to a path boundary:
+      # unanchored, the bare element is a substring test, and `.[2]` of
+      # github.com/go-chi/chi/v5 is "chi", which matched an unrelated
+      # advisory for github.com/unrelated/archive. That direction of error is
+      # noise rather than a false clean, but it pushes verdict=attention and
+      # a ::warning:: on records that have nothing to do with the pin, which
+      # is exactly how a reader is trained to ignore the report.
+      #
+      # A trailing space and a `https://` prefix are normalised off both
+      # sides first: `https://github.com/go-chi/chi ` is an observed real
+      # value, and left alone it fails the module-path test and falls to the
+      # loose arm by accident rather than by decision.
+      | (.package.name // "" | pw_norm) as $pname
+      | ($mod | pw_norm) as $m
+      | select(
+          if ($pname | pw_is_modpath) then
+            ($pname == $m)
+            or ((($pname | pw_demaj) == ($m | pw_demaj))
+                and ((($pname | pw_hasmaj) | not) or (($m | pw_hasmaj) | not)))
+            or ($pname | startswith($m + "/"))
+            or ($m | startswith($pname + "/"))
+          else
+            ($pname | test("(^|[/ ])" + ($m | split("/") | .[2] | gsub("\\."; "\\\\.")) + "($|[/ @])"))
+            or ($pname | test($m | gsub("\\."; "\\\\.")))
+          end)
       | [ ($a.ghsa_id // ""), ($a.cve_id // ""), ($a.severity // ""),
           (.vulnerable_version_range // "") ]
       | join("\u001f") + "\u0000"' <<<"$g_body" 2>/dev/null)
@@ -1338,6 +1576,349 @@ if [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
       printf '%s\t%s\t%s\n' "$r_module" "$r_pinned" "$r_ids"
     done | sort -u
   )
+fi
+
+# ---------------------------------------------------------------------------
+# Pass 5 — THE IMAGE, not the `--with` list (trap 5, T-0669).
+#
+# Two inputs the `--with` extractor structurally cannot see:
+#
+#   base    `FROM caddy:<ver>-builder` / `-alpine` in the Dockerfile. Parsed
+#           here, mapped to `caddyserver/caddy`, and swept on the repo-scoped
+#           endpoint — the same endpoint pass 4 already uses, so this is a new
+#           INPUT to existing code, not a new mechanism.
+#   graph   every module in the built binary (`go version -m`), which is what
+#           reaches the engine behind a thin wrapper pin. 235 modules on this
+#           image; `corazawaf/coraza` is in it and was in nothing before.
+#
+# WHY THE REPO ENDPOINT AND NOT OSV. Because OSV cannot answer this question.
+# Measured on the five Caddy advisories live at the 2.11.7 the image shipped:
+# an OSV package+version query at that exact version returns ZERO, and each of
+# the five is a 404 on OSV by GHSA id. They carry no CVE id, and T-0654 settled
+# that the CVE id — not a lag — is the mechanism: a CVE-less advisory appears
+# on the per-repository endpoint and nowhere else measured. So the sweep is
+# GitHub-repo-scoped by necessity, and that is also why its findings reach
+# `attention` rather than `advisory`: the ranges are free text, exactly as in
+# pass 4, and exit 2 stays reserved for OSV's machine-checked matching
+# (T-0634's deliberate divergence, kept here).
+#
+# ONLY A VERSION-BEARING MODULE IS SWEPT, and the rest are COUNTED, not
+# dropped: a module with no comparable version cannot be range-filtered, and
+# silently omitting it would make the swept count read as the graph size.
+#
+# The bound on cost is deliberate. One HTTP call per github.com module over
+# 235 modules would exhaust an unauthenticated 60/hour budget many times over
+# and take minutes, so the graph sweep is capped and reports its own
+# truncation. A cap that hid its own effect would be the false-clean shape
+# this whole file is written against, so an unswept remainder reads as
+# unswept.
+# ---------------------------------------------------------------------------
+img_extra="$OUT_DIR/image-extra.tsv"
+: > "$img_extra"
+img_targets="$OUT_DIR/image-targets.tsv"   # module \t version \t source
+: > "$img_targets"
+img_swept=0
+# "Could have been swept and was not" -- a budget cap, or an endpoint that did
+# not answer. A defect, and the thing that alerts.
+img_unswept=0
+# "This index cannot answer for this module, ever" -- not on github.com, so it
+# has no per-repository advisory endpoint, or no comparable semver version.
+# A permanent scope limit, reported but never alerted on: 74 of this image's
+# 236 graph modules are in this class, so counting them as unswept would make
+# that counter permanently non-zero and therefore unreadable.
+img_out_of_scope=0
+img_graph_state="not-run"
+img_graph_total=0
+img_graph_seen=0
+img_unavailable=""
+# Derived from the available GitHub budget, not fixed. A token lifts the
+# advisory API from 60 requests/hour/IP to 5000, and this image's graph has
+# ~162 sweepable modules: one number cannot serve both. A fixed 60 left >=102
+# modules unswept on EVERY authenticated run, which turned `image_unswept`
+# into an always-on signal -- the alert fatigue this report had already had
+# removed once (T-0651) -- and made "an unswept component is not a clean
+# component" vacuous by applying it to two thirds of the graph by design.
+#
+# Unauthenticated, the cap is real and the remainder is honestly reported as
+# unswept. PINWATCH_GRAPH_CAP overrides either way, which is how the tests
+# drive the named-targets-only path.
+if [ -n "${PINWATCH_GRAPH_CAP:-}" ]; then
+  GRAPH_SWEEP_CAP="$PINWATCH_GRAPH_CAP"
+elif [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+  GRAPH_SWEEP_CAP=400
+else
+  GRAPH_SWEEP_CAP=40
+fi
+
+# --- the base image -------------------------------------------------------
+# Both FROM lines are read and reconciled. They are the same version today and
+# the Dockerfile's own comments assume so, but a bump that moved only one of
+# them would ship a binary built against one Caddy and a runtime image from
+# another, and that must be a loud finding rather than a coin toss over which
+# line the parser happened to read first.
+base_builder="$(clean_scalar "$(sed -n 's/^FROM .*[[:space:]]caddy:\([0-9][^[:space:]]*\)-builder[[:space:]].*$/\1/p' \
+  "$DOCKERFILE" | head -1)")"
+base_runtime="$(clean_scalar "$(sed -n 's/^FROM[[:space:]]\+caddy:\([0-9][^[:space:]]*\)-alpine[[:space:]]*$/\1/p' \
+  "$DOCKERFILE" | head -1)")"
+if [ -z "$base_builder" ] && [ -z "$base_runtime" ]; then
+  # The core of the image being unswept is the exact gap T-0669 closed, so a
+  # parser that can no longer find it is an error, not a silent skip.
+  echo "could not parse a \`FROM caddy:<version>-*\` base image out of $DOCKERFILE; the base image is the core of this image and was NOT swept for advisories" >> "$errors"
+else
+  if [ -n "$base_builder" ] && [ -n "$base_runtime" ] \
+     && [ "$base_builder" != "$base_runtime" ]; then
+    echo "the builder base is \`caddy:$base_builder\` but the runtime base is \`caddy:$base_runtime\`; the binary and the image it ships in are built on different Caddy versions" >> "$errors"
+  fi
+  printf '%s\t%s\t%s\n' "github.com/caddyserver/caddy" \
+    "${base_builder:-$base_runtime}" "base image" >> "$img_targets"
+fi
+
+# --- --also targets -------------------------------------------------------
+for t in $EXTRA_TARGETS; do
+  case "$t" in
+    *@*) printf '%s\t%s\t%s\n' "${t%@*}" "${t##*@}" "--also" >> "$img_targets" ;;
+    *) die "--also expects module@version, got: $t" ;;
+  esac
+done
+
+# --- the built binary's module graph --------------------------------------
+# `image:<ref>` extracts the binary from a built image. `docker create` +
+# `docker cp` rather than `docker run`: the published image is distroless with
+# no shell, so there is nothing to exec, and it has no `--version` flag either
+# (passing one boots the server). A missing docker or a failed extraction is
+# reported as the graph not having been read.
+if [ -n "$BINARY" ] && [ -z "$FIXTURE" ]; then
+  bin_path="$BINARY"
+  case "$BINARY" in
+    image:*)
+      img_ref="${BINARY#image:}"
+      bin_path=""
+      if ! command -v docker >/dev/null 2>&1; then
+        img_graph_state="error"
+        echo "--binary names a container image but docker is not available; the module graph was NOT swept" >> "$errors"
+      else
+        bin_cid="$(docker create "$img_ref" 2>/dev/null || true)"
+        if [ -n "$bin_cid" ]; then
+          if docker cp "$bin_cid:/usr/bin/caddy" "$OUT_DIR/caddy-bin" >/dev/null 2>&1; then
+            bin_path="$OUT_DIR/caddy-bin"
+          fi
+          docker rm -f "$bin_cid" >/dev/null 2>&1 || true
+        fi
+        if [ -z "$bin_path" ]; then
+          img_graph_state="error"
+          echo "could not extract /usr/bin/caddy from image '$(clean_scalar "$img_ref")'; the module graph was NOT swept" >> "$errors"
+        fi
+      fi ;;
+  esac
+
+  if [ -n "$bin_path" ]; then
+    if [ ! -f "$bin_path" ]; then
+      img_graph_state="error"
+      echo "--binary '$(clean_scalar "$bin_path")' does not exist; the module graph was NOT swept" >> "$errors"
+    elif ! command -v go >/dev/null 2>&1; then
+      img_graph_state="error"
+      echo "go is not available, so \`go version -m\` could not read the module graph; the graph was NOT swept" >> "$errors"
+    else
+      # `mod` is the main module, `dep` the dependencies; both ship code.
+      # `=>` lines are REPLACEMENTS and are deliberately excluded from the
+      # version comparison and counted as unswept instead: the version on a
+      # replaced module describes upstream, not the code in the binary, which
+      # is the same reason pass 1 reports a `--with` local replacement rather
+      # than comparing it.
+      graph_raw="$OUT_DIR/module-graph.txt"
+      if ! go version -m "$bin_path" > "$graph_raw" 2>/dev/null \
+         || ! grep -qE '^[[:space:]]*(dep|mod)[[:space:]]' "$graph_raw"; then
+        img_graph_state="error"
+        echo "\`go version -m\` read no module graph out of '$(clean_scalar "$bin_path")' (not a Go binary, or stripped of build info); the graph was NOT swept" >> "$errors"
+      else
+        img_graph_state="ok"
+        img_graph_total="$(awk '$1=="dep"||$1=="mod"{n++} END{print n+0}' "$graph_raw")"
+        # Only github.com modules have a repo-scoped endpoint to ask, and only
+        # a plain semver version can be range-compared. Everything else is
+        # counted as unswept below rather than quietly skipped.
+        awk '($1=="dep"||$1=="mod") && $2 ~ /^github\.com\// && $3 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ \
+             { printf "%s\t%s\tmodule graph\n", $2, $3 }' "$graph_raw" >> "$img_targets"
+        # Everything the filter above dropped is OUT OF SCOPE, not unswept:
+        # a module not on github.com has no per-repository advisory endpoint,
+        # and one without a plain semver version cannot be range-compared.
+        # Counted rather than dropped silently, so the report can say how much
+        # of the graph this index structurally cannot answer for -- but kept
+        # out of `img_unswept`, which must mean "a defect" to stay readable.
+        img_out_of_scope=$(( img_out_of_scope + $(awk '
+          ($1=="dep"||$1=="mod") && !($2 ~ /^github\.com\// && $3 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {n++}
+          END{print n+0}' "$graph_raw") ))
+      fi
+    fi
+  fi
+elif [ -z "$FIXTURE" ]; then
+  img_unavailable="no built binary was supplied (\`--binary\`), so the image's module graph was not swept; only the base image and the \`--with\` pins above were checked"
+fi
+
+# --- sweep the collected targets -----------------------------------------
+# Sorted and de-duplicated: the graph legitimately contains a module that is
+# also a `--with` pin, and a module can appear under two major-version paths.
+# A target already covered by the pin table is swept anyway — pass 4 asks the
+# same endpoint for it, and the de-duplication at the end of this loop drops
+# the repeat by GHSA id rather than by trusting the two passes to agree.
+if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" != "1" ]; then
+  # Sorted and de-duplicated, then ORDERED BY PRIORITY: the base image and any
+  # explicit `--also` target are swept BEFORE the graph bulk.
+  #
+  # This ordering is load-bearing, not cosmetic. With a plain `sort -u` the
+  # targets came out alphabetically, so a 236-module graph spent the whole
+  # unauthenticated 60/hour GitHub budget on modules beginning a-c and never
+  # reached `caddyserver` -- the base image, the single component this sweep
+  # exists to cover, unswept on a run that named it explicitly. Measured
+  # before fixing: 27 swept, 137 unswept, and the acceptance fixture reporting
+  # 0 of its 5 advisories. The run did not read clean (the remainder is
+  # counted and reaches `error`), so this was a priority bug and not a false
+  # clean -- but a sweep whose most important target is the one it drops is
+  # not much better. Rate limiting is normal here, so what gets dropped must
+  # be the least important thing, by construction.
+  sort -u "$img_targets" \
+    | awk -F'\t' '{ print ($3 == "module graph" ? 1 : 0) "\t" $0 }' \
+    | sort -s -k1,1n | cut -f2- > "$img_targets.sorted" \
+    && mv "$img_targets.sorted" "$img_targets"
+
+  i_gh_auth=()
+  i_gh_tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  [ -n "$i_gh_tok" ] && i_gh_auth=(-H "Authorization: Bearer $i_gh_tok")
+
+  while IFS=$'\t' read -r i_mod i_ver i_src; do
+    [ -n "$i_mod" ] && [ -n "$i_ver" ] || continue
+    # The base-image row is swept unconditionally; graph rows are capped.
+    # The cap exists to bound the GRAPH, which is 235 modules. The base image
+    # and an explicit `--also` target are named requests, not graph bulk, so
+    # they are never capped -- capping an `--also` made the acceptance fixture
+    # report zero findings for a version with five, which is the shape of
+    # false clean this file is written against.
+    if [ "$i_src" = "module graph" ] && [ "$img_graph_seen" -ge "$GRAPH_SWEEP_CAP" ]; then
+      img_unswept=$((img_unswept+1))
+      continue
+    fi
+    # Not a github.com path with a usable owner/repo: there is no
+    # per-repository advisory endpoint for it, which is a permanent scope
+    # limit rather than a sweep that failed. See img_out_of_scope.
+    case "$i_mod" in
+      github.com/*/*) ;;
+      *) img_out_of_scope=$((img_out_of_scope+1)); continue ;;
+    esac
+    i_owner="$(printf '%s' "$i_mod" | cut -d/ -f2)"
+    i_repo="$(printf '%s' "$i_mod" | cut -d/ -f3)"
+    printf '%s' "$i_owner/$i_repo" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' \
+      || { img_out_of_scope=$((img_out_of_scope+1)); continue; }
+    case "$i_owner/$i_repo" in *..*) img_out_of_scope=$((img_out_of_scope+1)); continue ;; esac
+
+    i_body="$(curl -fsS --max-time 25 \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      "${i_gh_auth[@]+"${i_gh_auth[@]}"}" \
+      "https://api.github.com/repos/$i_owner/$i_repo/security-advisories?per_page=100" 2>/dev/null || true)"
+    # An array is the only shape that means "this is the advisory list". A
+    # rate-limit or error object is a JSON object, and reading it as an empty
+    # list would say "no advisories" — the inversion this file exists against.
+    if [ -z "$i_body" ] || ! jq -e 'type == "array"' <<<"$i_body" >/dev/null 2>&1; then
+      img_unswept=$((img_unswept+1))
+      [ -z "$img_unavailable" ] && img_unavailable="GitHub's advisory API did not return a list for at least one module of the image (rate limit, or no token), so the image sweep is incomplete"
+      continue
+    fi
+    img_swept=$((img_swept+1))
+    [ "$i_src" = "module graph" ] && img_graph_seen=$((img_graph_seen+1))
+
+    while IFS= read -r -d '' i_rec; do
+      case "$i_rec" in *$'\037'*) ;; *) continue ;; esac
+      i_ghsa="${i_rec%%$'\037'*}";  i_rest="${i_rec#*$'\037'}"
+      i_cve="${i_rest%%$'\037'*}";  i_rest="${i_rest#*$'\037'}"
+      i_sev="${i_rest%%$'\037'*}";  i_rest="${i_rest#*$'\037'}"
+      i_range="${i_rest%%$'\037'*}"; i_patched="${i_rest#*$'\037'}"
+      [ -n "$i_ghsa" ] || continue
+
+      # THE COUNT-INFLATION GUARD (item 3, T-0645/T-0660). Three of Caddy's
+      # eight CVE-less advisories are bounded strictly below the shipped
+      # version and do not apply. Reporting eight where five apply is as wrong
+      # as reporting zero: a reader who checks one row, finds it already fixed,
+      # and stops believing the rest is the failure this guard prevents. Same
+      # shared filter as pass 4, so the two reports cannot disagree.
+      range_excludes_version "$i_range" "$i_ver" && continue
+      # The advisory's own stated fix is already in this version. Independent
+      # of the range text, and the only exclusion that can place a range no
+      # parser can read -- which on this repo is five of the rows the range
+      # filter conservatively keeps. See `patch_already_in_version`.
+      patch_already_in_version "$i_patched" "$i_ver" && continue
+
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$i_mod" "$i_ver" "$(clean_scalar "$i_ghsa")" \
+        "$(clean_scalar "${i_cve:-—}")" "$(clean_scalar "${i_sev:-?}")" \
+        "$(clean_scalar "${i_range:-?}")" "$(clean_scalar "${i_patched:-—}")" >> "$img_extra"
+    done < <(jq -j --arg mod "$i_mod" '
+      def pw_norm: ascii_downcase | gsub("\\s+$"; "") | sub("^https?://"; "") | sub("/+$"; "");
+      def pw_is_modpath: test("^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]+)?/[^ ]+$");
+      def pw_demaj: sub("/v[0-9]+$"; "");
+      def pw_hasmaj: test("/v[0-9]+$");
+
+      .[]
+      | . as $a
+      | (.vulnerabilities // [])[]
+      # The SAME matching discipline as pass 4, and for the same reason
+      # (T-0666): a full module path is the one spelling that can be compared
+      # exactly, and comparing it loosely attached go-jose v3 rows to a v4 pin
+      # and reported the version that PATCHES all five as vulnerable. Two
+      # different /vN suffixes never match. The containment arm is kept so an
+      # advisory naming a package inside a module still matches the module.
+      #
+      # NO APOSTROPHES IN THESE COMMENTS: they sit inside a single-quoted
+      # shell argument, so one apostrophe ends the jq program and bash parses
+      # the rest as shell, surfacing as a bash error pointing at a jq line.
+      | (.package.name // "" | pw_norm) as $pname
+      | ($mod | pw_norm) as $m
+      | select(
+          if ($pname | pw_is_modpath) then
+            ($pname == $m)
+            or ((($pname | pw_demaj) == ($m | pw_demaj))
+                and ((($pname | pw_hasmaj) | not) or (($m | pw_hasmaj) | not)))
+            or ($pname | startswith($m + "/"))
+            or ($m | startswith($pname + "/"))
+          else
+            ($pname | test("(^|[/ ])" + ($m | split("/") | .[2] | gsub("\\."; "\\\\.")) + "($|[/ @])"))
+            or ($pname | test($m | gsub("\\."; "\\\\.")))
+          end)
+      # `patched_versions`, NOT `first_patched_version` (T-0660). The
+      # authoritative-looking field is frequently null: on all five Caddy
+      # 2.11.7 advisories `first_patched_version` is null while
+      # `patched_versions` carries the real fix. Reading the null one filed an
+      # available HIGH fix as an unfixable residual.
+      | [ ($a.ghsa_id // ""), ($a.cve_id // ""), ($a.severity // ""),
+          (.vulnerable_version_range // ""), (.patched_versions // "") ]
+      | join("\u001f") + "\u0000"' <<<"$i_body" 2>/dev/null)
+  done < "$img_targets"
+
+  # De-duplicate on module+GHSA: a module reached by two paths (a `--with` pin
+  # that is also in the graph, or two major-version spellings) must not render
+  # as two findings.
+  if [ -s "$img_extra" ]; then
+    # Keyed on module+version+GHSA, NOT the whole line. A GitHub advisory has
+    # one `vulnerabilities` entry per affected package, and a module that
+    # publishes many packages produces many entries for one advisory:
+    # aws-sdk-go-v2 rendered the same GHSA-3jcv-796g-cpjg four times with four
+    # different ranges, which a reader counts as four findings. Every entry is
+    # still PUT THROUGH the range filter above -- any one of them covering the
+    # shipped version is a genuine hit -- and only the rendering is collapsed,
+    # to the first entry that survived. `sort -u` on the full line cannot do
+    # this, because the lines differ in the range column.
+    sort -u "$img_extra" | awk -F'\t' '!seen[$1 FS $2 FS $3]++' \
+      > "$img_extra.dedup" && mv "$img_extra.dedup" "$img_extra"
+  fi
+elif [ "${PINWATCH_SKIP_GITHUB:-0}" = "1" ] && [ -z "$FIXTURE" ]; then
+  img_unavailable="the image advisory sweep was disabled via PINWATCH_SKIP_GITHUB, so neither the base image nor the module graph was checked"
+fi
+
+# The base image is the core of this image, so "was it swept" must be a fact in
+# the output and not something a reader infers from the absence of a row.
+img_base_state="not-swept"
+if [ -s "$img_targets" ] \
+   && awk -F'\t' '$3=="base image"{found=1} END{exit !found}' "$img_targets" \
+   && [ "$img_swept" -gt 0 ]; then
+  img_base_state="swept"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1654,6 +2235,60 @@ done
     echo "</details>"
     echo
   fi
+  # -------------------------------------------------------------------------
+  # The image itself — base image + module graph (T-0669).
+  # -------------------------------------------------------------------------
+  echo "#### The image itself — base image and module graph"
+  echo
+  echo "The \`--with\` list above is not the image. This section sweeps the two parts it cannot see: the \`FROM caddy:<version>\` base, and every module actually linked into the built binary. Both are checked on GitHub's **per-repository** advisory endpoint, because that is the only place a CVE-less advisory appears — at the 2.11.7 this image once shipped, five advisories were live there while an OSV package+version query at the same version returned **zero** and every one of the five was a 404 on OSV by id."
+  echo
+  printf -- '- **Base image:** '
+  if [ -n "$base_builder" ] || [ -n "$base_runtime" ]; then
+    printf '`caddy:%s` → `github.com/caddyserver/caddy` — %s\n' \
+      "${base_builder:-$base_runtime}" \
+      "$([ "$img_base_state" = "swept" ] && echo 'swept' || echo '**NOT swept**')"
+  else
+    printf '**could not be parsed from `%s`** — NOT swept\n' "$DOCKERFILE"
+  fi
+  printf -- '- **Module graph:** '
+  case "$img_graph_state" in
+    ok)      printf '%s modules in the built binary; %s swept' "$img_graph_total" "$img_swept" ;;
+    error)   printf '**could not be read** — see the errors below' ;;
+    not-run) printf '**not run** (no `--binary` supplied)' ;;
+  esac
+  [ "$img_unswept" -gt 0 ] && printf ', **%s not swept**' "$img_unswept"
+  [ "$img_out_of_scope" -gt 0 ] \
+    && printf ', %s outside this index (not on github.com, or no comparable version)' "$img_out_of_scope"
+  echo
+  echo
+  if [ -s "$img_extra" ]; then
+    echo "**Advisories whose range covers a version this image actually ships.** Advisories bounded strictly *below* the shipped version are already excluded — of Caddy's eight CVE-less advisories, three are cleared by the shipped version and reporting eight where five apply would be as wrong as reporting zero (T-0645/T-0660). The ranges below are GitHub's own free text and have **not** been compared mechanically beyond that exclusion; \`fixed in\` is \`patched_versions\`, not the frequently-null \`first_patched_version\`:"
+    echo
+    echo "| component | version in image | source | GHSA | CVE | severity | affected range | fixed in |"
+    echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+    while IFS=$'\t' read -r i_mod i_ver i_ghsa i_cve i_sev i_range i_patched; do
+      i_src="$(awk -F'\t' -v m="$i_mod" -v v="$i_ver" '$1==m && $2==v {print $3; exit}' "$img_targets")"
+      printf '| `%s` | `%s` | %s | %s | %s | %s | `%s` | %s |\n' \
+        "$i_mod" "$i_ver" "${i_src:-?}" "$i_ghsa" "$i_cve" "$i_sev" "$i_range" "$i_patched"
+    done < "$img_extra"
+    echo
+  elif [ "$img_swept" -gt 0 ]; then
+    echo "No advisory on the per-repository endpoint covers a version this image ships, across the $img_swept component(s) swept above."
+    echo
+  fi
+  if [ "$img_out_of_scope" -gt 0 ]; then
+    echo "**$img_out_of_scope component(s) are outside what this index can answer for.** GitHub's advisory database is keyed on a repository, so a module not hosted on github.com (\`cel.dev\`, \`cloud.google.com\`, \`golang.org/x/…\`) has no endpoint to ask, and a module without a plain semver version cannot be range-compared. This is a known and permanent limit of the second index, **not** a sweep that failed — those modules are still covered by the OSV queries on the pins above where they are pinned. Reported separately so that \`not swept\` keeps meaning \"this could have been checked and was not\"."
+    echo
+  fi
+  if [ "$img_unswept" -gt 0 ]; then
+    echo "**$img_unswept component(s) of the image COULD have been swept and were NOT.** A module beyond this run's cap of $GRAPH_SWEEP_CAP graph modules, or one whose endpoint did not answer. An unswept component is not a clean component."
+    if [ -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+      echo
+      echo "This run was **unauthenticated**, so the GitHub advisory API allowed 60 requests/hour and the graph sweep was capped at $GRAPH_SWEEP_CAP modules. Supplying \`GH_TOKEN\`/\`GITHUB_TOKEN\` raises that to 5000/hour, which covers the whole graph; CI already does."
+    fi
+    echo
+  fi
+  [ -n "$img_unavailable" ] && { echo "**$img_unavailable.**"; echo; }
   if [ "$adv_unknown" -gt 0 ]; then
     echo "**Advisory status could not be established for $adv_unknown pin(s).** Neither the version-scoped nor the commit-scoped query could be asked, so those rows say nothing about whether an advisory applies. An unchecked pin is not a clean pin."
     echo
@@ -1662,24 +2297,44 @@ done
     echo "**$adv_partial pin(s) were checked by only one of the two queries.** A version-only check cannot see CVE records that carry no package field (their affected range is a \`GIT\` range keyed on the repo); a commit-only check can miss a curated package range. Those rows are narrower than a — and are marked \`partial\`."
     echo
   fi
+  # The image sweep joins this guard, and that is the point of T-0669: for its
+  # whole life this sentence could print while the base image carried five
+  # unswept advisories, because it only ever described the `--with` pins. An
+  # all-clear that is true of a subset and silent about the rest is the shape
+  # this file is written against.
   if [ "$advisories" -eq 0 ] && [ "$behind" -eq 0 ] && [ "$moved" -eq 0 ] \
      && [ "$malformed_rows" -eq 0 ] && [ "$adv_unknown" -eq 0 ] \
      && [ "$adv_partial" -eq 0 ] && [ "$floors_expired" -eq 0 ] \
      && [ ! -s "$errors" ] && [ ! -s "$unpinned_file" ] \
      && [ ! -s "$gh_extra" ] && [ -z "$gh_unavailable" ] \
-     && [ ! -s "$replaced_file" ] && [ -z "$tag_now_ok" ]; then
+     && [ ! -s "$replaced_file" ] && [ -z "$tag_now_ok" ] \
+     && [ ! -s "$img_extra" ] && [ "$img_unswept" -eq 0 ] \
+     && [ "$img_out_of_scope" -eq 0 ] \
+     && [ -z "$img_unavailable" ] && [ "$img_graph_state" = "ok" ] \
+     && [ "$img_base_state" = "swept" ]; then
     # The all-clear must not claim more than it checked. With an acknowledged
     # floor present, "every pin is at upstream's newest release" is false, and
     # a sentence a reader can catch being wrong is how a report loses its
     # authority; so the acknowledged pins are named in the same breath.
     if [ "$floors_ack" -gt 0 ]; then
-      echo "Every pin is at upstream's newest release except $floors_ack acknowledged intentional floor(s) listed above, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report."
+      echo "Every pin is at upstream's newest release except $floors_ack acknowledged intentional floor(s) listed above, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report. The image itself was swept too: the \`caddy:${base_builder:-$base_runtime}\` base and all $img_graph_total modules of the built binary ($img_swept component(s) checked on the per-repository endpoint), with no advisory covering a shipped version."
     else
-      echo "Every pin is at upstream's newest release, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report."
+      echo "Every pin is at upstream's newest release, and for every pin both the version-scoped and the commit-scoped advisory query were asked and came back clean. GitHub's advisory database ($gh_checked module(s) cross-checked) adds nothing OSV did not already report. The image itself was swept too: the \`caddy:${base_builder:-$base_runtime}\` base and all $img_graph_total modules of the built binary ($img_swept component(s) checked on the per-repository endpoint), with no advisory covering a shipped version."
     fi
   fi
   echo
-  echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`.</sub>"
+  # Which tree did we actually read? This script reads $DOCKERFILE by plain
+  # path, so say so -- a dirty file means the verdict describes uncommitted
+  # pins. Disclosure, not relocation: see the design rule in the header.
+  tree_note="$DOCKERFILE"
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    if git diff --quiet -- "$DOCKERFILE" 2>/dev/null; then
+      tree_note="$DOCKERFILE (clean vs HEAD)"
+    else
+      tree_note="$DOCKERFILE (**UNCOMMITTED CHANGES** vs HEAD -- these pins are not what HEAD builds)"
+    fi
+  fi
+  echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`. Read from \`$tree_note\`.</sub>"
 } >> "$report"
 
 # Order matters, and it is not the obvious one.
@@ -1715,13 +2370,36 @@ done
 # either must not be able to make an expired acknowledgement silent. A
 # malformed or orphaned directive reaches `error` through `-s "$errors"`
 # above, because a floor that cannot be READ must not read as no floor at all.
+# THE IMAGE SWEEP (T-0669) joins both of the lower arms, and which arm each
+# part lands in is deliberate:
+#
+#   - A FINDING reaches `attention`, not `advisory`. The ranges are GitHub's
+#     free text, so this is the same deliberate divergence T-0634 settled for
+#     the pin cross-check: exit 2 stays reserved for OSV's machine-checked
+#     matching, and a prose range cannot earn it. A CVE-less advisory on the
+#     base image is invisible to OSV by construction, so demanding OSV
+#     confirmation before exit 2 would mean this class never reaches it — but
+#     inventing exit 2 from a parsed sentence is how a wrong parse excuses or
+#     invents a finding. `attention` plus a named table is the honest level.
+#   - AN UNSWEPT COMPONENT reaches `error`, exactly as an unaskable OSV
+#     question does. A graph that could not be read, a base image that could
+#     not be parsed and a capped remainder are all "we did not look", and this
+#     file's one rule is that not looking must not read as clean.
+#
+# `img_graph_state=not-run` is the one case that stays at `attention`: the
+# caller did not ask for a graph sweep, which is a narrower run rather than a
+# broken one — and the report says so in its own sentence. The workflow passes
+# `--binary`, so a CI run that silently stopped doing so still shows up.
 if   [ "$advisories" -gt 0 ]; then verdict="advisory"; rc=2
 elif [ "$unresolved" -gt 0 ] || [ "$osv_failed" -eq 1 ] \
   || [ "$malformed_rows" -gt 0 ] || [ "$adv_unknown" -gt 0 ] \
+  || [ "$img_unswept" -gt 0 ] || [ "$img_graph_state" = "error" ] \
   || [ -s "$errors" ]; then verdict="error"; rc=3
 elif [ "$behind" -gt 0 ] || [ "$moved" -gt 0 ] || [ -n "$tag_now_ok" ] \
   || [ "$floors_expired" -gt 0 ] \
   || [ "$adv_partial" -gt 0 ] || [ -s "$gh_extra" ] || [ -n "$gh_unavailable" ] \
+  || [ -s "$img_extra" ] || [ -n "$img_unavailable" ] \
+  || [ "$img_graph_state" = "not-run" ] \
   || [ -s "$unpinned_file" ] || [ -s "$replaced_file" ] \
   || [ -s "$notices" ]; then verdict="attention"; rc=1
 else verdict="ok"; rc=0
@@ -1738,11 +2416,21 @@ if [ "$EMIT_JSON" -eq 1 ]; then
         --argjson gx "$(wc -l < "$gh_extra" | tr -d ' ')" \
         --argjson gc "$gh_checked" \
         --argjson gs "$(wc -l < "$gh_skipped" | tr -d ' ')" \
+        --argjson ix "$(wc -l < "$img_extra" | tr -d ' ')" \
+        --argjson iu "$img_unswept" --argjson isw "$img_swept" \
+        --argjson ios "$img_out_of_scope" \
+        --argjson igt "$img_graph_total" \
+        --arg ig "$img_graph_state" --arg ib "$img_base_state" \
+        --arg ibv "${base_builder:-${base_runtime:-}}" \
         '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
           advisory_unknown:$au, advisory_partial:$ap,
           floors_acknowledged:$fa, floors_expired:$fe,
           github_only:$gx, github_modules_checked:$gc,
-          github_modules_skipped:$gs}' \
+          github_modules_skipped:$gs,
+          image_findings:$ix, image_unswept:$iu, image_swept:$isw,
+          image_out_of_scope:$ios,
+          image_graph:$ig, image_graph_modules:$igt,
+          image_base:$ib, image_base_version:$ibv}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
 fi
@@ -1760,6 +2448,12 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "github_only=$(wc -l < "$gh_extra" | tr -d ' ')"
     echo "github_modules_checked=$gh_checked"
     echo "github_modules_skipped=$(wc -l < "$gh_skipped" | tr -d ' ')"
+    echo "image_findings=$(wc -l < "$img_extra" | tr -d ' ')"
+    echo "image_unswept=$img_unswept"
+    echo "image_out_of_scope=$img_out_of_scope"
+    echo "image_swept=$img_swept"
+    echo "image_graph=$img_graph_state"
+    echo "image_base=$img_base_state"
     echo "report<<$PINREPORT_DELIM"
     cat "$report"
     echo "$PINREPORT_DELIM"

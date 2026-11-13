@@ -434,6 +434,18 @@ jobs:
       # Exposed so `alert` can distinguish "could not establish whether an
       # advisory applies" from an ordinary could-not-run; see that job's `if`.
       advisory_unknown: ${{ steps.check.outputs.advisory_unknown }}
+      # The image sweep (T-0669). `image_unswept` is the one that must not be
+      # ignored: it counts components of the image whose advisory status was
+      # never established, which is the condition the `--with`-only watch was
+      # silently in for its whole life.
+      image_findings: ${{ steps.check.outputs.image_findings }}
+      image_unswept: ${{ steps.check.outputs.image_unswept }}
+      # Reported, never alerted on: see the `alert` job's `if`. A module with
+      # no per-repository advisory endpoint is a permanent limit of the second
+      # index, not a sweep that failed.
+      image_out_of_scope: ${{ steps.check.outputs.image_out_of_scope }}
+      image_base: ${{ steps.check.outputs.image_base }}
+      image_graph: ${{ steps.check.outputs.image_graph }}
     steps:
       # main's checkout, not the release tag's: this asks whether the pins we
       # ship TODAY are current, and the script only exists on main. Checking
@@ -464,8 +476,30 @@ jobs:
           # 3 could-not-run), so it must not fail the step; the verdict is
           # read from the output instead. A status this script never emits
           # would be a real crash, and is surfaced below.
+          # `--binary image:…` adds the IMAGE to the sweep, which the `--with`
+          # list structurally cannot cover (trap 5 in the script's header):
+          #
+          #   - the `FROM caddy:<ver>` base, which was swept by NOTHING until
+          #     T-0669 and carried five live CVE-less advisories at the 2.11.7
+          #     this image shipped;
+          #   - the transitive graph, i.e. the engine behind a thin wrapper pin
+          #     (`corazawaf/coraza` has 14 advisories; the `coraza-caddy` pin
+          #     that wraps it has 0).
+          #
+          # The PUBLISHED `:stable` is read rather than a freshly built image,
+          # because this job deliberately has no build step and `:stable` is
+          # what the fleet is actually running — the question worth asking is
+          # about the image in service, not one that exists only in CI. The
+          # module graph comes from `go version -m` on the extracted binary, so
+          # it is what shipped rather than what a list says shipped.
+          #
+          # A failure to read it is reported as NOT SWEPT and reaches
+          # verdict=error; it never reads as a clean graph. So dropping this
+          # flag would be visible in the verdict rather than silently halving
+          # what the job checks.
           set +e
-          ./scripts/check-pinned-modules.sh --out-dir pinwatch
+          ./scripts/check-pinned-modules.sh --out-dir pinwatch \
+            --binary image:applegater/caddyui-caddy:stable
           rc=$?
           set -e
           case "$rc" in
@@ -499,6 +533,11 @@ jobs:
           ADV_PARTIAL: ${{ steps.check.outputs.advisory_partial }}
           FLOORS_EXPIRED: ${{ steps.check.outputs.floors_expired }}
           GITHUB_ONLY: ${{ steps.check.outputs.github_only }}
+          IMAGE_FINDINGS: ${{ steps.check.outputs.image_findings }}
+          IMAGE_UNSWEPT: ${{ steps.check.outputs.image_unswept }}
+          IMAGE_OUT_OF_SCOPE: ${{ steps.check.outputs.image_out_of_scope }}
+          IMAGE_BASE: ${{ steps.check.outputs.image_base }}
+          IMAGE_GRAPH: ${{ steps.check.outputs.image_graph }}
         shell: bash
         run: |
           case "$VERDICT" in
@@ -542,6 +581,42 @@ jobs:
           case "$FLOORS_EXPIRED" in
             ''|0) ;;
             *) echo "::warning::$FLOORS_EXPIRED intentional floor(s) have EXPIRED: upstream moved past the version the decision was recorded against, so the acknowledgement no longer holds and the pin counts as behind again" ;;
+          esac
+
+          # THE IMAGE ITSELF (T-0669). The three states below are reported
+          # separately from the pin verdict on purpose: for its whole life this
+          # job could print "every pin is current" while the base image carried
+          # five unswept advisories, because the watch only ever described the
+          # `--with` list. A subset all-clear that is silent about the rest is
+          # the exact failure this adds coverage for, so the base image's own
+          # swept/not-swept state is stated in the log every run and not left
+          # to be inferred from the absence of a finding.
+          case "$IMAGE_BASE" in
+            swept) ;;
+            '') echo "::warning::the image sweep reported nothing about the FROM caddy:<version> base image, so its advisory status is unknown" ;;
+            *) echo "::warning::the FROM caddy:<version> base image was NOT swept for advisories; it is the core of this image and an unswept component is not a clean one" ;;
+          esac
+          case "$IMAGE_GRAPH" in
+            ok) ;;
+            not-run) echo "::warning::the built image's module graph was not swept, so the engines behind thin wrapper pins (e.g. corazawaf/coraza behind coraza-caddy) were not checked" ;;
+            *) echo "::warning::the built image's module graph could not be read (state: $IMAGE_GRAPH); the transitive graph was NOT checked" ;;
+          esac
+          case "$IMAGE_UNSWEPT" in
+            ''|0) ;;
+            *) echo "::warning::$IMAGE_UNSWEPT component(s) of the image were NOT swept for advisories; an unswept component is not a clean component" ;;
+          esac
+          case "$IMAGE_FINDINGS" in
+            ''|0) ;;
+            *) echo "::warning::$IMAGE_FINDINGS advisory record(s) cover a version this image actually ships (base image or module graph); the ranges are GitHub free text and need a human read - see the job summary" ;;
+          esac
+          # A notice, not a warning, and never an alert: this is how much of the
+          # graph GitHub's repository-keyed index cannot answer for at all. It
+          # is a standing property of the index (~74 of 236 modules here), so
+          # treating it as a problem would make every run look broken. Stated
+          # every run so the sweep's coverage is never overstated by silence.
+          case "$IMAGE_OUT_OF_SCOPE" in
+            ''|0) ;;
+            *) echo "::notice::$IMAGE_OUT_OF_SCOPE module(s) are outside GitHub's repository-keyed advisory index (not on github.com, or no comparable version); they are covered by the OSV queries where pinned, and this is a known limit rather than a failed sweep" ;;
           esac
 
   # ---------------------------------------------------------------------------
@@ -770,6 +845,42 @@ jobs:
     # when it does fire, nobody learns anything from a verdict buried in a log
     # line. Note this is the COUNT, not the verdict: `error` also covers
     # ordinary proxy hiccups, which are not worth an issue.
+    #
+    # `image_findings` alerts on the same grounds, and it is the condition
+    # T-0669 was filed about. An advisory whose range covers the Caddy version
+    # in the base image, or a module actually linked into the shipped binary,
+    # is the T-0660 case: five live advisories sat on the base at 2.11.7, every
+    # one invisible to OSV because none carries a CVE id, while this job
+    # reported every pin current. That is rarer than staleness, not more
+    # frequent — it is 0 on a current base, as it is at 2.11.9 today — so it
+    # does not re-introduce the weekly noise rejected above.
+    #
+    # `image_unswept` alerts for the reason `advisory_unknown` does: a
+    # component whose advisory status was never ESTABLISHED is
+    # indistinguishable, from the report alone, from one that was checked and
+    # is clean. It is the state the `--with`-only watch was silently in for
+    # its whole life, so it must be loud rather than inferred.
+    #
+    # It is quiet in the common case, and getting it there took two fixes worth
+    # not undoing. `image_unswept` counts ONLY "this could have been swept and
+    # was not" -- a budget cap, or an endpoint that did not answer. Modules
+    # this index structurally cannot answer for are counted as
+    # `image_out_of_scope` instead: 74 of the 236 modules in this image's graph
+    # are not on github.com (cel.dev, cloud.google.com, golang.org/x/...) and
+    # so have no per-repository advisory endpoint, ever. That counter is
+    # reported and deliberately NOT alerted on. The graph cap is also derived
+    # from the API budget rather than fixed, so the ~162 sweepable modules fit
+    # inside the 5000/hour this job's GITHUB_TOKEN buys.
+    #
+    # With a fixed cap of 60 and those two states merged, this condition was
+    # true on EVERY run -- the weekly noise the paragraph above rejects,
+    # reintroduced in a new place. If it ever starts firing every week again,
+    # that is the regression to look for, not a reason to delete the condition.
+    #
+    # `image_graph` is deliberately NOT in this list: `not-run` is a narrower
+    # run rather than a broken one, it is already a log warning and a report
+    # sentence, and this job passes `--binary`, so a graph that stops being
+    # read surfaces as `image_unswept` or as a read error instead.
     if: >-
       always() && (
         needs.build-scan.result == 'failure' ||
@@ -777,6 +888,10 @@ jobs:
         needs.watch-pins.outputs.verdict == 'advisory' ||
         (needs.watch-pins.outputs.advisory_unknown != '0' &&
          needs.watch-pins.outputs.advisory_unknown != '') ||
+        (needs.watch-pins.outputs.image_findings != '0' &&
+         needs.watch-pins.outputs.image_findings != '') ||
+        (needs.watch-pins.outputs.image_unswept != '0' &&
+         needs.watch-pins.outputs.image_unswept != '') ||
         (github.event_name == 'workflow_dispatch' && inputs.force_alert)
       )
     runs-on: ubuntu-latest
