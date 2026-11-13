@@ -25,8 +25,20 @@
 set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/check-pinned-modules.sh"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# Fixture Dockerfiles must name the SAME Caddy base as the shipped one, so a base
+# bump cannot leave the tests exercising a mix of the old and new tag. Derived
+# from Dockerfile.caddy rather than hardcoded, so the next bump needs no edit here.
+BUILDER_FROM="$(sed -n 's/^FROM .*\(caddy:[0-9][^ ]*-builder\) AS builder$/\1/p' \
+  "$REPO/Dockerfile.caddy" | head -1)"
+if [ -z "$BUILDER_FROM" ]; then
+  echo "FATAL: could not read the caddy builder tag from Dockerfile.caddy" >&2
+  exit 1
+fi
+FROM_LINE="FROM $BUILDER_FROM AS builder"
 
 pass=0; fail=0
 check() { # name expected actual
@@ -39,7 +51,7 @@ check() { # name expected actual
 
 # A minimal Dockerfile with two pins: one floored, one not.
 mk_dockerfile() { # $1=dest $2=directive-line (may be empty)
-  { echo 'FROM caddy:2.11.7-builder AS builder'
+  { echo "$FROM_LINE"
     echo 'RUN xcaddy build \'
     [ -n "$2" ] && printf '    %s\n' "$2"
     echo '    --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \'
@@ -163,7 +175,7 @@ grep -q 'only .*floor.* is understood' "$(lastout)/report.md" \
 
 echo
 echo "=== 10. a directive matching no pin is an ERROR (stale after a re-pin) ==="
-{ echo 'FROM caddy:2.11.7-builder AS builder'
+{ echo "$FROM_LINE"
   echo 'RUN xcaddy build \'
   echo '    # pin-watch: floor pin=v1.7.8 against=v1.8.2 ref=T-0636 reason=stale, this was written for v1.7.8 and the pin is now v1.8.0.'
   echo '    --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.8.0 \'
@@ -177,7 +189,7 @@ grep -q 'the pin moved and the acknowledgement did not follow it' "$(lastout)/re
 
 echo
 echo "=== 11. a dangling directive with no --with after it is an ERROR ==="
-{ echo 'FROM caddy:2.11.7-builder AS builder'
+{ echo "$FROM_LINE"
   echo 'RUN xcaddy build \'
   echo '    --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \'
   echo '    --with github.com/caddy-dns/route53@v1.6.2'
@@ -196,7 +208,7 @@ grep -q 'could not run' "$(lastout)/report.md" \
 
 echo
 echo "=== 13. intervening prose between directive and pin still pairs ==="
-{ echo 'FROM caddy:2.11.7-builder AS builder'
+{ echo "$FROM_LINE"
   echo 'RUN xcaddy build \'
   echo '    # pin-watch: floor pin=v1.7.8 against=v1.8.2 ref=T-0636 reason=paired across an explanatory comment.'
   echo '    # an ordinary explanatory comment that must not break the pairing'
@@ -230,7 +242,7 @@ check "floors row has exactly 6 columns" "6" "$nf"
 
 echo
 echo "=== 16. the directive string in a NON-comment line declares nothing ==="
-{ echo 'FROM caddy:2.11.7-builder AS builder'
+{ echo "$FROM_LINE"
   echo 'RUN echo "pin-watch: floor pin=v1.7.8 against=v1.8.2 reason=forged from a build line" && xcaddy build \'
   echo '    --with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \'
   echo '    --with github.com/caddy-dns/route53@v1.6.2'
@@ -268,7 +280,7 @@ echo "=== 19. header PROSE quoting the directive is not a directive ==="
 # as a second declaration and reported "two directives in a row" on a correct
 # file, while the real directive below went unread. Reproduced on the live
 # Dockerfile; locked down here.
-{ echo 'FROM caddy:2.11.7-builder AS builder'
+{ echo "$FROM_LINE"
   echo '# Security pins:'
   echo '#   - A pin behind upstream ON PURPOSE carries a `# pin-watch: floor`'
   echo '#     comment above it, read by scripts/check-pinned-modules.sh.'
@@ -314,7 +326,7 @@ if curl -fsS --max-time 15 -X POST https://api.osv.dev/v1/query \
      -H 'Content-Type: application/json' \
      -d '{"package":{"name":"github.com/go-chi/chi/v5","ecosystem":"Go"},"version":"v5.4.0"}' \
      >/dev/null 2>&1; then
-  { echo 'FROM caddy:2.11.7-builder AS builder'
+  { echo "$FROM_LINE"
     echo 'RUN xcaddy build \'
     echo '    # pin-watch: floor pin=v5.4.0 against=v5.5.0 ref=TEST reason=acknowledged on purpose, to prove an advisory still wins.'
     echo '    --with github.com/go-chi/chi/v5@v5.4.0 \'

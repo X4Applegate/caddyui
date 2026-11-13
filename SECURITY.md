@@ -111,12 +111,20 @@ What neither check covers is the **Caddy base image's own** module set, which is
 
 Development is assisted by Claude (Anthropic). No secrets, credentials, database contents, or user data are shared with Claude — only code structure and logic.
 
-### Caddy base advisories (resolved)
+### Caddy base advisories (fixed upstream; not yet in the published image)
 
 Five CVE-less advisories published 2026-11-04 affected Caddy **2.11.7** and earlier, including one
 **high** (`GHSA-r766-rf9f-588h`: `Host`/`:authority` values with dot segments escaping a
-`{host}`-based document root). **All five are fixed in Caddy 2.11.8, and this image is now built on
+`{host}`-based document root). **All five are fixed in Caddy 2.11.8. This repository's `Dockerfile.caddy` now builds on
 2.11.9**, which no Caddy advisory affects.
+
+> **The published image has not caught up yet.** `applegater/caddyui-caddy:stable` currently
+> serves the v2.68.11 artifact (`sha256:abdb5b0a4737…`), whose binary links **caddy v2.11.7** —
+> verified with `go version -m` on the extracted binary, not inferred from the tag. So the five
+> advisories, including the high, **still apply to the image you pull today**, and the
+> preconditions listed below therefore still matter — in particular, do not build a document
+> root from `{host}` until the next release is published. This note is removed when
+> `go version -m` on the extracted `:stable` binary reports caddy v2.11.9.
 
 None carried a CVE id, so none appeared in OSV or in CVE-keyed scanners — they were visible only
 through GitHub's repository advisory endpoint. That blind spot is why the pinned-module watcher

@@ -22,7 +22,7 @@ A prebuilt **[Caddy](https://caddyserver.com/)** for use with **[CaddyUI](https:
 | [`caddy-l4`](https://github.com/mholt/caddy-l4) | TCP/UDP routing, and sharing port 443/80 with other protocols (CaddyUI's Layer4 proxies) |
 | [`coraza-caddy`](https://github.com/corazawaf/coraza-caddy) | Coraza web application firewall with the OWASP Core Rule Set (CaddyUI's middleware profiles, **v2.61.0+**) |
 
-The base is the official `caddy:alpine` image; the current build ships **Caddy 2.11.7**.
+The base is the official `caddy:alpine` image; the current build ships **Caddy 2.11.9**.
 
 ## Tags
 
