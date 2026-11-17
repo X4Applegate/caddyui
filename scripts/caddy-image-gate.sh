@@ -54,10 +54,22 @@
 #
 #  0. Scan coverage. Before either gate runs, assert the new image's Trivy scan
 #     actually looked at the image: an OS was detected, it is not end-of-life,
-#     every scan target the baseline had is still present, and each shared
-#     target's package count has not collapsed. This is a precondition rather
-#     than a gate because it produces no verdict -- it exits 2 ("the gate could
-#     not run"), which all three call sites already treat as blocking.
+#     every scan target the baseline had is still present, each shared target's
+#     package count has not collapsed, the retained packages are the SAME
+#     packages by name, and the Go binary the baseline scanned is still being
+#     scanned. This is a precondition rather than a gate because it produces no
+#     verdict -- it exits 2 ("the gate could not run"), which all three call
+#     sites already treat as blocking.
+#
+#     The last two are there because a COUNT IS NOT AN IDENTITY (T-0638). The
+#     count floor asks "are there still at least half as many rows", so it is
+#     cleared by a package list that was replaced rather than retained --
+#     padding with fabricated names keeps the count up while every finding
+#     against a dropped real package cancels out of gate 1 as though the
+#     rebuild had fixed it. Likewise "a gobinary result exists" is not "the
+#     binary this image runs was scanned", since Trivy emits one result per Go
+#     binary it finds. Both were demonstrated end-to-end against a real
+#     :stable-shaped baseline before being closed here.
 #
 #     It exists because gate 1 is set arithmetic, and set arithmetic reads an
 #     EMPTY findings list as a perfect score. That made this the ONE fail-open
@@ -300,13 +312,21 @@ mkdir -p "$OUT"
 rm -f "$OUT/verdict" "$OUT/summary.md" \
       "$OUT"/added-*.ids "$OUT"/removed-*.ids \
       "$OUT"/new-*.ids "$OUT"/old-*.ids \
-      "$OUT"/mods-*.txt "$OUT"/cfg-*.txt "$OUT"/fs-*.txt 2>/dev/null || true
+      "$OUT"/mods-*.txt "$OUT"/cfg-*.txt "$OUT"/fs-*.txt \
+      "$OUT"/.cov-*.names 2>/dev/null || true
 # cfg-trustenv-*.txt is covered by the cfg-*.txt glob above, and the verdict
 # reads its LINE COUNT rather than merely testing the diff, so a stale copy
 # would be counted as this run's finding -- i.e. it would BLOCK a clean image
 # on evidence from a previous run. That makes the clearing above load-bearing
 # for it in a way it is not for the diffs: keep the name prefixed `cfg-` if it
 # is ever renamed.
+#
+# .cov-*.names are the scratch files of coverage checks 5, 5b and 7 (T-0638).
+# Each is removed as soon as its target has been compared, so they do not
+# normally survive a run -- but a `die` from a LATER target, or a kill between
+# the two writes, leaves one behind. Cleared for the same reason: this
+# directory is reused on a local run, and those checks read the paths back, so
+# a stale file would be read as this run's package list for that target.
 
 command -v trivy >/dev/null || die "trivy not found"
 command -v jq    >/dev/null || die "jq not found"
@@ -593,9 +613,44 @@ pkg_count_for_type() {
       end' "$1"
 }
 
+# The set of package NAMES for a type, deduplicated and sorted, one per line.
+#
+# This is what check 5 compares, and it is the answer to the half of the
+# coverage problem a COUNT cannot reach. pkg_count_for_type counts ROWS; two
+# package lists of the same length are not the same package list. A rebuild
+# that drops 120 real Go modules and adds 120 fabricated ones has the same
+# count, clears the 50% floor outright, and contributes no findings for any of
+# the 120 it dropped -- which then cancel out of gate 1's set arithmetic as
+# "closed by the rebuild". Measured on the real images by security pass A:
+# alpine 16 / gobinary 118 with ZERO vulnerabilities passes every count-based
+# check and reports verdict=improved, and padding with 500 fabricated entries
+# passes too, because names were never compared.
+#
+# Names are sanitized on the same grounds as ids_from and config_from: for a
+# `gobinary` result Trivy copies PkgName out of the Go build info of a binary
+# built from a Dockerfile the submitter controls, so these strings are
+# attacker-chosen and they flow into ::error:: lines and into summary.md, which
+# is appended to $GITHUB_OUTPUT inside a heredoc. Sanitizing INSIDE jq keeps
+# one name per line, so an embedded newline cannot forge extra list entries
+# either -- which matters more here than in ids_from, because this list is fed
+# to `comm` and a split row would be a spurious set member on both sides.
+#
+# Sorted with LC_ALL=C so the ordering matches `comm`'s expectation exactly;
+# a locale-dependent collation is the classic way to make comm silently
+# under-report an intersection.
+pkg_names_for_type() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?.Name
+      | select(. != null and . != "")
+      | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
 assert_scan_coverage() {
   local new="$1" old="$2" arch="$3"
   local os_family new_types old_types missing t new_pkgs old_pkgs floor eosl
+  local old_names_f new_names_f old_named retained name_floor
+  local old_gotargets new_gotargets lost_go
 
   # The baseline must be a readable scan before it can define the standard.
   #
@@ -734,11 +789,112 @@ assert_scan_coverage() {
     if [ "$new_pkgs" -lt "$floor" ]; then
       die "the rebuild's '$(safe_text "$t")' scan of linux/$arch sees $new_pkgs package(s) where the published image has $old_pkgs (floor $floor): the target is present but its contents largely could not be read, so most of it is UNOBSERVED rather than fixed. A findings list this far short of the baseline's cannot be compared against it."
     fi
+
+    # 5. The retained packages must be the SAME packages (T-0638).
+    #
+    # Check 4 is arithmetic on row counts, and a count is not an identity. It
+    # asks "are there still at least half as many rows", never "are these the
+    # same packages". So it is cleared by a list that has been REPLACED rather
+    # than retained: drop the real modules, pad with fabricated names, keep the
+    # count up. Every finding against a dropped package then has nothing to
+    # match on the new side and cancels out of gate 1 as though the rebuild had
+    # fixed it.
+    #
+    # So apply the SAME 50% floor to the INTERSECTION instead of to the raw
+    # count: of the packages the baseline could see, at least half must still
+    # be present BY NAME. Padding is now useless, because a fabricated name
+    # does not intersect the baseline and therefore cannot contribute to the
+    # number being floored.
+    #
+    # Deliberately the same loose 50%, and deliberately an intersection rather
+    # than a subset assertion, for the reason check 4's floor is loose: a
+    # legitimate release really does remove packages, and dropping a plugin
+    # removes its whole dependency subtree. Requiring the baseline's names to
+    # be a strict SUBSET of the rebuild's would block that ordinary case and
+    # get the check switched off. Measured for scale against the real pair:
+    # v2.68.12 retains 237/237 gobinary and 32/32 alpine names from :stable,
+    # i.e. 100% against a 50% floor -- the same order of slack check 4 has.
+    #
+    # This does NOT replace check 4. Count catches a target gutted down to
+    # nothing; identity catches one swapped out for something else. The two
+    # compose, which is why both run: a list half the size made of entirely
+    # real retained packages passes 5 and is caught by 4's absolute floors,
+    # and a full-size list made of fabricated names passes 4 and is caught
+    # here.
+    old_names_f="$OUT/.cov-old-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    new_names_f="$OUT/.cov-new-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    pkg_names_for_type "$old" "$t" > "$old_names_f"
+    pkg_names_for_type "$new" "$t" > "$new_names_f"
+
+    # Count DISTINCT names, not rows: the floor below is computed from this
+    # number, so it has to be the same denominator the intersection is drawn
+    # from. A result that lists one package twice would otherwise set a floor
+    # the intersection cannot reach.
+    old_named=$(wc -l < "$old_names_f")
+    old_named=${old_named//[[:space:]]/}
+
+    # A baseline whose rows carry no usable names cannot define an identity
+    # floor. Not a die: .Packages[].Name is guaranteed for neither every
+    # ecosystem nor every Trivy version, and check 4's count floor has already
+    # run on this target, so the coverage assertion still has a measurement
+    # here. Skipping is sound precisely because this check is additive.
+    if [ "$old_named" -eq 0 ]; then
+      rm -f "$old_names_f" "$new_names_f"
+      continue
+    fi
+
+    retained=$(LC_ALL=C comm -12 "$old_names_f" "$new_names_f" | wc -l)
+    retained=${retained//[[:space:]]/}
+    name_floor=$(( (old_named + 1) / 2 ))
+    if [ "$retained" -lt "$name_floor" ]; then
+      rm -f "$old_names_f" "$new_names_f"
+      die "the rebuild's '$(safe_text "$t")' scan of linux/$arch retains only $retained of the published image's $old_named package name(s) (floor $name_floor), though it reports $new_pkgs package(s) in total: the package list was REPLACED rather than retained, so the baseline's findings for the missing packages would cancel out of the comparison as though they had been fixed. A package count is not a package identity."
+    fi
+    rm -f "$old_names_f" "$new_names_f"
   done
   # Restore globbing: the rest of the script relies on it (the summary's
   # `for _ in $ARCHES` and the module-diff paths), and a `die` above exits the
   # whole script anyway, so this only needs to cover the success path.
   set +f
+
+  # 6. The scanned binary is the SHIPPED binary (T-0638).
+  #
+  # Checks 3-5 are per TYPE, and `gobinary` is a type that can legitimately
+  # appear more than once: Trivy emits one result per Go binary it finds, keyed
+  # by its path in .Target. So "a gobinary result exists" is not "the binary
+  # this image runs was scanned". A rebuild that leaves /usr/bin/caddy
+  # unreadable to Trivy -- stripped build info, moved, replaced after the
+  # scanner's walk -- but ships any OTHER Go binary at some other path still
+  # has a `gobinary` type present, and checks 3-5 then measure THAT binary's
+  # packages against the baseline's caddy packages.
+  #
+  # Asserted against the baseline's own gobinary targets rather than a
+  # hardcoded `usr/bin/caddy`, for the reason the whole function is relative:
+  # a hardcoded path would have to be edited by the release being gated. The
+  # baseline is a real scan of the image the fleet runs, and on the real
+  # :stable that path is exactly `usr/bin/caddy`, which is where
+  # Dockerfile.caddy's final `COPY --from=builder` puts it.
+  #
+  # Scoped to gobinary deliberately. OS results carry the image REFERENCE in
+  # .Target ("repo:tag (alpine 3.24.4)"), which differs between the two sides
+  # by definition, so comparing targets for every type would report drift on
+  # every run. Language results carry a PATH, which is the thing worth
+  # asserting on.
+  old_gotargets="$(jq -r '[.Results[]? | select(.Type == "gobinary") | .Target
+                           | select(. != null and . != "")] | unique | .[]' "$old")"
+  if [ -n "$old_gotargets" ]; then
+    new_gotargets="$(jq -r '[.Results[]? | select(.Type == "gobinary") | .Target
+                             | select(. != null and . != "")] | unique | .[]' "$new")"
+    lost_go="$(LC_ALL=C comm -13 <(printf '%s\n' "$new_gotargets" | LC_ALL=C sort -u) \
+                                 <(printf '%s\n' "$old_gotargets" | LC_ALL=C sort -u))"
+    if [ -n "$lost_go" ]; then
+      local lost_1l old_go_1l new_go_1l
+      lost_1l="$(safe_text "$(printf '%s' "$lost_go"       | tr '\n' ' ')")";   lost_1l="${lost_1l% }"
+      old_go_1l="$(safe_text "$(printf '%s' "$old_gotargets" | tr '\n' ' ')")"; old_go_1l="${old_go_1l% }"
+      new_go_1l="$(safe_text "$(printf '%s' "$new_gotargets" | tr '\n' ' ')")"; new_go_1l="${new_go_1l% }"
+      die "the rebuild's scan of linux/$arch no longer covers the Go binary at: $lost_1l -- the gobinary TYPE is still present, so the per-type checks above compared a DIFFERENT binary against the published one's. The binary this image actually runs is therefore unobserved, and its findings would cancel out of the comparison. (published: $old_go_1l / rebuild: $new_go_1l)"
+    fi
+  fi
 
   printf 'scan coverage OK (linux/%s): os=%s, targets=%s\n' \
     "$arch" "$(safe_text "$os_family")" "$(safe_text "$(printf '%s' "$new_types" | tr '\n' ' ')")"
