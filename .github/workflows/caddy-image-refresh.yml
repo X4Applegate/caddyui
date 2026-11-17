@@ -469,6 +469,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The network-dependent half of the pin-watch regression suites (T-0712).
+      # The network-free half runs on every PR in ci.yml; these three make real
+      # proxy/OSV/GitHub calls, so they belong next to the live watch they
+      # guard rather than on a PR, where three external services could turn a
+      # review red for an unrelated reason.
+      #
+      # BEFORE the check below, deliberately. This job's whole output is the
+      # verdict of check-pinned-modules.sh; running its regression suites
+      # afterwards would mean reading a verdict first and only then asking
+      # whether the thing that produced it still works.
+      #
+      # `continue-on-error` because the suites test the SCRIPT, while the step
+      # below reports on the PINS. A broken suite is a real problem and this
+      # step goes red for it, but it must not suppress the advisory watch for
+      # the week — that would make a test regression silently cost the fleet
+      # its CVE reporting, trading a small problem for a much larger one.
+      # `alert` keys off the pin verdict, which is unaffected either way.
+      - name: Run the network-dependent pin-watch suites
+        id: suites
+        continue-on-error: true
+        env:
+          # Lifts GitHub's advisory limit from 60/hour per runner IP to
+          # 1000/hour, which is what lets image-sweep case 16 actually run its
+          # live sweep instead of self-skipping. The suites only ever READ
+          # public advisory data, so `contents: read` already suffices.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/run-pinwatch-suites.sh network
+
       - name: Check pins against proxy.golang.org, OSV and GitHub advisories
         id: check
         shell: bash
@@ -569,8 +597,22 @@ jobs:
           GOMOD: ${{ steps.check.outputs.gomod }}
           GOMOD_FINDINGS: ${{ steps.check.outputs.gomod_findings }}
           GOMOD_UNSWEPT: ${{ steps.check.outputs.gomod_unswept }}
+          SUITES: ${{ steps.suites.outcome }}
         shell: bash
         run: |
+          # The regression suites ran with `continue-on-error`, so their
+          # failure does not fail the job and would otherwise be visible only
+          # to someone who expanded the step. Restate it here, where every
+          # other caveat about this run's trustworthiness is already stated.
+          # Matched explicitly with the failure as the DEFAULT arm, for the
+          # same reason the verdict below is: an unrecognised or empty outcome
+          # must not read as a success.
+          case "$SUITES" in
+            success) ;;
+            skipped) echo "::warning::the pin-watch regression suites did not run, so this verdict comes from a script whose behaviour was not checked" ;;
+            *) echo "::error::the pin-watch regression suites FAILED (outcome: $SUITES) - check-pinned-modules.sh has a behavioural regression, so treat the verdict below with suspicion" ;;
+          esac
+
           case "$VERDICT" in
             advisory)
               echo "::error::a published advisory matches a PINNED plugin version - see the job summary" ;;

@@ -203,3 +203,43 @@ jobs:
         env:
           CADDYUI_TEST_MARIADB_DSN: caddyui:test-password@tcp(127.0.0.1:3306)/caddyui_test
         run: go test ./internal/db -v
+
+  # ---------------------------------------------------------------------------
+  # pin-watch regression suites (T-0712).
+  #
+  # `go test ./...` cannot reach a shell script, so until this job existed the
+  # only automated thing happening to check-pinned-modules.sh was
+  # `shellcheck` — a ~3000-line script was linted on every push while none of
+  # its behaviour was. The suites guarding it were hand-run only, and a
+  # regression test nobody runs is a regression test that does not exist. The
+  # cross-check suite in particular was written to fail on the pre-T-0666
+  # predicate; that assertion is worth nothing unless something evaluates it
+  # when the script changes.
+  #
+  # ONLY THE NETWORK-FREE SUITES RUN HERE. The other three make real
+  # proxy/OSV/GitHub calls and take about a minute; more importantly their
+  # result depends on the state of three external services, so a PR could go
+  # red for a reason that has nothing to do with the PR. Those run on the
+  # weekly caddy-image-refresh workflow, next to the live pin watch they
+  # actually guard. Both halves run; neither is left unrun, which was the
+  # state this fixes.
+  #
+  # `paths:` is deliberately NOT used to skip this job when the script is
+  # untouched. It is ~1 second of runner time, and a filter that decides a
+  # guard is unnecessary is one more place for the guard to silently not run.
+  # ---------------------------------------------------------------------------
+  pinwatch:
+    name: Pin-watch regression suites (offline)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The wrapper fails the job on a failing suite and raises a warning —
+      # never a silent pass — on a skipped case. In `offline` mode a skip
+      # should not be possible at all, so one appearing here is itself the
+      # signal that a suite acquired a network dependency it should not have.
+      - name: Run the network-free pin-watch suites
+        run: ./scripts/run-pinwatch-suites.sh offline
