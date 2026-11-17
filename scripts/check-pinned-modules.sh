@@ -269,7 +269,13 @@ OSV="${OSV_BASE:-https://api.osv.dev}"
 #      an uncommitted pin set while reading identically to a CI run. The fix
 #      is disclosure, NOT reading HEAD: the weekly job must grade the
 #      checked-out ref (pristine after actions/checkout) and a deliberate
-#      pre-commit run is legitimate. So state the path and whether it is dirty.
+#      pre-commit run is legitimate. So state the path, THE REVISION, and
+#      whether it is dirty -- all three. "clean vs HEAD" without the SHA was
+#      the half-fix (T-0656): it distinguishes a dirty run from a clean one
+#      in the moment, and says nothing to the person reading the stored
+#      artefact 80 days later, for whom two reports against different commits
+#      are still the same sentence. The revision is the part that makes the
+#      artefact answer "what were we pinned to on date X" by itself.
 # Before adding any new verdict, counter or row, ask what it reports when its
 # own input is missing, and whether a reader can tell the two cases apart.
 # ---------------------------------------------------------------------------
@@ -313,6 +319,18 @@ GOMOD=""
 PINREPORT_DELIM="PINREPORT_EOF_$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n' \
   || printf '%s%s' "$$" "$(date +%s%N 2>/dev/null || date +%s)")"
 
+# Defined above `die()`, and that placement is load-bearing. `die` emits
+# `input=$(clean_scalar "$DOCKERFILE")` into $GITHUB_OUTPUT, and `die` is
+# reachable from argument parsing and the `curl`/`jq` preflight -- all of
+# which run before the parser section further down. A function defined after
+# its caller is `command not found` the moment that path is taken, which here
+# would mean the one output stream a failed run has is emitted damaged, on
+# exactly the runs that matter. The reasoning for the sanitiser lives with
+# the parsers below; only the definition is hoisted.
+clean_scalar() {
+  printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-120
+}
+
 die() {
   echo "check-pinned-modules: $*" >&2
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -343,6 +361,15 @@ die() {
       echo "gomod=unknown"
       echo "gomod_findings=unknown"
       echo "gomod_unswept=unknown"
+      # The input path is known even here -- it is either the default or the
+      # `--dockerfile` value, and `die` can fire before that file has been
+      # read at all. Its REVISION is not established on this path, so it is
+      # `unknown` rather than empty: empty is what a successful run emits for
+      # "checked, and there is no revision", and a failed run must not be
+      # able to render as that (T-0656).
+      echo "input=$(clean_scalar "$DOCKERFILE")"
+      echo "input_rev=unknown"
+      echo "input_state=unknown"
       echo "report<<$PINREPORT_DELIM"
       echo "### Pinned xcaddy plugin watch"
       echo
@@ -457,13 +484,9 @@ fi
 # Sanitising at the row-write site instead would be one refactor away from a
 # new unsanitised path, which is how this class of bug comes back.
 #
-# Defined here, above the parsers, rather than next to the HTTP helpers: the
-# floor-directive parser below is the first consumer, and a function defined
-# after its caller is a crash under `set -u` the moment the directive path is
-# taken — i.e. only on the runs that matter.
-clean_scalar() {
-  printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-120
-}
+# `clean_scalar` itself is defined ABOVE `die()`, near the top of the file --
+# see the note there. This block stays here because it is where the reasoning
+# belongs, next to the parsers that are its main consumers.
 
 # A floor's REASON is prose and is the entire point of the mechanism: a reason
 # cut off mid-sentence ("OSV is clean at v1.") is worse than useless, because
@@ -2856,13 +2879,61 @@ done
   # Which tree did we actually read? This script reads $DOCKERFILE by plain
   # path, so say so -- a dirty file means the verdict describes uncommitted
   # pins. Disclosure, not relocation: see the design rule in the header.
+  #
+  # THE REVISION IS PART OF THE DISCLOSURE, NOT A DECORATION (T-0656). A
+  # stored report is read long after the run: the weekly workflow keeps it for
+  # 90 days, and "pinned v0.1.3" with no revision attached is indistinguishable
+  # from the same sentence taken against a committed pin. Two local runs
+  # minutes apart once disagreed about one pin for exactly this reason -- the
+  # file was briefly dirty -- and the disagreement read like a lost commit.
+  # `clean vs HEAD` alone does not fix that: it says the file matches HEAD
+  # without saying WHICH HEAD, so two reports against different commits still
+  # look identical. The short SHA is what makes "what were we pinned to on
+  # date X" answerable from the artefact alone.
+  #
+  # EVERY GIT CALL IS SCOPED TO THE DOCKERFILE'S OWN DIRECTORY, not to $PWD.
+  # `--dockerfile` takes an arbitrary path, and the test suites pass fixtures
+  # under $TMPDIR; a bare `git rev-parse` would then report the revision of
+  # whatever repo the caller happened to be standing in and attach it to a
+  # Dockerfile from somewhere else -- a wrong provenance claim, which is worse
+  # than none, since this footer exists to be trusted.
+  #
+  # UNTRACKED IS DIRTY. `git diff --quiet` compares the index and the work
+  # tree against HEAD, and succeeds for a file git has never seen -- so a
+  # fixture, or a Dockerfile.caddy that is new in this tree, would be reported
+  # `clean vs HEAD` while being absent from that commit entirely. It is
+  # checked separately and named for what it is.
   tree_note="$DOCKERFILE"
-  if git rev-parse --git-dir >/dev/null 2>&1; then
-    if git diff --quiet -- "$DOCKERFILE" 2>/dev/null; then
-      tree_note="$DOCKERFILE (clean vs HEAD)"
+  # Also emitted as machine fields (see result.json below), because the
+  # footer sentence is for a human reading the artefact and a later audit
+  # across 90 days of stored reports should not have to parse prose.
+  # `input_state` is one of clean|dirty|untracked|no-git, and `input_rev` is
+  # empty when no revision could be established -- never a placeholder SHA.
+  input_rev=""
+  input_state="no-git"
+  df_dir="$(cd "$(dirname -- "$DOCKERFILE")" 2>/dev/null && pwd)" || df_dir=""
+  if [ -n "$df_dir" ] && git -C "$df_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    # A repository with no commit yet has a --git-dir but no HEAD to resolve.
+    # That is "revision unknown", not an error: the run is still valid and the
+    # report still has to say what it could and could not establish.
+    df_rev="$(git -C "$df_dir" rev-parse --short HEAD 2>/dev/null)" || df_rev=""
+    input_rev="$df_rev"
+    df_at="${df_rev:-revision unknown}"
+    if ! git -C "$df_dir" ls-files --error-unmatch -- "$DOCKERFILE" >/dev/null 2>&1; then
+      input_state="untracked"
+      tree_note="$DOCKERFILE @ $df_at (**UNTRACKED** -- this file is not in that commit at all)"
+    elif git -C "$df_dir" diff --quiet HEAD -- "$DOCKERFILE" 2>/dev/null; then
+      input_state="clean"
+      tree_note="$DOCKERFILE @ $df_at (clean)"
     else
-      tree_note="$DOCKERFILE (**UNCOMMITTED CHANGES** vs HEAD -- these pins are not what HEAD builds)"
+      input_state="dirty"
+      tree_note="$DOCKERFILE @ $df_at (**UNCOMMITTED CHANGES** -- these pins are not what $df_at builds)"
     fi
+  else
+    # Outside a checkout entirely. Say so rather than failing: running the
+    # watcher against a Dockerfile in a bare directory is legitimate, and
+    # silence here would read as a clean tree.
+    tree_note="$DOCKERFILE (revision unknown -- not a git checkout)"
   fi
   echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`. Read from \`$tree_note\`.</sub>"
 } >> "$report"
@@ -2957,6 +3028,7 @@ if [ "$EMIT_JSON" -eq 1 ]; then
         --arg gm "$gomod_state" --argjson gmt "$gomod_total" \
         --argjson gms "$gomod_seen" --argjson gmu "$gomod_unswept" \
         --argjson gmo "$gomod_out_of_scope" --arg gmsrc "$gomod_source" \
+        --arg inp "$DOCKERFILE" --arg irev "$input_rev" --arg ist "$input_state" \
         '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
           advisory_unknown:$au, advisory_partial:$ap,
           floors_acknowledged:$fa, floors_expired:$fe,
@@ -2967,7 +3039,8 @@ if [ "$EMIT_JSON" -eq 1 ]; then
           image_graph:$ig, image_graph_modules:$igt,
           image_base:$ib, image_base_version:$ibv,
           gomod:$gm, gomod_modules:$gmt, gomod_swept:$gms,
-          gomod_unswept:$gmu, gomod_out_of_scope:$gmo, gomod_source:$gmsrc}' \
+          gomod_unswept:$gmu, gomod_out_of_scope:$gmo, gomod_source:$gmsrc,
+          input:$inp, input_rev:$irev, input_state:$ist}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
 fi
@@ -3006,6 +3079,22 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "gomod=$gomod_out"
     echo "gomod_findings=$gomod_hits_out"
     echo "gomod_unswept=$gomod_unswept"
+    # The input's provenance (T-0656), so a workflow consuming these outputs
+    # can record WHICH revision a stored verdict describes without parsing the
+    # report prose. `input_rev` is empty, never a placeholder, when no
+    # revision could be established -- see `input_state`.
+    #
+    # The PATH goes through clean_scalar for the reason given above
+    # clean_scalar itself: a newline in a value written as `key=value` places
+    # the remainder at column 0 of this block, which forges a step output.
+    # `--dockerfile` is operator-supplied rather than upstream-controlled, so
+    # this is defence in depth rather than a live hole -- but "the current
+    # caller happens to be trusted" is exactly the incidental property that
+    # note warns against relying on. The revision and state are git's own
+    # output and cannot contain a newline.
+    echo "input=$(clean_scalar "$DOCKERFILE")"
+    echo "input_rev=$input_rev"
+    echo "input_state=$input_state"
     echo "report<<$PINREPORT_DELIM"
     cat "$report"
     echo "$PINREPORT_DELIM"
