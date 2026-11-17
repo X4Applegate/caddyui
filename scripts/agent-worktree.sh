@@ -72,7 +72,11 @@ cmd_add() {
   mkdir -p "$WT_ROOT"
 
   if git -C "$MAIN_REPO" worktree list --porcelain | grep -qx "worktree $dir"; then
-    printf 'existing worktree: %s\n' "$dir"
+    # To STDERR, like every other progress line here. On stdout it broke the documented
+    # composition `cd "$(agent-worktree.sh add <agent>)"` on the REUSE path -- i.e. on every run
+    # after the first -- because the captured value became two lines ("existing worktree: /p\n/p")
+    # and `cd` got a non-existent directory. Measured 2026-11-17 (T-0824).
+    printf 'existing worktree: %s\n' "$dir" >&2
   elif git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$branch"; then
     # Branch exists from an earlier run but the tree is gone: re-attach rather than re-create,
     # so any unpushed commits on that branch survive.
@@ -87,6 +91,24 @@ cmd_add() {
 
   printf '%s\n' "$dir"
   printf 'branch %s (from origin/main %s)\n' "$branch" "$base" >&2
+
+  # T-0824. If this tree is already doing release work, name any OTHER LIVE session doing release
+  # work on the same surface. T-0678 was two sessions rebasing one release minutes apart, seen
+  # only afterwards; this is the cheap local signal for that, and it runs here because every
+  # session calls this script at the top of every run.
+  #
+  # Advisory and failure-tolerant on purpose: `|| true` so a missing mothership checkout, an
+  # unreachable Gateway or any bug in the checker can never stop a session from getting its tree.
+  # On a fresh tree it prints the "nothing to compare" line and costs one `git diff`.
+  # Only the warning is shown here, not the "nothing to compare" chatter: this runs on EVERY run
+  # of every session, and a line that appears every time is a line nobody reads. Run the checker
+  # once, keep its stderr, and print it only if it actually found a peer.
+  local peers="${MOTHERSHIP_MAIN_REPO:-/mnt/volumes/8TB/mothership}/scripts/release-peers.sh"
+  if [ -x "$peers" ]; then
+    local found=""
+    found="$("$peers" --repo "$dir" 2>&1 >/dev/null || true)"
+    case "$found" in *'another LIVE session'*) printf '%s\n' "$found" >&2 ;; esac
+  fi
 }
 
 cmd_list() {
