@@ -785,6 +785,36 @@ pkg_vers_for_type() {
     | unique | .[]' "$1" | LC_ALL=C sort -u
 }
 
+# The NAMES of the rows pkg_vers_for_type emitted a pair for -- i.e. the rows
+# that HAVE a readable version -- for the denominator-ratchet check below.
+#
+# This exists instead of recovering the name by splitting the pair on its last
+# `@`, which is what the first spelling of that check did and which the round-2
+# review broke. The split is correct when the NAME contains `@` (Go module
+# paths legitimately do), but wrong when the VERSION does -- and the sanitizer
+# charclass permits `@`, so an attacker-chosen version survives into the
+# compared string. `name@v0.58.0@1` splits to `name@v0.58.0`, which is in
+# NEITHER name list, so `comm -12` drops the row and the ratchet never counts
+# it. Reproduced end to end against a baseline whose x/crypto version was
+# `v0.58.0@1`: the rebuild dropped the Version key and the CVE, coverage
+# printed OK and gate 1 reported the finding as REMOVED, under STRICT policy.
+# The control with a plain version blocked, so the `@` was the whole bug.
+#
+# Deriving the name from `.Name` directly has no parse step to confuse: it is
+# the SAME select and the SAME sanitization as pkg_vers_for_type, so the two
+# outputs correspond row for row by construction rather than by agreement
+# between a formatter and a parser. No legitimacy cost: for any row whose
+# version contains no `@` the two spellings agree exactly, and the real scans
+# contain no such version -- so this can only ever ADD rows the split silently
+# dropped, never remove one it counted.
+pkg_versioned_names_for_type() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((.Name // "") != "" and (.Version // "") != "")
+      | (.Name | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
 # Count rows whose Version would be CHANGED by the 120-character truncation
 # pkg_vers_for_type and pkg_ver_of_name apply.
 #
@@ -798,9 +828,10 @@ pkg_vers_for_type() {
 # a CVE with the gate reporting coverage OK.
 #
 # A real Go module version or apk revision is far shorter than 120 characters
-# (the longest on either real pair is a 50-character pseudo-version), so
-# refusing to compare a version that does not survive the cut costs nothing
-# legitimate and removes the channel rather than widening the window.
+# -- measured across the captured pairs, the longest is a 37-character Go
+# pseudo-version -- so refusing to compare a version that does not survive the
+# cut costs nothing legitimate and removes the channel rather than widening
+# the window.
 # Counted on BOTH sides by the caller, because the plant has to be accepted
 # once before it can be exploited.
 long_version_count() {
@@ -853,14 +884,21 @@ pkg_ver_of_name() {
 # is: the caller's needle is sanitized, and the baseline's ID set is compared
 # against the rebuild's, so the two must be rendered identically or a name
 # needing sanitization silently yields an empty set on one side.
+#
+# An EMPTY id is kept rather than filtered, and that is deliberate: `ids_from`
+# has no such filter, so a row whose VulnerabilityID is "" or absent is a
+# finding gate 1 counts. Filtering it here but not there made it invisible to
+# this set while still cancelling out of gate 1 -- so it could vanish while the
+# package's version moved, and 5c would exempt. Whatever the two functions
+# disagree about is laundering surface; they must render the same row the same
+# way. A whitespace-only id sanitizes to `???` and was already caught.
 vuln_ids_for_pkg() {
   jq -r --arg t "$2" --arg n "$3" '
     [ .Results[]? | select(.Type == $t) | .Vulnerabilities[]?
       | select((((.PkgName // "") | tostring
                  | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) == $n))
       | ((.VulnerabilityID // "") | tostring
-         | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120])
-      | select(. != "") ]
+         | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120]) ]
     | unique | .[]' "$1" | LC_ALL=C sort -u
 }
 
@@ -869,7 +907,7 @@ assert_scan_coverage() {
   local os_family new_types old_types missing t new_pkgs old_pkgs floor eosl
   local old_names_f new_names_f old_named retained name_floor
   local vuln_names_f lost_vuln lost_vuln_1l
-  local vuln_names_f_keep vn old_v new_v moved_vuln moved_vuln_1l moved_vuln_n lost_ids
+  local vuln_names_f_keep vn old_v new_v moved_vuln moved_vuln_1l moved_vuln_n lost_ids_n
   local vuln_ver_blocking
   local old_nv_f new_nv_f old_nv nv_retained nv_floor
   local nv_names_f nv_newnames_f dropped_ver long_old long_new
@@ -1294,10 +1332,22 @@ assert_scan_coverage() {
       # a partial retention is not a full one. `comm -23` is the baseline IDs
       # not present on the new side; empty means every one survived, which is
       # the upgrade case ids_from protects and the only state exempted here.
-      lost_ids="$(LC_ALL=C comm -23 \
-                    <(vuln_ids_for_pkg "$old" "$t" "$vn") \
-                    <(vuln_ids_for_pkg "$new" "$t" "$vn"))"
-      [ -n "$lost_ids" ] || continue
+      #
+      # COUNTED BY LINE, NOT TESTED FOR EMPTINESS. An empty VulnerabilityID is
+      # a finding `ids_from` counts (it keys on "\($id)\t\($pkg)", with no
+      # filter on $id), so it must be a member of this set too -- but a set
+      # whose ONLY lost member is the empty id is a single empty line, and
+      # command substitution strips it to a zero-length string. `[ -n ... ]`
+      # then reads "nothing was lost" and 5c exempts the version move, while
+      # gate 1 still cancels that finding as FIXED. Reproduced: baseline
+      # go-jose/v3 with three CVEs plus one empty-id row, rebuild moving the
+      # version and keeping the three -- coverage OK, the empty-id finding
+      # removed. `wc -l` counts the line the string cannot hold.
+      lost_ids_n="$(LC_ALL=C comm -23 \
+                      <(vuln_ids_for_pkg "$old" "$t" "$vn") \
+                      <(vuln_ids_for_pkg "$new" "$t" "$vn") | wc -l)"
+      lost_ids_n=${lost_ids_n//[[:space:]]/}
+      [ "$lost_ids_n" -gt 0 ] || continue
       old_v="$(pkg_ver_of_name "$old" "$t" "$vn")"
       new_v="$(pkg_ver_of_name "$new" "$t" "$vn")"
       # No readable version on either side: 5b already asserted presence and
@@ -1397,12 +1447,16 @@ assert_scan_coverage() {
     # turn a legitimate plugin removal -- which both of those deliberately
     # tolerate -- into a hard stop.
     #
-    # Split on the LAST `@`, not the first: a name@version pair is built by
-    # appending "@" + version, and Go module paths legitimately contain `@`.
+    # The two name lists come from pkg_versioned_names_for_type, NOT from
+    # splitting the pairs on their last `@`. See that function: the version is
+    # attacker-chosen and the sanitizer permits `@`, so a split recovers the
+    # wrong name whenever the VERSION contains one, and the row then matches
+    # neither list and is never counted. Reading `.Name` directly has no parse
+    # step to confuse.
     nv_names_f="$OUT/.cov-oldnv-names-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
     nv_newnames_f="$OUT/.cov-newnv-names-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
-    sed 's/@[^@]*$//' "$old_nv_f" | LC_ALL=C sort -u > "$nv_names_f"
-    sed 's/@[^@]*$//' "$new_nv_f" | LC_ALL=C sort -u > "$nv_newnames_f"
+    pkg_versioned_names_for_type "$old" "$t" > "$nv_names_f"
+    pkg_versioned_names_for_type "$new" "$t" > "$nv_newnames_f"
     dropped_ver=$(LC_ALL=C comm -12 "$nv_names_f" "$new_names_f" \
                   | LC_ALL=C comm -23 - "$nv_newnames_f" | wc -l)
     dropped_ver=${dropped_ver//[[:space:]]/}

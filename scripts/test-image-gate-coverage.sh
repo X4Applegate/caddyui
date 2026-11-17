@@ -652,5 +652,83 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
 run_cov "$WORK/t43.json" "$BVV"
 check "an ordinary long Go pseudo-version still passes" pass
 
+# ---------------------------------------------------------------------------
+# ROUND-2 REVIEW. The fixes above passed their own 43-case suite and were still
+# wrong in two ways, both reproduced end to end by independent review. Each
+# case below FAILS against the round-1 code and passes against the current
+# gate, so they prove the bugs rather than asserting the fixes.
+
+# 44. AN '@' IN THE BASELINE'S VERSION DEFEATED 5d's RATCHET. The ratchet
+#     recovered the package name by splitting the `name@version` pair on its
+#     LAST `@` -- correct when the NAME carries one (Go module paths do), wrong
+#     when the VERSION does. The sanitizer charclass permits `@`, so an
+#     attacker-chosen version survives into the compared string:
+#     `name@v0.58.0@1` split to `name@v0.58.0`, which is in NEITHER name list,
+#     so `comm -12` dropped the row and it was never counted.
+#
+#     The name is now read from `.Name` directly (pkg_versioned_names_for_type),
+#     which has no parse step to confuse. Keep it that way: a split here is a
+#     formatter and a parser that have to agree about attacker input.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
+      [ .[] | if (.Version // "") != "" then .Version = (.Version + "@1") else . end ]
+    | (.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
+      [ { VulnerabilityID: "GO-2026-5932", PkgName: "example.com/mod-5",
+          InstalledVersion: "v1.0.0@1" } ]' "$BVV" > "$WORK/t44-base.json"
+# Rebuild keeps every NAME, drops mod-5's Version key, and drops the finding.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
+      [ .[] | if .Name == "example.com/mod-5" then del(.Version)
+              else (if (.Version // "") != "" then .Version = (.Version + "@1") else . end) end ]
+    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t44.json"
+run_cov "$WORK/t44.json" "$WORK/t44-base.json"
+check "an '@' in the baseline version cannot hide a dropped version (5d ratchet)" block
+
+# 45. The same shape with a PLAIN version is the control: it blocked before
+#     this fix too, which is what localises 44 to the `@` rather than to the
+#     ratchet being broken in general.
+jq '(.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
+      [ { VulnerabilityID: "GO-2026-5932", PkgName: "example.com/mod-5",
+          InstalledVersion: "v1.0.0" } ]' "$BVV" > "$WORK/t45-base.json"
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
+      [ .[] | if .Name == "example.com/mod-5" then del(.Version) else . end ]
+    | (.Results[] | .Vulnerabilities) |= []' "$BVV" > "$WORK/t45.json"
+run_cov "$WORK/t45.json" "$WORK/t45-base.json"
+check "the same drop with a plain version blocks (control for 44)" block
+
+# 46. AN EMPTY VulnerabilityID ESCAPED 5c's ID SET. `ids_from` keys findings on
+#     "\($id)\t\($pkg)" with no filter on $id, so a row whose VulnerabilityID is
+#     "" or absent IS a finding gate 1 counts -- but `vuln_ids_for_pkg` ended
+#     with `select(. != "")` and dropped it, so it was invisible to 5c and could
+#     vanish while the package's version moved.
+#
+#     TWO defects, and fixing only the filter is not enough: with the filter
+#     gone the lost set is a single EMPTY LINE, and command substitution strips
+#     that to a zero-length string, so `[ -n "$lost_ids" ]` still read "nothing
+#     lost". The count is therefore taken with `wc -l`, which counts the line
+#     the string cannot hold. Do not fold this back into an emptiness test.
+jq '(.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
+      [ { VulnerabilityID: "CVE-2026-1111", PkgName: "example.com/mod-5",
+          InstalledVersion: "v1.0.0" },
+        { VulnerabilityID: "", PkgName: "example.com/mod-5",
+          InstalledVersion: "v1.0.0" } ]' "$BVV" > "$WORK/t46-base.json"
+# Rebuild moves mod-5's version, KEEPS the real CVE, drops only the empty-id row.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
+      [ .[] | if .Name == "example.com/mod-5" then .Version = "v9.9.9" else . end ]
+    | (.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
+      [ { VulnerabilityID: "CVE-2026-1111", PkgName: "example.com/mod-5",
+          InstalledVersion: "v9.9.9" } ]' "$BVV" > "$WORK/t46.json"
+run_cov "$WORK/t46.json" "$WORK/t46-base.json"
+check "an empty VulnerabilityID is a finding 5c must not lose" block
+
+# 47. An ABSENT VulnerabilityID key behaves identically to an empty one --
+#     `ids_from` renders both as "", so 5c must too. Separate case because the
+#     `// ""` default is easy to drop on one side while keeping it on the other.
+jq '(.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
+      [ { VulnerabilityID: "CVE-2026-1111", PkgName: "example.com/mod-5",
+          InstalledVersion: "v1.0.0" },
+        { PkgName: "example.com/mod-5", InstalledVersion: "v1.0.0" } ]' \
+   "$BVV" > "$WORK/t47-base.json"
+run_cov "$WORK/t46.json" "$WORK/t47-base.json"
+check "an absent VulnerabilityID key behaves like an empty one" block
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
