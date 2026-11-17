@@ -56,10 +56,19 @@
 #     actually looked at the image: an OS was detected, it is not end-of-life,
 #     every scan target the baseline had is still present, each shared target's
 #     package count has not collapsed, the retained packages are the SAME
-#     packages by name, and the Go binary the baseline scanned is still being
-#     scanned. This is a precondition rather than a gate because it produces no
-#     verdict -- it exits 2 ("the gate could not run"), which all three call
-#     sites already treat as blocking.
+#     packages by name, at least half of them at the same name@version, and
+#     (for the pinned Go module types, under the strict policy) no
+#     findings-bearing package has moved version while its findings vanished,
+#     and the Go binary the baseline scanned is still being scanned. This is a
+#     precondition rather than a gate because it produces no verdict -- it
+#     exits 2 ("the gate could not run"), which all three call sites already
+#     treat as blocking.
+#
+#     That sentence is deliberately long. An earlier spelling said "the SAME
+#     packages by name AND at the same versions", which promised more than
+#     any of these checks deliver; over-claiming in a security control's own
+#     summary is how a later reader trusts more than the code enforces, and
+#     review has now caught that twice on this function.
 #
 #     The later checks are there because a COUNT IS NOT AN IDENTITY (T-0638).
 #     The count floor asks "are there still at least half as many rows", so it
@@ -97,6 +106,53 @@
 #     baseline's whole name set pays for the shipped binary's coverage while
 #     usr/bin/caddy is gutted to a single package. Check 7 applies the same
 #     identity floor per retained gobinary TARGET, which is what stops it.
+#
+#     AND A NAME IS NOT A VERSION (T-0810). Checks 5, 5b and 7 all compare
+#     `.Packages[].Name`; until T-0810 nothing compared `.Packages[].Version`
+#     anywhere in this function. So a rebuild could report an identical
+#     package name set -- 237/237 intersection, every floor cleared, every
+#     findings-bearing package still present -- while the versions behind
+#     those names were entirely different. Measured against the real :stable
+#     scan: keep all 237 names, replace every version, and the precondition
+#     printed "scan coverage OK" while gate 1 reported ADDED=0 REMOVED=7,
+#     verdict=improved, exit 0.
+#
+#     Two checks close it, in the same relationship 5 and 5b have:
+#
+#       5c  a package carrying findings in the baseline must still be
+#           reported AT THE SAME VERSION, unless EVERY ONE of those findings
+#           is still reported against it. This is the load-bearing half. The
+#           targeted form of the attack -- swap the versions of only the five
+#           findings-bearing modules -- sits at 97% name@version retention
+#           and clears any ratio, exactly as pass A's targeted drop cleared
+#           check 5's.
+#
+#           "EVERY ONE", compared as an ID SET, is load-bearing and not
+#           pedantry. Asking merely whether the package still carries SOME
+#           finding exempted a package carrying several by retaining any one
+#           of them, and the real baseline reports three CVEs against
+#           github.com/go-jose/go-jose/v3 -- so that spelling laundered two
+#           of them as fixed, under the strict policy, with no note. Set
+#           comparison against the BASELINE's ids also means a fabricated
+#           finding cannot buy the exemption, which is the standard 5b holds
+#           itself to.
+#       5d  a loose 50% name@version floor per type, which catches the
+#           wholesale replacement 5c's narrow rule is indifferent to.
+#
+#     NEITHER MAKES gate 1 VERSION-AWARE, and that is deliberate: `ids_from`
+#     still keys findings on ID+package only, for the reason written out
+#     above it. 5c's first limb is what keeps the two compatible -- a package
+#     that moved version and STILL CARRIES the finding is the upgrade
+#     `ids_from` exists to protect, and it satisfies 5c outright. Verified on
+#     the documented case (x/crypto v0.57.0 -> v0.58.0 still reporting
+#     GO-2026-5932): gate 1 reports added=0 removed=0 and 5c passes.
+#
+#     5c's hard stop is scoped to `gobinary`/`gomod`, because those versions
+#     are reproducible by construction (every xcaddy --with is pinned) while
+#     `apk upgrade --no-cache` is unpinned BY DESIGN and picking up new OS
+#     package versions is the whole purpose of a refresh. Unscoped, it would
+#     have blocked the T-0592 refresh -- the one that fixed CVE-2026-4738 by
+#     moving zlib 1.3.2-r1 -> 1.4-r0.
 #
 #     It exists because gate 1 is set arithmetic, and set arithmetic reads an
 #     EMPTY findings list as a perfect score. That made this the ONE fail-open
@@ -348,12 +404,18 @@ rm -f "$OUT/verdict" "$OUT/summary.md" \
 # for it in a way it is not for the diffs: keep the name prefixed `cfg-` if it
 # is ever renamed.
 #
-# .cov-*.names are the scratch files of coverage checks 5, 5b and 7 (T-0638).
-# Each is removed as soon as its target has been compared, so they do not
-# normally survive a run -- but a `die` from a LATER target, or a kill between
-# the two writes, leaves one behind. Cleared for the same reason: this
-# directory is reused on a local run, and those checks read the paths back, so
-# a stale file would be read as this run's package list for that target.
+# .cov-*.names are the scratch files of coverage checks 5, 5b, 5c, 5d and 7
+# (T-0638, T-0810). Each is removed as soon as its target has been compared,
+# so they do not normally survive a run -- but a `die` from a LATER target, or
+# a kill between the two writes, leaves one behind. Cleared for the same
+# reason: this directory is reused on a local run, and those checks read the
+# paths back, so a stale file would be read as this run's package list for
+# that target.
+#
+# KEEP THE .names SUFFIX on any scratch file added to those checks. 5d's
+# name@version lists are `.cov-old-nv-*.names` rather than `*.nv` precisely so
+# this glob keeps covering them; a new suffix would fall outside the sweep
+# without anything failing visibly.
 
 command -v trivy >/dev/null || die "trivy not found"
 command -v jq    >/dev/null || die "jq not found"
@@ -697,11 +759,120 @@ pkg_names_for_target() {
     | unique | .[]' "$1" | LC_ALL=C sort -u
 }
 
+# name@version pairs for a type (T-0810).
+#
+# Checks 5, 5b and 7 all compare `.Packages[].Name`, and NOTHING compares
+# `.Packages[].Version`, so a rebuild can report an identical package name set
+# -- 237/237 intersection, every floor cleared -- while the versions behind
+# those names are entirely different from the baseline's. Measured against the
+# real :stable scan: keep all 237 names, replace every version, zero the
+# findings, and the precondition prints "scan coverage OK" while gate 1 reports
+# ADDED=0 REMOVED=7, verdict=improved, exit 0.
+#
+# Packages with no readable Version are SKIPPED rather than rendered as
+# `name@` or `name@null`. Trivy does not populate Version for every row -- on
+# the real gobinary result the root `caddy` package carries none, so 236 of 237
+# rows have one -- and a synthetic empty version would otherwise be a pair that
+# matches on both sides for free, diluting the ratio in the attacker's favour.
+# The denominator is therefore the number of pairs that CAN be compared, which
+# is the same shape as check 5 counting distinct names rather than rows.
+pkg_vers_for_type() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((.Name // "") != "" and (.Version // "") != "")
+      | ((.Name | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) + "@" +
+         (.Version | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120])) ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
+# Count rows whose Version would be CHANGED by the 120-character truncation
+# pkg_vers_for_type and pkg_ver_of_name apply.
+#
+# Truncation makes two versions sharing their first 120 sanitized characters
+# indistinguishable, and that is a laundering channel rather than a cosmetic
+# limit: plant `v0.58.0+build.<140 chars>` in one release -- which compares
+# EQUAL to itself, keeps its finding and so passes silently, looking like
+# ordinary `+build` metadata -- and from then on that package's version can be
+# changed beyond character 120 while 5c and 5d see no movement at all.
+# Reproduced in review against the real :stable scan: the second step dropped
+# a CVE with the gate reporting coverage OK.
+#
+# A real Go module version or apk revision is far shorter than 120 characters
+# (the longest on either real pair is a 50-character pseudo-version), so
+# refusing to compare a version that does not survive the cut costs nothing
+# legitimate and removes the channel rather than widening the window.
+# Counted on BOTH sides by the caller, because the plant has to be accepted
+# once before it can be exploited.
+long_version_count() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((.Name // "") != "" and (.Version // "") != "")
+      | (.Version | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?"))
+      | select(length > 120) ]
+    | length' "$1"
+}
+
+# The version a given package name is reported at, for one type. Used by 5c to
+# ask whether a findings-bearing package MOVED, as distinct from whether it is
+# still present (which is 5b's question).
+#
+# A name listed at several versions yields several lines; the caller treats any
+# difference in the set as a move, which is the conservative reading.
+#
+# SANITIZE .Name INSIDE THE SELECT, because the needle this is called with is
+# ALREADY sanitized: it comes from the vulnerability list, which is written
+# through the same gsub/truncate. Comparing a sanitized needle against a raw
+# haystack silently matches NOTHING for any name carrying a character outside
+# the allowed class or longer than 160 bytes -- `old_v` then comes back empty
+# and 5c skips the package as "no readable version". That is fail-OPEN on the
+# load-bearing check, and directly attacker-selectable, since a `gobinary`
+# PkgName is copied from Go build info in a submitter-controlled image: one
+# `~` in a module path was enough to turn 5c off. Found in review; the control
+# with a plain name blocks correctly, so the asymmetry was the whole bug.
+# Both sides must pass through the SAME transformation.
+pkg_ver_of_name() {
+  jq -r --arg t "$2" --arg n "$3" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((((.Name // "") | tostring
+                 | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) == $n)
+               and (.Version // "") != "")
+      | (.Version | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120]) ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
+# The set of finding IDs reported against one package name, for one type.
+#
+# 5c's exemption asks whether a package that MOVED VERSION still carries the
+# findings it carried in the baseline. That question must be asked per FINDING,
+# not per package: a package carrying several findings would otherwise be
+# exempted by retaining any ONE of them while the rest cancel out of gate 1 as
+# fixed. That is not hypothetical on this image -- the real :stable baseline
+# reports THREE CVEs against github.com/go-jose/go-jose/v3.
+#
+# Both the ID and the name are sanitized here, for the reason pkg_ver_of_name
+# is: the caller's needle is sanitized, and the baseline's ID set is compared
+# against the rebuild's, so the two must be rendered identically or a name
+# needing sanitization silently yields an empty set on one side.
+vuln_ids_for_pkg() {
+  jq -r --arg t "$2" --arg n "$3" '
+    [ .Results[]? | select(.Type == $t) | .Vulnerabilities[]?
+      | select((((.PkgName // "") | tostring
+                 | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) == $n))
+      | ((.VulnerabilityID // "") | tostring
+         | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120])
+      | select(. != "") ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
 assert_scan_coverage() {
   local new="$1" old="$2" arch="$3"
   local os_family new_types old_types missing t new_pkgs old_pkgs floor eosl
   local old_names_f new_names_f old_named retained name_floor
   local vuln_names_f lost_vuln lost_vuln_1l
+  local vuln_names_f_keep vn old_v new_v moved_vuln moved_vuln_1l moved_vuln_n lost_ids
+  local vuln_ver_blocking
+  local old_nv_f new_nv_f old_nv nv_retained nv_floor
+  local nv_names_f nv_newnames_f dropped_ver long_old long_new
   local old_gotargets new_gotargets lost_go old_gocount
 
   # The baseline must be a readable scan before it can define the standard.
@@ -890,17 +1061,29 @@ assert_scan_coverage() {
     # ecosystem nor every Trivy version, and check 4's count floor has already
     # run on this target, so the coverage assertion still has a measurement
     # here. Skipping is sound precisely because this check is additive.
+    #
+    # SKIP THIS CHECK ONLY -- DO NOT `continue` THE TYPE. The earlier spelling
+    # was a `continue`, which was correct while 5 and 5b were the only checks
+    # below it and both keyed on .Packages[].Name. It stopped being correct
+    # when 5c and 5d were added (T-0810): 5c keys on the VULNERABILITY's
+    # .PkgName, a different field that can be populated when the package rows
+    # are not, and 5d keys on name@version. A `continue` therefore disabled
+    # every version check for a baseline whose package rows carry versions but
+    # no names -- found in review, reproduced, and exactly the
+    # self-perpetuating shape documented for check 4's zero-package baseline
+    # above: check 3 still passes because the TYPE is present on both sides,
+    # so one such image publishes once and :stable IS the blind baseline from
+    # then on.
     if [ "$old_named" -eq 0 ]; then
-      rm -f "$old_names_f" "$new_names_f"
-      continue
-    fi
-
-    retained=$(LC_ALL=C comm -12 "$old_names_f" "$new_names_f" | wc -l)
-    retained=${retained//[[:space:]]/}
-    name_floor=$(( (old_named + 1) / 2 ))
-    if [ "$retained" -lt "$name_floor" ]; then
-      rm -f "$old_names_f" "$new_names_f"
-      die "the rebuild's '$(safe_text "$t")' scan of linux/$arch retains only $retained of the published image's $old_named package name(s) (floor $name_floor), though it reports $new_pkgs package(s) in total: the package list was REPLACED rather than retained, so the baseline's findings for the missing packages would cancel out of the comparison as though they had been fixed. A package count is not a package identity."
+      : # no identity floor available for this target; 5b/5c/5d still apply
+    else
+      retained=$(LC_ALL=C comm -12 "$old_names_f" "$new_names_f" | wc -l)
+      retained=${retained//[[:space:]]/}
+      name_floor=$(( (old_named + 1) / 2 ))
+      if [ "$retained" -lt "$name_floor" ]; then
+        rm -f "$old_names_f" "$new_names_f"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch retains only $retained of the published image's $old_named package name(s) (floor $name_floor), though it reports $new_pkgs package(s) in total: the package list was REPLACED rather than retained, so the baseline's findings for the missing packages would cancel out of the comparison as though they had been fixed. A package count is not a package identity."
+      fi
     fi
 
     # 5b. Every package that CARRIES A FINDING in the baseline must still be
@@ -948,16 +1131,304 @@ assert_scan_coverage() {
         | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
       | unique | .[]' "$old" | LC_ALL=C sort -u > "$vuln_names_f"
     lost_vuln="$(LC_ALL=C comm -23 "$vuln_names_f" "$new_names_f")"
-    rm -f "$vuln_names_f"
+    # Kept for check 5c below, which asks a different question of the same
+    # list -- not "is this package still present" but "is it still the same
+    # version". Removed at the end of 5c rather than here.
+    vuln_names_f_keep="$vuln_names_f"
     if [ -n "$lost_vuln" ]; then
       lost_vuln_1l="$(safe_text "$(printf '%s' "$lost_vuln" | tr '\n' ' ')")"
       lost_vuln_1l="${lost_vuln_1l% }"
       if [ "$DRIFT_POLICY" = block ]; then
-        rm -f "$old_names_f" "$new_names_f"
+        rm -f "$old_names_f" "$new_names_f" "$vuln_names_f_keep"
         die "the rebuild's '$(safe_text "$t")' scan of linux/$arch no longer reports package(s) that carry findings in the published image: $lost_vuln_1l -- those findings have nothing to match against on the new side, so they would cancel out of the comparison as FIXED when they are merely unobserved. A rebuild of an unchanged Dockerfile must not drop a package the baseline is reporting a vulnerability for."
       fi
       printf 'NOTE (linux/%s): the rebuild no longer reports %s package(s) that carry findings in the published image: %s. Those findings will read as fixed in the comparison below; confirm the package was removed deliberately.\n' \
         "$arch" "$(safe_text "$t")" "$lost_vuln_1l"
+    fi
+
+    # 5c. A package that CARRIES FINDINGS in the baseline must still be
+    #     reported AT THE SAME VERSION -- unless EVERY ONE of those findings
+    #     is still reported against it (T-0810).
+    #
+    # 5b makes "this finding is gone" mean the package is still observed. It
+    # does not make it mean the SAME package was observed. Checks 5/5b/7 all
+    # compare names, so swapping only the versions of the findings-bearing
+    # packages satisfies every one of them while the findings still cancel
+    # out of gate 1 as fixed. Measured against the real :stable scan: swap
+    # the versions of just the five findings-bearing Go modules and the
+    # name@version retention is 231/236 = 97%, far above any ratio floor,
+    # while all 7 findings disappear and the verdict comes out improved.
+    # That is pass A's "drop exactly the packages that decide the verdict"
+    # recurring one level down, and a ratio cannot catch it for the same
+    # reason it could not catch the first one.
+    #
+    # WHY THIS IS NOT ids_from's EXCLUDED VERSION, REINTRODUCED.
+    # ---------------------------------------------------------
+    # ids_from deliberately keys findings on ID+package and NOT on
+    # InstalledVersion, because including it made an UPGRADE of a
+    # still-affected package look like one finding removed plus one added --
+    # measured on GO-2026-5932 across v0.57.0 -> v0.58.0 -- so a security
+    # release that bumps a module still carrying a standing advisory could
+    # never ship. Nothing here changes that: gate 1's set arithmetic is
+    # untouched and stays version-blind.
+    #
+    # The rule's FIRST limb is what keeps the two compatible. A package whose
+    # version moved and which STILL CARRIES THE FINDING on the new side is
+    # exactly the upgrade ids_from protects, and it satisfies this check
+    # outright -- the finding did not cancel, so there is nothing to
+    # misread. Verified on the documented case: with the baseline's x/crypto
+    # at v0.57.0 and the rebuild's at v0.58.0 still reporting GO-2026-5932,
+    # gate 1 reports added=0 removed=0 and this check passes.
+    #
+    # So the only state this blocks is the one that is genuinely ambiguous:
+    # the finding vanished AND the thing it was reported against is no longer
+    # the same thing. Under `block` -- the refresh path, rebuilding an
+    # UNCHANGED Dockerfile.caddy from a release tag -- a findings-bearing
+    # package cannot legitimately change version at all, so that state is
+    # wrong by definition and blocking is the whole point. Under `report` --
+    # the release path -- an upgrade that actually FIXES the advisory
+    # produces precisely this shape and is the normal reason to cut a
+    # security release, so it is printed for the reviewer instead, exactly
+    # as 5b and gates 2/3 treat their drift. The scan alone cannot tell a
+    # real fix from a substituted version; the release diff and the pin set
+    # in Dockerfile.caddy can, and that is the reviewer's job.
+    #
+    # WHY THIS BLOCKS ONLY WHERE VERSIONS ARE REPRODUCIBLE BY CONSTRUCTION.
+    # ---------------------------------------------------------------------
+    # The argument above -- "a refresh rebuilds an unchanged Dockerfile, so a
+    # findings-bearing package cannot legitimately change version" -- is true
+    # for Go modules and FALSE for OS packages, and the difference is written
+    # into Dockerfile.caddy. Every xcaddy `--with` carries a version (pinned
+    # in v2.68.9), so the module set is reproducible and any movement in it
+    # is drift the refresh path already blocks on through gate 2. The alpine
+    # layer is the opposite: `apk upgrade --no-cache` is UNPINNED BY DESIGN
+    # and `FROM caddy:2.11.9-alpine` is a moving tag, so picking up new OS
+    # package versions is not drift -- it is the entire purpose of a weekly
+    # refresh.
+    #
+    # Measured, not reasoned: the T-0592 refresh moved alpine-release
+    # 3.23.7-r0 -> 3.23.8-r0, apk-tools and libapk 3.0.8-r0 -> 3.0.9-r0, and
+    # zlib 1.3.2-r1 -> 1.4-r0, and that last one is what FIXED CVE-2026-4738.
+    # Blocking OS version movement under `block` would therefore have blocked
+    # the refresh that delivered a security fix -- the same "the gate calls
+    # your fix a regression" failure ids_from exists to avoid, reappearing in
+    # a different place. A rule that blocks the fix it is meant to protect
+    # gets switched off, and then protects nothing.
+    #
+    # So the hard stop is scoped to the types whose versions are pinned, and
+    # everything else is reported with the same note. That is not a weaker
+    # rule where it matters: the supply-chain substitution this check exists
+    # for is a swapped Go MODULE, which is exactly where the block applies.
+    # An OS package version that moves while its finding disappears is the
+    # ordinary, expected shape of an `apk upgrade`, and the note puts it in
+    # front of the reviewer either way.
+    #
+    # The block limb therefore forbids nothing the refresh path already
+    # allowed: a Go module whose version moved is module drift, and gate 2
+    # diffs `caddy list-modules --versions` and fails the whole run on any
+    # drift under this same policy. What this adds is a second observation of
+    # the same fact derived from the scan rather than from executing the
+    # binary, which matters because the two can disagree.
+    #
+    # BE HONEST ABOUT HOW INDEPENDENT THAT SECOND OBSERVATION ACTUALLY IS.
+    # It is not two separate safety nets on the release path. Gate 2 and this
+    # check are governed by the SAME MODULE_DRIFT_POLICY variable, and
+    # release-docker.yml sets it from whether the submitter edited
+    # Dockerfile.caddy -- so the attacker's own change selects the weaker
+    # posture for BOTH at once, and both degrade to advisory together. Gate 2
+    # is also the stronger evidence where it runs, because it executes the
+    # binary while this check reads JSON the image authored. Read 5c as a
+    # cross-check ON gate 2, not as independent cover FOR it: where they
+    # disagree, one of them is being lied to, and the scan is the likelier
+    # liar.
+    # Measured on the real release pair v2.68.9 -> v2.68.12, which fixed three
+    # CVEs by upgrading go-jose/v4, x/net and stdlib: under `report` all three
+    # are printed as notes and the release passes, which is the intended
+    # outcome -- the reviewer is told the findings cleared because versions
+    # moved, and the release diff says whether those moves were the ones asked
+    # for.
+    case "$t" in
+      gobinary|gomod) vuln_ver_blocking=1 ;;
+      *)              vuln_ver_blocking=0 ;;
+    esac
+
+    # Measured cost on the real pair: ZERO under both policies. All five
+    # findings-bearing modules are reported at identical versions on both
+    # sides of v2.68.12 vs :stable.
+    # Counted as well as listed. safe_text caps every interpolated string at
+    # 200 characters -- a deliberate log-injection defence, not a bug -- so a
+    # long list is truncated mid-package in both the die and the note. A
+    # reviewer reading a truncated list would not know how much was cut, and
+    # on the release path that note is the ONLY thing standing between a
+    # substituted version and an approval. The count is generated here rather
+    # than taken from the string, so it survives the cut.
+    moved_vuln=""
+    moved_vuln_n=0
+    while IFS= read -r vn; do
+      [ -n "$vn" ] || continue
+      # EXEMPT ONLY ON FULL RETENTION OF THE BASELINE'S FINDINGS FOR THIS
+      # PACKAGE, compared as an ID SET rather than as a count.
+      #
+      # The first spelling of this asked `length > 0` -- "does this package
+      # name appear in any vulnerability row on the new side" -- and that is
+      # wrong in two ways, both found in review and both reproduced against
+      # the real :stable scan.
+      #
+      # (1) PER-PACKAGE, NOT PER-FINDING. A package carrying several findings
+      #     was exempted by retaining any ONE of them while the others
+      #     cancelled as fixed. Live on this image: the baseline reports three
+      #     CVEs against github.com/go-jose/go-jose/v3, so substituting its
+      #     version and keeping one of the three gave coverage OK, ADDED=0
+      #     REMOVED=2, verdict=improved, exit 0 -- under the STRICT policy,
+      #     and with no note printed either.
+      #
+      # (2) THE EXEMPTION ACCEPTED A FABRICATED FINDING. Every string in this
+      #     JSON is attacker-chosen, so the image could manufacture its own
+      #     exemption by adding one invented vulnerability row naming the
+      #     package. That failed the standard 5b sets for itself a few lines
+      #     up -- anchored to real, observed vulnerabilities -- while claiming
+      #     to follow it.
+      #
+      # Comparing the BASELINE's ID set against the new side's fixes both: a
+      # fabricated ID is not in the baseline set so it cannot complete it, and
+      # a partial retention is not a full one. `comm -23` is the baseline IDs
+      # not present on the new side; empty means every one survived, which is
+      # the upgrade case ids_from protects and the only state exempted here.
+      lost_ids="$(LC_ALL=C comm -23 \
+                    <(vuln_ids_for_pkg "$old" "$t" "$vn") \
+                    <(vuln_ids_for_pkg "$new" "$t" "$vn"))"
+      [ -n "$lost_ids" ] || continue
+      old_v="$(pkg_ver_of_name "$old" "$t" "$vn")"
+      new_v="$(pkg_ver_of_name "$new" "$t" "$vn")"
+      # No readable version on either side: 5b already asserted presence and
+      # there is nothing further to compare. Not a die, for the reason check
+      # 5 skips a nameless baseline -- the check is additive.
+      [ -n "$old_v" ] || continue
+      # Absent from the new side entirely is 5b's case, already handled above.
+      [ -n "$new_v" ] || continue
+      if [ "$old_v" != "$new_v" ]; then
+        moved_vuln="$moved_vuln$vn ($(printf '%s' "$old_v" | tr '\n' ',' | sed 's/,$//') -> $(printf '%s' "$new_v" | tr '\n' ',' | sed 's/,$//')) "
+        moved_vuln_n=$(( moved_vuln_n + 1 ))
+      fi
+    done < "$vuln_names_f_keep"
+    if [ -n "$moved_vuln" ]; then
+      moved_vuln_1l="$(safe_text "${moved_vuln% }")"
+      if [ "$DRIFT_POLICY" = block ] && [ "$vuln_ver_blocking" -eq 1 ]; then
+        rm -f "$old_names_f" "$new_names_f" "$vuln_names_f_keep"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch reports $moved_vuln_n package(s) that carry findings in the published image at a DIFFERENT version, and no longer reports those findings: $moved_vuln_1l -- the finding cancels out of the comparison as FIXED, but the package it was reported against is not the same one, so nothing establishes it was fixed rather than substituted. Every xcaddy --with in Dockerfile.caddy carries a version, so a rebuild of an unchanged Dockerfile must reproduce the same module versions; a module that moved here did not come from the pin set. Cut a release if the bump is intended."
+      fi
+      printf 'NOTE (linux/%s): the rebuild reports %s %s package(s) at a different version than the published image, and no longer reports the finding(s) they carried: %s. Those findings read as FIXED in the comparison below on the strength of the version change alone, so confirm each new version is the intended upgrade rather than a substitution. (List truncated at 200 characters; the count is exact.)\n' \
+        "$arch" "$moved_vuln_n" "$(safe_text "$t")" "$moved_vuln_1l"
+    fi
+    rm -f "$vuln_names_f_keep"
+
+    # 5d. A loose name@VERSION identity floor (T-0810).
+    #
+    # 5c covers the packages that decide the verdict, the way 5b does for
+    # presence. This covers the wholesale case the way check 5 does: a
+    # rebuild that keeps every name but replaces every version behind them.
+    # That image is not the baseline's dependency set under another label --
+    # it is a different set of code wearing the same names, and a finding
+    # absent from it is unobserved rather than fixed.
+    #
+    # Deliberately the SAME loose 50% as checks 4, 5 and 7, and for the same
+    # reason: a legitimate release really does move versions, and a tight
+    # floor here would block ordinary releases and get switched off.
+    # Measured on the real pairs -- v2.68.12 vs :stable retains 235/236
+    # gobinary and 32/32 alpine name@version pairs (99% / 100%), and the
+    # T-0592 security release, which is the heaviest real churn on record
+    # because it moved the whole alpine base to fix CVE-2026-4738, retains
+    # 28/32 alpine (87%) and 235/235 gobinary (100%). The wholesale swap
+    # retains 0/236. The separation between a legitimate release and the
+    # attack is the entire range, so a 50% floor sits in open space rather
+    # than on a boundary.
+    #
+    # This does NOT subsume 5c and 5c does not subsume this, for exactly the
+    # relationship check 4 and check 5 have: a ratio catches the wholesale
+    # replacement that 5c's narrow rule ignores, and 5c catches the targeted
+    # five-package swap that sits at 97% and clears any ratio.
+    # Named `.names` like every other scratch file here, NOT `.nv`, so the
+    # stale-output sweep at the top of the script clears them: that sweep
+    # globs "$OUT"/.cov-*.names, and a new suffix would silently fall outside
+    # it. A stale file would then be read back as this run's name@version list
+    # for this target -- the exact failure the sweep exists to prevent, and
+    # one that fails OPEN here, since a stale baseline list that happens to
+    # intersect would clear the floor.
+    old_nv_f="$OUT/.cov-old-nv-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    new_nv_f="$OUT/.cov-new-nv-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    pkg_vers_for_type "$old" "$t" > "$old_nv_f"
+    pkg_vers_for_type "$new" "$t" > "$new_nv_f"
+    old_nv=$(wc -l < "$old_nv_f"); old_nv=${old_nv//[[:space:]]/}
+
+    # A VERSION THAT DOES NOT SURVIVE TRUNCATION CANNOT BE COMPARED.
+    #
+    # See long_version_count. Checked on BOTH sides and before any floor is
+    # taken, because the plant must be accepted once before it can be used,
+    # and because a baseline already carrying one is a baseline whose version
+    # comparison is already blind for that row.
+    long_old=$(long_version_count "$old" "$t")
+    long_new=$(long_version_count "$new" "$t")
+    if [ "$long_old" -gt 0 ] || [ "$long_new" -gt 0 ]; then
+      rm -f "$old_nv_f" "$new_nv_f" "$old_names_f" "$new_names_f"
+      die "the '$(safe_text "$t")' scan of linux/$arch reports package version(s) longer than 120 characters (published: $long_old, rebuild: $long_new): versions are compared truncated to that length, so two versions agreeing only up to it are indistinguishable here and a later change beyond the cut would move a package without this check seeing it. A real module version or package revision is far shorter; refusing to compare one this long closes a laundering channel rather than widening the window."
+    fi
+
+    # THE DENOMINATOR MUST NOT BE ATTACKER-SHRINKABLE ACROSS RELEASES.
+    #
+    # `old_nv` counts only baseline rows that HAVE a readable version, and a
+    # published image becomes the next baseline. So stripping Version from
+    # just under half the packages each release clears the 50% floor every
+    # time while halving the denominator for the next one -- names stay
+    # untouched, so checks 4, 5, 5b and 7 never fire, and the standard walks
+    # down to a single pair. That is the same inherited-denominator ratchet
+    # that made fabricated NAMES dangerous (closed by 5b), one level down,
+    # and 5b does not cover it because a stripped version is not a missing
+    # package.
+    #
+    # So a baseline package that HAD a version and whose rebuild row no
+    # longer carries one counts as a LOST pair rather than as nothing to
+    # compare. That is the honest reading anyway: the version stopped being
+    # observable, and an unobservable version cannot establish that a finding
+    # was fixed. Legitimate cost is nil -- Trivy populates Version for every
+    # gobinary row but the synthetic root package, and for every alpine row,
+    # on both real pairs.
+    # Only packages the rebuild STILL REPORTS are asked this. One that is gone
+    # altogether is 5 and 5b's question, and counting it here as well would
+    # turn a legitimate plugin removal -- which both of those deliberately
+    # tolerate -- into a hard stop.
+    #
+    # Split on the LAST `@`, not the first: a name@version pair is built by
+    # appending "@" + version, and Go module paths legitimately contain `@`.
+    nv_names_f="$OUT/.cov-oldnv-names-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    nv_newnames_f="$OUT/.cov-newnv-names-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    sed 's/@[^@]*$//' "$old_nv_f" | LC_ALL=C sort -u > "$nv_names_f"
+    sed 's/@[^@]*$//' "$new_nv_f" | LC_ALL=C sort -u > "$nv_newnames_f"
+    dropped_ver=$(LC_ALL=C comm -12 "$nv_names_f" "$new_names_f" \
+                  | LC_ALL=C comm -23 - "$nv_newnames_f" | wc -l)
+    dropped_ver=${dropped_ver//[[:space:]]/}
+    rm -f "$nv_names_f" "$nv_newnames_f"
+    if [ "$dropped_ver" -gt 0 ]; then
+      rm -f "$old_nv_f" "$new_nv_f" "$old_names_f" "$new_names_f"
+      die "the rebuild's '$(safe_text "$t")' scan of linux/$arch reports $dropped_ver package(s) WITHOUT a version that the published image reported WITH one, while still reporting the package itself: an unobservable version cannot establish that a finding against that package was fixed rather than substituted, and because a published image becomes the next baseline, accepting this would shrink the version floor's denominator for every later release. Re-scan, or rebase onto an image Trivy can read versions from."
+    fi
+
+    # A baseline carrying no readable versions cannot define a version floor.
+    # Skipped rather than fatal for the reason check 5 skips a nameless
+    # baseline: .Packages[].Version is guaranteed for neither every ecosystem
+    # nor every Trivy version, checks 4 and 5 have already measured this
+    # target, and this check is additive. The denominator ratchet above is
+    # what stops this skip from being walked toward deliberately.
+    if [ "$old_nv" -eq 0 ]; then
+      rm -f "$old_nv_f" "$new_nv_f"
+    else
+      nv_retained=$(LC_ALL=C comm -12 "$old_nv_f" "$new_nv_f" | wc -l)
+      nv_retained=${nv_retained//[[:space:]]/}
+      nv_floor=$(( (old_nv + 1) / 2 ))
+      rm -f "$old_nv_f" "$new_nv_f"
+      if [ "$nv_retained" -lt "$nv_floor" ]; then
+        rm -f "$old_names_f" "$new_names_f"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch retains only $nv_retained of the published image's $old_nv package name@version pair(s) (floor $nv_floor), though it retains $retained of $old_named package NAME(s): the names were kept while the versions behind them were replaced, so this is a different dependency set wearing the baseline's labels and its findings would read as fixed when they are merely unobserved. A package name is not a package version."
+      fi
     fi
 
     rm -f "$old_names_f" "$new_names_f"
