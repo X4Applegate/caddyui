@@ -163,6 +163,12 @@ run_cov "$WORK/t3.json" "$B"
 check "lost gobinary target blocks" block
 
 # 4. A collapsed package count blocks (pre-existing check 4).
+#
+#    The rebuild keeps 50 of the baseline's REAL names, so it is caught by
+#    check 4's count floor (50 < 119) -- but 50 retained names is also below
+#    check 5's identity floor of 119, so check 5 would catch it too and this
+#    test alone cannot tell which one fired. Test 22 is the one that isolates
+#    check 4; this case is kept for the ordinary collapse shape.
 mkscan "$WORK/t4.json" 32 50 real usr/bin/caddy
 run_cov "$WORK/t4.json" "$B"
 check "gobinary collapsed below 50% count floor blocks" block
@@ -328,6 +334,35 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
     | (.Results[] | .Vulnerabilities) |= []' "$BV" > "$WORK/t21.json"
 run_cov "$WORK/t21.json" "$BV"
 check "carried-over fabricated names cannot satisfy the floor (ratchet step 2)" block
+
+# 22. Check 4 ISOLATED: a nameless baseline with a readable count, against a
+#     rebuild that collapses below the count floor (T-0812).
+#
+#     Every other blocking case in this file is also caught by check 5, so
+#     deleting check 4's count floor outright -- replacing its condition with
+#     `if false; then` -- left the whole suite reporting 21 passed, 0 failed.
+#     A check no test can observe is a check a future edit can remove in
+#     silence, so this case exists to make that mutation fail.
+#
+#     The shape is test 12's baseline (237 gobinary rows carrying no .Name,
+#     which is a real Trivy possibility -- .Packages[].Name is guaranteed for
+#     neither every ecosystem nor every version) paired with test 4's
+#     collapse instead of test 12's intact rebuild. Because the baseline has
+#     no usable names, check 5 takes its `old_named -eq 0` skip and never
+#     looks at this target, and 5b has no named findings to assert on. Check
+#     4 is then the ONLY thing standing between a 237-package baseline and a
+#     40-package rebuild: 40 < 119 blocks, and with check 4 removed the same
+#     input passes as "scan coverage OK".
+#
+#     This is why check 4 is NOT redundant with check 5, contrary to what
+#     security pass B concluded. Count and identity cover different holes:
+#     identity needs names to work at all, and the count floor is what still
+#     measures coverage when names are unavailable.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages)
+      |= [ range(0; 237) | { Version: "1.0.0" } ]' "$B" > "$WORK/t22-base.json"
+mkscan "$WORK/t22.json" 32 40 real usr/bin/caddy
+run_cov "$WORK/t22.json" "$WORK/t22-base.json"
+check "nameless baseline + collapsed count blocks (check 4 alone)" block
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
