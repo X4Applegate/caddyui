@@ -90,6 +90,79 @@ jobs:
       - name: The base-drift check never reports an unearned all-clear
         run: ./scripts/test-caddy-base-drift.sh
 
+      # The caddy-image-gate.sh regression suites (T-0821).
+      #
+      # That script decides whether a rebuilt image may replace the published
+      # one and move `:stable`/`:latest` on six public-facing edge proxies, and
+      # until this step existed NONE of its suites was run by any workflow --
+      # `shellcheck` above was the only automated thing reaching the file. Every
+      # assertion in the gate is a REFUSAL that fires only on a malicious or
+      # degraded input, so removing one leaves the happy path green and nothing
+      # notices. T-0812 is a live instance: replacing check 4's floor with
+      # `if false` still produced a fully passing run, because nothing isolated
+      # it. A regression test nobody runs is a regression test that does not
+      # exist.
+      #
+      # These are scan-level and string-level: no Docker, no network, all
+      # in a few seconds, which is why they sit in this job
+      # rather than a new one. `workflow-guards` already exists for exactly this
+      # shape of check -- shell suites needing no Go toolchain, no services and
+      # no credentials -- so extending it adds no runner and no checkout.
+      #
+      # NOT RUN HERE: the `pinned-module-*` sweeps pull real images and call
+      # proxy.golang.org, OSV and GitHub. Those are wired separately by T-0712
+      # (offline half on PRs, network half on the weekly refresh) and must not
+      # be folded in here, where three external services could turn a review red
+      # for a reason unrelated to the change under review.
+      - name: Image-gate regression suites
+        run: |
+          # Named explicitly rather than globbed. A glob over
+          # scripts/test-caddy-image-gate-*.sh would quietly run a suite that
+          # later acquires a Docker or network dependency on every PR, and -
+          # worse for a guard - would report success for an EMPTY match if the
+          # files were ever renamed. An absent suite must be a hard error, not
+          # zero iterations of a loop.
+          suites=(
+            test-caddy-image-gate-fs-allow.sh    # FS_ALLOW_RE validation, 52 cases
+            test-caddy-image-gate-trust-env.sh   # TLS-trust env rules, 40 cases
+            test-image-gate-coverage.sh          # scan-coverage floors (T-0638/T-0809), crafted Trivy JSON
+          )
+
+          for s in "${suites[@]}"; do
+            [ -x "scripts/$s" ] || {
+              echo "::error::scripts/$s is missing or not executable; the gate is unguarded on this ref"
+              exit 1
+            }
+          done
+
+          # Every suite runs even after one fails: they are independent, and
+          # `set -e` here would report the first failure while hiding the rest.
+          rc=0
+          for s in "${suites[@]}"; do
+            echo "::group::$s"
+            ./"scripts/$s" || { rc=1; echo "::error::$s failed"; }
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+      # A suite on disk that no step runs is the exact failure this card fixed,
+      # and it would come back silently the next time one is added: the step
+      # above would still be green, having simply not run the new file. So the
+      # list is cross-checked against the tree. This is a guard on the guard;
+      # it costs milliseconds and removes the only way this regression recurs.
+      - name: Every image-gate suite on disk is actually run
+        run: |
+          missing=0
+          for f in scripts/test-caddy-image-gate-*.sh scripts/test-image-gate-*.sh; do
+            [ -e "$f" ] || continue
+            b="$(basename "$f")"
+            grep -q "$b" .github/workflows/ci.yml || {
+              echo "::error::$b exists but is not run by ci.yml; add it to the Image-gate regression suites step"
+              missing=1
+            }
+          done
+          exit "$missing"
+
   # govulncheck is here for ONE property nothing else in this repo reports:
   # REACHABILITY. It distinguishes an advisory against a linked module from one
   # against a function this code actually calls, and on its first run it found
