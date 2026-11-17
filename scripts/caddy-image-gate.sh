@@ -61,15 +61,42 @@
 #     verdict -- it exits 2 ("the gate could not run"), which all three call
 #     sites already treat as blocking.
 #
-#     The last two are there because a COUNT IS NOT AN IDENTITY (T-0638). The
-#     count floor asks "are there still at least half as many rows", so it is
-#     cleared by a package list that was replaced rather than retained --
+#     The later checks are there because a COUNT IS NOT AN IDENTITY (T-0638).
+#     The count floor asks "are there still at least half as many rows", so it
+#     is cleared by a package list that was replaced rather than retained --
 #     padding with fabricated names keeps the count up while every finding
 #     against a dropped real package cancels out of gate 1 as though the
 #     rebuild had fixed it. Likewise "a gobinary result exists" is not "the
 #     binary this image runs was scanned", since Trivy emits one result per Go
-#     binary it finds. Both were demonstrated end-to-end against a real
-#     :stable-shaped baseline before being closed here.
+#     binary it finds. Every bypass named here was demonstrated end-to-end
+#     against the real :stable scan before being closed.
+#
+#     BE PRECISE ABOUT WHAT THE NAME FLOOR DOES AND DOES NOT PROMISE. A 50%
+#     intersection is NOT "the same packages", and on its own it is weaker
+#     than it looks in two specific ways, both measured:
+#
+#       - it is indifferent to WHICH names survive, so a rebuild may retain
+#         119 innocuous modules of 237, drop exactly the five that carry
+#         findings, and clear the floor by one;
+#       - its denominator is the BASELINE's name set, and a published image
+#         becomes the baseline. Fabricated names therefore carry forward and
+#         count as retained on the next release, which made the blinding
+#         ratchet FASTER than the count floor alone, not slower.
+#
+#     Check 5b is what actually closes both, and it is the load-bearing one:
+#     a package carrying a finding in the baseline must still be reported by
+#     the rebuild, with no percentage. It is anchored to observed
+#     vulnerabilities rather than to whatever the previous image listed, so a
+#     fabricated name can never satisfy it and cannot be inherited. Read the
+#     name floor as coarse protection against wholesale replacement, and 5b
+#     as the rule that makes "this finding is gone" mean fixed rather than
+#     unobserved.
+#
+#     Checks 4, 5 and 5b are per TYPE, and that aggregation is itself a
+#     bypass when a type has several results: a decoy Go binary carrying the
+#     baseline's whole name set pays for the shipped binary's coverage while
+#     usr/bin/caddy is gutted to a single package. Check 7 applies the same
+#     identity floor per retained gobinary TARGET, which is what stops it.
 #
 #     It exists because gate 1 is set arithmetic, and set arithmetic reads an
 #     EMPTY findings list as a perfect score. That made this the ONE fail-open
@@ -646,11 +673,36 @@ pkg_names_for_type() {
     | unique | .[]' "$1" | LC_ALL=C sort -u
 }
 
+# The same, for ONE RESULT identified by its .Target rather than for a whole
+# type. Checks 4 and 5 aggregate every result of a type together, and that
+# aggregation is itself a bypass (found by the security review of the first
+# spelling of check 6):
+#
+#   ship usr/bin/caddy gutted to a single package, and ALONGSIDE it a decoy
+#   Go binary at usr/bin/helper carrying all 237 of the baseline's real module
+#   names. The type-level count is 238 and the type-level name intersection is
+#   237/237, so checks 4 and 5 are satisfied; check 6 is satisfied too, because
+#   usr/bin/caddy IS still a scanned target -- it is simply empty. All 7
+#   findings vanish and the verdict is `improved`. Reproduced end to end
+#   against the real :stable scan before check 7 below was written.
+#
+# So the per-type checks cannot be the only ones: a type whose results are
+# per-FILE needs its floors applied per file, or one file's coverage can be
+# paid for with another's.
+pkg_names_for_target() {
+  jq -r --arg tg "$2" '
+    [ .Results[]? | select((.Target // "") == $tg) | .Packages[]?.Name
+      | select(. != null and . != "")
+      | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
 assert_scan_coverage() {
   local new="$1" old="$2" arch="$3"
   local os_family new_types old_types missing t new_pkgs old_pkgs floor eosl
   local old_names_f new_names_f old_named retained name_floor
-  local old_gotargets new_gotargets lost_go
+  local vuln_names_f lost_vuln lost_vuln_1l
+  local old_gotargets new_gotargets lost_go old_gocount
 
   # The baseline must be a readable scan before it can define the standard.
   #
@@ -850,6 +902,64 @@ assert_scan_coverage() {
       rm -f "$old_names_f" "$new_names_f"
       die "the rebuild's '$(safe_text "$t")' scan of linux/$arch retains only $retained of the published image's $old_named package name(s) (floor $name_floor), though it reports $new_pkgs package(s) in total: the package list was REPLACED rather than retained, so the baseline's findings for the missing packages would cancel out of the comparison as though they had been fixed. A package count is not a package identity."
     fi
+
+    # 5b. Every package that CARRIES A FINDING in the baseline must still be
+    #     present in the rebuild, by name. No percentage.
+    #
+    # The 50% floor above is deliberately loose and deliberately indifferent
+    # to WHICH names survive, and those are the same property viewed twice:
+    # an attacker may retain any 119 of 237 names, so they retain innocuous
+    # ones and drop exactly the packages whose findings they want gone.
+    # Measured against the real pair: dropping the five findings-bearing Go
+    # modules while padding back to 237 clears the floor BY ONE and gate 1
+    # then reports ADDED=0 REMOVED=7, verdict=improved, and the moving tags
+    # advance onto an image whose vulnerabilities were simply hidden.
+    #
+    # So the loose floor keeps its job -- tolerating ordinary churn and
+    # legitimate plugin drops -- and this narrower, absolute rule covers the
+    # packages that actually decide the verdict. A finding only cancels out
+    # of gate 1's subset arithmetic as FIXED if its package stops being
+    # reported; requiring those packages to still be observed is what makes
+    # "this finding is gone" mean "gone" rather than "unobserved".
+    #
+    # This also removes the CARRY CHANNEL that the name floor alone has
+    # across releases. Fabricated names become baseline names once published,
+    # so they count toward the next release's intersection and the floor can
+    # be walked down much faster than the count floor alone allowed. A
+    # fabricated name never carries a finding, so it can never satisfy THIS
+    # rule -- it is anchored to real, observed vulnerabilities rather than to
+    # whatever the previous image happened to list.
+    #
+    # Measured cost on the real pair: ZERO. The baseline's five
+    # findings-bearing modules are all present in the rebuild, so the refresh
+    # path and an ordinary release are unaffected.
+    #
+    # A genuine plugin removal CAN legitimately drop a vulnerable package, so
+    # this is absolute only under the strict policy. Under `report` -- the
+    # release path, where removing a plugin is a documented reason to edit
+    # Dockerfile.caddy -- it is printed and carried into the summary for the
+    # reviewer instead, exactly as gates 2 and 3 treat their drift. That
+    # keeps the rule from being the one that gets switched off, while still
+    # putting the disappearance in front of the human approving the release.
+    vuln_names_f="$OUT/.cov-vuln-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    jq -r --arg t "$t" '
+      [ .Results[]? | select(.Type == $t) | .Vulnerabilities[]?.PkgName
+        | select(. != null and . != "")
+        | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+      | unique | .[]' "$old" | LC_ALL=C sort -u > "$vuln_names_f"
+    lost_vuln="$(LC_ALL=C comm -23 "$vuln_names_f" "$new_names_f")"
+    rm -f "$vuln_names_f"
+    if [ -n "$lost_vuln" ]; then
+      lost_vuln_1l="$(safe_text "$(printf '%s' "$lost_vuln" | tr '\n' ' ')")"
+      lost_vuln_1l="${lost_vuln_1l% }"
+      if [ "$DRIFT_POLICY" = block ]; then
+        rm -f "$old_names_f" "$new_names_f"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch no longer reports package(s) that carry findings in the published image: $lost_vuln_1l -- those findings have nothing to match against on the new side, so they would cancel out of the comparison as FIXED when they are merely unobserved. A rebuild of an unchanged Dockerfile must not drop a package the baseline is reporting a vulnerability for."
+      fi
+      printf 'NOTE (linux/%s): the rebuild no longer reports %s package(s) that carry findings in the published image: %s. Those findings will read as fixed in the comparison below; confirm the package was removed deliberately.\n' \
+        "$arch" "$(safe_text "$t")" "$lost_vuln_1l"
+    fi
+
     rm -f "$old_names_f" "$new_names_f"
   done
   # Restore globbing: the rest of the script relies on it (the summary's
@@ -882,6 +992,28 @@ assert_scan_coverage() {
   # asserting on.
   old_gotargets="$(jq -r '[.Results[]? | select(.Type == "gobinary") | .Target
                            | select(. != null and . != "")] | unique | .[]' "$old")"
+
+  # "No Go binaries in the baseline" and "Go binaries whose paths were not
+  # recorded" are different states, and only the first is a safe skip.
+  #
+  # The jq above drops null and empty Targets, so a baseline with gobinary
+  # RESULTS but no usable .Target on any of them yields an empty list, which a
+  # bare `-n` test cannot distinguish from a baseline that simply has no Go
+  # binary at all. Skipping on that is the self-perpetuating shape already
+  # closed for check 4's zero-package baseline above: checks 3-5 still pass
+  # because the gobinary TYPE is present on both sides, so a rebuild that
+  # scans an entirely DIFFERENT binary goes unnoticed, and once such an image
+  # is published it IS the baseline and check 6 is disarmed from then on.
+  #
+  # Trivy 0.76.1 always populates .Target for a gobinary result, so this is
+  # defence in depth rather than a live bypass -- which is exactly what the
+  # old_pkgs -eq 0 case was when it was judged worth closing rather than
+  # tracking. Counted BEFORE the filter, so the two states are separable.
+  old_gocount="$(jq -r '[.Results[]? | select(.Type == "gobinary")] | length' "$old")"
+  if [ "$old_gocount" -gt 0 ] && [ -z "$old_gotargets" ]; then
+    die "the published image's scan of linux/$arch has $old_gocount gobinary result(s) but no usable .Target on any of them: the set of Go binaries the baseline covered cannot be established, so a rebuild that scans a DIFFERENT binary than the one this image runs could not be detected. Re-scan the baseline."
+  fi
+
   if [ -n "$old_gotargets" ]; then
     new_gotargets="$(jq -r '[.Results[]? | select(.Type == "gobinary") | .Target
                              | select(. != null and . != "")] | unique | .[]' "$new")"
@@ -894,6 +1026,46 @@ assert_scan_coverage() {
       new_go_1l="$(safe_text "$(printf '%s' "$new_gotargets" | tr '\n' ' ')")"; new_go_1l="${new_go_1l% }"
       die "the rebuild's scan of linux/$arch no longer covers the Go binary at: $lost_1l -- the gobinary TYPE is still present, so the per-type checks above compared a DIFFERENT binary against the published one's. The binary this image actually runs is therefore unobserved, and its findings would cancel out of the comparison. (published: $old_go_1l / rebuild: $new_go_1l)"
     fi
+
+    # 7. PER-BINARY identity floor.
+    #
+    # Check 6 establishes the baseline's Go binaries are still SCANNED. It
+    # does not establish any of them was scanned usefully, because checks 4
+    # and 5 pool every gobinary result of the type together. A decoy binary
+    # therefore pays for the real one's coverage: gut usr/bin/caddy to one
+    # package, add usr/bin/helper carrying the baseline's 237 real module
+    # names, and the type-level count (238) and type-level intersection
+    # (237/237) both clear while the binary the image actually runs is
+    # entirely unobserved. Verified against the real :stable scan -- every
+    # earlier check passed and all 7 findings disappeared.
+    #
+    # So apply the same 50% identity floor AGAIN, per retained target. Same
+    # threshold and same intersection semantics as check 5: this narrows
+    # WHERE the floor is applied, not how strict it is, so it cannot block a
+    # release check 5 would have allowed on a single-binary image. On today's
+    # image the two are identical, because there is exactly one gobinary
+    # result.
+    local gt gt_old_f gt_new_f gt_old_n gt_ret gt_floor
+    while IFS= read -r gt; do
+      [ -n "$gt" ] || continue
+      gt_old_f="$OUT/.cov-tgt-old-$arch-$(printf '%s' "$gt" | tr -c 'A-Za-z0-9._-' '_').names"
+      gt_new_f="$OUT/.cov-tgt-new-$arch-$(printf '%s' "$gt" | tr -c 'A-Za-z0-9._-' '_').names"
+      pkg_names_for_target "$old" "$gt" > "$gt_old_f"
+      pkg_names_for_target "$new" "$gt" > "$gt_new_f"
+      gt_old_n=$(wc -l < "$gt_old_f"); gt_old_n=${gt_old_n//[[:space:]]/}
+      if [ "$gt_old_n" -eq 0 ]; then
+        rm -f "$gt_old_f" "$gt_new_f"
+        continue
+      fi
+      gt_ret=$(LC_ALL=C comm -12 "$gt_old_f" "$gt_new_f" | wc -l); gt_ret=${gt_ret//[[:space:]]/}
+      gt_floor=$(( (gt_old_n + 1) / 2 ))
+      rm -f "$gt_old_f" "$gt_new_f"
+      if [ "$gt_ret" -lt "$gt_floor" ]; then
+        die "the rebuild's scan of the Go binary at '$(safe_text "$gt")' on linux/$arch retains only $gt_ret of the published image's $gt_old_n package name(s) for THAT BINARY (floor $gt_floor): the binary is still a scan target but its own contents were not retained, so its findings would cancel out of the comparison even though the type-level totals look healthy. Coverage of one binary cannot be paid for with another's."
+      fi
+    done <<EOF
+$old_gotargets
+EOF
   fi
 
   printf 'scan coverage OK (linux/%s): os=%s, targets=%s\n' \
