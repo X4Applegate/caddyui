@@ -122,9 +122,54 @@ check "malformed upstream JSON -> unknown" unknown "${r%%	*}"
 r="$(printf '{}\n\x00\nnot json\n' | python3 -I "$TMP/comparator.py")"
 check "malformed recorded JSON -> unknown" unknown "${r%%	*}"
 
+# A bare manifest is deliberately unsupported (no platform key to compare on), so it must
+# report unknown rather than being guessed at.
 single='{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"'"$A"'"},"layers":[]}'
 r="$(cmp_run "$single" "$single")"
-check "single-manifest (non-index) base -> unknown" unknown "${r%%	*}"
+check "single-manifest (non-index) base is unsupported -> unknown" unknown "${r%%	*}"
+
+# PARTIAL COVERAGE IS NOT AN ALL-CLEAR. One wanted platform matching while the other is
+# absent must NOT report `unchanged`: that rendered as "VERIFIED CURRENT" for an
+# architecture nobody compared, and the fleet pulls arm64. 0-of-2 was already unknown; this
+# is the 1-of-2 case, which was the gap.
+r="$(cmp_run "$(idx "linux/amd64=$A")" "$(idx "linux/amd64=$A" "linux/arm64=$B")")"
+check "arm64 absent upstream -> unknown, not a partial all-clear" unknown "${r%%	*}"
+r="$(cmp_run "$(idx "linux/amd64=$A" "linux/arm64/v8=$B")" "$(idx "linux/amd64=$A")")"
+check "arm64 absent in the recorded base -> unknown" unknown "${r%%	*}"
+
+# A real difference still wins over an uncomparable platform: the finding stands alone.
+r="$(cmp_run "$(idx "linux/amd64=$C")" "$(idx "linux/amd64=$A" "linux/arm64=$B")")"
+check "a moved platform is reported even when another is uncomparable" moved "${r%%	*}"
+
+# MANIFESTS WITH NO DIGEST must not compare equal. Storing a missing digest as "" made two
+# digest-less entries match, so an index that said nothing was reported as current.
+nodigest='{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64","variant":"v8"}}]}'
+r="$(cmp_run "$nodigest" "$nodigest")"
+check "manifests with no digest -> unknown, not equal-therefore-clean" unknown "${r%%	*}"
+r="$(cmp_run "$nodigest" "$(idx "linux/amd64=$A" "linux/arm64/v8=$B")")"
+check "upstream digests missing, recorded present -> unknown" unknown "${r%%	*}"
+
+# ATTESTATION MANIFESTS MUST NOT BE MISTAKEN FOR A PLATFORM.
+#
+# Honest note on what this does and does not prove: removing the `"unknown" in (arch,
+# osname)` filter does NOT change any verdict, so no test here can catch its removal. That
+# is because `WANTED` is an allowlist of exactly linux/amd64 and linux/arm64, and an
+# unknown/unknown key can never be looked up. The filter is belt-and-braces behind the
+# allowlist, not load-bearing, and it was left in place because it keeps `platforms()`
+# correct on its own terms for any future caller that iterates the map instead of querying
+# it. This assertion therefore pins the OUTCOME (attestations never affect the verdict or
+# the count), which is what callers depend on -- it is not a guard on the filter line.
+att() { # amd64 arm64 attestation-digest
+  python3 -I -c '
+import json, sys
+print(json.dumps({"mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [
+  {"platform": {"os": "linux", "architecture": "amd64"}, "digest": sys.argv[1]},
+  {"platform": {"os": "linux", "architecture": "arm64", "variant": "v8"}, "digest": sys.argv[2]},
+  {"platform": {"os": "unknown", "architecture": "unknown"}, "digest": sys.argv[3]}]}))' "$@"
+}
+r="$(cmp_run "$(att "$A" "$B" "$C")" "$(att "$A" "$B" "$A")")"
+check "attestation digests differ across sides but are ignored" unchanged "${r%%	*}"
+case "$r" in *"2 platform(s)"*) ok "attestations are not counted as a platform" ;; *) bad "attestation counted: $r" ;; esac
 
 # ---------------------------------------------------------------------------
 # 2. the shell, with the registry stubbed
@@ -214,9 +259,58 @@ OUT="$(cd "$TMP" && PATH="$TMP/bin:$PATH" bash "$SCRIPT" applegater/caddyui-cadd
 want_rc 2 "Dockerfile without FROM -> exit 2"
 
 # --advisory must collapse every verdict to exit 0 for the release workflow, AFTER reporting.
+#
+# THE drift= KEY IS ASSERTED ON THE ADVISORY PATH SPECIFICALLY, because --advisory is the
+# ONLY way release-docker.yml ever invokes this script, and the remedy step is keyed on
+# `steps.drift.outputs.drift`. Asserting the key on a non-advisory run and the exit code on
+# an advisory run leaves the shipping configuration's actual contract untested: making
+# finish() skip the write under --advisory kept the suite fully green while silently
+# breaking the remedy step, so a moved base would print a security warning with no
+# instruction attached -- the exact failure the split-step redesign exists to prevent.
+rm -f "$TMP/gho"; : > "$TMP/gho"
 mk_docker 'echo "ERROR: nope" >&2; exit 1'
 run_script --advisory
 want_rc 0 "--advisory exits 0 on an unknown verdict"
+if grep -qx 'drift=unknown' "$TMP/gho"; then
+  ok "--advisory STILL writes drift= (the workflow reads steps.drift.outputs.drift)"
+else
+  bad "--advisory exited 0 without writing drift=; the remedy step would never fire"
+fi
+
+# And specifically drift=moved under --advisory: that is the one value the remedy step keys
+# on, so its absence would silently drop the instruction from a real security warning.
+# Driven end-to-end through the shell, not just the comparator.
+cat > "$TMP/up.json" <<JSON
+{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+ {"platform":{"os":"linux","architecture":"amd64"},"digest":"$C"},
+ {"platform":{"os":"linux","architecture":"arm64","variant":"v8"},"digest":"$C"}]}
+JSON
+cat > "$TMP/rec.json" <<JSON
+{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+ {"platform":{"os":"linux","architecture":"amd64"},"digest":"$A"},
+ {"platform":{"os":"linux","architecture":"arm64","variant":"v8"},"digest":"$B"}]}
+JSON
+cat > "$TMP/prov.json" <<JSON
+{"linux/amd64":{"SLSA":{"buildDefinition":{"resolvedDependencies":[
+ {"uri":"pkg:docker/caddy@2.11.9-alpine?platform=linux%2Famd64",
+  "digest":{"sha256":"${A#sha256:}"}}]}}}}
+JSON
+mk_docker '
+case "$*" in
+  *Provenance*)  cat "'"$TMP"'/prov.json" ;;
+  *@sha256:'"${A#sha256:}"'*) cat "'"$TMP"'/rec.json" ;;
+  *)             cat "'"$TMP"'/up.json" ;;
+esac
+exit 0'
+rm -f "$TMP/gho"; : > "$TMP/gho"
+run_script --advisory
+want_rc 0 "--advisory exits 0 on a MOVED verdict too"
+if grep -qx 'drift=moved' "$TMP/gho"; then
+  ok "--advisory writes drift=moved (what the remedy step keys on)"
+else
+  bad "a moved base did not write drift=moved under --advisory; the remedy would never print. gho: $(cat "$TMP/gho") out: $OUT"
+fi
+case "$OUT" in *"::warning::"*) ok "a moved base emits a ::warning:: annotation" ;; *) bad "moved produced no annotation: $OUT" ;; esac
 
 # The drift key must be written on every path, so the workflow step can read it.
 rm -f "$TMP/gho"; : > "$TMP/gho"

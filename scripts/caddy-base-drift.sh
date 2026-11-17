@@ -229,6 +229,9 @@ fi
 
 # -I: no site dir, no cwd on sys.path. Both JSON blobs are untrusted registry output and are
 # passed on stdin as data, never interpolated into the program text.
+# shellcheck disable=SC2016  # single quotes are REQUIRED: the python body must reach the
+# interpreter verbatim. Double quotes would let the shell expand $-expressions inside the
+# program text, which is both wrong and the shape that becomes injection.
 verdict="$(printf '%s\n\x00\n%s\n' "$upstream_raw" "$recorded_raw" | python3 -I -c '
 import json, sys
 
@@ -258,29 +261,33 @@ def platforms(index):
         arch, osname = p.get("architecture"), p.get("os")
         if not arch or not osname or "unknown" in (arch, osname):
             continue
+        # A manifest with no digest is DROPPED, not stored as "". Defaulting to the empty
+        # string made two digest-less entries compare EQUAL, so a platform nobody could
+        # actually compare was counted as checked and reported current -- a false all-clear
+        # from an index that said nothing at all.
+        dig = m.get("digest")
+        if not dig:
+            continue
         key = "%s/%s" % (osname, arch)
         if p.get("variant"):
             key += "/" + p["variant"]
-        out[key] = m.get("digest", "")
+        out[key] = dig
     return out
 
-# A single-manifest (non-index) image has no "manifests" list; treat it as one platform so a
-# base that is not multi-arch still gets compared rather than silently reported unknown.
-def platforms_or_single(index, label):
-    got = platforms(index)
-    if got:
-        return got
-    if index.get("config") or index.get("layers"):
-        return {"<single>": label}
-    return {}
-
-up_p = platforms_or_single(up, "upstream")
-rec_p = platforms_or_single(rec, "recorded")
+# A single-manifest (non-index) image is deliberately NOT supported: this project builds a
+# multi-arch base and compares per platform, so there is no sensible platform key for a bare
+# manifest. Such an input reports unknown rather than being guessed at.
+#
+# An earlier version pretended to handle it by returning a {"<single>": label} sentinel,
+# which WANTED could never match -- dead code whose comment promised a capability the code
+# did not have, and which would have produced a false `moved` if it had ever fired.
+up_p = platforms(up)
+rec_p = platforms(rec)
 
 if not up_p:
-    fail("the upstream index listed no usable platforms")
+    fail("the upstream index listed no usable platform manifests")
 if not rec_p:
-    fail("the recorded base index listed no usable platforms")
+    fail("the recorded base index listed no usable platform manifests")
 
 # Only platforms this project actually builds for. A base that gains or drops ppc64le is not
 # a change to anything shipped here, and reporting it would train the reader to ignore this.
@@ -309,10 +316,20 @@ if checked == 0:
     fail("no platform could be compared (" + "; ".join(skipped) + ")")
 
 if moved:
+    # A real difference is reported even if another platform could not be checked: the
+    # finding stands on its own and withholding it would be worse than reporting it.
     print("moved\t" + "; ".join("%s built-from %s upstream-now %s" % m for m in moved))
+elif skipped:
+    # PARTIAL COVERAGE IS NOT AN ALL-CLEAR. Every WANTED platform must have been compared
+    # before this says "current". Previously 1-of-2 compared rendered as "VERIFIED CURRENT"
+    # while 0-of-2 was unknown, so a truncated index, a mid-run rate limit, or upstream
+    # dropping an arch produced a green all-clear for an architecture nobody looked at --
+    # and the fleet pulls arm64. The script header already states the rule this broke: an
+    # unanswered question must not be scored as a pass.
+    fail("%d platform(s) matched but %d could not be compared (%s)"
+         % (checked, len(skipped), "; ".join(skipped)))
 else:
-    extra = (" (" + "; ".join(skipped) + ")") if skipped else ""
-    print("unchanged\t%d platform(s) compared, all current%s" % (checked, extra))
+    print("unchanged\t%d platform(s) compared, all current" % checked)
 ')"
 
 status="${verdict%%	*}"
