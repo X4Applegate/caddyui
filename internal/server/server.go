@@ -4789,22 +4789,23 @@ func (s *Server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "snapshot is corrupted: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Validate before loading, even though it was valid at capture time —
-	// the running Caddy might be a different version with different requirements.
+	// Caddy's /load validates and applies atomically. Validate is not a dry
+	// run: Caddy ignores validate_only, so calling it here would overwrite
+	// the live config before the recovery snapshot is captured.
 	caddyCl := s.caddyForRequest(r)
-	if err := caddyCl.Validate(cfg); err != nil {
-		_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "snapshot_restore_failed",
-			fmt.Sprintf("snapshot:%d", id), err.Error(), false)
-		http.Error(w, "caddy rejected snapshot: "+err.Error(), http.StatusBadGateway)
-		return
-	}
 	// Snapshot the CURRENT config first so restoring is itself undoable.
 	if s.autoSnapshotsEnabled() {
-		if _, cur, err := caddyCl.FetchConfig(); err == nil && cur != "" && cur != "null" {
-			_, _ = models.CreateSnapshot(s.DB, s.currentServerID(r), models.SnapshotSourceAuto,
-				fmt.Sprintf("auto: before restoring snapshot #%d", id), cur)
-			_ = models.PruneAutoSnapshots(s.DB, s.currentServerID(r), 20)
+		_, cur, err := caddyCl.FetchConfig()
+		if err != nil || cur == "" || cur == "null" {
+			http.Error(w, "cannot capture current Caddy config; restore aborted", http.StatusBadGateway)
+			return
 		}
+		if _, err := models.CreateSnapshot(s.DB, s.currentServerID(r), models.SnapshotSourceAuto,
+			fmt.Sprintf("auto: before restoring snapshot #%d", id), cur); err != nil {
+			http.Error(w, "cannot save recovery snapshot; restore aborted", http.StatusInternalServerError)
+			return
+		}
+		_ = models.PruneAutoSnapshots(s.DB, s.currentServerID(r), 20)
 	}
 	if err := caddyCl.Load(cfg); err != nil {
 		_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "snapshot_restore_failed",
