@@ -1271,12 +1271,13 @@ jobs:
       # ADVISORY, so a moved base cannot fail a release that was itself correct — see the long
       # comment on this job. The script's own exit status distinguishes moved (1) from
       # could-not-tell (2); --advisory collapses both to 0 for this caller AFTER writing the
-      # verdict to the summary, so the fact is reported without turning a correct release red.
+      # verdict to the summary and emitting a ::warning:: annotation, so the fact is reported
+      # on the run header without turning a correct release red.
       - name: Check whether the pinned base image moved since the published build
+        id: drift
         if: needs.caddy.result == 'skipped' && needs.plan.outputs.push == 'true'
         env:
           IMAGE: applegater/caddyui-caddy
-          VERSION: ${{ needs.plan.outputs.version }}
         shell: bash
         run: |
           set -uo pipefail
@@ -1289,19 +1290,30 @@ jobs:
 
           scripts/caddy-base-drift.sh --advisory "${IMAGE}:stable" Dockerfile.caddy
 
-          # The script wrote its verdict to the summary and to $GITHUB_OUTPUT. Add the
-          # remedy, which is this workflow's business rather than the script's: a moved base
-          # is published by caddy-image-refresh.yml, which builds and scans weekly but only
-          # publishes on a manual dispatch, so it needs a human.
-          if grep -qx 'drift=moved' "$GITHUB_OUTPUT" 2>/dev/null; then
-            {
-              echo
-              echo "This is **not** a failure of this release, and nothing here is broken: CaddyUI published correctly, and the skip followed the documented rule. It is a prompt to publish a base refresh:"
-              echo
-              echo '```sh'
-              echo "gh workflow run caddy-image-refresh.yml -f publish=true"
-              echo '```'
-              echo
-              echo "That publishes \`${IMAGE}:${VERSION}-pN\` and moves \`:stable\`/\`:latest\` to it, gated the same way a release is."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+      # The remedy is a SEPARATE step keyed on the previous step's declared output, not a
+      # grep of $GITHUB_OUTPUT inside the same step.
+      #
+      # $GITHUB_OUTPUT is a fresh file per step, so reading it in-place only worked because
+      # the script happened to run in the same step that read it. That coupling is invisible
+      # and unenforced: inserting a step between them, or moving the script call, would make
+      # the read silently return nothing — printing a security warning with no instruction
+      # about what to do, on a green job. `steps.drift.outputs.drift` is the supported
+      # channel and survives reordering.
+      - name: How to publish a base refresh
+        if: needs.caddy.result == 'skipped' && steps.drift.outputs.drift == 'moved'
+        env:
+          IMAGE: applegater/caddyui-caddy
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo
+            echo "This is **not** a failure of this release, and nothing here is broken: CaddyUI published correctly, and the skip followed the documented rule. It is a prompt to publish a base refresh — \`caddy-image-refresh.yml\` builds and scans weekly but only publishes on a manual dispatch, so it needs a human:"
+            echo
+            echo '```sh'
+            echo "gh workflow run caddy-image-refresh.yml -f publish=true"
+            echo '```'
+            echo
+            echo "That publishes \`${IMAGE}:${VERSION}-pN\` and moves \`:stable\`/\`:latest\` to it, gated the same way a release is."
+          } >> "$GITHUB_STEP_SUMMARY"

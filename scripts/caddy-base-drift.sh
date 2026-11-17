@@ -70,11 +70,51 @@ IMAGE_REF="${1:-applegater/caddyui-caddy:stable}"
 DOCKERFILE="${2:-Dockerfile.caddy}"
 
 note() { printf '%s\n' "$*"; }
-summary() { [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY"; return 0; }
+
+# A dropped write is the one failure mode this whole script exists to prevent -- its only
+# product is a report, so a summary append that silently fails (unwritable file, or the 1 MiB
+# step-summary cap, which this workflow writes a lot of prose toward) means nobody is told,
+# on a green step. Report the failure to the job log rather than returning 0 regardless.
+summary() {
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+  printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY" \
+    || note "::warning::could not write to the step summary; the base-drift verdict may not appear in the run summary"
+  return 0
+}
 
 finish() {
   local status="$1" code="$2"
-  [ -n "${GITHUB_OUTPUT:-}" ] && printf 'drift=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+  # UNKNOWN IS ANNOUNCED, NOT JUST RECORDED.
+  #
+  # This script is advisory on the release path, so `moved` and `unknown` both end in a green
+  # step. That makes "I could not check" visually identical to "I checked and it is current"
+  # unless something says otherwise -- which would recreate, one level up, exactly the
+  # silent-skip defect this change exists to remove. An unresolvable registry call is a
+  # realistic steady state here (the job deliberately holds no Docker Hub credential and so
+  # pulls anonymously), not a rare event, so it must be loud.
+  #
+  # ::warning:: surfaces on the run header, where a reader looks, rather than only inside
+  # summary prose. `moved` gets one too: the fleet tracks :stable, and a stale base is worth
+  # an annotation even though it must not fail the release.
+  case "$status" in
+    unknown)
+      note "::warning::base-drift check could not determine whether the pinned base moved; this run did NOT verify the published image's base"
+      # Stated HERE rather than at each call site so every unknown path is worded the same,
+      # including the early exits above that never reach the verdict block at the end. Those
+      # each explain their own specific cause; this adds the one line that must always be
+      # present -- that the absence of a warning is not an all-clear.
+      summary "❓ **Base NOT VERIFIED.** This is **not** an all-clear: the check did not complete, so whether the published image's base is current is unknown."
+      ;;
+    moved)
+      note "::warning::the pinned base image has moved since the published image was built; it may be missing base-layer security fixes"
+      ;;
+  esac
+
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    printf 'drift=%s\n' "$status" >> "$GITHUB_OUTPUT" \
+      || note "::warning::could not write the drift verdict to GITHUB_OUTPUT; a later step keyed on it will not see this result"
+  fi
   if [ "$advisory" = true ]; then exit 0; fi
   exit "$code"
 }
@@ -95,15 +135,24 @@ fi
 note "base pin:    $BASE"
 note "published:   $IMAGE_REF"
 
-upstream_raw="$(docker buildx imagetools inspect "$BASE" --raw 2>&1)"
-if [ $? -ne 0 ] || [ -z "$upstream_raw" ]; then
+# Each registry call is tested with `if ! var=$(...)`, NOT by reading $? on the next line.
+# Bash does propagate a command substitution's status through a simple assignment, so the
+# $? form worked — but only while nothing sits between the assignment and the test, and a
+# single statement inserted there would silently turn a failed registry call into a pass.
+# For a check whose whole purpose is to avoid reporting "all clear" when it could not
+# verify, that is too thin a margin. shellcheck flags the $? form as SC2181.
+#
+# stderr is NOT merged into the data (no 2>&1). Capturing the error text would make the
+# `-z` emptiness guard useless exactly when the call fails, and would feed an error string
+# to a JSON parser; diagnostics belong on this script's own stderr, not in the variable
+# being parsed.
+if ! upstream_raw="$(docker buildx imagetools inspect "$BASE" --raw 2>/dev/null)" || [ -z "$upstream_raw" ]; then
   note "could not resolve $BASE upstream"
   summary "⚠️ Could not resolve \`$BASE\` upstream, so this run cannot say whether the base moved."
   finish unknown 2
 fi
 
-prov="$(docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json .Provenance }}' 2>&1)"
-if [ $? -ne 0 ] || [ -z "$prov" ]; then
+if ! prov="$(docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json .Provenance }}' 2>/dev/null)" || [ -z "$prov" ]; then
   note "could not read provenance for $IMAGE_REF"
   summary "⚠️ Could not read provenance for \`$IMAGE_REF\`, so this run cannot say whether the base moved."
   finish unknown 2
@@ -113,7 +162,7 @@ fi
 # dereference it to per-platform manifests before comparing. Done here in bash because it
 # needs a second registry call: the python below is pure comparison over data on stdin.
 recorded_index="$(printf '%s' "$prov" | BASE_PIN="$BASE" python3 -I -c '
-import json, os, sys, urllib.parse
+import json, os, re, sys, urllib.parse
 pin = os.environ["BASE_PIN"]
 name, _, tag = pin.partition(":")
 if "/" not in name:
@@ -134,9 +183,21 @@ for entry in (prov or {}).values():
             n = "library/" + n
         if n == name and t == tag:
             sha = (d.get("digest") or {}).get("sha256")
-            if sha:
+            # VALIDATED, not merely non-empty. This value comes from a registry response and
+            # is interpolated into an image reference below. It is used inside a quoted
+            # expansion, so it is one argv element and cannot word-split or glob today --
+            # but an unvalidated digest is one unquoting away from argument injection, and a
+            # malformed one would silently weaken the comparison. Require the real shape.
+            #
+            # A malformed digest is reported as MALFORMED rather than skipped. Skipping it
+            # would leave the caller saying "provenance does not name the base", which is a
+            # different and misleading diagnosis: the base IS named, its digest is junk, and
+            # those two faults want different responses from whoever reads the run.
+            if sha and re.fullmatch(r"[0-9a-f]{64}", sha):
                 print("sha256:" + sha)
-                sys.exit(0)
+            else:
+                print("MALFORMED")
+            sys.exit(0)
 ')"
 
 if [ -z "$recorded_index" ]; then
@@ -144,12 +205,23 @@ if [ -z "$recorded_index" ]; then
   summary "⚠️ The provenance for \`$IMAGE_REF\` does not record \`$BASE\`, so this run cannot say whether the base moved."
   finish unknown 2
 fi
+if [ "$recorded_index" = MALFORMED ]; then
+  note "provenance for $IMAGE_REF records a malformed base digest for $BASE"
+  summary "⚠️ The provenance for \`$IMAGE_REF\` records \`$BASE\` with a malformed digest, so this run cannot say whether the base moved."
+  finish unknown 2
+fi
+# Re-checked here as well as in the emitter above: the emitter is the only writer today, but
+# this is the value that becomes an image reference, so the check belongs next to the use.
+if [[ ! "$recorded_index" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  note "provenance recorded a malformed base digest: $recorded_index"
+  summary "⚠️ The provenance for \`$IMAGE_REF\` recorded a malformed base digest, so this run cannot say whether the base moved."
+  finish unknown 2
+fi
 note "recorded:    $recorded_index (index recorded in provenance)"
 
 # Repository part of the pin, so the recorded index can be addressed by digest.
 base_repo="${BASE%%:*}"
-recorded_raw="$(docker buildx imagetools inspect "${base_repo}@${recorded_index}" --raw 2>&1)"
-if [ $? -ne 0 ] || [ -z "$recorded_raw" ]; then
+if ! recorded_raw="$(docker buildx imagetools inspect "${base_repo}@${recorded_index}" --raw 2>/dev/null)" || [ -z "$recorded_raw" ]; then
   note "could not resolve the recorded base index ${recorded_index}"
   summary "⚠️ Could not resolve the base index \`${recorded_index}\` recorded in \`$IMAGE_REF\`'s provenance, so this run cannot say whether the base moved."
   finish unknown 2
@@ -247,16 +319,20 @@ status="${verdict%%	*}"
 detail="${verdict#*	}"
 note "verdict:     $status — $detail"
 
+# Three states, named differently on purpose. "Not verified" must not read like "verified
+# clean": both leave the step green, so the words are the only thing distinguishing them.
 case "$status" in
   unchanged)
-    summary "✅ Base image \`$BASE\` has **not** moved since \`$IMAGE_REF\` was built ($detail)."
+    summary "✅ **Base VERIFIED CURRENT.** \`$BASE\` has not moved since \`$IMAGE_REF\` was built ($detail)."
     finish unchanged 0 ;;
   moved)
-    summary "⚠️ Base image \`$BASE\` has **MOVED** since \`$IMAGE_REF\` was built, so the published image may be missing base-layer security fixes."
+    summary "⚠️ **Base MOVED.** \`$BASE\` has moved since \`$IMAGE_REF\` was built, so the published image may be missing base-layer security fixes."
     summary ""
     summary "\`$detail\`"
     finish moved 1 ;;
   *)
-    summary "⚠️ Could not determine whether \`$BASE\` moved: $detail"
+    summary "Could not determine whether \`$BASE\` moved: $detail"
+    summary ""
+    summary "Check by hand before assuming the published base is current: \`docker buildx imagetools inspect $BASE\`."
     finish unknown 2 ;;
 esac
