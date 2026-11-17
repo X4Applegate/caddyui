@@ -35,6 +35,13 @@ trap 'rm -rf "$WORK"' EXIT
 PASS=0
 FAIL=0
 
+# The gate sets DRIFT_POLICY outside the extracted function range, and check
+# 5b reads it. Default to the gate's own default (`block`), so a test that
+# does not say otherwise exercises the STRICT path -- the same
+# safer-by-default rule the script itself applies to a caller that forgets the
+# variable.
+DRIFT_POLICY="${MODULE_DRIFT_POLICY:-block}"
+
 # Source the gate's functions WITHOUT running its body.
 #
 # The script is `set -euo pipefail` with an argument check and a dependency
@@ -217,6 +224,110 @@ jq '(.Results[] | select(.Type == "gobinary") | .Packages)
 mkscan "$WORK/t12.json" 32 237 real usr/bin/caddy
 run_cov "$WORK/t12.json" "$WORK/t12-base.json"
 check "baseline packages without names skip identity floor, do not die" pass
+
+# 13. A baseline whose gobinary results carry NO usable .Target blocks.
+#     Found by the independent code review of the first spelling of check 6:
+#     the `-n "$old_gotargets"` guard conflated "the baseline has no Go
+#     binaries" (a safe skip) with "the baseline's Go binaries have no recorded
+#     path" (not safe -- checks 3-5 still pass because the TYPE is present on
+#     both sides, so a rebuild scanning a DIFFERENT binary went unnoticed, and
+#     once published that image IS the baseline). Asserted with the rebuild's
+#     binary MOVED, which is precisely what check 6 exists to catch.
+jq '(.Results[] | select(.Type == "gobinary") | .Target) |= null' "$B" > "$WORK/t13-base.json"
+mkscan "$WORK/t13.json" 32 237 real somewhere/else
+run_cov "$WORK/t13.json" "$WORK/t13-base.json"
+check "baseline gobinary results with no usable Target block" block
+
+# 14. A baseline with NO gobinary results at all still passes: check 6 has
+#     nothing to assert, and that skip is the legitimate one 13 is contrasted
+#     against. Guards against fixing 13 by making every absent target fatal.
+jq 'del(.Results[] | select(.Type == "gobinary"))' "$B" > "$WORK/t14-base.json"
+jq 'del(.Results[] | select(.Type == "gobinary"))' "$WORK/t1.json" > "$WORK/t14.json"
+run_cov "$WORK/t14.json" "$WORK/t14-base.json"
+check "baseline with no gobinary results at all passes" pass
+
+# 15. THE DECOY BINARY. Found by the security review of the first spelling of
+#     check 6, and the reason check 7 exists: the shipped binary is gutted to
+#     one package while a SECOND Go binary carries the baseline's whole real
+#     name set. Type-level count and type-level intersection both clear, and
+#     check 6 is satisfied literally because usr/bin/caddy is still a scanned
+#     target -- it is simply empty. Only a per-TARGET floor catches this.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |= [ { Name: "caddy" } ]
+    | .Results += [ { Target: "usr/bin/helper", Class: "lang-pkgs", Type: "gobinary",
+                      Packages: [ range(0;237)
+                                  | { Name: ("example.com/mod-" + (. | tostring)) } ],
+                      Vulnerabilities: [] } ]' "$B" > "$WORK/t15.json"
+run_cov "$WORK/t15.json" "$B"
+check "decoy binary carrying the real names does not pay for the shipped one" block
+
+# 16. The same shape WITHOUT the decoy: shipped binary gutted to one package.
+#     Already caught by check 4's count floor, kept so a future edit that
+#     narrows check 7 cannot quietly open the simpler case.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |= [ { Name: "caddy" } ]' \
+   "$B" > "$WORK/t16.json"
+run_cov "$WORK/t16.json" "$B"
+check "shipped binary gutted to one package blocks" block
+
+# 17. A second Go binary ADDED alongside an intact one still passes. Check 7
+#     must only measure targets the BASELINE had, or adding a helper binary
+#     to a legitimate release would be fatal.
+jq '.Results += [ { Target: "usr/bin/helper", Class: "lang-pkgs", Type: "gobinary",
+                    Packages: [ { Name: "example.com/helper" } ],
+                    Vulnerabilities: [] } ]' "$WORK/t1.json" > "$WORK/t17.json"
+run_cov "$WORK/t17.json" "$B"
+check "an added second Go binary alongside an intact one passes" pass
+
+# ---------------------------------------------------------------------------
+# Check 5b: the baseline's findings-bearing packages must survive.
+#
+# These use a baseline that actually HAS vulnerabilities, since 5b is keyed on
+# .Vulnerabilities[].PkgName. The fixtures above carry none.
+BV="$WORK/baseline-vuln.json"
+jq '(.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
+      [ { VulnerabilityID: "GO-2026-0001", PkgName: "example.com/mod-5" },
+        { VulnerabilityID: "GO-2026-0002", PkgName: "example.com/mod-9" } ]' "$B" > "$BV"
+
+# 18. Pass A's attack: retain enough names to clear the 50% floor, but drop
+#     exactly the packages that carry the findings. Clears check 5 by design
+#     -- 5b is what catches it.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
+      ([ .[] | select(.Name != "example.com/mod-5" and .Name != "example.com/mod-9") ][0:119]
+       + [ range(0;118) | { Name: ("attacker.invalid/pad-" + (. | tostring)) } ])
+    | (.Results[] | .Vulnerabilities) |= []' "$BV" > "$WORK/t18.json"
+run_cov "$WORK/t18.json" "$BV"
+check "dropping only the findings-bearing packages blocks under block policy" block
+
+# 19. The same input under MODULE_DRIFT_POLICY=report is REPORTED, not fatal:
+#     a release may legitimately remove a plugin, and its whole subtree with
+#     it. The reviewer sees the note; gate 1 decides the verdict.
+SAVED_POLICY="$DRIFT_POLICY"
+DRIFT_POLICY=report
+run_cov "$WORK/t18.json" "$BV"
+if [ "$COV_RC" -eq 0 ] && printf '%s' "$COV_OUT" | grep -q 'carry findings'; then
+  printf 'ok   %s\n' "report policy notes the dropped vulnerable package instead of dying"
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL %s (rc=%s)\n     %s\n' "report policy notes the dropped vulnerable package instead of dying" \
+    "$COV_RC" "$COV_OUT"
+  FAIL=$((FAIL + 1))
+fi
+DRIFT_POLICY="$SAVED_POLICY"
+
+# 20. An honest rebuild that keeps the findings-bearing packages passes.
+run_cov "$BV" "$BV"
+check "rebuild retaining the findings-bearing packages passes" pass
+
+# 21. Pass B's ratchet, second step: the baseline now CONTAINS the fabricated
+#     names planted by a previous release, so they are legitimate
+#     intersection members and the name floor alone is satisfied. 5b is what
+#     stops it, because a fabricated name never carries a finding.
+jq '(.Results[] | select(.Type == "gobinary") | .Packages) |=
+      ([ { Name: "caddy" } ]
+       + [ range(0;118) | { Name: ("attacker.invalid/pad-" + (. | tostring)) } ]
+       + [ range(0;118) | { Name: ("attacker.invalid/pad2-" + (. | tostring)) } ])
+    | (.Results[] | .Vulnerabilities) |= []' "$BV" > "$WORK/t21.json"
+run_cov "$WORK/t21.json" "$BV"
+check "carried-over fabricated names cannot satisfy the floor (ratchet step 2)" block
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
