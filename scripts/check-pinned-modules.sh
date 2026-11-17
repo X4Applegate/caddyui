@@ -36,6 +36,35 @@
 #             addition to the `--with` pins. See trap 5: the `--with` list is
 #             not the image. Without it the graph sweep is reported as NOT RUN,
 #             which reaches `attention` -- an unswept graph is not a clean one.
+#             It ALSO fills the `linked` column (below); without it that column
+#             reads *not measured* on every row.
+#
+# THE `linked` COLUMN: WRITTEN PIN vs SHIPPED ARTEFACT (T-0752).
+# This script's table reads the Dockerfile TEXT, so for its whole life it was
+# accurate about INTENT and silent about OUTCOME: it printed
+# `crowdsec/pkg/apiclient v1.7.8` while the shipped binary carried
+# `crowdsec v1.8.1`. xcaddy resolves ONE module graph across every plugin, so
+# another plugin's own floor can lift a pin above its written version, and
+# nothing in a text-derived table can see that.
+#
+# With `--binary`, each row also states what the artefact contains:
+#
+#   | module | pinned | linked           | upstream | advisories |
+#   | crowdsec/pkg/apiclient | v1.7.8 | v1.8.1 (raised) | v1.8.2 | — |
+#
+# FOUR renderings, deliberately distinct, because the failure mode here is a
+# reader misreading an absence as a finding or vice versa:
+#
+#   `v1.8.1` (raised)   measured; above the pin (another module's floor won)
+#   `v1.7.8`            measured; exactly the pin
+#   **not linked**      measured; the pin names nothing in the binary
+#   *not measured*      no readable binary -- this run cannot say
+#
+# `assert-floor-versions.sh` is the enforcing half of the same fact and runs
+# in the Dockerfile builder stage: it FAILS THE BUILD when a declared security
+# floor is linked BELOW its pin. This column is the reporting half, and it
+# deliberately does not move the verdict -- a raised pin is normal xcaddy
+# behaviour, not a defect.
 #   --also    sweep this `module@version` too, for a one-off check or a test
 #             fixture. Not a place to maintain a list of engines; use --binary.
 #   --gomod   ALSO sweep CaddyUI's OWN Go module set (T-0676). A path to a
@@ -355,6 +384,13 @@ die() {
       echo "image_out_of_scope=unknown"
       echo "image_graph=unknown"
       echo "image_base=unknown"
+      # `unknown`, not 0, for the same reason as the counters above: a 0 here
+      # would read as "every pin was compared against the binary and matched",
+      # which is the not-measured/clean confusion the column exists to stop.
+      echo "linked_measured=unknown"
+      echo "linked_raised=unknown"
+      echo "linked_lowered=unknown"
+      echo "linked_absent=unknown"
       # Not 0, for the third time and the same reason: nothing was established
       # about caddyui's own module set either, and a 0 would read as "go.mod
       # was swept and was clean".
@@ -2204,6 +2240,43 @@ if [ -n "$BINARY" ] && [ -z "$FIXTURE" ]; then
         img_out_of_scope=$(( img_out_of_scope + $(awk '
           ($1=="dep"||$1=="mod") && !($2 ~ /^github\.com\// && $3 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {n++}
           END{print n+0}' "$graph_raw") ))
+        # A flat module<TAB>version index for the `linked` column (T-0752).
+        #
+        # Deliberately built from a WIDER filter than the advisory sweep just
+        # above: that one keeps only github.com modules at plain semver,
+        # because those are the only ones with a per-repository endpoint to
+        # ask. The `linked` column asks nothing -- it only states what the
+        # artefact contains -- so restricting it the same way would print
+        # not-linked for `golang.org/x/net`, a pin that IS linked and is one
+        # of the four security floors. Pseudo-versions are kept for the same
+        # reason (caddy-dns/digitalocean is pinned to one).
+        #
+        # Two classes of row are EXCLUDED, both because they would print a
+        # string that is not a linked version:
+        #
+        #   `=>` REPLACEMENT rows. On a replaced module the version names
+        #   upstream, not the code in the binary -- the same reason the sweep
+        #   above counts replacements as unswept rather than comparing them.
+        #
+        #   NON-VERSION values. The main module of a locally built binary is
+        #   `mod <name> (devel)`, observed on this very image as
+        #   `mod caddy (devel)`. A pin walking up to it would render
+        #   `linked (devel)`, which reads as a version and is not one. Only
+        #   values starting `v` and a digit are admitted.
+        #
+        # Fields are split on TAB, not whitespace: `go version -m` emits a
+        # leading tab and tab separators, and the default FS would make the
+        # row's own indentation significant.
+        graph_index="$OUT_DIR/module-index.tsv"
+        awk -F'\t' '{
+              # Re-index past the leading empty field the leading tab creates.
+              k=1; if ($1=="") k=2
+              typ=$k; mod=$(k+1); ver=$(k+2); nxt=$(k+3)
+              if ((typ=="dep" || typ=="mod") && nxt != "=>" \
+                  && mod != "" && ver ~ /^v[0-9]/)
+                printf "%s\t%s\n", mod, ver
+            }' "$graph_raw" \
+          | sort -u > "$graph_index"
       fi
     fi
   fi
@@ -2414,6 +2487,42 @@ fi
 # ---------------------------------------------------------------------------
 # Verdict + report.
 # ---------------------------------------------------------------------------
+# T-0752: the `linked` column. `raised`/`lowered` are divergences between what
+# the Dockerfile asks for and what the artefact contains; `absent` is a pin
+# naming code the binary does not link at all.
+linked_raised=0; linked_lowered=0; linked_absent=0; linked_measured=0
+
+# Resolve a `--with` PACKAGE path to its MODULE row in the built binary.
+#
+# This is trap 1 from this file's own header, and the reason the column could
+# not simply read the proxy-resolved `module` field already on the row: that
+# field comes from proxy.golang.org, this one has to match what the LINKER
+# recorded, and the two disagree in exactly the case this column exists for --
+#
+#   --with github.com/crowdsecurity/crowdsec/pkg/apiclient   (package)
+#   dep    github.com/crowdsecurity/crowdsec                 (module)
+#
+# So the path is walked up one element at a time until a row matches. A `/v5`
+# major-version suffix is a module path in its own right and matches at full
+# length, so it needs no special case. Same algorithm as
+# assert-floor-versions.sh, kept deliberately identical: the build-time
+# assertion and the weekly report must not be able to disagree about which
+# module a pin refers to.
+linked_version_of() {
+  lv_probe="$1"
+  [ -n "${graph_index:-}" ] && [ -s "${graph_index:-/nonexistent}" ] || { printf ''; return 1; }
+  while [ -n "$lv_probe" ]; do
+    lv_hit="$(awk -F'\t' -v p="$lv_probe" '$1==p {print $2; exit}' "$graph_index")"
+    if [ -n "$lv_hit" ]; then printf '%s' "$lv_hit"; return 0; fi
+    case "$lv_probe" in
+      */*) lv_probe="${lv_probe%/*}" ;;
+      *)   lv_probe="" ;;
+    esac
+  done
+  printf ''
+  return 1
+}
+
 behind=0; advisories=0; unresolved=0; moved=0; adv_unknown=0; adv_partial=0
 floors_ack=0; floors_expired=0
 # Set only when the all-clear is actually entitled to mention go.mod.
@@ -2427,8 +2536,8 @@ report="$OUT_DIR/report.md"
   echo
   echo "\`$DOCKERFILE\` — $pin_count pinned \`--with\`/\`--replace\` arguments."
   echo
-  echo "| module | pinned | upstream | advisories |"
-  echo "| --- | --- | --- | --- |"
+  echo "| module | pinned | linked | upstream | advisories |"
+  echo "| --- | --- | --- | --- | --- |"
 } > "$report"
 
 malformed_rows=0
@@ -2636,8 +2745,65 @@ while [ "$row_i" -lt "${#row_toks[@]}" ]; do
   else
     adv_cell="—"
   fi
-  printf '| `%s` | `%s` | %s | %s |\n' \
-    "$arg" "$pinned" "$up" "$adv_cell" >> "$report"
+  # -------------------------------------------------------------------------
+  # The `linked` cell (T-0752). What the ARTEFACT contains, beside what the
+  # Dockerfile ASKS FOR. The table was accurate about intent and silent about
+  # outcome: it said crowdsec v1.7.8 while the shipped binary carried v1.8.1,
+  # a three-minor divergence a reader could only find by building the image.
+  #
+  # THE DEGRADATION STORY IS THE POINT, and it is why this is not a one-liner.
+  # An empty cell on a run without `--binary` would read as "nothing was
+  # linked", i.e. the most alarming possible reading of the most common run.
+  # Four states, four distinct renderings, none of which can be mistaken for
+  # another -- the same discipline the advisory column already applies to
+  # "asked and clean" vs "never asked":
+  #
+  #   v1.8.1 (raised)   measured, and above the pin -- the T-0667 case
+  #   v1.7.8            measured, and exactly the pin
+  #   **not linked**    measured, and the pin names nothing in the binary
+  #   *not measured*    no binary was supplied; this run cannot say
+  #
+  # `not measured` is italic and `not linked` is bold on purpose: one is an
+  # absence of evidence and the other is evidence of an absence, and the
+  # weekly reader skims the bold.
+  if [ "$img_graph_state" != "ok" ]; then
+    linked_cell="*not measured*"
+  else
+    linked_ver="$(linked_version_of "$arg")"
+    if [ -z "$linked_ver" ]; then
+      # Not a verdict on the pin's correctness -- a `--with` whose package is
+      # compiled in but whose module path the walk cannot reach would land
+      # here too -- so it is stated, counted, and left to the reader rather
+      # than folded into the exit status. assert-floor-versions.sh DOES fail
+      # the build on this for the four security floors, which is where that
+      # judgement belongs.
+      linked_cell="**not linked**"
+      linked_absent=$((linked_absent+1))
+    else
+      linked_measured=$((linked_measured+1))
+      if [ "$linked_ver" = "$pinned" ]; then
+        linked_cell="\`$linked_ver\`"
+      else
+        # `sort -V` for the direction, for the same reason the staleness
+        # compare uses it: v1.10.0 is newer than v1.9.0 and a string compare
+        # gets that backwards.
+        lv_low="$(printf '%s\n%s\n' "$pinned" "$linked_ver" | sort -V | head -1)"
+        if [ "$lv_low" = "$linked_ver" ]; then
+          # BELOW the pin. The build-time guard already fails on this for a
+          # declared floor; seeing it here means either a non-floor pin or a
+          # report run against an older artefact than the Dockerfile.
+          linked_cell="\`$linked_ver\` (**lowered**)"
+          linked_lowered=$((linked_lowered+1))
+        else
+          linked_cell="\`$linked_ver\` (raised)"
+          linked_raised=$((linked_raised+1))
+        fi
+      fi
+    fi
+  fi
+
+  printf '| `%s` | `%s` | %s | %s | %s |\n' \
+    "$arg" "$pinned" "$linked_cell" "$up" "$adv_cell" >> "$report"
 done
 
 {
@@ -2647,6 +2813,29 @@ done
     echo
   fi
   [ "$behind" -gt 0 ] && { echo "**$behind pin(s) behind upstream's newest tag.**"; echo; }
+  # What the `linked` column adds up to (T-0752). Stated as a sentence as well
+  # as a column, because the interesting case is one row in sixteen and the
+  # weekly reader skims. The no-binary run says so explicitly rather than
+  # printing a zero, which would read as "nothing diverged" -- the same
+  # not-measured/clean confusion the column itself exists to prevent.
+  if [ "$img_graph_state" != "ok" ]; then
+    echo "**The \`linked\` column was not measured.** No built binary was supplied (\`--binary PATH|image:REF\`), so this run states what the Dockerfile *asks for* and cannot state what an artefact *contains*. The two are not the same thing: xcaddy resolves a plugin's own dependency graph, so a pin can be lifted past its written version by another plugin's floor."
+    echo
+  elif [ "$linked_raised" -gt 0 ] || [ "$linked_lowered" -gt 0 ] || [ "$linked_absent" -gt 0 ]; then
+    printf '**%s of %s pin(s) do not match the built binary:**' \
+      "$(( linked_raised + linked_lowered + linked_absent ))" "$pin_count"
+    [ "$linked_raised" -gt 0 ] \
+      && printf ' %s raised above the pin by another module'\''s floor (not an error — xcaddy resolves one graph, and the highest floor wins)' "$linked_raised"
+    [ "$linked_lowered" -gt 0 ] \
+      && printf ' %s **below** the pin, which `assert-floor-versions.sh` fails the build on for a declared security floor' "$linked_lowered"
+    [ "$linked_absent" -gt 0 ] \
+      && printf ' %s naming a module the binary does not link at all' "$linked_absent"
+    echo "."
+    echo
+  elif [ "$linked_measured" -gt 0 ]; then
+    echo "Every pin above is linked into the built binary at exactly its written version ($linked_measured measured)."
+    echo
+  fi
   if [ "$floors_expired" -gt 0 ]; then
     echo "**$floors_expired intentional floor(s) have EXPIRED and are counted as behind again.** Upstream has moved past the version the decision was recorded against, so the reasoning was taken on facts that no longer hold. Re-take the decision and update \`against=\`, or move the pin."
     echo
@@ -3012,6 +3201,16 @@ cat "$report"
 echo "verdict=$verdict"
 
 if [ "$EMIT_JSON" -eq 1 ]; then
+  # `null`, not 0, when there was no binary to measure against. A consumer
+  # branching on `.linked_raised == 0` must not read "measured and matching"
+  # out of a run that measured nothing -- the same not-measured/clean
+  # distinction the column itself draws, carried into the machine output.
+  if [ "$img_graph_state" = "ok" ]; then
+    lj_measured="$linked_measured"; lj_raised="$linked_raised"
+    lj_lowered="$linked_lowered";   lj_absent="$linked_absent"
+  else
+    lj_measured=null; lj_raised=null; lj_lowered=null; lj_absent=null
+  fi
   jq -n --arg v "$verdict" --argjson b "$behind" --argjson a "$advisories" \
         --argjson m "$moved" --argjson u "$unresolved" \
         --argjson au "$adv_unknown" --argjson ap "$adv_partial" \
@@ -3029,6 +3228,8 @@ if [ "$EMIT_JSON" -eq 1 ]; then
         --argjson gms "$gomod_seen" --argjson gmu "$gomod_unswept" \
         --argjson gmo "$gomod_out_of_scope" --arg gmsrc "$gomod_source" \
         --arg inp "$DOCKERFILE" --arg irev "$input_rev" --arg ist "$input_state" \
+        --argjson lr "$lj_raised" --argjson ll "$lj_lowered" \
+        --argjson la "$lj_absent" --argjson lm "$lj_measured" \
         '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
           advisory_unknown:$au, advisory_partial:$ap,
           floors_acknowledged:$fa, floors_expired:$fe,
@@ -3040,7 +3241,9 @@ if [ "$EMIT_JSON" -eq 1 ]; then
           image_base:$ib, image_base_version:$ibv,
           gomod:$gm, gomod_modules:$gmt, gomod_swept:$gms,
           gomod_unswept:$gmu, gomod_out_of_scope:$gmo, gomod_source:$gmsrc,
-          input:$inp, input_rev:$irev, input_state:$ist}' \
+          input:$inp, input_rev:$irev, input_state:$ist,
+          linked_measured:$lm, linked_raised:$lr,
+          linked_lowered:$ll, linked_absent:$la}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
 fi
@@ -3064,6 +3267,21 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "image_swept=$img_swept"
     echo "image_graph=$img_graph_state"
     echo "image_base=$img_base_state"
+    # On a run without a readable binary these are `not-measured` rather than
+    # 0: a consumer branching on `linked_raised == 0` must not read "measured
+    # and matching" out of a run that measured nothing. `image_graph` already
+    # carries the same distinction for the sweep.
+    if [ "$img_graph_state" = "ok" ]; then
+      echo "linked_measured=$linked_measured"
+      echo "linked_raised=$linked_raised"
+      echo "linked_lowered=$linked_lowered"
+      echo "linked_absent=$linked_absent"
+    else
+      echo "linked_measured=not-measured"
+      echo "linked_raised=not-measured"
+      echo "linked_lowered=not-measured"
+      echo "linked_absent=not-measured"
+    fi
     # `gomod_state` alone means "the module LIST was read", which is not the
     # same as "the modules were ASKED about": with the sweep disabled, or with
     # the GitHub budget exhausted before any go.mod row, the list parses fine
