@@ -1,0 +1,23 @@
+FROM applegater/caddyui-caddy:stable
+# T-0784 fixture: repoint an EXISTING trust-store symlink at an
+# attacker-controlled certificate.
+#
+# This shape adds no path and changes no mode. Under the old
+# space-separated file list, where a symlink's comparison key was
+# `path -> target`, it read as one REMOVED path plus one ADDED path --
+# i.e. ordinary-looking churn in the one directory assertion (a) exists
+# for. 236 of the 237 entries under etc/ssl/certs/ on :stable are
+# symlinks, so that shape was the common case there, not a corner case.
+#
+# With tab-separated columns it is a changed TARGET column on an
+# unchanged path: assertion (c) reports no new trust-store path and (a)
+# still names the link.
+#
+# Build:
+#   openssl req -x509 -newkey rsa:2048 -keyout /dev/null -out evil.pem \
+#     -days 1 -nodes -subj "/CN=t0784-evil"
+#   docker build -t t0784-symlink-repoint:test \
+#     -f Dockerfile.symlink-repoint .
+USER root
+COPY evil.pem /tmp/evil.pem
+RUN ln -sf /tmp/evil.pem /etc/ssl/certs/002c0b4f.0
