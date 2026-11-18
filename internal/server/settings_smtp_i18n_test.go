@@ -12,7 +12,7 @@ import (
 
 func TestI18nSMTPSettingsFallbackAndForm(t *testing.T) {
 	e := newSecEnv(t)
-	for _, lang := range []string{"en", "fr", "ru", "zh-CN"} {
+	for _, lang := range []string{"en", "es", "fr", "ru", "zh-CN"} {
 		t.Run(lang, func(t *testing.T) {
 			e.do(t, "admin", http.MethodPost, "/profile", url.Values{"action": {"update_locale"}, "locale": {lang}})
 			rec := e.do(t, "admin", http.MethodGet, "/settings/notifications", nil)
