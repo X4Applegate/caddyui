@@ -327,25 +327,25 @@
   {{/* ── SMTP ── */}}
   <div id="settings-smtp" class="scroll-mt-20 bg-white border border-ink-200 rounded-xl shadow-card p-6 space-y-5">
     <div>
-      <div class="text-sm font-semibold text-ink-900 mb-0.5">Email (SMTP)</div>
-      <p class="text-xs text-ink-500">CaddyUI will send email alerts for certificate expiry and proxy upstream health changes.</p>
+      <div class="text-sm font-semibold text-ink-900 mb-0.5">{{t $ "settings.smtp.title"}}</div>
+      <p class="text-xs text-ink-500">{{t $ "settings.smtp.help"}}</p>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
       <div class="sm:col-span-2">
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">SMTP Host</label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.smtp.host"}}</label>
         <input name="smtp_host" value="{{.SMTPHost}}" type="text" placeholder="smtp.example.com"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Port</label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.smtp.port"}}</label>
         <input name="smtp_port" value="{{.SMTPPort}}" type="number" min="1" max="65535" placeholder="587"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
     </div>
 
     <div>
-      <label class="block text-sm font-medium text-ink-800 mb-1.5">Security</label>
+      <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.smtp.security"}}</label>
       <div class="flex flex-wrap gap-4">
         <label class="flex items-center gap-2 text-sm cursor-pointer">
           <input type="radio" name="smtp_security" value="starttls" {{if eq .SMTPSecurity "starttls"}}checked{{end}} class="accent-brand-600" />
@@ -357,21 +357,21 @@
         </label>
         <label class="flex items-center gap-2 text-sm cursor-pointer">
           <input type="radio" name="smtp_security" value="none" {{if eq .SMTPSecurity "none"}}checked{{end}} class="accent-brand-600" />
-          <span class="text-ink-700">None <span class="text-ink-400">(port 25)</span></span>
+          <span class="text-ink-700">{{t $ "settings.smtp.none"}} <span class="text-ink-400">(port 25)</span></span>
         </label>
       </div>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">Username</label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.smtp.username"}}</label>
         <input name="smtp_username" value="{{.SMTPUsername}}" type="text" autocomplete="off" placeholder="user@example.com"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <div>
         <label class="block text-sm font-medium text-ink-800 mb-1.5">
-          Password
-          <span class="text-ink-400 font-normal text-xs ml-1">(leave blank to keep existing)</span>
+          {{t $ "settings.smtp.password"}}
+          <span class="text-ink-400 font-normal text-xs ml-1">{{t $ "settings.smtp.keep_password"}}</span>
         </label>
         <input name="smtp_password" value="" type="password" autocomplete="new-password" placeholder="••••••••"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
@@ -383,22 +383,22 @@
       <input id="smtp_skip_verify" name="smtp_skip_verify" type="checkbox" value="1" {{if .SMTPSkipVerify}}checked{{end}}
         class="mt-0.5 accent-brand-600 cursor-pointer" />
       <label for="smtp_skip_verify" class="text-sm text-ink-700 cursor-pointer">
-        Skip TLS certificate verification
-        <span class="block text-xs text-ink-400 font-normal mt-0.5">Use only if your mail server uses a self-signed or untrusted certificate. Disables certificate chain validation.</span>
+        {{t $ "settings.smtp.skip_verify"}}
+        <span class="block text-xs text-ink-400 font-normal mt-0.5">{{t $ "settings.smtp.skip_verify_help"}}</span>
       </label>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">From address</label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.smtp.from"}}</label>
         <input name="smtp_from" value="{{.SMTPFrom}}" type="email" placeholder="caddyui@example.com"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
       </div>
       <div>
-        <label class="block text-sm font-medium text-ink-800 mb-1.5">To address(es)</label>
+        <label class="block text-sm font-medium text-ink-800 mb-1.5">{{t $ "settings.smtp.to"}}</label>
         <input name="smtp_to" value="{{.SMTPTo}}" type="text" placeholder="admin@example.com, ops@example.com"
           class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition" />
-        <p class="text-xs text-ink-500 mt-1.5">Comma-separate multiple recipients.</p>
+        <p class="text-xs text-ink-500 mt-1.5">{{t $ "settings.smtp.recipients_help"}}</p>
       </div>
     </div>
 
@@ -409,14 +409,14 @@
          is type="button" with onclick so it fires an independent fetch
          against /settings/test-email without submitting the form. */}}
     <div class="pt-3 border-t border-ink-100 flex flex-wrap items-center gap-3">
-      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">Save settings</button>
+      <button type="submit" class="inline-flex items-center bg-brand-600 hover:bg-brand-700 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition">{{t $ "settings.save"}}</button>
       {{if .SMTPConfigured}}
       <button id="test-email-btn" type="button" onclick="testEmail()" class="inline-flex items-center bg-white hover:bg-ink-50 border border-ink-200 text-ink-700 font-medium text-sm px-4 py-2 rounded-lg transition">
-        Send test email
+        {{t $ "settings.smtp.test"}}
       </button>
       <span id="test-email-result" class="text-sm"></span>
       {{else}}
-      <span class="text-xs text-ink-400 italic">Save SMTP settings to enable the test button</span>
+      <span class="text-xs text-ink-400 italic">{{t $ "settings.smtp.test_hint"}}</span>
       {{end}}
     </div>
   </div>
@@ -1566,25 +1566,25 @@ function testEmail() {
   var btn = document.getElementById('test-email-btn');
   var result = document.getElementById('test-email-result');
   btn.disabled = true;
-  btn.textContent = 'Sending…';
+  btn.textContent = {{t $ "js.settings.smtp.sending"}};
   fetch('/settings/test-email', {method: 'POST'})
     .then(function(r) { return r.json(); })
     .then(function(d) {
       if (d.ok) {
-        result.textContent = '✓ Sent!';
+        result.textContent = {{t $ "js.settings.smtp.sent"}};
         result.className = 'text-sm text-brand-700';
       } else {
-        result.textContent = 'Failed: ' + (d.error || 'unknown error');
+        result.textContent = d.error || {{t $ "js.settings.smtp.unknown_error"}};
         result.className = 'text-sm text-red-700';
       }
     })
     .catch(function(e) {
-      result.textContent = 'Error: ' + e.message;
+      result.textContent = {{t $ "js.settings.smtp.error"}}.replace("{error}", function() { return e.message; });
       result.className = 'text-sm text-red-700';
     })
     .finally(function() {
       btn.disabled = false;
-      btn.textContent = 'Send test email';
+      btn.textContent = {{t $ "settings.smtp.test"}};
     });
 }
 
