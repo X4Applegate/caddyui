@@ -311,7 +311,20 @@ if grep -q 'pin-watch' "$LIVE_OUT/errors.txt" 2>/dev/null; then
 else
   check "no pin-watch error on the live Dockerfile" y y
 fi
-check "live Dockerfile declares exactly 1 floor" "1" \
+# The expected count is DERIVED FROM THE DOCKERFILE AT RUN TIME, never written here as a
+# constant. A hardcoded "1" was a frozen expectation: adding the route53 floor (T-0637) made
+# this fail while the parser worked perfectly, so the test reported a defect in the very thing
+# it certifies, and the only way to "fix" it would be to retype the number after each
+# legitimate floor. Counting the directives in the file keeps the test measuring the PARSER,
+# while still catching the failure that matters: a directive present in the Dockerfile but
+# missing from floors.tsv.
+LIVE_DF="$(cd "$(dirname "$0")/.." && pwd)/Dockerfile.caddy"
+expected_floors="$(grep -cE '^[[:space:]]*#[[:space:]]*pin-watch:[[:space:]]*floor([[:space:]]|$)' "$LIVE_DF")"
+# A pattern that silently matched nothing would make this assert 0 == 0 and pass while
+# measuring nothing -- the empty-input-reads-as-a-pass shape. Require a floor to exist first.
+check "live Dockerfile declares at least one floor to count" y \
+  "$( [ "$expected_floors" -ge 1 ] && echo y || echo n )"
+check "every floor directive in the live Dockerfile reached floors.tsv ($expected_floors)" "$expected_floors" \
   "$(wc -l < "$LIVE_OUT/floors.tsv" | tr -d ' ')"
 
 echo

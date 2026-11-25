@@ -368,6 +368,7 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/caddy-dns/godaddy@v1.2.0 \
     --with github.com/caddy-dns/digitalocean@v0.0.0-20250606074528-04bde2867106 \
     --with github.com/caddy-dns/hetzner/v2@v2.0.1 \
+    # pin-watch: floor pin=v1.6.2 against=v1.6.3 ref=T-0637 reason=route53 is configured on ZERO boxes -- re-derived 2026-11-13 by reading the RUNNING config (127.0.0.1:2019/config/) inside the caddy container on all six hosts, six distinct config sizes, 0 route53 references on every one; the fleet is Cloudflare-only for DNS-01. OSV is clean on BOTH sides (v1.6.2 pinned and v1.6.3), so staying accrues no known exposure and moving buys no reachable fix. 7 of the 8 commits in v1.6.2..v1.6.3 are dependabot/CI housekeeping; the only functional one drags aws-sdk-go-v2 1.39.1->1.48.0, service/route53 1.58.3->1.70.10, smithy-go 1.23.0->1.28.9, ADDS service/signin and DROPS internal/ini. That module-set change cannot ride inside a release whose verified claim is "module set membership did not change", and libdns/route53 v1.6.3 alters DeleteRecords wildcard semantics in a credentialed DNS provider, so it needs a release whose review scope covers a credentialed DNS provider rather than any release merely in flight (T-0625 declined it on exactly that ground and was right).
     --with github.com/caddy-dns/route53@v1.6.2 \
     --with github.com/caddy-dns/gandi@v1.2.1 \
     --with github.com/hslatman/caddy-crowdsec-bouncer/http@v0.15.0 \
