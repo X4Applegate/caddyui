@@ -154,10 +154,25 @@ an **error** rather than a guess if it never settles.
 Exit 2 is separate on purpose. A harness that cannot start must not be
 indistinguishable from one that ran and found nothing.
 
-## Still worth covering
+## Multi-route precedence is a separate harness
 
-v0.1.3 changed route matching on the matcher path: the new `anyRouteNeedsMore`
-defers a catch-all while an earlier route still needs bytes, so which route a
-given set of first bytes lands on can differ from v0.1.2. This harness uses a
-single SSH route plus pass-through and does **not** exercise multi-route
-precedence. Tracked separately — see T-0631's follow-ups.
+This one uses a single SSH route plus pass-through, so it says nothing about
+which of several competing routes wins a given first packet. v0.1.3 also changed
+that — `anyRouteNeedsMore` replaced the single `lastNeedsMoreIdx` watermark in
+`layer4/routes.go` — and it is covered by:
+
+```bash
+./scripts/layer4-concurrency/precedence.sh
+```
+
+See [PRECEDENCE.md](PRECEDENCE.md). That one is a **differential**, not a
+pass/fail gate, and the distinction is the point: the two bugs *this* harness
+tests are wrong on any reading, so `--prove` can demand the buggy image fail. A
+precedence change has no such anchor, so the precedence harness records the
+landing route per image and reports the differences instead of asserting one
+answer.
+
+Headline measured result: on `caddy-l4` v0.1.2 a split RDP connection request
+reached **no route at all** (and landed on the **catch-all** when one was
+present); on v0.1.3 it reaches the `rdp` route. The boundary is the `ssh`
+matcher's 4-byte threshold, not the one you would guess.
