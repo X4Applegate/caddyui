@@ -82,6 +82,14 @@ jobs:
       - name: Only release TAGS may publish, and the built ref must be that tag
         run: ./scripts/test-release-plan-version-input.sh
 
+      # The base-drift check reports whether a release that SKIPPED the Caddy rebuild
+      # shipped a stale base. Its only failure mode is a reassuring answer it was not
+      # entitled to give, so the suite asserts the shape of the wrong answers -- never
+      # `unchanged` when it could not compare, never a silent amd64-only comparison. Stubs
+      # the registry; no network access.
+      - name: The base-drift check never reports an unearned all-clear
+        run: ./scripts/test-caddy-base-drift.sh
+
   # govulncheck is here for ONE property nothing else in this repo reports:
   # REACHABILITY. It distinguishes an advisory against a linked module from one
   # against a function this code actually calls, and on its first run it found

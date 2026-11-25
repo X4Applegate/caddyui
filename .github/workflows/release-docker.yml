@@ -123,6 +123,7 @@ jobs:
       push: ${{ steps.p.outputs.push }}
       caddy: ${{ steps.p.outputs.caddy }}
       caddy_changed: ${{ steps.p.outputs.caddy_changed }}
+      caddy_reason: ${{ steps.p.outputs.caddy_reason }}
     steps:
       # Deliberately UNQUALIFIED, unlike the `ref` this job hands downstream.
       # This job must also accept a branch, because a branch dispatch is the
@@ -236,8 +237,18 @@ jobs:
           #                   that intends drift would let a re-resolved plugin
           #                   reach :stable with no reviewer, which is exactly
           #                   what caddy-image-refresh.yml blocks.
+          #
+          # caddy_reason    = WHY this run did or did not rebuild, in words, for
+          #                   the summary job at the end of this file. The skip
+          #                   used to be silent: the caddy job simply did not
+          #                   run, nothing was written to the run summary, and a
+          #                   green release looked identical whether the image
+          #                   had been rebuilt or not (T-0709). Three of the
+          #                   eight releases before v2.68.9 took that path. The
+          #                   decision is made here, so it is recorded here.
           caddy=false
           caddy_changed=false
+          caddy_reason=
           if [ "$kind" != none ]; then
             prev="$(git describe --tags --abbrev=0 "${version}^" 2>/dev/null || true)"
             if [ -z "$prev" ]; then
@@ -245,15 +256,24 @@ jobs:
               # newly defined rather than drifted.
               caddy=true
               caddy_changed=true
+              caddy_reason="no previous release tag to compare against; treating the module set as newly defined"
             elif ! git diff --quiet "$prev" "$version" -- Dockerfile.caddy; then
               caddy=true
               caddy_changed=true
+              caddy_reason="Dockerfile.caddy changed since ${prev}"
+            else
+              caddy_reason="Dockerfile.caddy unchanged since ${prev}"
             fi
+          else
+            caddy_reason="build-only run (no release tag), so nothing publishes"
           fi
           # Asked for by hand: rebuild, but do NOT inherit "drift is expected"
           # unless the diff above already established it.
           if [ "$WANT_CADDY" = "true" ]; then
             caddy=true
+            if [ "$caddy_changed" != true ]; then
+              caddy_reason="${caddy_reason}, but caddy=true was dispatched by hand"
+            fi
           fi
 
           # Only the version and release kind cross to the build jobs — never the
@@ -389,7 +409,22 @@ jobs:
             echo "caddy_changed=$caddy_changed"
           } >> "$GITHUB_OUTPUT"
 
+          # caddy_reason is PROSE, so it is written with a heredoc delimiter
+          # rather than as a bare name=value line. Its interpolated parts are
+          # tag names that the checks above have already constrained, but the
+          # same standard the forged-line guard above applies to raw input
+          # applies to any value whose shape is not a single bare token: a
+          # delimited block cannot append a second key whatever it contains.
+          # The delimiter is random so the value can never close it.
+          reason_eof="EOF_$(openssl rand -hex 8)"
+          {
+            echo "caddy_reason<<${reason_eof}"
+            echo "$caddy_reason"
+            echo "${reason_eof}"
+          } >> "$GITHUB_OUTPUT"
+
           echo "version=$version kind=$kind push=$push caddy=$caddy caddy_changed=$caddy_changed"
+          echo "caddy_reason=$caddy_reason"
 
   caddyui:
     name: applegater/caddyui
@@ -1135,3 +1170,150 @@ jobs:
           else
             echo "caddy image not rebuilt this release; caddyui-caddy overview left unchanged"
           fi
+
+  # Say, in the run summary, whether the Caddy image was rebuilt — and when it was NOT,
+  # whether that was safe.
+  #
+  # WHY THIS JOB EXISTS (T-0709). The rebuild above is conditional on Dockerfile.caddy having
+  # changed, and the skip was SILENT: the `caddy` job simply did not run, nothing was written
+  # to the run summary, and a green release looked identical whether the image had been
+  # rebuilt or not. That is not a corner case — v2.68.6, v2.68.7 and v2.68.8 all published
+  # that way, three of the eight releases before v2.68.9.
+  #
+  # Same family as T-0708 (the overview was a manual tail) and T-0690 (the recreate is a
+  # manual tail): each step in the chain is conditional in a way the preceding step's success
+  # does not reveal. The fix is the same shape — report the decision.
+  #
+  # TWO THINGS ARE REPORTED, and they are different questions:
+  #
+  #   1. WAS IT REBUILT, and why. Cheap, always correct, and on its own it removes the
+  #      silence, which is the actual defect. A reader of the run now sees "Caddy image: NOT
+  #      rebuilt, Dockerfile.caddy unchanged since vX.Y.Z" instead of seeing nothing at all.
+  #
+  #   2. SHOULD IT HAVE BEEN. The trigger (did a human edit Dockerfile.caddy?) is uncorrelated
+  #      with the need (did the base image gain CVE fixes?). Dockerfile.caddy pins its bases
+  #      by TAG — `caddy:2.11.9-alpine`, not a digest — and that tag is mutable upstream, so
+  #      Alpine can ship a security fix under the same name with nothing in this repository
+  #      changing. The workflow header already concedes this: "Alpine security fixes can sit
+  #      built-but-unshipped between releases."
+  #
+  # So on a skipped release this job resolves the pinned base tag NOW and compares it against
+  # the base the published image was actually built from. If they differ, the skip was a miss
+  # and the summary says so with the command that fixes it.
+  #
+  # ADVISORY, DELIBERATELY. This job does not fail the release and does not trigger a rebuild.
+  #
+  #   - It must not fail a release. The release itself is correct: CaddyUI shipped, its gate
+  #     passed, and the Caddy image was skipped by a documented rule. Turning a stale base
+  #     into a red release would make a green run mean "and the upstream base has not moved",
+  #     which no release can promise — the base can move an hour after a perfectly good run.
+  #     A release that is red for something it did not do is a release people learn to re-run.
+  #
+  #   - It must not silently rebuild either. A rebuild publishes to :stable and :latest for
+  #     six boxes, and caddy-image-refresh.yml exists precisely to put that behind a gate and
+  #     a human dispatch. This job reporting a moved base and that workflow publishing the
+  #     answer is the correct division; collapsing them would route an unreviewed base change
+  #     to the fleet from a job whose whole purpose is to notice things quietly.
+  #
+  # What it replaces is the silence, not the judgement. The weekly refresh does not close this
+  # on its own: its own header states that "publish is never reachable without a manual
+  # dispatch", so it builds and scans on a schedule but publishes only when a human asks. A
+  # moved base is therefore picked up automatically by neither path — this job is what makes
+  # the fact visible so the human knows to dispatch.
+  caddy-decision:
+    name: Caddy image decision
+    runs-on: ubuntu-latest
+    needs: [plan, caddy]
+    # Runs on EVERY release, including the one where `caddy` was skipped — that is the case it
+    # exists for. `always()` is what lets a skipped dependency still reach this job; the
+    # `caddy` job's own result is read below rather than assumed.
+    if: always() && needs.plan.result == 'success'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - name: Report whether the Caddy image was rebuilt
+        env:
+          CADDY_RESULT: ${{ needs.caddy.result }}
+          CADDY_PLANNED: ${{ needs.plan.outputs.caddy }}
+          CADDY_REASON: ${{ needs.plan.outputs.caddy_reason }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PUSH: ${{ needs.plan.outputs.push }}
+          IMAGE: applegater/caddyui-caddy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The headline. Four outcomes, and each is stated rather than implied by absence.
+          case "$CADDY_RESULT" in
+            success) headline="**Caddy image: REBUILT** and published as \`${IMAGE}:${VERSION}\`." ;;
+            failure) headline="**Caddy image: BUILD FAILED.** No tag was created — see the \`${IMAGE}\` job." ;;
+            cancelled) headline="**Caddy image: CANCELLED.**" ;;
+            *) headline="**Caddy image: NOT REBUILT** — ${CADDY_REASON}." ;;
+          esac
+
+          {
+            echo "## Caddy image"
+            echo
+            echo "$headline"
+            echo
+            echo "- Release: \`${VERSION}\`"
+            echo "- Decision: ${CADDY_REASON}"
+            echo "- Rebuild job: \`${CADDY_RESULT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "caddy result=$CADDY_RESULT planned=$CADDY_PLANNED reason=$CADDY_REASON"
+      # Only asked when the rebuild was skipped. When the image WAS rebuilt it was built from
+      # the current base by definition, so there is nothing to compare.
+      #
+      # ADVISORY, so a moved base cannot fail a release that was itself correct — see the long
+      # comment on this job. The script's own exit status distinguishes moved (1) from
+      # could-not-tell (2); --advisory collapses both to 0 for this caller AFTER writing the
+      # verdict to the summary and emitting a ::warning:: annotation, so the fact is reported
+      # on the run header without turning a correct release red.
+      - name: Check whether the pinned base image moved since the published build
+        id: drift
+        if: needs.caddy.result == 'skipped' && needs.plan.outputs.push == 'true'
+        env:
+          IMAGE: applegater/caddyui-caddy
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo
+            echo "### Base image"
+            echo
+            echo "The rebuild was skipped, so the published Caddy image still carries whatever base it was last built with. \`Dockerfile.caddy\` pins its base by TAG, and that tag is mutable upstream — Alpine can ship a security fix under the same name with nothing in this repository changing."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          scripts/caddy-base-drift.sh --advisory "${IMAGE}:stable" Dockerfile.caddy
+
+      # The remedy is a SEPARATE step keyed on the previous step's declared output, not a
+      # grep of $GITHUB_OUTPUT inside the same step.
+      #
+      # $GITHUB_OUTPUT is a fresh file per step, so reading it in-place only worked because
+      # the script happened to run in the same step that read it. That coupling is invisible
+      # and unenforced: inserting a step between them, or moving the script call, would make
+      # the read silently return nothing — printing a security warning with no instruction
+      # about what to do, on a green job. `steps.drift.outputs.drift` is the supported
+      # channel and survives reordering.
+      - name: How to publish a base refresh
+        if: needs.caddy.result == 'skipped' && steps.drift.outputs.drift == 'moved'
+        env:
+          IMAGE: applegater/caddyui-caddy
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo
+            echo "This is **not** a failure of this release, and nothing here is broken: CaddyUI published correctly, and the skip followed the documented rule. It is a prompt to publish a base refresh — \`caddy-image-refresh.yml\` builds and scans weekly but only publishes on a manual dispatch, so it needs a human:"
+            echo
+            echo '```sh'
+            echo "gh workflow run caddy-image-refresh.yml -f publish=true"
+            echo '```'
+            echo
+            echo "That publishes \`${IMAGE}:${VERSION}-pN\` and moves \`:stable\`/\`:latest\` to it, gated the same way a release is."
+          } >> "$GITHUB_STEP_SUMMARY"
