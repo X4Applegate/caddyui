@@ -4605,17 +4605,37 @@ func buildForwardAuthHandler(p models.ProxyHost) map[string]any {
 
 // BuildWAFDirectives renders the SecLang for a profile's WAF choice: Coraza's
 // recommended base, optionally the OWASP Core Rule Set at the chosen paranoia
-// level, the engine mode, then the operator's own directives — last, so they can
-// tune or override what came before (SecRuleRemoveById and the like).
+// level, the engine mode, and the operator's own directives in two slots that
+// follow the CRS layout (REQUEST-900 before the rules, RESPONSE-999 after):
+//
+//   - PreDirectives go after crs-setup and before the rules are included.
+//     Coraza evaluates rules in declaration order within a phase, so a runtime
+//     exclusion (ctl:ruleRemoveById, ctl:ruleRemoveTargetById) or a CRS setting
+//     (setvar:tx.allowed_request_content_type…) must be declared before the rules
+//     it affects; written after them it is evaluated too late for every rule of
+//     its own phase or an earlier one, silently.
+//   - Directives go last: config-time changes (SecRuleRemoveById,
+//     SecRuleUpdateTargetById) act on rules already loaded, so they only work
+//     after the include.
 func BuildWAFDirectives(w *models.WAFSettings) string {
 	var b strings.Builder
 	b.WriteString("Include @coraza.conf-recommended\n")
+	pre := strings.TrimSpace(w.PreDirectives)
 	if w.CRS {
 		b.WriteString("Include @crs-setup.conf.example\n")
 		if w.Paranoia > 1 {
 			fmt.Fprintf(&b, "SecAction \"id:900000,phase:1,pass,t:none,nolog,setvar:tx.blocking_paranoia_level=%d\"\n", w.Paranoia)
 		}
+		if pre != "" {
+			b.WriteString(pre)
+			b.WriteString("\n")
+		}
 		b.WriteString("Include @owasp_crs/*.conf\n")
+	} else if pre != "" {
+		// No rule set to come before: the slot still precedes the engine line
+		// and the after-slot, so the relative order the operator chose holds.
+		b.WriteString(pre)
+		b.WriteString("\n")
 	}
 	if w.Mode == models.WAFModeBlock {
 		b.WriteString("SecRuleEngine On\n")

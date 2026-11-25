@@ -100,3 +100,60 @@ func TestHasWAFModuleUsesAdaptAndNeverLoadsConfig(t *testing.T) {
 		}
 	}
 }
+
+// A profile without "before the Core Rule Set" directives must render exactly
+// what it rendered before that slot existed. coraza-caddy keys its WAF pool on
+// a hash of the directives, so byte-identical output also means an upgrade
+// does not rebuild any running WAF.
+func TestBuildWAFDirectivesUnchangedWithoutPreDirectives(t *testing.T) {
+	const base = "Include @coraza.conf-recommended\n"
+	for _, tc := range []struct {
+		w    models.WAFSettings
+		want string
+	}{
+		{models.WAFSettings{Mode: models.WAFModeBlock, CRS: true, Paranoia: 1},
+			base + "Include @crs-setup.conf.example\nInclude @owasp_crs/*.conf\nSecRuleEngine On\n"},
+		{models.WAFSettings{Mode: models.WAFModeDetect, CRS: true, Paranoia: 3, Directives: "  SecRuleRemoveById 942100  "},
+			base + "Include @crs-setup.conf.example\nSecAction \"id:900000,phase:1,pass,t:none,nolog,setvar:tx.blocking_paranoia_level=3\"\nInclude @owasp_crs/*.conf\nSecRuleEngine DetectionOnly\nSecRuleRemoveById 942100\n"},
+		{models.WAFSettings{Mode: models.WAFModeBlock, CRS: false, Paranoia: 4, Directives: "SecRule ARGS \"@contains x\" \"id:1,deny\""},
+			base + "SecRuleEngine On\nSecRule ARGS \"@contains x\" \"id:1,deny\"\n"},
+		// Whitespace only is the same as empty.
+		{models.WAFSettings{Mode: models.WAFModeBlock, CRS: true, Paranoia: 1, PreDirectives: " \n\t "},
+			base + "Include @crs-setup.conf.example\nInclude @owasp_crs/*.conf\nSecRuleEngine On\n"},
+	} {
+		if got := BuildWAFDirectives(&tc.w); got != tc.want {
+			t.Errorf("%+v rendered\n%q\nwant\n%q", tc.w, got, tc.want)
+		}
+	}
+}
+
+// Runtime exclusions (ctl:) are evaluated in declaration order within a phase,
+// so they must be declared before the rules; config-time ones (SecRuleRemoveById)
+// act on loaded rules, so they must come after. Each slot lands on its side.
+func TestBuildWAFDirectivesPlacesPreDirectivesBeforeTheRuleSet(t *testing.T) {
+	pre := `SecRule REQUEST_URI "@beginsWith /webapi/" "id:1000105,phase:1,pass,nolog,ctl:ruleRemoveById=930130"`
+	got := BuildWAFDirectives(&models.WAFSettings{Mode: models.WAFModeBlock, CRS: true, Paranoia: 2,
+		PreDirectives: "\n" + pre + "\n", Directives: "SecRuleRemoveById 942100"})
+	idx := func(s string) int {
+		i := strings.Index(got, s)
+		if i < 0 {
+			t.Fatalf("%q missing:\n%s", s, got)
+		}
+		return i
+	}
+	setup, paranoia, p, rules, engine, post := idx("@crs-setup.conf.example"), idx("blocking_paranoia_level=2"), idx(pre), idx("@owasp_crs/*.conf"), idx("SecRuleEngine On"), idx("SecRuleRemoveById 942100")
+	if !(setup < paranoia && paranoia < p && p < rules && rules < engine && engine < post) {
+		t.Errorf("wrong order (want crs-setup < paranoia < pre < rules < engine < post):\n%s", got)
+	}
+	if strings.Count(got, pre) != 1 {
+		t.Errorf("the pre directives must appear exactly once:\n%s", got)
+	}
+
+	// Without the rule set there is nothing to precede, but the operator's
+	// relative order (pre, then post) still holds and nothing CRS-related appears.
+	noCRS := BuildWAFDirectives(&models.WAFSettings{Mode: models.WAFModeDetect, CRS: false, PreDirectives: "SecAction \"id:1,pass,nolog\"", Directives: "SecRuleRemoveById 1"})
+	want := "Include @coraza.conf-recommended\nSecAction \"id:1,pass,nolog\"\nSecRuleEngine DetectionOnly\nSecRuleRemoveById 1\n"
+	if noCRS != want {
+		t.Errorf("CRS off rendered\n%q\nwant\n%q", noCRS, want)
+	}
+}

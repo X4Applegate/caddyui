@@ -2485,6 +2485,8 @@ func migrate(db *sql.DB) error {
 		{"waf_crs", `ALTER TABLE middleware_profiles ADD COLUMN waf_crs INTEGER NOT NULL DEFAULT 0`},
 		{"waf_paranoia", `ALTER TABLE middleware_profiles ADD COLUMN waf_paranoia INTEGER NOT NULL DEFAULT 0`},
 		{"waf_directives", `ALTER TABLE middleware_profiles ADD COLUMN waf_directives TEXT NOT NULL DEFAULT ''`},
+		// SecLang placed before the Core Rule Set (runtime exclusions, CRS settings).
+		{"waf_pre_directives", `ALTER TABLE middleware_profiles ADD COLUMN waf_pre_directives TEXT NOT NULL DEFAULT ''`},
 	} {
 		if !columnExists2(db, "middleware_profiles", col.name) {
 			migrationStep(db, col.ddl)
