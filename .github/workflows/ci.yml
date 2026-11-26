@@ -181,6 +181,7 @@ jobs:
           suites=(
             test-govulncheck-gate.sh      # reachability gate: staleness guard, exit classification, acks
             test-go-toolchain-watch.sh    # toolchain advisory watch: OSV range walk, explicit-unknown
+            test-govulncheck-ci-step.sh   # THIS workflow's own step: a called finding fails, a present one reports
           )
 
           for s in "${suites[@]}"; do
@@ -319,7 +320,32 @@ jobs:
       # every run.
       - name: Reachability gate — a called finding fails, a present one reports
         id: govulncheck
-        run: ./scripts/govulncheck-gate.sh --source --fail-on called --out-dir govulncheck-out
+        # THE EXIT STATUS IS A RESULT, NOT A PASS/FAIL, so it is classified
+        # here rather than propagated. The gate's convention (shared with
+        # check-pinned-modules.sh) is 0 clean / 1 attention / 2 called / 3
+        # could-not-run, and `1` covers a merely PRESENT finding -- which
+        # this tree has today (GO-2026-5932, uncalled). Propagating the raw
+        # status would therefore fail every unrelated PR on an uncalled
+        # residual, which is exactly the noise T-0744 decided against and
+        # the reason this job was report-only before it. Same shape as the
+        # toolchain step in caddy-image-refresh.yml.
+        #
+        # 3 FAILS DELIBERATELY. A scan that could not run is unknown, not
+        # clean, and letting it pass would re-create the T-0740 defect one
+        # level up -- the whole subject of that card.
+        run: |
+          set -uo pipefail
+          set +e
+          ./scripts/govulncheck-gate.sh --source --fail-on called --out-dir govulncheck-out
+          rc=$?
+          set -e
+          case "$rc" in
+            0) ;;
+            1) echo "::notice::govulncheck reported findings, none called; see the job summary" ;;
+            2) echo "::error::a CALLED govulncheck finding is reachable from this code and is not acknowledged in scripts/govulncheck-acks.txt"; exit 1 ;;
+            3) echo "::error::the reachability scan could not run, so its result is UNKNOWN rather than clean (T-0740)"; exit 1 ;;
+            *) echo "::error::govulncheck-gate.sh exited unexpectedly ($rc); treat this tree as unscanned"; exit 1 ;;
+          esac
 
       - name: Upload govulncheck report
         if: always()

@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.3.1",
+  "id": "GO-2026-6603",
+  "modified": "2026-10-08T22:31:09Z",
+  "published": "2026-10-08T22:31:09Z",
+  "aliases": [
+    "CVE-2026-78659"
+  ],
+  "summary": "HTTP/2 server memory exhaustion due to Trailer headers in net/http",
+  "affected": [
+    {
+      "package": {
+        "name": "stdlib",
+        "ecosystem": "Go"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "1.26.9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "package": {
+        "name": "stdlib",
+        "ecosystem": "Go"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "1.27.0-0"
+            },
+            {
+              "fixed": "1.27.2"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

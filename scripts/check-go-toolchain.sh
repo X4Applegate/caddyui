@@ -354,23 +354,80 @@ for cand in "${candidates[@]}"; do
   # Only the ranges for the module this candidate came from. An advisory can
   # name several modules (a stdlib one sometimes also names a x/ module), and
   # another module's range says nothing about the toolchain.
+  # EACH RANGE IS WALKED ON ITS OWN AND THE RESULTS ARE OR-ED. OSV
+  # affectedness is a union over independent ranges, not a fold across all of
+  # them: an advisory patched on two release branches carries one `affected`
+  # entry per branch (`introduced 1.26.0-0 / fixed 1.26.9` and `introduced
+  # 1.27.0-0 / fixed 1.27.2`), and OSV guarantees no ordering between them.
+  #
+  # Folding one `state` over the concatenation is order-dependent and loses
+  # findings. Measured on the real GO-2026-6603 record with its two entries
+  # swapped: the 1.27 branch sets state=1, then the 1.26 branch's `fixed
+  # 1.26.9` satisfies `1.27.0 >= 1.26.9` and clears it back to 0, so a
+  # genuinely affected go1.27.0 reported "no advisory applies". Six live
+  # stdlib advisories have that shape. Within ONE range the fold is correct
+  # and is kept -- events there are ordered introduced -> fixed.
+  # A COMPARISON THAT COULD NOT BE MADE IS NOT A "NO". `ge` returns 2 when
+  # either side is an unreadable version, and `if ge ...` would fold that into
+  # the false branch: an unparsable `introduced` would read as "the pin is
+  # below the affected range", i.e. clean. That is the fail-open shape this
+  # whole script exists to refuse, so the status is read explicitly and
+  # anything other than 0/1 reaches the explicit-unknown path.
   state=0
-  while IFS=$'\037' read -r kind ver; do
-    [ -n "$kind" ] || continue
-    case "$kind" in
-      introduced)
-        if [ "$ver" = "0" ]; then state=1
-        elif ge "$pinned" "$ver"; then state=1
-        fi ;;
-      fixed)
-        if ge "$pinned" "$ver"; then state=0; fi ;;
-    esac
+  ranges_seen=0
+  while IFS= read -r range_events; do
+    [ -n "$range_events" ] || continue
+    ranges_seen=$((ranges_seen+1))
+    r_state=0
+    # `read -r -a` splits on IFS without glob expansion, so a version string
+    # can never be expanded against the filesystem.
+    events=()
+    IFS=$'\036' read -r -a events <<<"$range_events"
+    for ev in "${events[@]}"; do
+      kind="${ev%%$'\037'*}"
+      ver="${ev#*$'\037'}"
+      [ -n "$kind" ] || continue
+      case "$kind" in
+        introduced)
+          if [ "$ver" = "0" ]; then
+            r_state=1
+          else
+            ge "$pinned" "$ver"; gc=$?
+            case "$gc" in
+              0) r_state=1 ;;
+              1) ;;
+              *) note "advisory $c_id gives an \`introduced\` version (\`$ver\`) that is not a readable Go version, so whether it covers \`$pinned\` is unknown. A comparison that could not be made is not a 'no'."
+                 fail_unknown ;;
+            esac
+          fi ;;
+        fixed)
+          ge "$pinned" "$ver"; gc=$?
+          case "$gc" in
+            0) r_state=0 ;;
+            1) ;;
+            *) note "advisory $c_id gives a \`fixed\` version (\`$ver\`) that is not a readable Go version, so whether \`$pinned\` is past the fix is unknown. A comparison that could not be made is not a 'no'."
+               fail_unknown ;;
+          esac ;;
+      esac
+    done
+    [ "$r_state" = 1 ] && state=1
   done < <(jq -r --arg m "$c_path" '
-    [ .affected[]? | select(.package.name == $m) | .ranges[]? | .events[]? ]
-    | .[]
-    | to_entries[]
-    | [ .key, (.value | tostring) ] | join("\u001f")
+    .affected[]? | select(.package.name == $m) | .ranges[]?
+    | [ .events[]? | to_entries[] | [ .key, (.value | tostring) ] | join("\u001f") ]
+    | join("\u001e")
   ' "$f")
+
+  # ZERO RANGES IS A DISAGREEMENT BETWEEN THE TWO SOURCES, NOT A CLEAN ANSWER.
+  # This candidate is here because `index/modules.json` listed it UNDER
+  # $c_path, so its own record is expected to carry at least one range for
+  # that module. If it carries none, the index and the advisory contradict
+  # each other and nothing here can say whether the pin is covered -- yet the
+  # walk above would leave state=0, which renders identically to "ruled out by
+  # range". Distinguishing the two is the entire discipline of this script.
+  if [ "$ranges_seen" = 0 ]; then
+    note "advisory $c_id was shortlisted for \`$c_path\` by the index but its own record carries no version range for that module, so whether it covers \`$pinned\` is unknown. The index and the advisory disagree; that is not a clean answer."
+    fail_unknown
+  fi
 
   summary="$(jq -r '.summary // .details // ""' "$f" | head -1)"
   aliases="$(jq -r '(.aliases // []) | join(" ")' "$f")"

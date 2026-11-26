@@ -322,6 +322,107 @@ n=$((n+1)); OUT="$TMP/out.$n"
 "$SCRIPT" --not-a-flag > "$OUT" 2>&1; RC=$?
 want_rc 3 "21 an unknown argument is rejected with the could-not-run status"
 
+# ---------------------------------------------------------------------------
+# 22. AFFECTEDNESS IS A UNION OVER RANGES, NOT A FOLD ACROSS THEM, so the
+#     verdict cannot depend on the order OSV happens to list `affected` in.
+#
+#     An advisory patched on two release branches carries one `affected`
+#     entry per branch, and OSV guarantees no ordering between them. Folding
+#     a single state variable over the concatenation loses findings: for the
+#     real GO-2026-6603 (fixed 1.26.9 AND 1.27.2) against a pinned go1.27.0,
+#     the 1.27 entry sets affected, and then the 1.26 entry's `fixed 1.26.9`
+#     satisfies `1.27.0 >= 1.26.9` and clears it again. A genuinely affected
+#     toolchain then reported "no advisory applies" with `advisories=0`, so
+#     the weekly alert stayed silent -- the exact crying-wolf-in-reverse this
+#     file's header says case 4 guards the other direction of.
+#
+#     Both orderings of the SAME real record must reach exit 2. Six live
+#     stdlib advisories have this two-entry shape.
+# ---------------------------------------------------------------------------
+IDX22="$TMP/idx22.json"
+cat > "$IDX22" <<'JSON'
+[
+  { "path": "stdlib", "vulns": [ { "id": "GO-2026-6603", "modified": "2026-10-08T22:31:09Z", "fixed": "1.27.2" } ] },
+  { "path": "toolchain", "vulns": [] }
+]
+JSON
+mkdir -p "$TMP/adv22-fwd" "$TMP/adv22-rev"
+cp "$FIX/advisories/GO-2026-6603.json" "$TMP/adv22-fwd/GO-2026-6603.json"
+jq '.affected = [ .affected[1], .affected[0] ]'   "$FIX/advisories/GO-2026-6603.json" > "$TMP/adv22-rev/GO-2026-6603.json"
+
+for ord in fwd rev; do
+  n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+  "$SCRIPT" --toolchain go1.27.0 --out-dir "$TMP/o.$n" \
+    --releases-fixture "$FIX/go-releases.json" \
+    --index-fixture "$IDX22" --advisory-dir "$TMP/adv22-$ord" > "$OUT" 2>&1
+  RC=$?
+  want_rc 2 "22 a two-branch advisory covers the pin whichever order its entries are in ($ord)"
+  want_in "GO-2026-6603" "22a and names it ($ord)"
+done
+
+# And the backport direction still holds on the same record: 1.27.2 IS the
+# fix for the 1.27 branch, so a pin at or above it is clean rather than
+# reported, even though the other entry's range is open below 1.26.9.
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+"$SCRIPT" --toolchain go1.27.2 --out-dir "$TMP/o.$n" \
+  --releases-fixture "$FIX/go-releases.json" \
+  --index-fixture "$IDX22" --advisory-dir "$TMP/adv22-rev" > "$OUT" 2>&1
+RC=$?
+want_rc 1 "22b a pin at the branch fix is not reported as covered"
+want_in "no advisory" "22c and says no advisory applies"
+
+# ---------------------------------------------------------------------------
+# 23. A COMPARISON THAT COULD NOT BE MADE IS NOT A "NO".
+#
+#     `ge` returns 2 when either side is an unreadable version, and folding
+#     that into an `if` puts it in the FALSE branch -- so an unparsable
+#     `introduced` read as "the pin is below the affected range", i.e. clean,
+#     and an unparsable `fixed` could clear an established affectedness. Both
+#     reported `verdict=ok` on a candidate whose range was never evaluated,
+#     which is the fail-open shape every other path in this script refuses.
+#
+#     An advisory record is third-party input. It does not have to be
+#     well-formed for the answer to be honest -- it has to be ADMITTED as
+#     unreadable.
+# ---------------------------------------------------------------------------
+IDX23="$TMP/idx23.json"
+cat > "$IDX23" <<'JSON'
+[
+  { "path": "stdlib", "vulns": [ { "id": "GO-9999-0001", "modified": "2026-11-01T00:00:00Z", "fixed": "1.99.0" } ] },
+  { "path": "toolchain", "vulns": [] }
+]
+JSON
+
+mk23() { # mk23 <dir> <json>
+  mkdir -p "$TMP/$1"
+  printf '%s\n' "$2" > "$TMP/$1/GO-9999-0001.json"
+}
+
+mk23 adv23-badintro '{ "id": "GO-9999-0001", "summary": "unparsable introduced",
+ "affected": [ { "package": { "name": "stdlib", "ecosystem": "Go" },
+ "ranges": [ { "type": "SEMVER", "events": [ { "introduced": "v1.0.0-beta.pseudo+meta.garbage" }, { "fixed": "1.99.0" } ] } ] } ] }'
+
+mk23 adv23-badfixed '{ "id": "GO-9999-0001", "summary": "unparsable fixed",
+ "affected": [ { "package": { "name": "stdlib", "ecosystem": "Go" },
+ "ranges": [ { "type": "SEMVER", "events": [ { "introduced": "0" }, { "fixed": "not-a-version" } ] } ] } ] }'
+
+mk23 adv23-norange '{ "id": "GO-9999-0001", "summary": "shortlisted for stdlib but carries no stdlib range",
+ "affected": [ { "package": { "name": "golang.org/x/net", "ecosystem": "Go" },
+ "ranges": [ { "type": "SEMVER", "events": [ { "introduced": "0" }, { "fixed": "0.60.0" } ] } ] } ] }'
+
+for c in badintro badfixed norange; do
+  n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+  GITHUB_OUTPUT="$TMP/gh23.$c" "$SCRIPT" --toolchain go1.27.4 --out-dir "$TMP/o.$n" \
+    --releases-fixture "$FIX/go-releases.json" \
+    --index-fixture "$IDX23" --advisory-dir "$TMP/adv23-$c" > "$OUT" 2>&1
+  RC=$?
+  want_rc 3 "23 an unevaluable advisory range is could-not-run, not clean ($c)"
+  want_in "could not run" "23a and says so ($c)"
+  OUT="$TMP/gh23.$c"
+  want_in "verdict=unknown" "23b and writes verdict=unknown ($c)"
+  want_in "advisories=unknown" "23c and refuses to report an advisory count ($c)"
+done
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
