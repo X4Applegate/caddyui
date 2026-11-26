@@ -464,6 +464,80 @@ OUT="$TMP/gh24"
 want_in "verdict=unknown" "24d and writes verdict=unknown"
 want_in "advisories=unknown" "24e and refuses to report an advisory count"
 
+# ---------------------------------------------------------------------------
+# 25. A PARTIAL jq READ IS THE DANGEROUS KIND, because the emptiness guards
+#     do not see it. jq can emit several rows and THEN error on a later
+#     element, so a count-based guard is satisfied while the data is
+#     truncated. Both reads that feed a verdict are covered:
+#
+#     (a) the stable release list -- a short list understates how far behind
+#         the pin is, turning an `attention` into an `ok`;
+#     (b) a candidate's version ranges -- a dropped AFFECTED range leaves
+#         state=0, which renders identically to "ruled out by range", i.e. a
+#         clean verdict on an affected pin. The `ranges_seen = 0` guard was
+#         written for this risk but only catches total failure.
+#
+#     Both need malformed-mid-array data from go.dev/dl or vuln.go.dev, so
+#     this is hardening rather than a live fail-open -- but it is the same
+#     class as every other case in this file.
+# ---------------------------------------------------------------------------
+REL25="$TMP/releases-partial.json"
+cat > "$REL25" <<'JSON'
+[
+  { "version": "go1.27.4", "stable": true },
+  { "version": "go1.27.9", "stable": "yes-but-a-string" },
+  "a bare string breaks .stable on a non-object"
+]
+JSON
+
+# Confirm the fixture really is a PARTIAL failure: a row, then a non-zero jq.
+n=$((n+1))
+rows="$(jq -r '.[] | select(.stable == true) | .version' "$REL25" 2>/dev/null | wc -l)"
+jq -r '.[] | select(.stable == true) | .version' "$REL25" >/dev/null 2>&1; jqrc=$?
+if [ "$rows" -ge 1 ] && [ "$jqrc" -ne 0 ]; then
+  ok "25 the release fixture is a partial read: $rows row(s) emitted, jq exit $jqrc"
+else
+  bad "25 the release fixture is not a partial read ($rows rows, jq exit $jqrc), so 25a proves nothing"
+fi
+
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+GITHUB_OUTPUT="$TMP/gh25a" "$SCRIPT" --toolchain go1.27.4 --out-dir "$TMP/o.$n" \
+  --releases-fixture "$REL25" --index-fixture "$FIX/vuln-index.json" \
+  --advisory-dir "$FIX/advisories" > "$OUT" 2>&1
+RC=$?
+want_rc 3 "25a a partially read release list is could-not-run, not a shorter list"
+want_not_in "is current and no advisory applies" "25b and never reports the pin as current"
+
+# (b) a candidate whose ranges error PART WAY: the first range is emitted and
+# does not affect the pin, the second -- which does -- is dropped.
+IDX25="$TMP/idx25.json"
+cat > "$IDX25" <<'JSON'
+[
+  { "path": "stdlib", "vulns": [ { "id": "GO-9999-0003", "modified": "2026-11-01T00:00:00Z", "fixed": "1.99.0" } ] },
+  { "path": "toolchain", "vulns": [] }
+]
+JSON
+mkdir -p "$TMP/adv25"
+cat > "$TMP/adv25/GO-9999-0003.json" <<'JSON'
+{ "id": "GO-9999-0003", "summary": "a partial range read drops an affected range",
+  "affected": [
+    { "package": { "name": "stdlib", "ecosystem": "Go" },
+      "ranges": [ { "type": "SEMVER", "events": [ { "introduced": "0" }, { "fixed": "1.26.9" } ] } ] },
+    { "package": { "name": "stdlib", "ecosystem": "Go" },
+      "ranges": [ { "type": "SEMVER", "events": [ { "introduced": "1.27.0-0" }, "a bare string is not an object" ] } ] }
+  ] }
+JSON
+
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+GITHUB_OUTPUT="$TMP/gh25c" "$SCRIPT" --toolchain go1.27.0 --out-dir "$TMP/o.$n" \
+  --releases-fixture "$FIX/go-releases.json" --index-fixture "$IDX25" \
+  --advisory-dir "$TMP/adv25" > "$OUT" 2>&1
+RC=$?
+want_rc 3 "25c a partially read range list is could-not-run, not 'ruled out by range'"
+want_not_in "no advisory applies" "25d and never says no advisory applies"
+OUT="$TMP/gh25c"
+want_in "verdict=unknown" "25e and writes verdict=unknown"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

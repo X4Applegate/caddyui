@@ -250,7 +250,20 @@ if ! jq -e 'type == "array"' "$releases_json" >/dev/null 2>&1; then
   fail_unknown
 fi
 
-mapfile -t stable_versions < <(jq -r '.[] | select(.stable == true) | .version' "$releases_json" 2>/dev/null)
+# THROUGH A FILE, SO A PARTIAL jq FAILURE IS NOT A SHORTER LIST. Read from a
+# process substitution, jq can emit several rows and THEN error on a later
+# element: the count is non-zero, so the "no stable release" guard below is
+# satisfied, and the list is silently truncated. A short release list
+# understates how far behind the pin is, which turns an `attention` into an
+# `ok`. The emptiness guard is kept as well -- it catches total failure, and
+# this catches the partial kind.
+releases_rows="$OUT_DIR/stable-versions.txt"
+if ! jq -r '.[] | select(.stable == true) | .version' "$releases_json" \
+     > "$releases_rows" 2>"$OUT_DIR/releases-jq-stderr.txt"; then
+  note "the Go release list could not be read to the end, so the set of current releases is unknown. A partially read release list is shorter than the truth and would understate how far behind the pin is: $(head -c 300 "$OUT_DIR/releases-jq-stderr.txt" 2>/dev/null | tr '\n' ' ')"
+  fail_unknown
+fi
+mapfile -t stable_versions < "$releases_rows"
 if [ "${#stable_versions[@]}" -eq 0 ]; then
   note "the Go release list contains no stable release, which cannot be true; it was not trusted"
   fail_unknown
@@ -387,6 +400,23 @@ for cand in "${candidates[@]}"; do
   # below the affected range", i.e. clean. That is the fail-open shape this
   # whole script exists to refuse, so the status is read explicitly and
   # anything other than 0/1 reaches the explicit-unknown path.
+  # EXTRACTED THROUGH A FILE FOR THE SAME REASON AS THE SHORTLIST. A partial
+  # jq failure here is the dangerous kind: some ranges are emitted and a later
+  # one errors, so `ranges_seen` is non-zero (the guard below is satisfied)
+  # while a genuinely affected range was never seen -- and a dropped affected
+  # range leaves state=0, which renders identically to "ruled out by range".
+  # That is a clean verdict on an affected pin, the exact defect this script
+  # exists to refuse.
+  ranges_file="$OUT_DIR/ranges-$c_id.txt"
+  if ! jq -r --arg m "$c_path" '
+    .affected[]? | select(.package.name == $m) | .ranges[]?
+    | [ .events[]? | to_entries[] | [ .key, (.value | tostring) ] | join("\u001f") ]
+    | join("\u001e")
+  ' "$f" > "$ranges_file" 2>"$OUT_DIR/ranges-jq-stderr.txt"; then
+    note "advisory $c_id's version ranges could not be read to the end, so whether it covers \`$pinned\` is unknown. A partially read range list can drop an affected range, and a dropped affected range looks exactly like one ruled out: $(head -c 300 "$OUT_DIR/ranges-jq-stderr.txt" 2>/dev/null | tr '\n' ' ')"
+    fail_unknown
+  fi
+
   state=0
   ranges_seen=0
   while IFS= read -r range_events; do
@@ -425,11 +455,7 @@ for cand in "${candidates[@]}"; do
       esac
     done
     [ "$r_state" = 1 ] && state=1
-  done < <(jq -r --arg m "$c_path" '
-    .affected[]? | select(.package.name == $m) | .ranges[]?
-    | [ .events[]? | to_entries[] | [ .key, (.value | tostring) ] | join("\u001f") ]
-    | join("\u001e")
-  ' "$f")
+  done < "$ranges_file"
 
   # ZERO RANGES IS A DISAGREEMENT BETWEEN THE TWO SOURCES, NOT A CLEAN ANSWER.
   # This candidate is here because `index/modules.json` listed it UNDER
