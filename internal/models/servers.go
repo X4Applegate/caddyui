@@ -75,8 +75,15 @@ type CaddyServer struct {
 	// DefaultDeployTargets. Off by default: nothing is ever deleted on another
 	// server unless an administrator opts in.
 	PropagateDeletions bool
-	LastContactAt      sql.NullTime
-	CreatedAt          time.Time
+	// LogSourceID (issue #164) is an optional identifier chosen by the
+	// operator — typically a host or inventory name — that forwarded log lines
+	// may carry as caddyui_source_id instead of the numeric caddyui_server_id,
+	// so a node provisioned outside CaddyUI can be configured before its row
+	// exists. Lower-case, unique, never all digits; "" = not set (stored as
+	// NULL). See log_source.go for the format and resolution rules.
+	LogSourceID   string
+	LastContactAt sql.NullTime
+	CreatedAt     time.Time
 
 	// IsDefaultDeployTarget is view state, never stored: set on the entries of
 	// a resource form's "Also deploy to" list when that server is one of the
@@ -135,13 +142,13 @@ func (c CaddyServer) TagList() []string {
 	return out
 }
 
-const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), COALESCE(ingest_target,''), COALESCE(data_dir,''), COALESCE(layer4_caddyfile,''), COALESCE(default_deploy_targets,''), COALESCE(propagate_deletions,0), last_contact_at, created_at`
+const caddyServerCols = `id, name, admin_url, type, tags, status, COALESCE(version,''), COALESCE(admin_username,''), COALESCE(admin_password,''), COALESCE(public_ip,''), COALESCE(ingest_target,''), COALESCE(data_dir,''), COALESCE(layer4_caddyfile,''), COALESCE(default_deploy_targets,''), COALESCE(propagate_deletions,0), COALESCE(log_source_id,''), last_contact_at, created_at`
 
 func scanCaddyServer(s interface {
 	Scan(dest ...any) error
 }) (CaddyServer, error) {
 	var c CaddyServer
-	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.IngestTarget, &c.DataDir, &c.Layer4Caddyfile, &c.DefaultDeployTargets, &c.PropagateDeletions, &c.LastContactAt, &c.CreatedAt)
+	err := s.Scan(&c.ID, &c.Name, &c.AdminURL, &c.Type, &c.Tags, &c.Status, &c.Version, &c.AdminUsername, &c.AdminPassword, &c.PublicIP, &c.IngestTarget, &c.DataDir, &c.Layer4Caddyfile, &c.DefaultDeployTargets, &c.PropagateDeletions, &c.LogSourceID, &c.LastContactAt, &c.CreatedAt)
 	return c, err
 }
 
@@ -241,14 +248,21 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 	if c.Status == "" {
 		c.Status = CaddyServerStatusUnknown
 	}
+	if err := CheckLogSourceID(db, c, 0); err != nil {
+		return 0, err
+	}
 	res, err := db.Exec(
-		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip, ingest_target, data_dir, layer4_caddyfile, default_deploy_targets, propagate_deletions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO caddy_servers (name, admin_url, type, tags, status, admin_username, admin_password, public_ip, ingest_target, data_dir, layer4_caddyfile, default_deploy_targets, propagate_deletions, log_source_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), c.Status,
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
 		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), strings.TrimSpace(c.DataDir),
 		strings.TrimSpace(c.Layer4Caddyfile), strings.TrimSpace(c.DefaultDeployTargets), c.PropagateDeletions,
+		nullableLogSourceID(c.LogSourceID),
 	)
+	if isLogSourceIDConflict(err) {
+		return 0, ErrLogSourceIDTaken
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -257,14 +271,21 @@ func CreateCaddyServer(db *sql.DB, c *CaddyServer) (int64, error) {
 
 func UpdateCaddyServer(db *sql.DB, c *CaddyServer) error {
 	c.Type = normalizeServerType(c.Type)
+	if err := CheckLogSourceID(db, c, c.ID); err != nil {
+		return err
+	}
 	_, err := db.Exec(
-		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=?, ingest_target=?, data_dir=?, layer4_caddyfile=?, default_deploy_targets=?, propagate_deletions=? WHERE id=?`,
+		`UPDATE caddy_servers SET name=?, admin_url=?, type=?, tags=?, version=?, admin_username=?, admin_password=?, public_ip=?, ingest_target=?, data_dir=?, layer4_caddyfile=?, default_deploy_targets=?, propagate_deletions=?, log_source_id=? WHERE id=?`,
 		strings.TrimSpace(c.Name), strings.TrimRight(strings.TrimSpace(c.AdminURL), "/"),
 		c.Type, strings.TrimSpace(c.Tags), strings.TrimSpace(c.Version),
 		strings.TrimSpace(c.AdminUsername), c.AdminPassword,
 		strings.TrimSpace(c.PublicIP), strings.TrimSpace(c.IngestTarget), strings.TrimSpace(c.DataDir),
-		strings.TrimSpace(c.Layer4Caddyfile), strings.TrimSpace(c.DefaultDeployTargets), c.PropagateDeletions, c.ID,
+		strings.TrimSpace(c.Layer4Caddyfile), strings.TrimSpace(c.DefaultDeployTargets), c.PropagateDeletions,
+		nullableLogSourceID(c.LogSourceID), c.ID,
 	)
+	if isLogSourceIDConflict(err) {
+		return ErrLogSourceIDTaken
+	}
 	return err
 }
 

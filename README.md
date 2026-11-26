@@ -238,6 +238,22 @@ host and port (default `caddyui:9019` on the repository Docker network); a
 node on another host gets its own **Log ingest target** on its Caddy Fleet
 entry *(v2.37.0)*. Do not publish the ingest listener to the internet.
 
+A node whose log forwarding you configure yourself (an **External** server
+provisioned with Ansible, for example) can identify itself with a name you
+choose instead of CaddyUI's generated numeric ID: set **Log source ID** on its
+Caddy Fleet entry (e.g. `edge-home`) and add the same value as
+`caddyui_source_id` to its forwarded log lines, e.g. with Caddy's `append`
+encoder: `{"format":"append","fields":{"caddyui_source_id":"edge-home"},"wrap":{"format":"json"}}`.
+Access logs, certificate events and runtime logs are attributed to that
+server *(issue #164)*. `caddyui_server_id` keeps working unchanged. When a
+line carries both, a `caddyui_source_id` that matches a fleet server wins;
+one that matches nothing is ignored and `caddyui_server_id` (if any) applies.
+Identifiers are up to 64 characters of letters, digits, `.`, `-` and `_`,
+start with a letter or digit, are never all digits (so they cannot be confused
+with a numeric ID), are case-insensitive and unique across the fleet. Rows are
+stored against the server's numeric ID when they arrive, so renaming the
+identifier later keeps existing history attributed to the server.
+
 ### Operational
 
 - **SQLite or MariaDB** — embedded SQLite by default; optional MariaDB backend for concurrent enterprise workloads, replication, and managed backups

@@ -316,24 +316,7 @@ func (i *Ingest) handleConn(ctx context.Context, conn net.Conn) {
 			// that contract safe if it later queues work asynchronously.
 			i.RuntimeFn(append([]byte(nil), line...))
 		}
-		ev, ok := parseLine(line)
-		if !ok {
-			i.stats.Errors.Add(1)
-			continue
-		}
-		if i.ExcludeFn != nil && i.ExcludeFn(ev.ClientIP, ev.Host, ev.Path, ev.UserAgent) {
-			i.stats.Excluded.Add(1)
-			continue
-		}
-		if err := models.InsertAccessEvent(i.DB, ev); err != nil {
-			i.stats.Errors.Add(1)
-			// Log but don't tear the connection down — a transient DB
-			// busy (e.g. during backup) would otherwise break the stream.
-			log.Printf("analytics: insert error: %v", err)
-			continue
-		}
-		i.stats.Events.Add(1)
-		i.stats.LastEventAt.Store(ev.TS.Unix())
+		i.acceptAccessLine(line)
 	}
 	if err := sc.Err(); err != nil && !errors.Is(err, net.ErrClosed) {
 		// Scanner errors on connection reset are expected on Caddy restart;
@@ -343,6 +326,36 @@ func (i *Ingest) handleConn(ctx context.Context, conn net.Conn) {
 		}
 	}
 	log.Printf("analytics: ingest connection from %s closed", remote)
+}
+
+// acceptAccessLine parses, attributes, filters and persists one access-log
+// line. Lines that are not access events, are excluded, or fail to insert are
+// counted and dropped; nothing here ends the connection.
+func (i *Ingest) acceptAccessLine(line []byte) {
+	ev, sourceID, ok := parseAccessLine(line)
+	if !ok {
+		i.stats.Errors.Add(1)
+		return
+	}
+	if i.ExcludeFn != nil && i.ExcludeFn(ev.ClientIP, ev.Host, ev.Path, ev.UserAgent) {
+		i.stats.Excluded.Add(1)
+		return
+	}
+	// Issue #164: a caddyui_source_id naming a fleet server wins over the
+	// numeric caddyui_server_id; the resolved numeric ID is what gets stored,
+	// so a later rename of the source ID leaves this row attributed.
+	if id, name, viaSource := models.ResolveLogServer(i.DB, sourceID, ev.ServerID); viaSource {
+		ev.ServerID, ev.ServerName = id, name
+	}
+	if err := models.InsertAccessEvent(i.DB, ev); err != nil {
+		i.stats.Errors.Add(1)
+		// Log but don't tear the connection down — a transient DB
+		// busy (e.g. during backup) would otherwise break the stream.
+		log.Printf("analytics: insert error: %v", err)
+		return
+	}
+	i.stats.Events.Add(1)
+	i.stats.LastEventAt.Store(ev.TS.Unix())
 }
 
 // isClosedConnErr detects the benign "use of closed network connection" /
@@ -374,6 +387,10 @@ type caddyAccessLog struct {
 	Duration   json.Number     `json:"duration"`
 	ServerID   json.RawMessage `json:"caddyui_server_id"`
 	ServerName string          `json:"caddyui_server_name"`
+	// SourceID (issue #164) is the operator-chosen log source ID. Raw so a
+	// malformed value (a number, an object) cannot make the whole line fail
+	// to decode; see parseFlexibleString.
+	SourceID json.RawMessage `json:"caddyui_source_id"`
 }
 
 type caddyAccessLogRequest struct {
@@ -390,16 +407,24 @@ type caddyAccessLogRequest struct {
 // log entry or is missing required fields. "Required" is deliberately
 // generous — a row with only a timestamp and status is still useful.
 func parseLine(line []byte) (models.AccessEvent, bool) {
+	ev, _, ok := parseAccessLine(line)
+	return ev, ok
+}
+
+// parseAccessLine is parseLine plus the line's raw caddyui_source_id (issue
+// #164), which the caller resolves against the fleet. The value is untrusted
+// and returned as-is apart from a length cap; resolution validates it.
+func parseAccessLine(line []byte) (models.AccessEvent, string, bool) {
 	// Filter out non-access-log JSON quickly. Caddy writes other logger
 	// categories (http.log.error, admin, etc.) to the same writer when
 	// multiple loggers share an output — we just drop them.
 	if !strings.Contains(string(line), `"http.log.access`) && !strings.Contains(string(line), `"request":`) {
-		return models.AccessEvent{}, false
+		return models.AccessEvent{}, "", false
 	}
 
 	var raw caddyAccessLog
 	if err := json.Unmarshal(line, &raw); err != nil {
-		return models.AccessEvent{}, false
+		return models.AccessEvent{}, "", false
 	}
 
 	// TS: Caddy uses unix seconds with fractional precision.
@@ -474,7 +499,7 @@ func parseLine(line []byte) (models.AccessEvent, bool) {
 		UserAgent:  ua,
 		DurationMs: durMs,
 		BytesOut:   raw.Size,
-	}, true
+	}, parseFlexibleString(raw.SourceID, 2*models.LogSourceIDMaxLen), true
 }
 
 func parseFlexibleInt64(raw json.RawMessage) int64 {
@@ -490,4 +515,18 @@ func parseFlexibleInt64(raw json.RawMessage) int64 {
 		n, _ = strconv.ParseInt(strings.TrimSpace(text), 10, 64)
 	}
 	return n
+}
+
+// parseFlexibleString decodes a JSON string field, returning "" for anything
+// that is not a string or is longer than max bytes (an over-long value cannot
+// be a valid identifier, so there is no point carrying it further).
+func parseFlexibleString(raw json.RawMessage, max int) string {
+	if len(raw) == 0 || len(raw) > max+2 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil || len(text) > max {
+		return ""
+	}
+	return text
 }

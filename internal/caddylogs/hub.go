@@ -75,14 +75,26 @@ func (h *Hub) AcceptLine(line []byte) {
 	if logger == "" && message == "" {
 		return
 	}
+	// Issue #164: a caddyui_source_id naming a fleet server wins over the
+	// numeric caddyui_server_id. The resolved numeric ID is what the ring and
+	// the certificate projection keep, so renaming the source ID later does
+	// not detach them. An unknown source ID falls back to the numeric ID (0
+	// when absent), exactly as a line without one.
+	serverID := int64Field(raw["caddyui_server_id"])
+	serverName := strings.TrimSpace(stringField(raw["caddyui_server_name"]))
+	sourceID, _ := raw["caddyui_source_id"].(string)
+	resolvedID, resolvedName, viaSource := models.ResolveLogServer(h.DB, sourceID, serverID)
+	if viaSource {
+		serverID, serverName = resolvedID, resolvedName
+	}
 	entry := Entry{
 		TS:         logTime(raw["ts"]),
-		ServerID:   int64Field(raw["caddyui_server_id"]),
-		ServerName: strings.TrimSpace(stringField(raw["caddyui_server_name"])),
+		ServerID:   serverID,
+		ServerName: serverName,
 		Level:      strings.ToUpper(strings.TrimSpace(stringField(raw["level"]))),
 		Logger:     logger,
 		Message:    message,
-		Fields:     remainingFields(raw),
+		Fields:     remainingFields(raw, viaSource),
 	}
 	if entry.TS.IsZero() {
 		entry.TS = time.Now().UTC()
@@ -205,12 +217,20 @@ func (h *Hub) Capture(serverID int64) (CaptureState, bool) {
 	return state, ok
 }
 
-func remainingFields(raw map[string]any) map[string]any {
+// remainingFields returns the line's fields minus the ones Entry already
+// carries. A caddyui_source_id that resolved to a server is folded into
+// ServerID like caddyui_server_id; one that did not stays visible so an
+// operator can spot a mistyped or unregistered identifier.
+func remainingFields(raw map[string]any, sourceResolved bool) map[string]any {
 	fields := make(map[string]any, len(raw))
 	for key, value := range raw {
 		switch key {
 		case "ts", "level", "logger", "msg", "caddyui_server_id", "caddyui_server_name", "caddyui_stream":
 			continue
+		case "caddyui_source_id":
+			if sourceResolved {
+				continue
+			}
 		}
 		fields[key] = value
 	}

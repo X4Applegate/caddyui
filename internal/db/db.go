@@ -2512,6 +2512,18 @@ func migrate(db *sql.DB) error {
 	// so neither behaviour depends on the column this drains.
 	migrateStripResponseHeaders(db)
 
+	// Issue #164: optional operator-chosen log source ID per fleet server,
+	// carried by forwarded log lines as caddyui_source_id. Nullable with no
+	// default so every existing row reads as "not set" (NULL) and the unique
+	// index below admits any number of servers without one — on both SQLite
+	// and MariaDB, which each allow repeated NULLs in a UNIQUE index. VARCHAR
+	// rather than TEXT because MariaDB cannot index TEXT without a prefix
+	// length; 64 matches models.LogSourceIDMaxLen.
+	if !columnExists2(db, "caddy_servers", "log_source_id") {
+		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN log_source_id VARCHAR(64)`)
+	}
+	migrationStep(db, `CREATE UNIQUE INDEX IF NOT EXISTS idx_caddy_servers_log_source_id ON caddy_servers(log_source_id)`)
+
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.
 	if migrationFailures > 0 {
