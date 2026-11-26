@@ -910,6 +910,29 @@ func (s *Server) apiV1GetRawRoute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rawRouteToAPIMap(rr))
 }
 
+// GET /api/v1/raw-routes/{id}/held-json — administrators only (issue #184
+// round 13). The routes the upgrade migration took off a non-admin's
+// Advanced route it held: they may hold whatever an `import` read up to
+// v2.68.16, so they are never shown to the owner. An administrator can
+// review them and restore them with PUT /api/v1/raw-routes/{id}.
+func (s *Server) apiV1HeldRawRouteJSON(w http.ResponseWriter, r *http.Request) {
+	if !isAdminUser(s.currentUser(r)) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	held, err := models.GetRawRouteHeldJSON(s.DB, id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "held_json": held})
+}
+
 // POST /api/v1/raw-routes
 func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)
@@ -931,8 +954,8 @@ func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if inp.JSONData == "" {
-		writeJSONError(w, http.StatusBadRequest, "json_data is required")
+	if inp.JSONData == "" && strings.TrimSpace(inp.CaddyfileSrc) == "" {
+		writeJSONError(w, http.StatusBadRequest, "json_data or caddyfile_src is required")
 		return
 	}
 	rr := &models.RawRoute{
@@ -940,6 +963,13 @@ func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 		Enabled: inp.Enabled, CertificateID: inp.CertificateID,
 		ForceSSL: inp.ForceSSL, BlockCommonExploits: inp.BlockCommonExploits,
 		Listen: models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(inp.Listen)), // v2.36.1 (issue #64)
+	}
+	// Issue #184 review: as in the form, caddyfile_src is authoritative —
+	// json_data is derived from it through Caddy, so the stored pair always
+	// agree and the tenant checks below see the routes the text produces.
+	if msg := s.deriveRawRouteJSON(r, rr); msg != "" {
+		writeJSONError(w, http.StatusBadRequest, msg)
+		return
 	}
 	serverID := s.currentServerID(r)
 	ownerID := int64(0)
@@ -994,14 +1024,23 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	storedJSON := existing.JSONData
 	if inp.Label != "" {
 		existing.Label = inp.Label
 	}
-	if inp.JSONData != "" {
-		existing.JSONData = inp.JSONData
-	}
-	if inp.CaddyfileSrc != "" {
+	// Issue #184 review: new Caddyfile text re-derives json_data (a text-only
+	// change can no longer leave the two disagreeing); new json_data without
+	// text drops the old text, which no longer describes the route.
+	switch {
+	case inp.CaddyfileSrc != "":
 		existing.CaddyfileSrc = inp.CaddyfileSrc
+		if msg := s.deriveRawRouteJSON(r, existing); msg != "" {
+			writeJSONError(w, http.StatusBadRequest, msg)
+			return
+		}
+	case inp.JSONData != "":
+		existing.JSONData = inp.JSONData
+		existing.CaddyfileSrc = ""
 	}
 	existing.Enabled = inp.Enabled
 	existing.ForceSSL = inp.ForceSSL
@@ -1016,6 +1055,11 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 	if err := models.UpdateRawRoute(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Issue #184 round 12: text adapted by this save, or JSON other than
+	// what was stored, leaves the upgrade migration nothing to do.
+	if inp.CaddyfileSrc != "" || (inp.JSONData != "" && !jsonEqual(inp.JSONData, storedJSON)) {
+		s.rawRouteMigrationSaved(id)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "rawroute_update", fmt.Sprintf("rr:%d", id), existing.Label, true)
 	s.trySyncCaddy(s.currentServerID(r), false)
@@ -1317,4 +1361,33 @@ func (s *Server) apiV1DeleteCertificate(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_delete", fmt.Sprintf("cert:%d", id), "", true)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+// deriveRawRouteJSON replaces rr.JSONData and rr.Listen with what Caddy
+// adapts rr.CaddyfileSrc to. A route without Caddyfile text is left alone.
+// The derived listen set is authoritative: text on the standard ports
+// clears a custom listen set, so the route never serves on a port its text
+// does not name. Returns an error message for the client, or "".
+func (s *Server) deriveRawRouteJSON(r *http.Request, rr *models.RawRoute) string {
+	src := strings.TrimSpace(rr.CaddyfileSrc)
+	if src == "" {
+		return ""
+	}
+	tenant := !isAdminUser(s.currentUser(r))
+	if why := s.tenantRawRouteTextProblem(src); why != "" && tenant {
+		return why
+	}
+	jsonData, listen, result, err := s.adaptRawRouteCaddyfileResult(s.caddyForRequest(r), src)
+	if err != nil {
+		return "Caddyfile rejected by Caddy: " + err.Error()
+	}
+	if tenant {
+		if why := s.tenantRawRouteAdaptedProblem(jsonData, listen, result); why != "" {
+			return why
+		}
+	}
+	rr.CaddyfileSrc = src
+	rr.JSONData = jsonData
+	rr.Listen = listen
+	return ""
 }

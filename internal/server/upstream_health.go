@@ -983,6 +983,11 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	pad("forward_host", "(your-upstream)")
 	pad("domains", "example.com")
 
+	if errMsg := s.advancedConfigSizeRefusal(r); errMsg != "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
 	p, err := parseProxyHostForm(r)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -1002,10 +1007,20 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	advancedError := ""
 	var previewOverrides map[string]any
 	if strings.TrimSpace(p.AdvancedConfig) != "" {
-		if validationError := validateProxyAdvancedDirectives(p.AdvancedConfig); validationError != "" {
+		tenantWhy := ""
+		if s.DB != nil && !isAdminUser(s.currentUser(r)) {
+			// Issue #184 round 10: the same tenant text rules as the save
+			// (validateProxyAdvanced), before Caddy sees the text.
+			if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
+				tenantWhy = "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+			}
+		}
+		if tenantWhy != "" {
+			advancedError = tenantWhy
+		} else if validationError := validateProxyAdvancedDirectives(p.AdvancedConfig); validationError != "" {
 			advancedError = validationError
 		} else {
-			caddyClient := s.Caddy
+			caddyClient := s.caddyClient()
 			if s.DB != nil {
 				caddyClient = s.caddyForRequest(r)
 			}
@@ -1037,7 +1052,14 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	route := caddy.BuildProxyRoute(previewProxy, previewHandlers)
 	caddy.MergeReverseProxyOverrides(route, previewOverrides)
 	route = redactProxyRoutePreview(route).(map[string]any)
-	caddyfile := caddy.RenderProxyHostCaddyfileWithCertificate(*p, s.certificateForCaddyfile(p.CertificateID))
+	// The host being previewed will belong to the requester when they are
+	// not an admin (or to its current owner when editing).
+	previewAdmin := isAdminUser(s.currentUser(r))
+	exportOpts := s.caddyfileExportOptions(s.currentServerID(r), previewAdmin)
+	if !previewAdmin {
+		exportOpts.TenantOwned = func(sql.NullInt64) bool { return true }
+	}
+	caddyfile := caddy.RenderProxyHostCaddyfileWithOptions(*p, s.certificateForCaddyfile(p.CertificateID), exportOpts)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	response := map[string]any{"route": route, "caddyfile": caddyfile}
@@ -1488,12 +1510,26 @@ func (s *Server) apiValidateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	cfSrc := strings.TrimSpace(r.FormValue("caddyfile_src"))
 	jsonData := strings.TrimSpace(r.FormValue("json_data"))
+	if cfSrc != "" && !isAdminUser(s.currentUser(r)) {
+		// Issue #184 round 8: the save's checks, before Caddy sees the text.
+		if why := s.tenantRawRouteTextProblem(cfSrc); why != "" {
+			respond(false, why)
+			return
+		}
+	}
 	if cfSrc != "" {
 		// Caddy's /adapt parses Caddyfile syntax and runs the adapter
 		// pipeline — that catches the bulk of bugs (unknown directives,
 		// missing args, malformed blocks). It does NOT apply the config
 		// to Caddy's running state.
-		_, _, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
+		adaptedJSON, adaptedListen, result, err := s.adaptRawRouteCaddyfileResult(s.caddyForRequest(r), cfSrc)
+		if err == nil && !isAdminUser(s.currentUser(r)) {
+			// Issue #184 review: the same allowlist the save applies.
+			if why := s.tenantRawRouteAdaptedProblem(adaptedJSON, adaptedListen, result); why != "" {
+				respond(false, why)
+				return
+			}
+		}
 		if err != nil {
 			// Caddy adapts a client_auth block happily; it is CaddyUI that
 			// turns it down, so don't put the words in Caddy's mouth.

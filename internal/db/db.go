@@ -2313,6 +2313,23 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "raw_routes", "listen") {
 		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN listen TEXT NOT NULL DEFAULT ''`)
 	}
+	// Issue #184 round 13: rules_184 marks an Advanced route written by this
+	// version (created, saved again under today's rules, or handled by the
+	// upgrade migration), so the migration never takes such a row again;
+	// every row stored before the upgrade reads 0. held_json keeps, for an
+	// administrator only, the routes the upgrade migration took off a
+	// non-admin's row it held (never shown to the owner, the API or the
+	// export).
+	if !columnExists2(db, "raw_routes", "rules_184") {
+		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN rules_184 INTEGER NOT NULL DEFAULT 0`)
+	}
+	if !columnExists2(db, "raw_routes", "held_json") {
+		typ := "TEXT"
+		if BackendOf(db) == BackendMariaDB {
+			typ = "LONGTEXT"
+		}
+		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN held_json `+typ+` NOT NULL DEFAULT ''`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial

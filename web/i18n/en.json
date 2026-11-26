@@ -448,5 +448,7 @@
   "servers.log_source_id.rules": "Up to {max} characters: letters, digits, dots, hyphens and underscores, starting with a letter or digit and not made of digits alone. Not case-sensitive; saved in lower case and unique across the fleet. Changing it later keeps the logs already received attributed to this server — lines still sending the old value simply stop matching.",
   "servers.log_source_id.error_invalid": "Log source ID must be at most {max} characters of letters, digits, dots, hyphens or underscores, start with a letter or digit, and not be digits only.",
   "servers.log_source_id.error_taken": "Log source ID \"{id}\" is already used by another server. Choose a different one.",
-  "servers.log_source_id.list": "log source"
+  "servers.log_source_id.list": "log source",
+  "proxy_host.error.path_matcher_control": "The path matcher must not contain line breaks or other control characters.",
+  "proxy_host.error.path_matcher_regexp": "The path matcher is not a valid regular expression: {error}"
 }
