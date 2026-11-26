@@ -3,11 +3,15 @@
 package caddy
 
 import (
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/X4Applegate/caddyui/internal/models"
 )
 
 // Caddyfile export safety (issue #184 review). The exporter concatenates
@@ -21,163 +25,119 @@ import (
 // errCaddyfileUnsafe is returned by the structural checks below.
 var errCaddyfileUnsafe = errors.New("caddyfile text is not self-contained")
 
-// cfToken is one Caddyfile token as Caddy's lexer would produce it.
-type cfToken struct {
-	text   string
-	quoted bool
-	line   int
+// caddyfileEnvRe is the only {$…} form allowed in verbatim text: a plain
+// name closed in the same token. Caddy's replaceEnvVars (parse.go) runs over
+// the raw file before lexing and pairs each `{$` with the NEXT `}` anywhere
+// after it, so an unclosed `{$`, or one whose `}` lies past whitespace,
+// swallows whatever text follows — the neighbouring blocks included. A
+// closed `{$NAME}` only splices in the value of an environment variable of
+// the host that loads the file, and the live route was adapted by Caddy
+// with the same substitution. `{$NAME:default}` is refused: the default
+// runs to the next `}` too.
+var caddyfileEnvRe = regexp.MustCompile(`\{\$[A-Za-z_][A-Za-z0-9_]*\}`)
+
+// caddyfileEnvSafe reports whether every `{$` in src is a closed {$NAME}.
+func caddyfileEnvSafe(src string) bool {
+	return !strings.Contains(caddyfileEnvRe.ReplaceAllString(src, ""), "{$")
 }
 
-// lexCaddyfile tokenizes src the way Caddy v2.11's caddyfile lexer does
-// (caddyconfig/caddyfile/lexer.go, Apache-2.0), with two deliberate
-// differences that only ever refuse input: heredocs are an error, and so
-// is input that ends inside a quote or after a line-continuation backslash
-// (Caddy would let those run into whatever text follows). A byte-order mark
-// is refused too: Caddy drops one only at the very start of the file, and
-// these snippets never are.
-func lexCaddyfile(src string) ([]cfToken, error) {
-	if !utf8.ValidString(src) || strings.ContainsRune(src, '\uFEFF') {
+// cfSite is one site block found by checkCaddyfileSites.
+type cfSite struct {
+	addrs []string
+}
+
+// checkCaddyfileSites parses src the way Caddy's parser (caddyfile/parse.go)
+// splits a file into blocks and returns the sites when src is safe to
+// concatenate with other such text:
+//   - every `{$` is a closed {$NAME} (see caddyfileEnvRe);
+//   - every top-level block is a site: addresses — which end at the end of
+//     their line unless it ends with a comma — then `{ … }`. A site without
+//     braces would run to the end of the file, and a block without
+//     addresses, `(snippet)` or `&(named-route)` is not a site;
+//   - braces balance, `{` ends its line and a closing `}` starts its line,
+//     as Caddy requires;
+//   - `import` as a directive (first token of a line) only names a snippet
+//     in imports; Caddy expands imports during parsing.
+//
+// Lexing is a port of Caddy's own lexer (caddyfile_lexer.go), and
+// TestCheckCaddyfileSitesAgreesWithCaddy checks the result against
+// `caddy adapt`.
+func checkCaddyfileSites(src string, imports map[string]bool) ([]cfSite, error) {
+	if !caddyfileEnvSafe(src) {
 		return nil, errCaddyfileUnsafe
-	}
-	runes := []rune(src)
-	pos, line, skipped := 0, 1, 0
-	var toks []cfToken
-	for {
-		var val []rune
-		var comment, quoted, btQuoted, escaped bool
-		tok := cfToken{line: line}
-		done := false
-		for !done {
-			if pos >= len(runes) {
-				if quoted || btQuoted || escaped {
-					return nil, errCaddyfileUnsafe
-				}
-				if len(val) > 0 {
-					tok.text = string(val)
-					toks = append(toks, tok)
-				}
-				return toks, nil
-			}
-			ch := runes[pos]
-			pos++
-			if !quoted && !btQuoted && len(val) > 1 && val[0] == '<' && val[1] == '<' {
-				return nil, errCaddyfileUnsafe // heredoc
-			}
-			if !escaped && !btQuoted && ch == '\\' {
-				escaped = true
-				continue
-			}
-			if quoted || btQuoted {
-				if quoted && escaped {
-					if ch != '"' {
-						val = append(val, '\\')
-					}
-					escaped = false
-				} else if (quoted && ch == '"') || (btQuoted && ch == '`') {
-					tok.text, tok.quoted = string(val), true
-					toks = append(toks, tok)
-					done = true
-					continue
-				}
-				if ch == '\n' {
-					line += 1 + skipped
-					skipped = 0
-				}
-				val = append(val, ch)
-				continue
-			}
-			if unicode.IsSpace(ch) {
-				if ch == '\r' {
-					continue
-				}
-				if ch == '\n' {
-					if escaped {
-						skipped++
-						escaped = false
-					} else {
-						line += 1 + skipped
-						skipped = 0
-					}
-					comment = false
-				}
-				if len(val) > 0 {
-					tok.text = string(val)
-					toks = append(toks, tok)
-					done = true
-				}
-				continue
-			}
-			if ch == '#' && len(val) == 0 {
-				comment = true
-			}
-			if comment {
-				continue
-			}
-			if len(val) == 0 {
-				tok = cfToken{line: line}
-				if ch == '"' {
-					quoted = true
-					continue
-				}
-				if ch == '`' {
-					btQuoted = true
-					continue
-				}
-			}
-			if escaped {
-				if ch == '<' {
-					return nil, errCaddyfileUnsafe // escaped heredoc marker
-				}
-				val = append(val, '\\')
-				escaped = false
-			}
-			val = append(val, ch)
-		}
-	}
-}
-
-// checkCaddyfileSites reports how many site blocks src holds when it is
-// safe to concatenate with other such text: no {$ anywhere (Caddy expands
-// it across the whole file before lexing), no import, braces balanced, and
-// every top-level block is a site — addresses followed by `{ … }` — rather
-// than a global options block, snippet or named route, with nothing left
-// outside a block.
-func checkCaddyfileSites(src string) (int, error) {
-	if strings.Contains(src, "{$") {
-		return 0, errCaddyfileUnsafe
 	}
 	toks, err := lexCaddyfile(src)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	depth, addrs, sites := 0, 0, 0
-	for _, t := range toks {
-		switch {
-		case t.text == "import":
-			return 0, errCaddyfileUnsafe
-		case t.text == "{" && !t.quoted:
-			if depth == 0 {
-				if addrs == 0 {
-					return 0, errCaddyfileUnsafe
+	open := func(i int) bool { return toks[i].text == "{" && !toks[i].quoted }
+	closing := func(i int) bool { return toks[i].text == "}" && !toks[i].quoted }
+	var sites []cfSite
+	for i := 0; i < len(toks); {
+		// addresses (parse.go addresses())
+		var site cfSite
+		expecting := false
+		for {
+			t := toks[i]
+			if open(i) {
+				if expecting {
+					return nil, errCaddyfileUnsafe
 				}
-				sites++
-				addrs = 0
+				break
 			}
-			depth++
-		case t.text == "}" && !t.quoted:
-			if depth == 0 {
-				return 0, errCaddyfileUnsafe
+			v := t.text
+			if t.text == "import" && cfIsNewLine(toks, i) || strings.HasPrefix(v, "@") || (!t.quoted && strings.HasSuffix(v, "{")) || closing(i) {
+				return nil, errCaddyfileUnsafe
 			}
-			depth--
-		case depth == 0:
-			if addrs == 0 && (strings.HasPrefix(t.text, "(") || strings.HasPrefix(t.text, "&(")) {
-				return 0, errCaddyfileUnsafe
+			if v != "" {
+				expecting = strings.HasSuffix(v, ",")
+				v = strings.TrimSuffix(v, ",")
+				if strings.Contains(v, ",") {
+					return nil, errCaddyfileUnsafe
+				}
+				if v != "" {
+					site.addrs = append(site.addrs, v)
+				}
 			}
-			addrs++
+			i++
+			if i >= len(toks) {
+				return nil, errCaddyfileUnsafe // addresses with no block
+			}
+			if !expecting && cfIsNewLine(toks, i) && !open(i) {
+				return nil, errCaddyfileUnsafe // a site without braces
+			}
 		}
-	}
-	if depth != 0 || addrs != 0 {
-		return 0, errCaddyfileUnsafe
+		if len(site.addrs) == 0 || strings.HasPrefix(site.addrs[0], "(") || strings.HasPrefix(site.addrs[0], "&(") {
+			return nil, errCaddyfileUnsafe
+		}
+		if i+1 < len(toks) && !cfIsNewLine(toks, i+1) {
+			return nil, errCaddyfileUnsafe // `{` must end its line
+		}
+		// block contents, up to the matching close brace
+		depth := 1
+		for i++; depth > 0; i++ {
+			if i >= len(toks) {
+				return nil, errCaddyfileUnsafe
+			}
+			newLine := cfIsNewLine(toks, i)
+			switch {
+			case open(i):
+				if newLine || (i+1 < len(toks) && !cfIsNewLine(toks, i+1)) {
+					return nil, errCaddyfileUnsafe
+				}
+				depth++
+			case closing(i):
+				if !newLine {
+					return nil, errCaddyfileUnsafe
+				}
+				depth--
+			case toks[i].text == "import" && newLine:
+				if i+1 >= len(toks) || cfIsNewLine(toks, i+1) || !imports[toks[i+1].text] {
+					return nil, errCaddyfileUnsafe
+				}
+			}
+		}
+		sites = append(sites, site)
 	}
 	return sites, nil
 }
@@ -203,43 +163,72 @@ var caddyfileComplexShorthands = regexp.MustCompile(`{(header|cookie|labels|path
 // verbatim from a Caddyfile token: {$ENV} expansion or a placeholder
 // shorthand. Regexp syntax such as \p{L}, {2,3} or \{host\} is untouched.
 func caddyfileRewritesValue(s string) bool {
-	if strings.Contains(s, "{$") || caddyfileComplexShorthands.MatchString(s) {
-		return true
+	return caddyfileRewriteIn(s) != ""
+}
+
+// caddyfileRewriteIn names what in s the Caddyfile adapter would rewrite —
+// "$" for {$ENV} expansion, else the placeholder shorthand without its
+// braces — or returns "".
+func caddyfileRewriteIn(s string) string {
+	if strings.Contains(s, "{$") {
+		return "$"
+	}
+	if m := caddyfileComplexShorthands.FindString(s); m != "" {
+		return strings.Trim(m, "{}")
 	}
 	for _, sh := range caddyfileSimpleShorthands {
 		if strings.Contains(s, sh) {
-			return true
+			return strings.Trim(sh, "{}")
 		}
 	}
-	return false
+	return ""
+}
+
+// caddyfileTokenProblem explains why s has no faithful Caddyfile token, in
+// words fit for the comment of a fail-closed site, or returns "".
+func caddyfileTokenProblem(s string) string {
+	switch {
+	case s == "":
+		return "is empty"
+	case !utf8.ValidString(s):
+		return "is not valid UTF-8"
+	}
+	switch rw := caddyfileRewriteIn(s); rw {
+	case "":
+	case "$":
+		return "contains an environment reference ($…), which Caddy would expand while loading the Caddyfile but the live route keeps as text"
+	default:
+		return "contains the placeholder shorthand " + rw + ", which a Caddyfile expands but the live route passes through literally — write the full placeholder (http.request.…) in CaddyUI to export it"
+	}
+	for _, r := range s {
+		switch {
+		case r == '`':
+			return "contains a backtick, which no Caddyfile token can hold unchanged"
+		case unicode.IsControl(r), r == '\u2028', r == '\u2029':
+			return "contains a line break or control character"
+		}
+	}
+	return ""
 }
 
 // caddyfileToken renders s as one Caddyfile token whose value Caddy reads
 // back unchanged. Plain text is left bare; anything else is wrapped in
 // backticks, which the lexer takes literally up to the next backtick. ok is
-// false — and the caller must fail closed — when no such token exists: a
-// backtick (backslash escaping is deliberately never attempted), control
-// characters, Unicode line separators, invalid UTF-8, or text the adapter
-// would rewrite (caddyfileRewritesValue).
+// false — and the caller must fail closed — when caddyfileTokenProblem
+// finds a reason; backslash escaping is deliberately never attempted.
 func caddyfileToken(s string) (string, bool) {
-	if s == "" || !utf8.ValidString(s) || caddyfileRewritesValue(s) {
+	if caddyfileTokenProblem(s) != "" {
 		return "", false
 	}
-	bare := true
 	for _, r := range s {
 		switch {
-		case r == '`', unicode.IsControl(r), r == ' ', r == ' ':
-			return "", false
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case strings.ContainsRune("/.-_*^$()[]|+?:~!%&=,;", r):
 		default:
-			bare = false
+			return "`" + s + "`", true
 		}
 	}
-	if bare {
-		return s, true
-	}
-	return "`" + s + "`", true
+	return s, true
 }
 
 // caddyfileBareSafe reports whether every value can be written as one
@@ -255,7 +244,7 @@ func caddyfileBareSafe(values ...string) bool {
 			return false
 		}
 		for _, r := range s {
-			if unicode.IsSpace(r) || unicode.IsControl(r) || r == ' ' || r == ' ' {
+			if unicode.IsSpace(r) || unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 				return false
 			}
 		}
@@ -290,7 +279,7 @@ var caddyfileWordRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 func caddyfileComment(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
-		case unicode.IsControl(r), r == ' ', r == ' ':
+		case unicode.IsControl(r), r == '\u2028', r == '\u2029':
 			return ' '
 		case r == '{':
 			return '('
@@ -319,10 +308,11 @@ var caddyfileSiteOnlyDirectives = map[string]bool{"tls": true, "bind": true, "lo
 // stay at site level (tls/bind/log) and the lines that can be moved inside
 // a `route { }` block without changing their order. ok is false when moving
 // them would change behaviour: inside `route` directives run as written,
-// while the JSON route ran them in Caddy's sorted order, so the handler
-// directives must already be in strictly increasing directive order (a
-// repeated directive would be sorted by matcher, which this does not model)
-// and must all be known handler directives.
+// while the JSON route ran them in Caddy's sorted order
+// (httpcaddyfile/directives.go sortRoutes). That order is the literal order
+// when the handler directives are known and in non-decreasing directive
+// order, and repeats of one directive carry no matcher — Caddy's stable
+// sort only reorders same-name directives by their matchers.
 func splitAdvancedForRoute(src string) (site, inRoute string, ok bool) {
 	toks, err := lexCaddyfile(src)
 	if err != nil {
@@ -330,16 +320,21 @@ func splitAdvancedForRoute(src string) (site, inRoute string, ok bool) {
 	}
 	lines := strings.Split(src, "\n")
 	type segment struct {
-		name             string
-		startLine, depth int
+		name       string
+		startLine  int
+		hasMatcher bool
 	}
 	var segs []segment
-	depth, lastLine := 0, -1
-	for _, t := range toks {
-		if depth == 0 && t.line != lastLine && !(t.text == "}" && !t.quoted) {
-			segs = append(segs, segment{name: t.text, startLine: t.line})
+	depth := 0
+	for i, t := range toks {
+		if depth == 0 && cfIsNewLine(toks, i) && !(t.text == "}" && !t.quoted) {
+			sg := segment{name: t.text, startLine: t.line}
+			if i+1 < len(toks) && !cfIsNewLine(toks, i+1) {
+				arg := toks[i+1].text
+				sg.hasMatcher = strings.HasPrefix(arg, "@") || strings.HasPrefix(arg, "/") || arg == "*"
+			}
+			segs = append(segs, sg)
 		}
-		lastLine = t.line
 		if !t.quoted && t.text == "{" {
 			depth++
 		} else if !t.quoted && t.text == "}" {
@@ -357,7 +352,7 @@ func splitAdvancedForRoute(src string) (site, inRoute string, ok bool) {
 		order[d] = i
 	}
 	var siteB, routeB strings.Builder
-	last := -1
+	last, lastHadMatcher := -1, false
 	for i, sg := range segs {
 		end := len(lines)
 		if i+1 < len(segs) {
@@ -369,12 +364,229 @@ func splitAdvancedForRoute(src string) (site, inRoute string, ok bool) {
 			routeB.WriteString(text) // matcher definition
 		case caddyfileSiteOnlyDirectives[sg.name]:
 			siteB.WriteString(text)
-		case !known || idx <= last:
+		case !known || idx < last || (idx == last && (sg.hasMatcher || lastHadMatcher)):
 			return "", "", false
 		default:
-			last = idx
+			last, lastHadMatcher = idx, sg.hasMatcher
 			routeB.WriteString(text)
 		}
 	}
 	return siteB.String(), routeB.String(), true
+}
+
+// ExportOptions carries what only the server knows to the Caddyfile
+// renderers. The zero value is the strictest: no snippet imports, nothing
+// treated as tenant-owned, no extra raw-route checks.
+type ExportOptions struct {
+	// Snippets are the `(name) { … }` blocks from the server's Caddyfile
+	// (CADDYFILE_PATH, issue #119). Those that pass checkCaddyfileSnippet
+	// may be imported by admin-owned content; the server-wide export
+	// prepends them so the file is complete.
+	Snippets []string
+	// TenantOwned reports whether a resource belongs to a non-admin. Such
+	// content never keeps an `import`, even of a known snippet.
+	TenantOwned func(owner sql.NullInt64) bool
+	// RawRouteVeto returns why a raw route's Caddyfile must not be
+	// exported (for example, it does not adapt to its stored routes), or "".
+	RawRouteVeto func(models.RawRoute) string
+}
+
+// snippetNameRe is the snippet name form CaddyUI accepts in `import`.
+var snippetNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// validSnippets returns the snippets that are one self-contained
+// `(name) { … }` block with no import and no unsafe {$, keyed by name.
+func (o ExportOptions) validSnippets() (map[string]string, []string) {
+	byName := map[string]string{}
+	var order []string
+	for _, snip := range o.Snippets {
+		name, ok := checkCaddyfileSnippet(snip)
+		if !ok || byName[name] != "" {
+			continue
+		}
+		byName[name] = strings.TrimSpace(snip)
+		order = append(order, name)
+	}
+	return byName, order
+}
+
+// importsFor is the snippet-name set content owned by owner may import.
+func (o ExportOptions) importsFor(owner sql.NullInt64) map[string]bool {
+	if o.TenantOwned != nil && o.TenantOwned(owner) {
+		return nil
+	}
+	byName, _ := o.validSnippets()
+	out := make(map[string]bool, len(byName))
+	for n := range byName {
+		out[n] = true
+	}
+	return out
+}
+
+// checkCaddyfileSnippet reports the name of a snippet that is exactly one
+// `(name) { … }` block obeying the same rules as checkCaddyfileSites, with
+// no import inside.
+func checkCaddyfileSnippet(src string) (string, bool) {
+	toks, err := lexCaddyfile(src)
+	if err != nil || len(toks) < 3 || !caddyfileEnvSafe(src) {
+		return "", false
+	}
+	head := toks[0].text
+	if toks[0].quoted || !strings.HasPrefix(head, "(") || !strings.HasSuffix(head, ")") || !snippetNameRe.MatchString(head[1:len(head)-1]) {
+		return "", false
+	}
+	site := "snippet.invalid " + src[strings.Index(src, head)+len(head):]
+	sites, err := checkCaddyfileSites(site, nil)
+	if err != nil || len(sites) != 1 || len(sites[0].addrs) != 1 {
+		return "", false
+	}
+	return head[1 : len(head)-1], true
+}
+
+// caddyfileImportProblem explains why the `import` directives in src cannot
+// be kept, or returns "".
+func caddyfileImportProblem(src string, allowed map[string]bool, tenant bool) string {
+	toks, err := lexCaddyfile(src)
+	if err != nil {
+		return ""
+	}
+	for i, t := range toks {
+		if t.text != "import" || !cfIsNewLine(toks, i) {
+			continue
+		}
+		name := ""
+		if i+1 < len(toks) && !cfIsNewLine(toks, i+1) {
+			name = toks[i+1].text
+		}
+		switch {
+		case allowed[name]:
+		case tenant:
+			return "it imports " + caddyfileComment(name) + "; imports are kept only for admin-owned hosts"
+		case snippetNameRe.MatchString(name):
+			return "it imports snippet " + name + ", which is not a self-contained snippet in the server Caddyfile (CADDYFILE_PATH)"
+		default:
+			return "it imports " + caddyfileComment(name) + ", which is not a snippet; file imports are never exported"
+		}
+	}
+	return ""
+}
+
+// rawRouteTextProblem ties a raw route's verbatim Caddyfile to its stored
+// JSON: every site address must name a host the stored routes match (or,
+// for an address without a host, the stored routes must match no host and
+// its port must be one of the route's own listeners), on a standard port or
+// one of the route's listeners. Otherwise the text could claim another
+// host's traffic or open a new listener while the live config does not.
+func rawRouteTextProblem(r models.RawRoute, sites []cfSite) string {
+	hosts, hostless, ok := rawRouteJSONHosts(r.JSONData)
+	if !ok {
+		return "its stored routes could not be read"
+	}
+	ports := map[string]bool{"": true, "80": true, "443": true}
+	listenPorts := map[string]bool{}
+	for _, a := range r.ListenAddrs() {
+		if i := strings.LastIndex(a, ":"); i >= 0 {
+			ports[a[i+1:]] = true
+			listenPorts[a[i+1:]] = true
+		}
+	}
+	for _, s := range sites {
+		for _, a := range s.addrs {
+			host, port, ok := caddyfileAddressHostPort(a)
+			switch {
+			case !ok:
+				return "site address " + caddyfileComment(a) + " could not be understood"
+			case !ports[port]:
+				return "site address " + caddyfileComment(a) + " uses a port the route does not listen on"
+			case host == "" && !(hostless && listenPorts[port]):
+				return "site address " + caddyfileComment(a) + " has no host, but the stored routes do not match every host on that listener"
+			case host != "" && !hosts[host]:
+				return "site address " + caddyfileComment(a) + " names a host the stored routes do not match"
+			}
+		}
+	}
+	return ""
+}
+
+// rawRouteJSONHosts returns the lower-cased hosts matched by the top-level
+// routes of a raw route's JSON, and whether every route matches any host.
+func rawRouteJSONHosts(jsonData string) (hosts map[string]bool, allHostless bool, ok bool) {
+	var decoded any
+	if err := json.Unmarshal([]byte(jsonData), &decoded); err != nil {
+		return nil, false, false
+	}
+	var routes []any
+	switch v := decoded.(type) {
+	case []any:
+		routes = v
+	case map[string]any:
+		routes = []any{v}
+	default:
+		return nil, false, false
+	}
+	hosts = map[string]bool{}
+	allHostless = len(routes) > 0
+	for _, rt := range routes {
+		m, _ := rt.(map[string]any)
+		sets, _ := m["match"].([]any)
+		routeHasHost := false
+		for _, set := range sets {
+			sm, _ := set.(map[string]any)
+			hs, _ := sm["host"].([]any)
+			for _, h := range hs {
+				if hs, ok := h.(string); ok {
+					hosts[strings.ToLower(hs)] = true
+					routeHasHost = true
+				}
+			}
+		}
+		if routeHasHost {
+			allHostless = false
+		}
+	}
+	return hosts, allHostless, true
+}
+
+// caddyfileAddressHostPort splits a site address into its lower-cased host
+// and port; ok is false for forms this check does not model.
+func caddyfileAddressHostPort(addr string) (host, port string, ok bool) {
+	a := strings.ToLower(addr)
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(a, scheme) {
+			a = a[len(scheme):]
+			if scheme == "http://" {
+				port = "80"
+			}
+			break
+		}
+	}
+	if strings.Contains(a, "://") {
+		return "", "", false
+	}
+	if i := strings.Index(a, "/"); i >= 0 {
+		a = a[:i]
+	}
+	if strings.HasPrefix(a, "[") {
+		end := strings.Index(a, "]")
+		if end < 0 {
+			return "", "", false
+		}
+		host, a = a[1:end], a[end+1:]
+		if a != "" {
+			if !strings.HasPrefix(a, ":") {
+				return "", "", false
+			}
+			port = a[1:]
+		}
+	} else if i := strings.LastIndex(a, ":"); i >= 0 {
+		host, port = a[:i], a[i+1:]
+	} else {
+		host = a
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return "", "", false
+		}
+	}
+	return host, port, true
 }

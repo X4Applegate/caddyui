@@ -1531,3 +1531,57 @@ func (s *Server) adaptProxyAdvancedWithClient(caddyCl *caddy.Client, p models.Pr
 	handle, _ := routes[0]["handle"].([]any)
 	return extractReverseProxyOverrides(handle)
 }
+
+// caddyfileExportOptions is the server context the Caddyfile export needs
+// (issue #184 review): the snippets from CADDYFILE_PATH that admin-owned
+// content may import, which owners are tenants, and — for a tenant's raw
+// route — a re-check of its stored Caddyfile through Caddy, because rows
+// written by older API versions may hold text that never matched their JSON.
+func (s *Server) caddyfileExportOptions(serverID int64) caddy.ExportOptions {
+	opts := caddy.ExportOptions{TenantOwned: s.isTenantOwner}
+	if s.CaddyfilePath != "" {
+		if b, err := os.ReadFile(s.CaddyfilePath); err == nil {
+			opts.Snippets = caddy.ExtractSnippets(string(b))
+		}
+	}
+	opts.RawRouteVeto = func(rr models.RawRoute) string {
+		if !s.isTenantOwner(rr.OwnerID) {
+			return ""
+		}
+		return s.rawRouteTextVeto(s.caddyForServer(serverID), rr)
+	}
+	return opts
+}
+
+// rawRouteTextVeto returns why a tenant's stored raw-route Caddyfile must
+// not be exported: it fails the tenant text rules, does not adapt, adapts
+// to routes the tenant checks refuse, or serves hosts its stored routes do
+// not. "" means the text may be written.
+func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute) string {
+	if why := tenantTextViolation(rr.CaddyfileSrc); why != "" {
+		return "its Caddyfile is not allowed for a non-admin owner"
+	}
+	if caddyCl == nil {
+		return "its Caddyfile could not be re-checked with Caddy"
+	}
+	jsonData, _, err := s.adaptRawRouteCaddyfile(caddyCl, rr.CaddyfileSrc)
+	if err != nil {
+		return "its Caddyfile could not be re-checked with Caddy"
+	}
+	derived := models.RawRoute{JSONData: jsonData}
+	for _, entry := range rawRouteEntries(derived) {
+		if s.tenantRouteViolation(entry) != "" {
+			return "its Caddyfile adapts to routes a non-admin may not have"
+		}
+	}
+	stored := map[string]bool{}
+	for _, h := range rawRouteHosts(rr) {
+		stored[strings.ToLower(h)] = true
+	}
+	for _, h := range rawRouteHosts(derived) {
+		if !stored[strings.ToLower(h)] {
+			return "its Caddyfile serves hosts its stored routes do not"
+		}
+	}
+	return ""
+}

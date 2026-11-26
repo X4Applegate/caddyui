@@ -3,6 +3,7 @@
 package caddy
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -433,9 +434,15 @@ func TestCaddyfileExportContainsUnsafeFieldValues(t *testing.T) {
 		{"extra upstream", func(p *models.ProxyHost) { p.ExtraUpstreams = `["192.0.2.11:80` + jsonEscape(evil) + `"]` }},
 		{"lb policy", func(p *models.ProxyHost) { p.LBPolicy = "first" + evil + "#"; p.ExtraUpstreams = `["192.0.2.11:80"]` }},
 		{"advanced config breakout", func(p *models.ProxyHost) { p.AdvancedConfig = "encode gzip" + evil + "x.example.test {" }},
-		{"advanced config env var", func(p *models.ProxyHost) { p.AdvancedConfig = "respond {$HOME} 200" }},
+		{"advanced config unclosed env var", func(p *models.ProxyHost) { p.AdvancedConfig = "header X-A {$HOME" }},
+		{"advanced config env var with default", func(p *models.ProxyHost) { p.AdvancedConfig = "header X-A {$HOME:x}" }},
+		{"advanced config file import", func(p *models.ProxyHost) { p.AdvancedConfig = "import /etc/caddy/*.caddy" }},
+		{"advanced config braceless site", func(p *models.ProxyHost) {
+			p.AdvancedConfig = "encode gzip\n}\nb.ad\nreverse_proxy 127.0.0.1:2019 {\n}\nx.te {"
+		}},
 		{"advanced config import", func(p *models.ProxyHost) { p.AdvancedConfig = "import /etc/caddy/Caddyfile" }},
-		{"advanced config heredoc", func(p *models.ProxyHost) { p.AdvancedConfig = "respond <<EOF\n\t}\n\tEOF 200" }},
+		{"advanced config unterminated heredoc", func(p *models.ProxyHost) { p.AdvancedConfig = "header X-A <<EOF\n\t}\n\tevil {" }},
+		{"advanced config heredoc with bad padding", func(p *models.ProxyHost) { p.AdvancedConfig = "header X-A <<EOF\nx\n\t}\n\tEOF" }},
 		{"advanced config open quote", func(p *models.ProxyHost) { p.AdvancedConfig = "respond \"x 200" }},
 	}
 	for _, tc := range failClosed {
@@ -520,45 +527,83 @@ func TestCaddyfileExportContainsUnsafeFieldValues(t *testing.T) {
 	}
 }
 
+// rawJSON is a stored raw-route JSON whose routes match the given hosts.
+func rawJSON(hosts ...string) string {
+	b, _ := json.Marshal(map[string]any{"match": []any{map[string]any{"host": hosts}}, "handle": []any{map[string]any{"handler": "static_response"}}})
+	return string(b)
+}
+
 // Issue #184 review: raw-route Caddyfiles are written verbatim, so each one
-// must be complete site blocks that cannot reach a neighbour. The review's
-// attack: a `{$` in the label comment swallows text up to the next `}` —
-// here inside the route's own quoted string — so the rest turns into a site
-// proxying the Caddy admin API.
+// must be complete site blocks that cannot reach a neighbour, whose
+// addresses the route's stored JSON actually serves. The review's attacks:
+// a `{$` in the label comment swallowing text up to the next `}`; text that
+// claims another owner's host, or opens a listener, while the stored JSON
+// (which the tenant checks saw) matches only the tenant's own host.
 func TestCaddyfileExportKeepsRawRoutesSelfContained(t *testing.T) {
-	attack := models.RawRoute{ID: 3, Label: "{$", Enabled: true,
+	attack := models.RawRoute{ID: 3, Label: "{$", Enabled: true, JSONData: rawJSON("t2.example.com"),
 		CaddyfileSrc: "t2.example.com {\n\trespond \"}\nevil.example.test {\n\treverse_proxy 127.0.0.1:2019\n}\nz.example.com {\n\trespond x\" 200\n}"}
 	out := RenderRawRouteCaddyfile(attack)
 	if strings.Contains(out, "{$") || !strings.Contains(out, "t2.example.com {") {
 		t.Fatalf("label must lose {$ and the (self-contained) source stays:\n%s", out)
 	}
-	omitted := map[string]string{
-		"unbalanced":     "a.example.test {\n\trespond 200\n}\n}\nevil.example.test {\n\treverse_proxy 127.0.0.1:2019\n",
-		"env var":        "a.example.test {\n\trespond \"{$HOME\" 200\n}",
-		"import":         "a.example.test {\n\timport /etc/caddy/Caddyfile\n}",
-		"global options": "{\n\tadmin 0.0.0.0:2019\n}\na.example.test {\n\trespond 200\n}",
-		"snippet":        "(evil) {\n\treverse_proxy 127.0.0.1:2019\n}",
-		"heredoc":        "a.example.test {\n\trespond <<EOF\n\t}\n\tEOF 200\n}",
-		"no braces":      "a.example.test\nrespond 200",
-		"open quote":     "a.example.test {\n\trespond \"x 200\n}",
+	omitted := map[string]models.RawRoute{
+		"unbalanced":         {CaddyfileSrc: "a.example.test {\n\trespond 200\n}\n}\nevil.example.test {\n\treverse_proxy 127.0.0.1:2019\n"},
+		"unclosed env var":   {CaddyfileSrc: "a.example.test {\n\trespond \"{$HOME\" 200\n}"},
+		"file import":        {CaddyfileSrc: "a.example.test {\n\timport /etc/caddy/Caddyfile\n}"},
+		"global options":     {CaddyfileSrc: "{\n\tadmin 0.0.0.0:2019\n}\na.example.test {\n\trespond 200\n}"},
+		"snippet":            {CaddyfileSrc: "(evil) {\n\treverse_proxy 127.0.0.1:2019\n}"},
+		"open heredoc":       {CaddyfileSrc: "a.example.test {\n\trespond <<EOF\n\t}\n}"},
+		"no braces":          {CaddyfileSrc: "a.example.test\nrespond 200"},
+		"braceless second":   {CaddyfileSrc: "a.example.test {\n\trespond 200\n}\nb.example\nreverse_proxy 127.0.0.1:2019"},
+		"open quote":         {CaddyfileSrc: "a.example.test {\n\trespond \"x 200\n}"},
+		"claims victim host": {CaddyfileSrc: "victim.example.test/admin* {\n\treverse_proxy 127.0.0.1:2019\n}"},
+		"claims extra host":  {CaddyfileSrc: "a.example.test, victim.example.test {\n\trespond 200\n}"},
+		"opens a listener":   {CaddyfileSrc: ":2019 {\n\treverse_proxy 127.0.0.1:2019\n}"},
+		"custom port":        {CaddyfileSrc: "a.example.test:2019 {\n\trespond 200\n}"},
+		"no stored JSON":     {CaddyfileSrc: "a.example.test {\n\trespond 200\n}", JSONData: "-"},
 	}
-	for name, src := range omitted {
-		out := RenderRawRouteCaddyfile(models.RawRoute{ID: 5, Label: name, CaddyfileSrc: src})
-		if strings.Contains(out, "respond") || strings.Contains(out, "evil") || !strings.Contains(out, "# (omitted: ") {
+	for name, rr := range omitted {
+		rr.ID, rr.Label = 5, name
+		if rr.JSONData == "" {
+			rr.JSONData = rawJSON("a.example.test")
+		}
+		out := RenderRawRouteCaddyfile(rr)
+		if strings.Contains(out, "respond") || strings.Contains(out, "evil") || strings.Contains(out, "2019 {") || !strings.Contains(out, "# (omitted: ") {
 			t.Errorf("%s: raw route must be omitted:\n%s", name, out)
 		}
 	}
-	two := models.RawRoute{ID: 6, Label: "two", Enabled: true, CaddyfileSrc: "a.example.test {\n\trespond \"}{\" 200\n}\nb.example.test {\n\trespond `x` 200\n}"}
-	if out := RenderRawRouteCaddyfile(two); !strings.Contains(out, "b.example.test {") {
-		t.Fatalf("well-formed multi-site source must stay:\n%s", out)
+	kept := map[string]models.RawRoute{
+		"two sites":          {CaddyfileSrc: "a.example.test {\n\trespond \"}{\" 200\n}\nb.example.test {\n\trespond `x` 200\n}", JSONData: "[" + rawJSON("a.example.test") + "," + rawJSON("b.example.test") + "]"},
+		"heredoc":            {CaddyfileSrc: "a.example.test {\n\trespond <<HTML\n\t\t<h1>}</h1>\n\t\tHTML 503\n}"},
+		"import as argument": {CaddyfileSrc: "a.example.test {\n\trespond /x \"import\" 200\n}"},
+		"closed env var":     {CaddyfileSrc: "a.example.test {\n\theader X-Env {$HOME}\n\trespond 200\n}"},
+		"scheme and path":    {CaddyfileSrc: "https://a.example.test/api/* {\n\trespond 200\n}"},
+		"own listener":       {CaddyfileSrc: "a.example.test:7070 {\n\trespond 200\n}", Listen: `[":7070"]`},
+		"hostless listener":  {CaddyfileSrc: ":7070 {\n\trespond 200\n}", JSONData: `{"handle":[{"handler":"static_response"}]}`, Listen: `[":7070"]`},
+		"brace on next line": {CaddyfileSrc: "a.example.test\n{\n\trespond 200\n}"},
+		"comma across lines": {CaddyfileSrc: "a.example.test,\nb.example.test {\n\trespond 200\n}", JSONData: rawJSON("a.example.test", "b.example.test")},
+		"case-insensitive":   {CaddyfileSrc: "A.Example.Test {\n\trespond 200\n}"},
+	}
+	var keptRoutes []models.RawRoute
+	for name, rr := range kept {
+		rr.ID, rr.Label, rr.Enabled = int64(10+len(keptRoutes)), name, true
+		if rr.JSONData == "" {
+			rr.JSONData = rawJSON("a.example.test")
+		}
+		if out := RenderRawRouteCaddyfile(rr); strings.Contains(out, "# (omitted: ") {
+			t.Errorf("%s: well-formed raw route must stay:\n%s", name, out)
+		}
+		keptRoutes = append(keptRoutes, rr)
 	}
 
+	twoSites := kept["two sites"]
+	twoSites.ID, twoSites.Enabled = 99, true
 	caddyBin := lookCaddy(t)
 	if caddyBin == "" {
 		return
 	}
 	file := filepath.Join(t.TempDir(), "Caddyfile")
-	if err := os.WriteFile(file, []byte(RenderServerCaddyfile("", nil, nil, []models.RawRoute{attack, two}, nil)), 0o644); err != nil {
+	if err := os.WriteFile(file, []byte(RenderServerCaddyfile("", nil, nil, []models.RawRoute{attack, twoSites}, nil)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	adapted, raw := caddyAdapt(t, caddyBin, file)
@@ -566,6 +611,12 @@ func TestCaddyfileExportKeepsRawRoutesSelfContained(t *testing.T) {
 	// that merely contains the other text.
 	if got := adaptedHosts(adapted); !reflect.DeepEqual(got, []string{"a.example.test", "b.example.test", "t2.example.com"}) || strings.Contains(string(raw), `"dial":"127.0.0.1:2019"`) {
 		t.Fatalf("adapted export serves %v; want only the raw routes as written:\n%s", got, raw)
+	}
+	// Each kept route adapts on its own between neighbours.
+	for _, rr := range keptRoutes {
+		f := filepath.Join(t.TempDir(), "kept")
+		_ = os.WriteFile(f, []byte(RenderServerCaddyfile("", nil, nil, []models.RawRoute{rr}, nil)), 0o644)
+		caddyAdapt(t, caddyBin, f)
 	}
 }
 
@@ -582,7 +633,9 @@ func TestCaddyfileStripPrefixKeepsAdvancedHandlerOrder(t *testing.T) {
 		{name: "maintenance", advanced: "respond \"down for maintenance\" 503"},
 		{name: "site options stay outside", advanced: "tls internal\nheader X-A 1\nrespond /down 503"},
 		{name: "out of order", advanced: "respond /x 503\nheader X-A 1", failClosed: true},
-		{name: "repeated directive", advanced: "respond /x 503\nrespond /y 503", failClosed: true},
+		{name: "repeated directive with matchers", advanced: "respond /x 503\nrespond /y 503", failClosed: true},
+		{name: "repeated header without matchers", advanced: "header X-A 1\nheader X-B 2\nheader -Server"},
+		{name: "repeated header, one with matcher", advanced: "header X-A 1\nheader /x X-B 2", failClosed: true},
 		{name: "unknown directive", advanced: "rate_limit 10r/s", failClosed: true},
 	}
 	caddyBin := lookCaddy(t)
@@ -698,10 +751,30 @@ func TestCheckCaddyfileSitesAgreesWithCaddy(t *testing.T) {
 		"\uFEFFa.test {\n\trespond 200\n}",
 		"a.test {\n\trespond \"\\\n}\nevil.test {\n\" 200\n}",
 		"a.test {\n\trespond `\\` 200\n}",
+		// round-3 review: addresses end at their line (parse.go addresses())
+		"a.test {\n\trespond 200\n}\nb.example\nreverse_proxy 127.0.0.1:2019 {\n}",
+		"b.example\nreverse_proxy 127.0.0.1:2019",
+		"a.test\n{\n\trespond 200\n}",
+		"a.test,\nb.test {\n\trespond 200\n}",
+		"a.test, {\n\trespond 200\n}",
+		"a.test b.test\nc.test {\n\trespond 200\n}",
+		// heredocs, with Caddy's own termination and padding rules
+		"a.test {\n\trespond <<EOF\n\t\t}\n\t\tevil.test {\n\t\tEOF 200\n}",
+		"a.test {\n\trespond <<EOF\n\t}\nEOF 200\n}",
+		"a.test {\n\trespond <<EOF\nx\n\t}\n\tEOF 200\n}",
+		"a.test {\n\trespond <<EOF\n\t}\n}\n",
+		"a.test {\n\trespond \\<<EOF 200\n}",
+		"a.test {\n\trespond <<A-1\n\tfoo A-1 bar\n\tA-1 200\n}",
+		// import only as a directive; well-formed {$NAME} only
+		"a.test {\n\trespond /x \"import\" 200\n}",
+		"a.test {\n\theader X import\n}",
+		"a.test {\n\theader X {$HOME}\n}",
+		"a.test {\n\theader X {$HOME\n}\nb.test {\n\trespond 200\n}",
+		"a.test {\n\theader X {$HOME:d}\n}",
 	}
 	accepted := 0
 	for i, src := range corpus {
-		if _, err := checkCaddyfileSites(src); err == nil {
+		if _, err := checkCaddyfileSites(src, nil); err == nil {
 			accepted++
 		} else {
 			corpus[i] = ""
@@ -744,5 +817,111 @@ func TestCheckCaddyfileSitesAgreesWithCaddy(t *testing.T) {
 		if !strings.Contains(string(raw2), `"status_code":201`) || !strings.Contains(string(raw2), `"status_code":202`) {
 			t.Errorf("accepted snippet %q swallowed a neighbour's handler:\n%s", src, raw2)
 		}
+	}
+}
+
+// Round-3 review: ordinary Advanced configs and raw routes must export, not
+// fail closed. The count of this corpus that rendered as a 503 site or an
+// omitted route was 9 of 24 on the round-2 code; it must now be 0.
+func TestRealisticCaddyfileCorpusExports(t *testing.T) {
+	snippets := []string{"(common_headers) {\n\theader X-Frame-Options DENY\n}"}
+	admin := ExportOptions{Snippets: snippets, TenantOwned: func(sql.NullInt64) bool { return false }}
+	advanced := []string{
+		"encode gzip zstd",
+		"header {\n\t-Server\n\tX-Robots-Tag \"noindex\"\n}",
+		"tls {\n\tdns cloudflare {$CF_API_TOKEN}\n}",
+		"request_body {\n\tmax_size 10MB\n}",
+		"reverse_proxy {\n\tflush_interval -1\n\ttransport http {\n\t\tread_timeout 300s\n\t}\n}",
+		"@blocked not remote_ip 10.0.0.0/8 192.168.0.0/16\nabort @blocked",
+		"header X-Frame-Options DENY\nheader X-Content-Type-Options nosniff",
+		"import common_headers",
+		"rewrite /old /new",
+		"basic_auth /admin/* {\n\tadmin $2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR7hx4IjWJPDhjvG\n}",
+		"header Content-Security-Policy \"default-src 'self'; img-src * data:\"",
+		"log {\n\toutput file /var/log/caddy/app.log\n}",
+		"uri strip_suffix .html",
+		"header X-Info \"import\"",
+		"handle_errors {\n\theader X-Status {err.status_code}\n}",
+		"header /api/* Cache-Control no-store",
+		"header X-Upstream {$UPSTREAM_NAME}",
+	}
+	strip := []string{
+		"header X-A 1\nheader X-B 2",
+		"@blocked not remote_ip 10.0.0.0/8\nabort @blocked",
+		"tls {\n\tdns cloudflare {$CF_API_TOKEN}\n}\nencode gzip",
+	}
+	raws := []models.RawRoute{
+		{CaddyfileSrc: "app.test {\n\treverse_proxy 10.0.0.5:8080\n}"},
+		{CaddyfileSrc: "app.test {\n\trespond <<HTML\n\t\t<h1>Maintenance</h1>\n\t\tHTML 503\n}"},
+		{CaddyfileSrc: "app.test {\n\trespond /x \"import\" 200\n}"},
+		{CaddyfileSrc: "app.test {\n\theader X-Env {$HOME}\n\treverse_proxy 10.0.0.5:8080\n}"},
+	}
+	failed := 0
+	for i, adv := range append(advanced, strip...) {
+		p := models.ProxyHost{ID: int64(i), Domains: "app.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.5", ForwardPort: 8080, Enabled: true, SSLEnabled: true, AdvancedConfig: adv}
+		if i >= len(advanced) {
+			p.PathMatcher, p.StripPathPrefix = "/api", true
+		}
+		if out := RenderProxyHostCaddyfileWithOptions(p, nil, admin); strings.Contains(out, "respond 503") || strings.Contains(out, "omitted") {
+			failed++
+			t.Errorf("Advanced config %q fails closed:\n%s", adv, out)
+		}
+	}
+	for i, rr := range raws {
+		rr.ID, rr.Enabled, rr.JSONData = int64(i), true, rawJSON("app.test")
+		if out := renderRawRoute(rr, admin); strings.Contains(out, "# (omitted") {
+			failed++
+			t.Errorf("raw route %q is omitted:\n%s", rr.CaddyfileSrc, out)
+		}
+	}
+	t.Logf("realistic corpus: %d of %d fail closed", failed, len(advanced)+len(strip)+len(raws))
+
+	// The server-wide export carries the snippet the import needs.
+	p := models.ProxyHost{ID: 1, Domains: "app.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.5", ForwardPort: 8080, Enabled: true, SSLEnabled: true, AdvancedConfig: "import common_headers"}
+	full := RenderServerCaddyfile("", []models.ProxyHost{p}, nil, nil, nil, admin)
+	if !strings.Contains(full, "(common_headers) {") || !strings.Contains(full, "\timport common_headers\n") {
+		t.Fatalf("export must carry the snippet and keep the import:\n%s", full)
+	}
+	// A tenant's import, an unknown snippet and a file import fail closed
+	// and say why.
+	tenant := admin
+	tenant.TenantOwned = func(sql.NullInt64) bool { return true }
+	for _, tc := range []struct {
+		opts       ExportOptions
+		adv, wants string
+	}{
+		{tenant, "import common_headers", "imports are kept only for admin-owned hosts"},
+		{admin, "import missing_snippet", "not a self-contained snippet in the server Caddyfile"},
+		{admin, "import /etc/caddy/*.caddy", "file imports are never exported"},
+		{ExportOptions{Snippets: []string{"(bad) {\n\timport /etc/passwd\n}"}}, "import bad", "not a self-contained snippet"},
+	} {
+		p.AdvancedConfig = tc.adv
+		if out := RenderProxyHostCaddyfileWithOptions(p, nil, tc.opts); !strings.Contains(out, "respond 503") || !strings.Contains(out, tc.wants) {
+			t.Errorf("%q: want a 503 site saying %q:\n%s", tc.adv, tc.wants, out)
+		}
+	}
+	// Header-value shorthand stays fail-closed, with the reason spelled out.
+	p.AdvancedConfig = ""
+	p.CustomReqHeaders = `{"X-Real-IP":"{remote_host}"}`
+	if out := RenderProxyHostCaddyfile(p); !strings.Contains(out, "custom request header X-Real-IP: its value contains the placeholder shorthand remote_host, which a Caddyfile expands but the live route passes through literally") {
+		t.Errorf("shorthand reason must be explicit:\n%s", out)
+	}
+
+	caddyBin := lookCaddy(t)
+	if caddyBin == "" {
+		return
+	}
+	dir := t.TempDir()
+	for i, adv := range append(advanced, strip...) {
+		if strings.Contains(adv, "dns cloudflare") {
+			continue // needs the cloudflare DNS module
+		}
+		p := models.ProxyHost{ID: int64(i), Domains: "app.example.test", ForwardScheme: "http", ForwardHost: "10.0.0.5", ForwardPort: 8080, Enabled: true, SSLEnabled: true, AdvancedConfig: adv}
+		if i >= len(advanced) {
+			p.PathMatcher, p.StripPathPrefix = "/api", true
+		}
+		f := filepath.Join(dir, fmt.Sprintf("adv%d", i))
+		_ = os.WriteFile(f, []byte(RenderServerCaddyfile("", []models.ProxyHost{p}, nil, nil, nil, admin)), 0o644)
+		caddyAdapt(t, caddyBin, f)
 	}
 }

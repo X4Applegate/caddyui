@@ -2469,6 +2469,13 @@ func (s *Server) cloneProxyHost(w http.ResponseWriter, r *http.Request) {
 	if cu != nil {
 		ownerID = cu.ID
 	}
+	// Issue #184 review: a host saved before the Path matcher check existed
+	// may hold a matcher the check refuses; show the copy in the new-host
+	// form with the translated error so it can be fixed, not a raw 500.
+	if msg := s.pathMatcherError(r, &clone); msg != "" {
+		s.renderProxyHostFormError(w, r, &clone, msg)
+		return
+	}
 	newID, err := models.CreateProxyHost(s.DB, src.ServerID, ownerID, &clone)
 	if err != nil {
 		http.Error(w, "clone failed: "+err.Error(), http.StatusInternalServerError)

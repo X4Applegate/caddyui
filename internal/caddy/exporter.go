@@ -29,7 +29,14 @@ import (
 // `serverName` is just metadata for the file header banner. Disabled hosts
 // are skipped — the export is "what's actually serving traffic", not "every
 // row in the DB". Pass an empty serverName to omit the banner.
-func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirects []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
+//
+// opts (at most one is used) supplies the server's snippets, which owners
+// count as tenants, and extra raw-route checks; see ExportOptions.
+func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirects []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate, opts ...ExportOptions) string {
+	var o ExportOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	certByID := make(map[int64]*models.Certificate, len(certs))
 	for i := range certs {
 		certByID[certs[i].ID] = &certs[i]
@@ -41,6 +48,13 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 	fmt.Fprintf(&b, "# Generated: %s\n", time.Now().UTC().Format(time.RFC3339))
 	b.WriteString("# Hosts/redirects/raw routes that are disabled in the UI are not included.\n")
 	b.WriteString("# This output is round-trip safe via /caddyfile-import for the directives it contains.\n\n")
+	if byName, order := o.validSnippets(); len(order) > 0 {
+		b.WriteString("# Snippets from the server Caddyfile, for the `import` lines below.\n")
+		for _, name := range order {
+			b.WriteString(byName[name])
+			b.WriteString("\n\n")
+		}
+	}
 
 	// Stable ordering across runs so two exports of the same DB diff cleanly.
 	sort.SliceStable(hosts, func(i, j int) bool {
@@ -55,7 +69,7 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 		if !ph.Enabled {
 			continue
 		}
-		b.WriteString(RenderProxyHostCaddyfileWithCertificate(ph, certByID[ph.CertificateID]))
+		b.WriteString(RenderProxyHostCaddyfileWithOptions(ph, certByID[ph.CertificateID], o))
 		b.WriteString("\n")
 	}
 	for _, rh := range redirects {
@@ -69,7 +83,7 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 		if !rr.Enabled {
 			continue
 		}
-		b.WriteString(RenderRawRouteCaddyfile(rr))
+		b.WriteString(renderRawRoute(rr, o))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -95,6 +109,13 @@ func RenderProxyHostCaddyfile(p models.ProxyHost) string {
 // a site that answers 503 — never as a block that proxies more than the
 // live route, and never as text that can reach a neighbouring block.
 func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Certificate) string {
+	return RenderProxyHostCaddyfileWithOptions(p, cert, ExportOptions{})
+}
+
+// RenderProxyHostCaddyfileWithOptions is RenderProxyHostCaddyfileWithCertificate
+// with the server's context: an admin-owned host's Advanced config may then
+// keep `import <snippet>` for a snippet in opts.Snippets.
+func RenderProxyHostCaddyfileWithOptions(p models.ProxyHost, cert *models.Certificate, opts ExportOptions) string {
 	domains := p.DomainList()
 	if len(domains) == 0 {
 		return ""
@@ -106,11 +127,16 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 	if why := proxyHostFieldsProblem(p, cert); why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
+	imports := opts.importsFor(p.OwnerID)
+	tenant := opts.TenantOwned != nil && opts.TenantOwned(p.OwnerID)
+	if why := caddyfileImportProblem(p.AdvancedConfig, imports, tenant); why != "" {
+		return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
+	}
 	out, why := renderProxyHostSite(p, cert, domains)
 	if why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
-	if n, err := checkCaddyfileSites(out); err != nil || n != 1 {
+	if sites, err := checkCaddyfileSites(out, imports); err != nil || len(sites) != 1 {
 		return caddyfileFailClosedSite(domains, "the generated block would not stay self-contained (check the Advanced config)")
 	}
 	return out
@@ -481,7 +507,7 @@ func RenderRedirectionCaddyfile(r models.RedirectionHost) string {
 	}
 	fmt.Fprintf(&b, "\tredir %s %d\n", dest, code)
 	b.WriteString("}\n")
-	if n, err := checkCaddyfileSites(b.String()); err != nil || n != 1 {
+	if sites, err := checkCaddyfileSites(b.String(), nil); err != nil || len(sites) != 1 {
 		return caddyfileFailClosedSite(domains, "the generated block would not stay self-contained")
 	}
 	return b.String()
@@ -493,7 +519,17 @@ func RenderRedirectionCaddyfile(r models.RedirectionHost) string {
 // the CaddyUI Advanced page, since translating arbitrary Caddy JSON back
 // to Caddyfile cleanly is a much bigger problem than this exporter wants
 // to solve.
+//
+// Issue #184 review: the source is written only when it is complete,
+// self-contained site blocks (checkCaddyfileSites) whose addresses the
+// route's stored JSON actually serves (rawRouteTextProblem), and the
+// server's veto (opts.RawRouteVeto) has no objection. Otherwise the route is
+// left out with a comment saying why.
 func RenderRawRouteCaddyfile(r models.RawRoute) string {
+	return renderRawRoute(r, ExportOptions{})
+}
+
+func renderRawRoute(r models.RawRoute, opts ExportOptions) string {
 	var b strings.Builder
 	label := r.Label
 	if label == "" {
@@ -501,12 +537,26 @@ func RenderRawRouteCaddyfile(r models.RawRoute) string {
 	}
 	fmt.Fprintf(&b, "# Raw route #%d — %s\n", r.ID, caddyfileComment(label))
 	src := strings.TrimSpace(r.CaddyfileSrc)
-	if n, err := checkCaddyfileSites(src); src != "" && (err != nil || n == 0) {
-		// Issue #184 review: the source is written verbatim, so it must be
-		// complete site blocks that cannot reach the rest of the export
-		// (unbalanced braces, {$ENV}, import, heredocs, global options,
-		// snippets). Otherwise the route is left out of the export.
-		b.WriteString("# (omitted: this route's Caddyfile is not a set of self-contained site blocks — open it in CaddyUI → Advanced)\n")
+	why := ""
+	if src != "" {
+		imports := opts.importsFor(r.OwnerID)
+		tenant := opts.TenantOwned != nil && opts.TenantOwned(r.OwnerID)
+		sites, err := checkCaddyfileSites(src, imports)
+		switch {
+		case err != nil || len(sites) == 0:
+			why = caddyfileImportProblem(src, imports, tenant)
+			if why == "" {
+				why = "its Caddyfile is not a set of self-contained site blocks"
+			}
+		default:
+			why = rawRouteTextProblem(r, sites)
+			if why == "" && opts.RawRouteVeto != nil {
+				why = opts.RawRouteVeto(r)
+			}
+		}
+	}
+	if why != "" {
+		fmt.Fprintf(&b, "# (omitted: %s — open it in CaddyUI → Advanced)\n", caddyfileComment(why))
 	} else if src != "" {
 		b.WriteString(src)
 		if !strings.HasSuffix(src, "\n") {
@@ -581,63 +631,93 @@ func caddyfileValue(s string) string {
 // why the host cannot be exported, or "".
 func proxyHostFieldsProblem(p models.ProxyHost, cert *models.Certificate) string {
 	if _, _, ok := caddyfilePathMatcher(p); !ok {
-		return "the path matcher cannot be written safely as Caddyfile syntax"
-	}
-	token := func(values ...string) bool {
-		for _, v := range values {
-			if _, ok := caddyfileToken(v); !ok {
-				return false
-			}
+		why := caddyfileTokenProblem(p.PathMatcher)
+		if why == "" {
+			why = "cannot be written safely as Caddyfile syntax"
 		}
-		return true
+		return "the path matcher " + why
 	}
 	var bad []string
-	// The primary upstream is the first reverse_proxy argument when there is
-	// no path matcher, where `/`, `*` or `@` would make it a matcher.
-	if p.ForwardHost != "" && (!caddyfileBareSafe(p.ForwardHost) || strings.ContainsAny(p.ForwardHost[:1], "/*")) {
-		bad = append(bad, "upstream host")
-	}
-	for _, eu := range p.ExtraUpstreamList() {
-		if eu = strings.TrimSpace(eu); eu != "" && !caddyfileBareSafe(eu) {
-			bad = append(bad, "extra upstream")
+	token := func(field, v string) {
+		if why := caddyfileTokenProblem(v); why != "" {
+			bad = append(bad, field+" "+why)
 		}
 	}
-	if p.UpstreamSNI != "" && !token(p.UpstreamSNI) {
-		bad = append(bad, "upstream SNI")
+	bare := func(field, v string) {
+		if !caddyfileBareSafe(v) {
+			if why := caddyfileTokenProblem(v); why != "" {
+				bad = append(bad, field+" "+why)
+			} else {
+				bad = append(bad, field+" must be one plain word (no spaces, quotes or backslashes)")
+			}
+		}
+	}
+	// The primary upstream is the first reverse_proxy argument when there is
+	// no path matcher, where `/`, `*` or `@` would make it a matcher.
+	if p.ForwardHost != "" {
+		bare("the upstream host", p.ForwardHost)
+		if strings.ContainsAny(p.ForwardHost[:1], "/*") {
+			bad = append(bad, "the upstream host starts like a request matcher")
+		}
+	}
+	for _, eu := range p.ExtraUpstreamList() {
+		if eu = strings.TrimSpace(eu); eu != "" {
+			bare("an extra upstream", eu)
+		}
+	}
+	if p.UpstreamSNI != "" {
+		token("the upstream SNI", p.UpstreamSNI)
 	}
 	if len(p.ExtraUpstreamList()) > 0 && p.LBPolicy != "" && !caddyfileWordRe.MatchString(p.LBPolicy) {
-		bad = append(bad, "load-balancing policy")
+		bad = append(bad, "the load-balancing policy is not a plain keyword")
 	}
-	if p.UpstreamHostOverride != "" && !token(p.UpstreamHostOverride) {
-		bad = append(bad, "upstream Host header")
+	if p.UpstreamHostOverride != "" {
+		token("the upstream Host header", p.UpstreamHostOverride)
 	}
-	if p.SecurityHeadersEnabled && p.CSPHeader != "" && !token(p.CSPHeader) {
-		bad = append(bad, "Content-Security-Policy")
+	if p.SecurityHeadersEnabled && p.CSPHeader != "" {
+		token("the Content-Security-Policy", p.CSPHeader)
 	}
-	if p.ClientAuthEnabled() && (!caddyfileWordRe.MatchString(p.ClientAuthMode) || !token(p.ClientAuthCAFileList()...)) {
-		bad = append(bad, "client certificate settings")
+	if p.ClientAuthEnabled() {
+		if !caddyfileWordRe.MatchString(p.ClientAuthMode) {
+			bad = append(bad, "the client certificate mode is not a plain keyword")
+		}
+		for _, f := range p.ClientAuthCAFileList() {
+			token("a client CA file path", f)
+		}
 	}
-	if p.CertificateID > 0 && cert != nil && cert.Source == models.CertSourcePath && cert.CertPath != "" && cert.KeyPath != "" && !token(cert.CertPath, cert.KeyPath) {
-		bad = append(bad, "certificate file path")
+	if p.CertificateID > 0 && cert != nil && cert.Source == models.CertSourcePath && cert.CertPath != "" && cert.KeyPath != "" {
+		token("the certificate file path", cert.CertPath)
+		token("the certificate key path", cert.KeyPath)
 	}
-	for _, m := range []map[string]string{p.CustomReqHeaderMap(), p.CustomRespHeaderMap()} {
-		for k, v := range m {
-			if !caddyfileHeaderNameRe.MatchString(k) || (v != "" && !token(v)) {
-				bad = append(bad, "custom header")
+	for _, hm := range []struct {
+		kind string
+		m    map[string]string
+	}{{"request", p.CustomReqHeaderMap()}, {"response", p.CustomRespHeaderMap()}} {
+		keys := make([]string, 0, len(hm.m))
+		for k := range hm.m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if !caddyfileHeaderNameRe.MatchString(k) {
+				bad = append(bad, "a custom "+hm.kind+" header name is not an HTTP field name starting with a letter or digit")
+				continue
+			}
+			if v := hm.m[k]; v != "" {
+				token("custom "+hm.kind+" header "+k+": its value", v)
 			}
 		}
 	}
 	for _, h := range append(splitCSV(p.StripReqHeaders), splitCSV(p.StripRespHeaders)...) {
 		if !caddyfileHeaderNameRe.MatchString(h) {
-			bad = append(bad, "stripped header name")
+			bad = append(bad, "a stripped header name is not an HTTP field name starting with a letter or digit")
 		}
 	}
 	if len(bad) == 0 {
 		return ""
 	}
-	sort.Strings(bad)
 	bad = slices.Compact(bad)
-	return "a value cannot be written safely as Caddyfile syntax (" + strings.Join(bad, ", ") + ")"
+	return strings.Join(bad, "; ")
 }
 
 // upstreamDial — produce a Caddyfile reverse_proxy upstream argument.

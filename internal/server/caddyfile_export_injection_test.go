@@ -304,3 +304,107 @@ func formError(body string) string {
 	}
 	return strings.Join(strings.Fields(rest), " ")
 }
+
+// Issue #184 round-3 review: the v1 API took json_data and caddyfile_src
+// separately, and the tenant checks only saw the JSON, so a tenant could
+// store JSON for its own host next to Caddyfile text claiming an admin's
+// host (or a new listener) — text the server-wide export then wrote
+// verbatim. The API must derive json_data from the text, and the export must
+// refuse text its stored JSON does not serve (rows written before the fix).
+func TestNonAdminRawRouteTextCannotClaimAnotherHostInTheExport(t *testing.T) {
+	s, conn, sid, caddyBin, admin, tenant := newExportFixture(t)
+	if _, err := models.CreateProxyHost(conn, sid, 0, &models.ProxyHost{Domains: "victim.example.test", ForwardScheme: "http", ForwardHost: "203.0.113.20", ForwardPort: 8080, Enabled: true, SSLEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	ownJSON := `{"match":[{"host":["tenant-raw.example.test"]}],"handle":[{"handler":"static_response","body":"hi"}]}`
+	api := func(method, path string, body map[string]any, params map[string]string) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := asUser(httptest.NewRequest(method, path, strings.NewReader(string(raw))), sid, tenant, params)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		if method == http.MethodPost {
+			s.apiV1CreateRawRoute(rec, req)
+		} else {
+			s.apiV1UpdateRawRoute(rec, req)
+		}
+		return rec
+	}
+	hijack := "victim.example.test/admin* {\n\treverse_proxy 127.0.0.1:2019\n}"
+	listener := ":2019 {\n\treverse_proxy 127.0.0.1:2019\n}"
+
+	for _, text := range []string{hijack, listener} {
+		rec := api(http.MethodPost, "/api/v1/raw-routes", map[string]any{"label": "x", "enabled": true, "json_data": ownJSON, "caddyfile_src": text}, nil)
+		if rec.Code == http.StatusCreated {
+			t.Errorf("create with mismatched caddyfile_src accepted:\n%s\n%s", text, rec.Body.String())
+		}
+		t.Logf("create refused (%d): %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+	}
+	// A text-only update re-derives the JSON, so the same text is refused.
+	rec := api(http.MethodPost, "/api/v1/raw-routes", map[string]any{"label": "own", "enabled": true, "json_data": ownJSON}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create JSON-only raw route: %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	rec = api(http.MethodPut, "/api/v1/raw-routes/x", map[string]any{"enabled": true, "caddyfile_src": hijack}, map[string]string{"id": strconv.FormatInt(created.ID, 10)})
+	if rec.Code == http.StatusOK {
+		t.Errorf("text-only update with a hijacking caddyfile_src accepted: %s", rec.Body.String())
+	}
+	t.Logf("text-only update refused (%d): %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+
+	// Rows already stored by the old API: JSON for the tenant's host, text
+	// for the victim's — and for a new listener.
+	for _, text := range []string{hijack, listener} {
+		rr := &models.RawRoute{Label: "legacy", Enabled: true, JSONData: ownJSON, CaddyfileSrc: text}
+		if _, err := models.CreateRawRoute(conn, sid, tenant.ID, rr); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	s.exportServerCaddyfile(rec, asUser(httptest.NewRequest(http.MethodGet, "/proxy-hosts/export-all.caddyfile", nil), sid, admin, nil))
+	export := rec.Body.String()
+	for _, line := range strings.Split(export, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue // the omission notes name the address; comments are inert
+		}
+		if strings.Contains(line, "victim.example.test/admin*") || strings.Contains(line, ":2019 {") || strings.Contains(line, "reverse_proxy 127.0.0.1:2019") {
+			t.Fatalf("export carries the mismatched raw-route text (%q):\n%s", line, export)
+		}
+	}
+	if caddyBin == "" {
+		t.Run("caddy adapt", func(t *testing.T) {
+			t.Skip("SKIPPED: no `caddy` binary on PATH — the API create/update checks above ran against a fake admin that cannot adapt, and the `caddy adapt` check of the export did NOT run.")
+		})
+		return
+	}
+	out, err := adaptWithCaddy(caddyBin, []byte(export))
+	if err != nil {
+		t.Fatalf("export does not adapt: %v\n%s", err, export)
+	}
+	if strings.Contains(string(out), `"dial":"127.0.0.1:2019"`) || strings.Contains(string(out), `":2019"`) {
+		t.Fatalf("adapted export routes to or listens on the admin API port:\n%s", out)
+	}
+}
+
+// Issue #184 round-3 review (4): cloning a host saved before the Path
+// matcher check existed shows the copy in the form with the translated
+// error, not a raw 500.
+func TestCloneOfLegacyInvalidPathMatcherShowsTheFormError(t *testing.T) {
+	s, conn, sid, _, admin, _ := newExportFixture(t)
+	id, err := models.CreateProxyHost(conn, sid, 0, &models.ProxyHost{Domains: "legacy.example.test", ForwardScheme: "http", ForwardHost: "203.0.113.10", ForwardPort: 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE proxy_hosts SET path_matcher='^/(unclosed', path_matcher_type='regexp' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	idStr := strconv.FormatInt(id, 10)
+	rec := httptest.NewRecorder()
+	s.cloneProxyHost(rec, asUser(postForm(t, "/proxy-hosts/"+idStr+"/clone", url.Values{}), sid, admin, map[string]string{"id": idStr}))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "not a valid regular expression") {
+		t.Fatalf("clone: want the form with the translated error, got %d: %.300s", rec.Code, rec.Body.String())
+	}
+}

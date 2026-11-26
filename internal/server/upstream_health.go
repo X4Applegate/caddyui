@@ -1037,7 +1037,13 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	route := caddy.BuildProxyRoute(previewProxy, previewHandlers)
 	caddy.MergeReverseProxyOverrides(route, previewOverrides)
 	route = redactProxyRoutePreview(route).(map[string]any)
-	caddyfile := caddy.RenderProxyHostCaddyfileWithCertificate(*p, s.certificateForCaddyfile(p.CertificateID))
+	// The host being previewed will belong to the requester when they are
+	// not an admin (or to its current owner when editing).
+	exportOpts := s.caddyfileExportOptions(s.currentServerID(r))
+	if !isAdminUser(s.currentUser(r)) {
+		exportOpts.TenantOwned = func(sql.NullInt64) bool { return true }
+	}
+	caddyfile := caddy.RenderProxyHostCaddyfileWithOptions(*p, s.certificateForCaddyfile(p.CertificateID), exportOpts)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	response := map[string]any{"route": route, "caddyfile": caddyfile}

@@ -29,8 +29,8 @@ func TestPathMatcherProblem(t *testing.T) {
 		{"/x\x00", "", models.PathMatcherHasControl},
 		{"/x\x7f", "", models.PathMatcherHasControl},
 		{"/x\u0085", "", models.PathMatcherHasControl},
-		{"/x y", "", models.PathMatcherHasControl},
-		{"/x y", "regexp", models.PathMatcherHasControl},
+		{"/x\u2028y", "", models.PathMatcherHasControl},
+		{"/x\u2029y", "regexp", models.PathMatcherHasControl},
 		{"/x\xff", "", models.PathMatcherBadEncoding},
 		{"^/(unclosed", "regexp", models.PathMatcherBadRegexp},
 		{"/x`\\", "regexp", models.PathMatcherBadRegexp}, // trailing backslash

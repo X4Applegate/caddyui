@@ -36,7 +36,7 @@ func PathMatcherProblem(matcher, matcherType string) string {
 		return PathMatcherBadEncoding
 	}
 	for _, r := range matcher {
-		if unicode.IsControl(r) || r == ' ' || r == ' ' {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return PathMatcherHasControl
 		}
 	}
