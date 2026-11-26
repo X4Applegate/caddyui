@@ -440,5 +440,13 @@
   "settings.security.oidc.domains_label": "Allowed email domains",
   "settings.security.oidc.domains_help": "One domain per line. Only verified addresses in these domains may sign in through SSO — this applies to existing accounts too, not only new ones. Subdomains are not implied: list {example} separately if you need it. Local password sign-in is unaffected.",
   "settings.security.oidc.domains_warning": "Leave blank only with a private provider.",
-  "settings.security.oidc.domains_public_help": "With a public one such as Google, blank means any account in the world is accepted — and with auto-create on, each of them gets a CaddyUI account."
+  "settings.security.oidc.domains_public_help": "With a public one such as Google, blank means any account in the world is accepted — and with auto-create on, each of them gets a CaddyUI account.",
+  "servers.log_source_id.label": "Log source ID",
+  "servers.log_source_id.optional": "(optional — a name of your choosing that identifies this server in forwarded logs)",
+  "servers.log_source_id.placeholder": "edge-home",
+  "servers.log_source_id.help": "For a Caddy whose log forwarding you configure yourself, for example with Ansible, so you never have to look up the numeric server ID CaddyUI generates. Choose a stable name, enter it here, and add the field caddyui_source_id with the same value to the node's forwarded log lines: CaddyUI then attributes its access logs, certificate events and runtime logs to this server. caddyui_server_id keeps working; if a line carries both, a caddyui_source_id that matches a server wins.",
+  "servers.log_source_id.rules": "Up to {max} characters: letters, digits, dots, hyphens and underscores, starting with a letter or digit and not made of digits alone. Not case-sensitive; saved in lower case and unique across the fleet. Changing it later keeps the logs already received attributed to this server — lines still sending the old value simply stop matching.",
+  "servers.log_source_id.error_invalid": "Log source ID must be at most {max} characters of letters, digits, dots, hyphens or underscores, start with a letter or digit, and not be digits only.",
+  "servers.log_source_id.error_taken": "Log source ID \"{id}\" is already used by another server. Choose a different one.",
+  "servers.log_source_id.list": "log source"
 }
