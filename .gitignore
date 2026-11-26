@@ -53,3 +53,13 @@ bin/
 
 # OpenClaw CLI shared images (not part of the project)
 .openclaw-cli-images/
+
+# Advisory/scan report directories. These are the default --out-dir of the
+# watch and gate scripts (check-pinned-modules.sh, check-go-toolchain.sh,
+# govulncheck-gate.sh), written at the repo root by CI and by any local
+# repro, and uploaded as artifacts rather than committed.
+pinwatch/
+toolchain-watch/
+govulncheck-out/
+govulncheck-image/
+reachability/
