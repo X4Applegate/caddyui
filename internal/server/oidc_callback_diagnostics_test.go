@@ -35,11 +35,14 @@ const (
 )
 
 type fakeIdP struct {
-	srv     *httptest.Server
-	key     *rsa.PrivateKey
-	nonce   string
-	claims  map[string]any // merged over the standard iss/aud/sub/exp/iat/nonce
-	idToken string         // the last ID token issued
+	srv    *httptest.Server
+	key    *rsa.PrivateKey
+	nonce  string
+	claims map[string]any // merged over the standard iss/aud/sub/exp/iat/nonce
+	// rawClaims, if set, is spliced verbatim after the standard claims, for
+	// payloads a map cannot express (duplicate keys in a set order).
+	rawClaims string
+	idToken   string // the last ID token issued
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -103,7 +106,13 @@ func (p *fakeIdP) sign(t *testing.T) string {
 		}
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
-	signing := enc(map[string]string{"alg": "RS256", "kid": "k1", "typ": "JWT"}) + "." + enc(claims)
+	body := enc(claims)
+	if p.rawClaims != "" {
+		b, _ := json.Marshal(claims)
+		b = append(append(b[:len(b)-1], ","+p.rawClaims...), '}')
+		body = base64.RawURLEncoding.EncodeToString(b)
+	}
+	signing := enc(map[string]string{"alg": "RS256", "kid": "k1", "typ": "JWT"}) + "." + body
 	sum := sha256.Sum256([]byte(signing))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, p.key, crypto.SHA256, sum[:])
 	if err != nil {
@@ -267,4 +276,97 @@ func TestOIDCCallbackVerifiedEmailStillSignsIn(t *testing.T) {
 		t.Errorf("redirect = %q, want / (signed in); log:\n%s", loc, logged)
 	}
 	assertNoTokenInLog(t, p, logged)
+}
+
+// Review finding on #158: the logged reason used exact-key lookups while the
+// decision uses encoding/json's case-insensitive, last-key-wins matching, so a
+// token could log an empty reason or claim the email was missing while
+// printing it. Both tokens from that review, end to end.
+func TestOIDCCallbackRejectionReasonMatchesTheDecision(t *testing.T) {
+	cases := []struct {
+		name   string
+		claims map[string]any
+	}{
+		{"duplicate email_verified, last false", nil},
+		{"upper-case EMAIL", map[string]any{"EMAIL": "a@x.test", "email_verified": false}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := newFakeIdP(t)
+			p.claims = c.claims
+			if c.claims == nil {
+				// A Go map cannot hold both keys in order; splice the raw
+				// JSON so "Email_Verified" really comes last.
+				p.rawClaims = `"email":"a@x.test","email_verified":true,"Email_Verified":false`
+			}
+			s := oidcCallbackTestServer(t, p.srv.URL)
+
+			loc, logged := runOIDCCallback(t, s, p)
+
+			if loc != "/login?error=sso_email" {
+				t.Errorf("redirect = %q, want /login?error=sso_email", loc)
+			}
+			if !strings.Contains(logged, `("a@x.test" verified=false): email_verified is false; every SSO sign-in`) {
+				t.Errorf("logged reason does not match the decision:\n%s", logged)
+			}
+			if strings.Contains(logged, "no email claim") || strings.Contains(logged, "): ; ") {
+				t.Errorf("logged reason contradicts the decision:\n%s", logged)
+			}
+			assertNoTokenInLog(t, p, logged)
+		})
+	}
+}
+
+// captureOIDCCallback runs the callback for an arbitrary request and returns
+// the response and everything logged.
+func captureOIDCCallback(t *testing.T, s *Server, req *http.Request) (*httptest.ResponseRecorder, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	rec := httptest.NewRecorder()
+	s.getOIDCCallback(rec, req)
+	return rec, buf.String()
+}
+
+func TestOIDCCallbackWhenSSOIsOffLogsWhy(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	s := &Server{DB: conn}
+
+	rec, logged := captureOIDCCallback(t, s, httptest.NewRequest(http.MethodGet, "/auth/oidc/callback?code=x&state=y", nil))
+
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Errorf("got %d %q, want 303 /login", rec.Code, rec.Header().Get("Location"))
+	}
+	if !strings.Contains(logged, "oidc: callback received but SSO is disabled or not fully configured") {
+		t.Errorf("no log line for a callback with SSO off:\n%q", logged)
+	}
+}
+
+// Anyone can request the callback URL, so its error parameter is attacker
+// text. A newline in it must not start a second, forged log line.
+func TestOIDCCallbackProviderErrorCannotForgeLogLines(t *testing.T) {
+	s := oidcCallbackTestServer(t, "https://idp.example.test")
+	req := httptest.NewRequest(http.MethodGet,
+		"/auth/oidc/callback?error=access_denied%0A2026/01/01%2000:00:00%20FORGED%20admin%20login%0D%0Aagain", nil)
+
+	rec, logged := captureOIDCCallback(t, s, req)
+
+	if rec.Header().Get("Location") != "/login?error=sso_denied" {
+		t.Errorf("redirect = %q, want /login?error=sso_denied", rec.Header().Get("Location"))
+	}
+	if n := strings.Count(logged, "\n"); n != 1 {
+		t.Errorf("one request produced %d log lines, want 1:\n%s", n, logged)
+	}
+	if strings.ContainsAny(strings.TrimSuffix(logged, "\n"), "\r\n") {
+		t.Errorf("raw CR/LF from the query reached the log:\n%q", logged)
+	}
+	if !strings.Contains(logged, `oidc: provider returned error: "access_denied\n2026/01/01 00:00:00 FORGED admin login\r\nagain"`) {
+		t.Errorf("error parameter not logged in escaped form:\n%s", logged)
+	}
 }

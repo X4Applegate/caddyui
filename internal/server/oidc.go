@@ -363,27 +363,58 @@ func describeOIDCClaimsDecodeFailure(payload []byte, err error) string {
 	return fmt.Sprintf("decoder error of type %T", err)
 }
 
+// oidcClaimPresence records whether a claim occurred in the ID token and
+// whether any occurrence was non-null. It is decoded by encoding/json itself,
+// so it sees exactly the keys the sign-in decision sees: matched
+// case-insensitively, every duplicate included ("email_verified" and
+// "Email_Verified" are the same claim to the decoder, last value winning).
+type oidcClaimPresence struct{ seen, nonNull bool }
+
+func (p *oidcClaimPresence) UnmarshalJSON(b []byte) error {
+	p.seen = true
+	if string(bytes.TrimSpace(b)) != "null" {
+		p.nonNull = true
+	}
+	return nil
+}
+
 // oidcEmailRejectionReason says which half of the email requirement an ID
-// token failed: whether the claims were absent or present with the wrong
-// value. fields is the token's raw claim set; email is the trimmed address.
+// token failed: whether a claim was absent, null, empty or false. payload is
+// the token's raw claim set; email and verified are the values the sign-in
+// decision was made on, so the explanation can never contradict it.
 // Issue #158: a provider that simply never sends email_verified (Microsoft
 // Entra ID, for one) used to log the same line as one that sent false.
-func oidcEmailRejectionReason(fields map[string]json.RawMessage, email string) string {
-	var reasons []string
-	if _, ok := fields["email"]; !ok {
-		reasons = append(reasons, "the ID token has no email claim")
-	} else if email == "" {
-		reasons = append(reasons, "the email claim is empty")
+func oidcEmailRejectionReason(payload []byte, email string, verified bool) string {
+	var present struct {
+		Email         oidcClaimPresence `json:"email"`
+		EmailVerified oidcClaimPresence `json:"email_verified"`
 	}
-	if raw, ok := fields["email_verified"]; !ok {
-		reasons = append(reasons, "the ID token has no email_verified claim")
-	} else if oidcJSONType(raw) == "null" {
-		reasons = append(reasons, "email_verified is null")
-	} else {
-		var v bool
-		if json.Unmarshal(raw, &v) == nil && !v {
+	_ = json.Unmarshal(payload, &present)
+	var reasons []string
+	if email == "" {
+		switch {
+		case !present.Email.seen:
+			reasons = append(reasons, "the ID token has no email claim")
+		case !present.Email.nonNull:
+			reasons = append(reasons, "the email claim is null")
+		default:
+			reasons = append(reasons, "the email claim is empty")
+		}
+	}
+	if !verified {
+		switch {
+		case !present.EmailVerified.seen:
+			reasons = append(reasons, "the ID token has no email_verified claim")
+		case !present.EmailVerified.nonNull:
+			reasons = append(reasons, "email_verified is null")
+		default:
+			// The claims decoded, so a non-null email_verified was a JSON
+			// boolean, and the decision says it ended up false.
 			reasons = append(reasons, "email_verified is false")
 		}
+	}
+	if len(reasons) == 0 {
+		return "email_verified did not decode to boolean true"
 	}
 	return strings.Join(reasons, "; ")
 }
@@ -494,6 +525,7 @@ func (s *Server) getOIDCLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	cfg := s.oidcConfig()
 	if !cfg.ready() {
+		log.Printf("oidc: callback received but SSO is disabled or not fully configured")
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
@@ -504,7 +536,9 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	clearOIDCFlowCookie(w, r, oidcNonceCookie)
 
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		log.Printf("oidc: provider returned error: %s", errParam)
+		// %q, not %s: the parameter is attacker-controlled (anyone can
+		// request the callback URL) and a raw newline would forge a log line.
+		log.Printf("oidc: provider returned error: %q", errParam)
 		http.Redirect(w, r, "/login?error=sso_denied", http.StatusSeeOther)
 		return
 	}
@@ -575,10 +609,10 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		// An unverified (or missing) email must not be trusted to match or
 		// create an account — it would allow impersonation on IdPs that let a
 		// user set an arbitrary address.
-		var fields map[string]json.RawMessage
-		_ = idToken.Claims(&fields)
+		var payload json.RawMessage
+		_ = idToken.Claims(&payload)
 		log.Printf("oidc: rejecting sign-in: email empty or unverified (%q verified=%v): %s; every SSO sign-in, including existing accounts, needs a non-empty email and email_verified=true",
-			email, claims.EmailVerified, oidcEmailRejectionReason(fields, email))
+			email, claims.EmailVerified, oidcEmailRejectionReason(payload, email, claims.EmailVerified))
 		http.Redirect(w, r, "/login?error=sso_email", http.StatusSeeOther)
 		return
 	}
