@@ -102,6 +102,13 @@ set -uo pipefail
 
 PROG="govulncheck-gate"
 
+# The scanner version this repo installs, kept identical to the three workflows
+# (ci.yml, caddy-image-refresh.yml, release-docker.yml). Remediation text must name
+# THIS version and not `@latest`: `@latest` resolves to v1.10.0, whose type checker
+# cannot parse this tree's go1.27 stdlib, so an operator told to install `@latest`
+# goes from exit 3 straight back to exit 3. Re-evaluate the pin under T-0887.
+PINNED_SCANNER="v1.9.0"
+
 MODE=""
 TARGET=""
 OUT_DIR="govulncheck-out"
@@ -290,7 +297,7 @@ resolve_tool() {
   local p
   p="$(command -v govulncheck 2>/dev/null)" || true
   if [ -z "$p" ]; then
-    note "govulncheck is not on \$PATH, so nothing was scanned. Install it with the tree's own toolchain: \`go install golang.org/x/vuln/cmd/govulncheck@latest\`"
+    note "govulncheck is not on \$PATH, so nothing was scanned. Install it with the tree's own toolchain: \`go install golang.org/x/vuln/cmd/govulncheck@${PINNED_SCANNER}\`"
     return 1
   fi
   TOOL_RESOLVED="$p"
@@ -614,7 +621,7 @@ else
         note "could not compare the scanner's toolchain ($tool_go) with the required one ($required_go)"
       elif [ "$c" = "-1" ]; then
         could_not_run=1
-        note "**the scanner is older than the tree it was asked to scan — reinstall it.** govulncheck was built with \`$tool_go\`; this scan needs at least \`$required_go\` ($required_src). A govulncheck built on an older Go embeds that release's type checker and cannot parse a newer stdlib: it exits non-zero with a \`package patterns\` error and NO findings, which reads as an operator mistake and records as a pass. Fix: \`go install golang.org/x/vuln/cmd/govulncheck@latest\` under this tree's toolchain (in CI, \`setup-go\` with \`go-version-file: go.mod\` then \`go install\`)."
+        note "**the scanner is older than the tree it was asked to scan — reinstall it.** govulncheck was built with \`$tool_go\`; this scan needs at least \`$required_go\` ($required_src). A govulncheck built on an older Go embeds that release's type checker and cannot parse a newer stdlib: it exits non-zero with a \`package patterns\` error and NO findings, which reads as an operator mistake and records as a pass. Fix: \`go install golang.org/x/vuln/cmd/govulncheck@${PINNED_SCANNER}\` under this tree's toolchain (in CI, \`setup-go\` with \`go-version-file: go.mod\` then \`go install\`)."
       fi
     fi
   fi

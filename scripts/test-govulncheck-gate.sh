@@ -156,7 +156,8 @@ RC=$?
 want_rc 3 "6  a scanner older than the tree is could-not-run (exit 3)"
 want_in "older than the tree it was asked to scan" "6a and says so plainly"
 want_in "reinstall" "6b and says what to do"
-want_in "go install golang.org/x/vuln/cmd/govulncheck@latest" "6c with the command"
+want_in "go install golang.org/x/vuln/cmd/govulncheck@v1.9.0" "6c with the command, naming the PINNED version"
+want_not_in "govulncheck@latest" "6c2 and never @latest, which cannot parse go1.27 (finding 6)"
 want_in "go1.26.11" "6d naming the scanner's own version"
 want_in "go1.27.4" "6e and the version required"
 want_not_in "called finding(s)" "6f and reports no finding from the stream it never trusted"
@@ -247,7 +248,8 @@ PATH="$TMP/no-scanner:$PATH" GOVULNCHECK_UNUSED=1 \
 RC=$?
 want_rc 3 "16 an absent govulncheck is could-not-run, not a clean scan"
 want_in "govulncheck is not on \$PATH" "16a and says the scanner is missing, not something else"
-want_in "go install golang.org/x/vuln/cmd/govulncheck@latest" "16b with the install command"
+want_in "go install golang.org/x/vuln/cmd/govulncheck@v1.9.0" "16b with the install command, naming the PINNED version"
+want_not_in "govulncheck@latest" "16b2 and never @latest, which cannot parse go1.27 (finding 6)"
 
 # A binary that does not exist.
 n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
