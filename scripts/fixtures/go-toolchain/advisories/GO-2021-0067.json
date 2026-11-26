@@ -1,0 +1,28 @@
+{
+  "id": "GO-2021-0067",
+  "summary": "Panic when opening archives in archive/zip",
+  "aliases": [
+    "CVE-2021-27919"
+  ],
+  "modified": "2024-05-20T16:03:47Z",
+  "affected": [
+    {
+      "package": {
+        "name": "stdlib"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "1.16.0-0"
+            },
+            {
+              "fixed": "1.16.1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
