@@ -347,7 +347,10 @@ func (s *Server) sanitizeTenantRoute(owner sql.NullInt64, what string, route any
 // parse as a Caddyfile (a proxy host's Advanced config, an Advanced route's
 // Caddyfile source, a pasted Caddyfile): env/file placeholders, and `import`
 // of anything other than a snippet name (an import path reads a file inside the
-// Caddy container, and a parse error echoes its first token).
+// Caddy container, and a parse error echoes its first token). Imports are
+// found the way Caddy's parser finds them — `import` as the first token of a
+// line, quoted or not — so text CaddyUI cannot read that way is refused
+// rather than sent to Caddy.
 func tenantTextViolation(text string) string {
 	if containsDangerousPlaceholder(text) {
 		return "{env.…}, {file.…} and {$…} placeholders read the Caddy server's environment and files and are admin-only"
@@ -355,6 +358,15 @@ func tenantTextViolation(text string) string {
 	for _, m := range caddyfileImportRe.FindAllStringSubmatch(text, -1) {
 		if !snippetNameRe.MatchString(m[1]) {
 			return fmt.Sprintf("`import %s` reads a file on the Caddy server — only snippet names may be imported", m[1])
+		}
+	}
+	args, ok := caddy.CaddyfileImportArguments(text)
+	if !ok {
+		return "the text could not be read as a Caddyfile (check for an unclosed quote or heredoc, or a trailing backslash)"
+	}
+	for _, arg := range args {
+		if !snippetNameRe.MatchString(arg) {
+			return "an `import` that is not a plain snippet name reads a file on the Caddy server — only snippet names may be imported"
 		}
 	}
 	return ""

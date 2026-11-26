@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1592,9 +1593,10 @@ func proxyAdvancedHandlers(result map[string]any) ([]any, map[string]any, error)
 // (issue #184 review): the snippets from CADDYFILE_PATH that admin-owned
 // content may import — written into the export only for an administrator
 // (forAdmin), and then only those the export imports — which owners are
-// tenants, and a re-check through Caddy of a tenant's raw-route Caddyfile
-// and proxy-host Advanced config, because rows written by older versions
-// may hold text that never matched what the live config carries.
+// tenants, and a re-check through Caddy of exactly the text the export
+// writes for a tenant's raw route or proxy host with an Advanced config,
+// because rows written by older versions may hold text that never matched
+// what the live config carries.
 func (s *Server) caddyfileExportOptions(serverID int64, forAdmin bool) caddy.ExportOptions {
 	opts := caddy.ExportOptions{TenantOwned: s.isTenantOwner, IncludeSnippets: forAdmin}
 	if s.CaddyfilePath != "" {
@@ -1603,11 +1605,11 @@ func (s *Server) caddyfileExportOptions(serverID int64, forAdmin bool) caddy.Exp
 		}
 	}
 	// The exporter consults the vetoes only for tenant-owned content.
-	opts.RawRouteVeto = func(rr models.RawRoute) string {
-		return s.rawRouteTextVeto(s.exportCaddyClient(serverID), rr)
+	opts.RawRouteVeto = func(rr models.RawRoute, text string) string {
+		return s.rawRouteTextVeto(s.exportCaddyClient(serverID), rr, text)
 	}
-	opts.ProxyHostVeto = func(p models.ProxyHost) string {
-		return s.proxyAdvancedExportVeto(s.exportCaddyClient(serverID), p)
+	opts.ProxyHostVeto = func(p models.ProxyHost, site string) string {
+		return s.proxyAdvancedExportVeto(s.exportCaddyClient(serverID), p, site)
 	}
 	return opts
 }
@@ -1621,16 +1623,35 @@ func (s *Server) exportCaddyClient(serverID int64) *caddy.Client {
 	return s.caddyForServer(serverID)
 }
 
-// rawRouteTextVeto returns why a tenant's stored raw-route Caddyfile must
-// not be exported: it fails the tenant text rules, does not adapt (or Caddy
-// cannot be reached to check), adapts to anything beyond what its stored
-// route carries (tenantAdaptedConfigProblem), or serves hosts its stored
-// routes do not. "" means the text may be written.
-func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute) string {
-	if why := tenantTextViolation(rr.CaddyfileSrc); why != "" {
+// adaptExportText adapts text exactly as the export writes it — no
+// snippets are added: tenant text may not import any, so an `import` fails
+// here and the text is left out.
+func adaptExportText(caddyCl *caddy.Client, text string) (map[string]any, error) {
+	if caddyCl == nil {
+		return nil, fmt.Errorf("the Caddy adapter is unavailable")
+	}
+	adapted, err := caddyCl.Adapt(text)
+	if err != nil {
+		return nil, err
+	}
+	return adapted.Result, nil
+}
+
+// rawRouteTextVeto returns why a tenant's raw-route Caddyfile, as the
+// export would write it (text), must not be exported: it fails the tenant
+// text rules, does not adapt (or Caddy cannot be reached to check), adapts
+// to anything beyond what its stored route carries
+// (tenantAdaptedConfigProblem), or serves hosts its stored routes do not.
+// "" means the text may be written.
+func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute, text string) string {
+	if tenantTextViolation(rr.CaddyfileSrc) != "" || tenantTextViolation(text) != "" {
 		return "its Caddyfile is not allowed for a non-admin owner"
 	}
-	jsonData, _, result, err := s.adaptRawRouteCaddyfileResult(caddyCl, rr.CaddyfileSrc)
+	result, err := adaptExportText(caddyCl, text)
+	if err != nil {
+		return "its Caddyfile could not be re-checked with Caddy"
+	}
+	jsonData, _, err := rawRouteFromAdapted(result)
 	if err != nil {
 		return "its Caddyfile could not be re-checked with Caddy"
 	}
@@ -1646,25 +1667,96 @@ func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute) str
 	return ""
 }
 
-// proxyAdvancedExportVeto is rawRouteTextVeto for a tenant's proxy-host
-// Advanced config: the live route keeps only the handlers it adapts to, and
-// only when they pass the tenant checks, so the text may be exported only
-// when it adapts to nothing more.
-func (s *Server) proxyAdvancedExportVeto(caddyCl *caddy.Client, p models.ProxyHost) string {
+// proxyAdvancedExportVeto is rawRouteTextVeto for a tenant's proxy host
+// with an Advanced config. site is the whole block the export would write
+// for the host — the generated directives with the Advanced text placed
+// among them — and that block is what Caddy adapts here, so the verdict is
+// about the exact bytes in the file, whatever the exporter did to place
+// the text. It may adapt to nothing a tenant's live route could not carry
+// (tenantAdaptedConfigProblem, whose route check is tenantRouteViolation),
+// and serve only the host's own domains. Any objection, adapt error or
+// unreachable Caddy means the host fails closed.
+func (s *Server) proxyAdvancedExportVeto(caddyCl *caddy.Client, p models.ProxyHost, site string) string {
 	if strings.TrimSpace(p.AdvancedConfig) == "" {
 		return ""
 	}
-	if tenantTextViolation(p.AdvancedConfig) != "" {
+	if tenantTextViolation(p.AdvancedConfig) != "" || tenantTextViolation(site) != "" {
 		return "it is not allowed for a non-admin owner"
 	}
-	result, err := s.adaptProxyAdvancedResult(caddyCl, p)
+	result, err := adaptExportText(caddyCl, site)
 	if err != nil {
-		return "it could not be re-checked with Caddy"
+		return "the exported block could not be re-checked with Caddy"
 	}
-	if why := s.proxyAdvancedAdaptedProblem(result); why != "" {
-		return "it " + why
+	why := s.proxyHostSiteAdaptedProblem(result, p)
+	if why != "" && (p.ClientAuthEnabled() || p.CertificateID > 0) {
+		// The host's own client-certificate or certificate-file settings
+		// put TLS configuration in the block, which the tenant allowlist
+		// refuses as such. Set aside exactly what the same host without
+		// an Advanced config adapts to, and judge the rest.
+		base := p
+		base.AdvancedConfig = ""
+		baseline, err := adaptExportText(caddyCl, caddy.RenderProxyHostCaddyfileWithCertificate(base, s.certificateForCaddyfile(p.CertificateID)))
+		if err != nil {
+			return "the exported block could not be re-checked with Caddy"
+		}
+		removeBaselineTLS(result, baseline)
+		why = s.proxyHostSiteAdaptedProblem(result, p)
+	}
+	if why != "" {
+		return "the exported block " + why
 	}
 	return ""
+}
+
+// proxyHostSiteAdaptedProblem judges the adapted form of a tenant proxy
+// host's exported site block: nothing beyond what a tenant's live config
+// may carry, and every route matching only the host's own domains.
+func (s *Server) proxyHostSiteAdaptedProblem(result map[string]any, p models.ProxyHost) string {
+	domains := map[string]bool{}
+	for _, d := range p.DomainList() {
+		domains[strings.ToLower(d)] = true
+	}
+	if why := s.tenantAdaptedConfigProblem(result, domains, nil); why != "" {
+		return why
+	}
+	for _, route := range extractAdaptedRoutes(result) {
+		hosts := hostsFromRoute(route)
+		if len(hosts) == 0 {
+			return "serves hosts that are not the proxy host's own"
+		}
+		for _, h := range hosts {
+			if !domains[strings.ToLower(h)] {
+				return "serves hosts that are not the proxy host's own"
+			}
+		}
+	}
+	return ""
+}
+
+// removeBaselineTLS deletes from result each server's TLS connection
+// policies, and the TLS app, where they are identical to baseline's.
+func removeBaselineTLS(result, baseline map[string]any) {
+	appsOf := func(cfg map[string]any) map[string]any {
+		apps, _ := cfg["apps"].(map[string]any)
+		return apps
+	}
+	serversOf := func(cfg map[string]any) map[string]any {
+		httpApp, _ := appsOf(cfg)["http"].(map[string]any)
+		servers, _ := httpApp["servers"].(map[string]any)
+		return servers
+	}
+	baseServers := serversOf(baseline)
+	for name, v := range serversOf(result) {
+		srv, _ := v.(map[string]any)
+		baseSrv, _ := baseServers[name].(map[string]any)
+		if srv != nil && baseSrv != nil && srv["tls_connection_policies"] != nil &&
+			reflect.DeepEqual(srv["tls_connection_policies"], baseSrv["tls_connection_policies"]) {
+			delete(srv, "tls_connection_policies")
+		}
+	}
+	if apps := appsOf(result); apps != nil && apps["tls"] != nil && reflect.DeepEqual(apps["tls"], appsOf(baseline)["tls"]) {
+		delete(apps, "tls")
+	}
 }
 
 // proxyAdvancedAdaptedProblem applies tenantAdaptedConfigProblem to an

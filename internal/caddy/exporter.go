@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/X4Applegate/caddyui/internal/models"
 )
@@ -133,24 +134,27 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 	if why := opts.importProblem(p.AdvancedConfig, p.OwnerID); why != "" {
 		return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
 	}
-	// Issue #184 review: a tenant's Advanced config is re-checked through
-	// Caddy — the live route keeps only its handlers, and only when they
-	// pass the tenant checks, while the export writes the text verbatim.
-	if strings.TrimSpace(p.AdvancedConfig) != "" && opts.tenant(p.OwnerID) {
-		why := "it could not be re-checked"
-		if opts.ProxyHostVeto != nil {
-			why = opts.ProxyHostVeto(p)
-		}
-		if why != "" {
-			return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
-		}
-	}
 	out, why := renderProxyHostSite(p, cert, domains)
 	if why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
 	if sites, err := checkCaddyfileSites(out, imports); err != nil || len(sites) != 1 {
 		return caddyfileFailClosedSite(domains, "the generated block would not stay self-contained (check the Advanced config)")
+	}
+	// Issue #184 review: a tenant's Advanced config is re-checked through
+	// Caddy — the live route keeps only its handlers, and only when they
+	// pass the tenant checks. The veto judges the block exactly as it is
+	// written here, so how the exporter places the Advanced text (inside
+	// the generated reverse_proxy, inside `route`, at site level) can never
+	// make the file mean more than what was checked.
+	if strings.TrimSpace(p.AdvancedConfig) != "" && opts.tenant(p.OwnerID) {
+		why := "it could not be re-checked"
+		if opts.ProxyHostVeto != nil {
+			why = opts.ProxyHostVeto(p, out)
+		}
+		if why != "" {
+			return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
+		}
 	}
 	return out
 }
@@ -258,6 +262,15 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	// Issue #184: the Path matcher narrows the JSON route to matching paths,
 	// so the Caddyfile carries the same matcher on reverse_proxy.
 	pathDef, stripToken, _ := caddyfilePathMatcher(p) // representable: checked by proxyHostFieldsProblem
+	// The generated matchers take names the Advanced config does not use, so
+	// the two can never define one name twice (which Caddy rejects, taking
+	// the whole file down with it).
+	usedMatchers, ok := caddyfileMatcherNames(p.AdvancedConfig)
+	if !ok {
+		return "", "the Advanced config could not be read as Caddyfile syntax (an unclosed quote or heredoc, or a trailing backslash)"
+	}
+	blockedName := caddyfileFreeMatcherName("blocked", usedMatchers)
+	pathName := caddyfileFreeMatcherName(caddyfilePathMatcherName, usedMatchers)
 	// With Strip prefix the order-sensitive directives go in a `route` block
 	// in the JSON route's order — blocker, Advanced config handlers, strip,
 	// reverse_proxy. Caddyfile sorting would otherwise run `uri strip_prefix`
@@ -281,7 +294,7 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	// Path blocking (the "block common exploits" toggle that defaults on in
 	// CaddyUI v2.11+). Mirrors the CaddyUI prompt's standard block list.
 	if p.BlockCommonExploits && !wrapInRoute {
-		b.WriteString(caddyfileExploitBlocker)
+		b.WriteString(caddyfileExploitBlocker(blockedName))
 	}
 
 	// Compression
@@ -342,22 +355,20 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	// wrapped in `route { }` or replaced by the fail-closed response.
 	proxyStart := b.Len()
 	if wrapInRoute && p.BlockCommonExploits {
-		b.WriteString(caddyfileExploitBlocker)
+		b.WriteString(caddyfileExploitBlocker(blockedName))
 	}
 	if advancedInRoute != "" {
 		b.WriteString("\t# from Advanced config\n")
-		for _, line := range strings.Split(strings.TrimRight(advancedInRoute, "\n"), "\n") {
-			b.WriteString("\t" + line + "\n")
-		}
+		b.WriteString(caddyfileIndent(strings.TrimRight(advancedInRoute, "\n")+"\n", "\t", false))
 	}
 	proxyMatcher := ""
 	if pathDef != "" {
-		fmt.Fprintf(&b, "\t@%s %s\n", caddyfilePathMatcherName, pathDef)
-		proxyMatcher = "@" + caddyfilePathMatcherName + " "
+		fmt.Fprintf(&b, "\t@%s %s\n", pathName, pathDef)
+		proxyMatcher = "@" + pathName + " "
 		// Strip prefix mirrors the route's `rewrite strip_path_prefix`
 		// handler under the same matcher.
 		if stripToken != "" {
-			fmt.Fprintf(&b, "\turi @%s strip_prefix %s\n", caddyfilePathMatcherName, stripToken)
+			fmt.Fprintf(&b, "\turi @%s strip_prefix %s\n", pathName, stripToken)
 		}
 	}
 
@@ -435,11 +446,9 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		b.WriteString("\t\t}\n")
 	}
 
-	if len(advancedInner) > 0 {
+	if strings.TrimSpace(advancedInner) != "" {
 		b.WriteString("\t\t# from Advanced config\n")
-		for _, line := range advancedInner {
-			fmt.Fprintf(&b, "\t\t%s\n", line)
-		}
+		b.WriteString(caddyfileIndent(advancedInner, "\t\t", true))
 	}
 	b.WriteString("\t}\n")
 	if wrapInRoute {
@@ -447,25 +456,15 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		b.Reset()
 		b.WriteString(site[:proxyStart])
 		b.WriteString("\troute {\n")
-		for _, line := range strings.SplitAfter(site[proxyStart:], "\n") {
-			if line != "" {
-				b.WriteString("\t" + line)
-			}
-		}
+		b.WriteString(caddyfileIndent(site[proxyStart:], "\t", false))
 		b.WriteString("\t}\n")
 	}
 
 	// Advanced raw config — verbatim user input, indented to match the site
-	// block. Trailing newline preserved.
+	// block (lines that continue a quoted string are left as they are).
 	if strings.TrimSpace(advancedRest) != "" {
 		b.WriteString("\n\t# --- Advanced raw config (from CaddyUI) ---\n")
-		for _, line := range strings.Split(advancedRest, "\n") {
-			if line == "" {
-				b.WriteString("\n")
-			} else {
-				fmt.Fprintf(&b, "\t%s\n", line)
-			}
-		}
+		b.WriteString(caddyfileIndent(strings.TrimRight(advancedRest, "\n")+"\n", "\t", false))
 	}
 
 	b.WriteString("}\n")
@@ -550,6 +549,9 @@ func renderRawRoute(r models.RawRoute, opts ExportOptions) string {
 	}
 	fmt.Fprintf(&b, "# Raw route #%d — %s\n", r.ID, caddyfileComment(label))
 	src := strings.TrimSpace(r.CaddyfileSrc)
+	if src != "" {
+		src += "\n"
+	}
 	why := ""
 	if src != "" {
 		sites, err := checkCaddyfileSites(src, opts.importsFor(r.OwnerID))
@@ -565,7 +567,7 @@ func renderRawRoute(r models.RawRoute, opts ExportOptions) string {
 				if opts.RawRouteVeto == nil {
 					why = "its Caddyfile could not be re-checked"
 				} else {
-					why = opts.RawRouteVeto(r)
+					why = opts.RawRouteVeto(r, src)
 				}
 			}
 		}
@@ -573,10 +575,7 @@ func renderRawRoute(r models.RawRoute, opts ExportOptions) string {
 	if why != "" {
 		fmt.Fprintf(&b, "# (omitted: %s — open it in CaddyUI → Advanced)\n", caddyfileComment(why))
 	} else if src != "" {
-		b.WriteString(src)
-		if !strings.HasSuffix(src, "\n") {
-			b.WriteString("\n")
-		}
+		b.WriteString(src) // exactly the text the veto judged
 	} else {
 		b.WriteString("# (JSON-typed raw route — open it in CaddyUI → Advanced to see / edit)\n")
 	}
@@ -588,8 +587,36 @@ func renderRawRoute(r models.RawRoute, opts ExportOptions) string {
 const caddyfilePathMatcherName = "caddyui_path"
 
 // caddyfileExploitBlocker is the Caddyfile form of the "block common
-// exploits" handler.
-const caddyfileExploitBlocker = "\t@blocked path /.env* /wp-admin* /wp-login* /phpmyadmin* /.git/* /xmlrpc.php\n\trespond @blocked 403\n"
+// exploits" handler, with its matcher called name.
+func caddyfileExploitBlocker(name string) string {
+	return "\t@" + name + " path /.env* /wp-admin* /wp-login* /phpmyadmin* /.git/* /xmlrpc.php\n\trespond @" + name + " 403\n"
+}
+
+// caddyfileMatcherNames returns every name src refers to as `@name`, in any
+// position (definitions and uses alike). ok is false when src does not lex.
+func caddyfileMatcherNames(src string) (map[string]bool, bool) {
+	toks, err := lexCaddyfile(src)
+	if err != nil {
+		return nil, false
+	}
+	names := map[string]bool{}
+	for _, t := range toks {
+		if strings.HasPrefix(t.text, "@") {
+			names[t.text[1:]] = true
+		}
+	}
+	return names, true
+}
+
+// caddyfileFreeMatcherName is base, or base_2, base_3, … — the first that
+// is not in used.
+func caddyfileFreeMatcherName(base string, used map[string]bool) string {
+	name := base
+	for n := 2; used[name]; n++ {
+		name = fmt.Sprintf("%s_%d", base, n)
+	}
+	return name
+}
 
 // caddyfilePathMatcher returns the Caddyfile matcher (without the @name)
 // equivalent to the `path` / `path_regexp` match BuildProxyRoute adds for
@@ -759,64 +786,148 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// splitAdvancedReverseProxyBlock separates a top-level `reverse_proxy { … }`
-// block from the rest of an Advanced config. inner holds the block's lines
-// with one level of indentation removed; rest is everything else, verbatim.
-func splitAdvancedReverseProxyBlock(src string) (rest string, inner []string) {
+// splitAdvancedReverseProxyBlock separates each top-level `reverse_proxy {`
+// block from the rest of an Advanced config, reading src as Caddy's lexer
+// does. A block counts only when `reverse_proxy` is the first token of a
+// line at depth 0 and the only other token on that line is an unquoted `{`
+// — the form the sync merges into the host's own handler (v2.40.0) — so
+// text inside a quoted string, backtick string or heredoc is never taken
+// apart. inner is the blocks' contents, verbatim; rest is everything else,
+// verbatim. When src does not lex, or a block is laid out in a way this
+// does not model, nothing is split: the text then stays at site level as
+// written, where Caddy reads it the way the checks did.
+func splitAdvancedReverseProxyBlock(src string) (rest, inner string) {
 	if strings.TrimSpace(src) == "" {
-		return src, nil
+		return src, ""
 	}
-	stripped := func(line string) string {
-		t := strings.TrimSpace(line)
-		if i := strings.Index(t, "#"); i >= 0 {
-			t = strings.TrimSpace(t[:i])
+	toks, err := lexCaddyfile(src)
+	if err != nil {
+		return src, ""
+	}
+	runes := []rune(src)
+	// lineStart is the offset of the line holding offset off; blankBetween
+	// reports whether runes[from:to] is only spaces and tabs.
+	lineStart := func(off int) int {
+		for off > 0 && runes[off-1] != '\n' {
+			off--
 		}
-		return t
+		return off
 	}
-	braces := func(line string) int {
-		d := 0
-		for _, ch := range stripped(line) {
-			switch ch {
-			case '{':
-				d++
-			case '}':
-				d--
+	blankBetween := func(from, to int) bool {
+		for _, r := range runes[from:to] {
+			if r != ' ' && r != '\t' && r != '\r' {
+				return false
 			}
 		}
-		return d
+		return true
 	}
-	lines := strings.Split(src, "\n")
-	var kept []string
-	depth := 0
-	for i := 0; i < len(lines); {
-		line := lines[i]
-		t := stripped(line)
-		if depth == 0 && t != "" && strings.Fields(t)[0] == "reverse_proxy" && strings.HasSuffix(t, "{") {
-			d := braces(line)
-			j := i + 1
-			var block []string
-			for ; j < len(lines) && d > 0; j++ {
-				d += braces(lines[j])
-				if d > 0 {
-					block = append(block, lines[j])
+	// afterLine is the offset just past the newline that ends the line
+	// holding off (or the end of src).
+	afterLine := func(off int) int {
+		for off < len(runes) && runes[off] != '\n' {
+			off++
+		}
+		if off < len(runes) {
+			off++
+		}
+		return off
+	}
+	brace := func(i int, b string) bool { return toks[i].text == b && !toks[i].quoted }
+	var restB, innerB strings.Builder
+	kept, depth := 0, 0
+	for i := 0; i < len(toks); i++ {
+		if depth == 0 && toks[i].text == "reverse_proxy" && cfIsNewLine(toks, i) &&
+			i+1 < len(toks) && brace(i+1, "{") && cfIsNewLine(toks, i+2) {
+			d, j := 1, i+2
+			for ; j < len(toks) && d > 0; j++ {
+				if brace(j, "{") {
+					d++
+				} else if brace(j, "}") {
+					d--
 				}
 			}
-			if d == 0 {
-				for _, bl := range block {
-					if strings.TrimSpace(bl) != "" {
-						inner = append(inner, strings.TrimPrefix(strings.TrimSpace(bl), "\t"))
-					}
-				}
-				i = j
+			closeTok := j - 1
+			from := lineStart(toks[i].start)
+			bodyFrom := afterLine(toks[i+1].end)
+			bodyTo := lineStart(toks[closeTok].start)
+			if d == 0 && cfIsNewLine(toks, closeTok) && (j >= len(toks) || cfIsNewLine(toks, j)) &&
+				blankBetween(from, toks[i].start) && blankBetween(bodyTo, toks[closeTok].start) && bodyFrom <= bodyTo {
+				restB.WriteString(string(runes[kept:from]))
+				innerB.WriteString(string(runes[bodyFrom:bodyTo]))
+				kept = afterLine(toks[closeTok].end)
+				i = closeTok
 				continue
 			}
+			return src, ""
 		}
-		kept = append(kept, line)
-		depth += braces(line)
-		i++
+		if brace(i, "{") {
+			depth++
+		} else if brace(i, "}") {
+			depth--
+		}
 	}
-	if inner == nil {
-		return src, nil
+	if kept == 0 {
+		return src, ""
 	}
-	return strings.Join(kept, "\n"), inner
+	restB.WriteString(string(runes[kept:]))
+	return restB.String(), innerB.String()
+}
+
+// caddyfileIndent prefixes every non-empty line of src with prefix, after
+// removing the leading whitespace all of those lines share when dedent is
+// set. A line that begins inside a quoted or backtick string is part of
+// that string's value and is left exactly as it is; heredoc lines shift
+// together with their closing marker, so the heredoc's value is unchanged.
+// src must end with a newline. When src does not lex, every non-empty line
+// is prefixed (the caller's self-containment check then refuses it).
+func caddyfileIndent(src, prefix string, dedent bool) string {
+	toks, err := lexCaddyfile(src)
+	var lines []string
+	if strings.HasSuffix(src, "\n") {
+		lines = strings.SplitAfter(src[:len(src)-1], "\n")
+		lines[len(lines)-1] += "\n"
+	} else {
+		lines = strings.SplitAfter(src, "\n")
+	}
+	// inString[i] reports whether line i begins inside a quoted string.
+	inString := make([]bool, len(lines))
+	if err == nil {
+		off := 0
+		for i, line := range lines {
+			for _, t := range toks {
+				if t.quoted && !t.heredoc && t.start < off && off < t.end {
+					inString[i] = true
+					break
+				}
+			}
+			off += utf8.RuneCountInString(line)
+		}
+	}
+	common := ""
+	if dedent {
+		first := true
+		for i, line := range lines {
+			body := strings.TrimRight(line, "\r\n")
+			if inString[i] || body == "" {
+				continue
+			}
+			lead := body[:len(body)-len(strings.TrimLeft(body, " \t"))]
+			if first {
+				common, first = lead, false
+				continue
+			}
+			for !strings.HasPrefix(lead, common) {
+				common = common[:len(common)-1]
+			}
+		}
+	}
+	var b strings.Builder
+	for i, line := range lines {
+		if inString[i] || strings.TrimRight(line, "\r\n") == "" {
+			b.WriteString(line)
+			continue
+		}
+		b.WriteString(prefix + strings.TrimPrefix(line, common))
+	}
+	return b.String()
 }

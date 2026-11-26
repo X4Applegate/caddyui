@@ -27,6 +27,11 @@ type cfToken struct {
 	quoted    bool
 	heredoc   bool
 	lineBreak int // NumLineBreaks: newlines in text, plus 2 for a heredoc
+	// start and end are the token's rune offsets in the source: start is
+	// its first rune (an opening quote or the `<<` of a heredoc included)
+	// and end is just past its last rune (a closing quote or the heredoc's
+	// closing marker included).
+	start, end int
 }
 
 // lexCaddyfile tokenizes src exactly as Caddy's lexer does, heredocs
@@ -75,6 +80,7 @@ func (l *cfLexer) next() (cfToken, bool, error) {
 			}
 			if len(val) > 0 {
 				tok.text = string(val)
+				tok.end = l.pos
 				return tok, true, nil
 			}
 			return tok, false, nil
@@ -85,6 +91,7 @@ func (l *cfLexer) next() (cfToken, bool, error) {
 		if !quoted && !btQuoted && !inHeredoc && !heredocEscaped && len(val) > 1 && string(val[:2]) == "<<" {
 			if ch == ' ' {
 				tok.text = string(val)
+				tok.end = l.pos - 1
 				return tok, true, nil
 			}
 			if ch == '\r' {
@@ -136,6 +143,7 @@ func (l *cfLexer) next() (cfToken, bool, error) {
 				l.line += l.skippedLines
 				l.skippedLines = 0
 				tok.text, tok.quoted, tok.heredoc = string(out), true, true
+				tok.end = l.pos
 				return tok, true, nil
 			}
 			continue
@@ -154,6 +162,7 @@ func (l *cfLexer) next() (cfToken, bool, error) {
 				escaped = false
 			} else if (quoted && ch == '"') || (btQuoted && ch == '`') {
 				tok.text, tok.quoted = string(val), true
+				tok.end = l.pos
 				return tok, true, nil
 			}
 			if ch == '\n' {
@@ -180,6 +189,7 @@ func (l *cfLexer) next() (cfToken, bool, error) {
 			}
 			if len(val) > 0 {
 				tok.text = string(val)
+				tok.end = l.pos - 1
 				return tok, true, nil
 			}
 			continue
@@ -193,7 +203,7 @@ func (l *cfLexer) next() (cfToken, bool, error) {
 		}
 
 		if len(val) == 0 {
-			tok = cfToken{line: l.line}
+			tok = cfToken{line: l.line, start: l.pos - 1}
 			if ch == '"' {
 				quoted = true
 				continue
