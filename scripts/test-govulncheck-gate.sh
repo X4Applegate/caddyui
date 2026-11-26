@@ -455,6 +455,43 @@ OUT="$TMP/gh33"
 want_in "verdict=unknown" "33f and writes verdict=unknown"
 want_in "called=unknown" "33g and refuses to report a called count of 0"
 
+# ---------------------------------------------------------------------------
+# 34. AN UNEVALUABLE `fixed_in=` RE-ARM IS NOT A LIVE ACK.
+#
+#     `fixed_in=` is what makes an acknowledgement self-healing, so the one
+#     thing it must not do is quietly stay honoured when the comparison could
+#     not be made. It used to: the re-arm was skipped outright when the tree
+#     had no readable `toolchain`, so an ack excused by "unfixed before
+#     go1.0.0" kept suppressing the gate even though nothing could say
+#     whether the fix was available. A question that could not be answered
+#     rendered as suppression, which is the inverse of this file's subject.
+#
+#     The safe direction is to treat the ack as no longer in force, so the
+#     finding goes back to failing and the note says why.
+# ---------------------------------------------------------------------------
+printf 'module acktest\n' > "$TMP/gomod-noversion"
+
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+printf 'GO-2026-5932 expires=2099-01-01 fixed_in=go1.0.0 reason=unevaluable re-arm\n' > "$TMP/acks34"
+"$SCRIPT" --source "$TMP" --gomod "$TMP/gomod-noversion" --acks "$TMP/acks34" \
+  --out-dir "$TMP/o.$n" --offline-fixture "$FIX/source-called.json" \
+  --fail-on called --skip-tool-check > "$OUT" 2>&1
+RC=$?
+want_rc 2 "34 an ack whose fixed_in re-arm cannot be evaluated does not suppress the gate"
+want_in "could not be evaluated" "34a and the report says the re-arm could not be evaluated"
+
+# Control: the SAME ack against a tree that does have a toolchain is honoured,
+# so case 34 is about the unevaluable comparison and not about the ack format.
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+printf 'module acktest\ngo 1.0\ntoolchain go0.9.0\n' > "$TMP/gomod-old"
+printf 'GO-2026-5932 expires=2099-01-01 fixed_in=go99.0.0 reason=no fix yet\n' > "$TMP/acks34b"
+"$SCRIPT" --source "$TMP" --gomod "$TMP/gomod-old" --acks "$TMP/acks34b" \
+  --out-dir "$TMP/o.$n" --offline-fixture "$FIX/source-called.json" \
+  --fail-on called --skip-tool-check > "$OUT" 2>&1
+RC=$?
+want_rc 1 "34b a live ack with an unreached fixed_in is still honoured"
+want_in "acknowledged" "34c and is reported as acknowledged"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
