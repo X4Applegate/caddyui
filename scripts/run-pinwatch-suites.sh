@@ -104,6 +104,7 @@ OFFLINE_SUITES=(
   test-pinned-module-replace.sh         # local fixtures; 45 calls, answers unused
   test-pinned-module-input-revision.sh  # --offline-fixture; 0 calls; 31/31 under unshare -rn
   test-pinned-module-linked.sh          # local `go version -m` fixtures; 49 calls, answers unused; 31/31 under unshare -rn
+  test-pinned-module-attribution.sh     # curl+go shims serve scripts/fixtures/t0889; 0 real calls
 )
 NETWORK_SUITES=(
   test-pinned-module-floors.sh          # case 21 -> api.osv.dev
