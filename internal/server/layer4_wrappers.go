@@ -249,7 +249,7 @@ func (s *Server) writeLayer4ListenerWrappers(serverID int64, proxies []models.La
 			continue
 		}
 		serverPath := "/config/apps/http/servers/" + name
-		srvLive, err := s.Caddy.FetchPath(serverPath)
+		srvLive, err := s.caddyClient().FetchPath(serverPath)
 		if err != nil {
 			return err
 		}
@@ -260,7 +260,7 @@ func (s *Server) writeLayer4ListenerWrappers(serverID int64, proxies []models.La
 			continue
 		}
 		path := serverPath + "/listener_wrappers"
-		liveRaw, err := s.Caddy.FetchPath(path)
+		liveRaw, err := s.caddyClient().FetchPath(path)
 		if err != nil {
 			return err
 		}
@@ -268,15 +268,15 @@ func (s *Server) writeLayer4ListenerWrappers(serverID int64, proxies []models.La
 		merged := mergeListenerWrappers(live, ours, managed[name], name == "srv0")
 		switch {
 		case len(merged) == 0 && liveRaw != nil:
-			if err := s.Caddy.DeletePath(path); err != nil {
+			if err := s.caddyClient().DeletePath(path); err != nil {
 				return err
 			}
 		case len(merged) > 0 && !configValuesEqual(liveRaw, merged):
 			if liveRaw == nil {
-				if err := s.Caddy.PutPath(path, merged); err != nil {
+				if err := s.caddyClient().PutPath(path, merged); err != nil {
 					return err
 				}
-			} else if err := s.Caddy.PatchPath(path, merged); err != nil {
+			} else if err := s.caddyClient().PatchPath(path, merged); err != nil {
 				return err
 			}
 		}

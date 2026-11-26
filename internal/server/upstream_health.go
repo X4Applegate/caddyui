@@ -1020,7 +1020,7 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 		} else if validationError := validateProxyAdvancedDirectives(p.AdvancedConfig); validationError != "" {
 			advancedError = validationError
 		} else {
-			caddyClient := s.Caddy
+			caddyClient := s.caddyClient()
 			if s.DB != nil {
 				caddyClient = s.caddyForRequest(r)
 			}

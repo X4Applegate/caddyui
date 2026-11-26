@@ -910,6 +910,29 @@ func (s *Server) apiV1GetRawRoute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rawRouteToAPIMap(rr))
 }
 
+// GET /api/v1/raw-routes/{id}/held-json — administrators only (issue #184
+// round 13). The routes the upgrade migration took off a non-admin's
+// Advanced route it held: they may hold whatever an `import` read up to
+// v2.68.16, so they are never shown to the owner. An administrator can
+// review them and restore them with PUT /api/v1/raw-routes/{id}.
+func (s *Server) apiV1HeldRawRouteJSON(w http.ResponseWriter, r *http.Request) {
+	if !isAdminUser(s.currentUser(r)) {
+		writeJSONError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	held, err := models.GetRawRouteHeldJSON(s.DB, id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "held_json": held})
+}
+
 // POST /api/v1/raw-routes
 func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 	cu := s.currentUser(r)

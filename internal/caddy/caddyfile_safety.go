@@ -643,11 +643,18 @@ func CaddyfileImportArguments(src string) (args []string, ok bool) {
 // 10 deep peaked at ~760 MB, 1 MB nested 100 deep exceeded 3 GB). Non-admin
 // text is held by the server to 64 KiB, 32 levels and 16 imports, each
 // import counted at an upper bound of what it expands to — arguments and
-// blocks it passes included (issue #184 round 11); the heaviest text built
-// within those limits peaked at ~235 MB in one adapt (cgroup memory.peak,
-// Caddy 2.11.9), ~315 MB at the looser bound for text CaddyUI wraps around
-// it. An administrator's text is trusted beyond this depth
-// limit. The depth is counted the way Caddy's own lexer reads the text, so
+// blocks it passes included (issue #184 round 11) — and, since round 13,
+// every token at CaddyfileMinTokenWeight bytes at least, a Caddyfile once
+// per listener port of its widest site block, and matcher references
+// times matcher definitions to 1 MiB. Measured in round 13 (cgroup
+// memory.peak of one `caddy adapt`, Caddy 2.11.9, three runs each), the
+// heaviest text built within those limits — tiny tokens 32 deep, snippet
+// fan-out of empty arguments, a block placed deep, 16 imports, matcher
+// definitions and references, a site on 2 and 16 ports, on the
+// Advanced-route and the proxy-host path — peaked at ~120 MB (worst run
+// 119 MB), and ~160 MB (worst run 161 MB) at the adapt hook's looser
+// bound for text CaddyUI wraps around a non-admin's (40 levels, 68 KiB).
+// An administrator's text is trusted beyond this depth limit. The depth is counted the way Caddy's own lexer reads the text, so
 // text CaddyUI's strict lexer refuses is limited too.
 const MaxCaddyfileNestingDepth = 100
 
@@ -822,13 +829,29 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 			phMax[p] = max(phMax[p], phMax[o])
 		}
 	}
-	// Running sums for the size and placeholder counts of a range.
+	// Running sums for the size and placeholder counts of a range, and
+	// (issue #184 round 13) for its tokens, matcher references and
+	// matcher definitions.
+	ref, def := cfMatcherFacts(toks, depths)
 	sumBytes := make([]int, n+1)
 	sumArgs := make([]int, n+1)
 	sumBlocks := make([]int, n+1)
+	sumWeight := make([]int, n+1)
+	sumRefs := make([]int, n+1)
+	sumDefWeight := make([]int, n+1)
+	b2i := func(b bool) int {
+		if b {
+			return 1
+		}
+		return 0
+	}
 	for k, t := range toks {
 		sumBytes[k+1] = sumBytes[k] + len(t.text) + 1
 		sumArgs[k+1] = sumArgs[k] + strings.Count(t.text, "{args")
+		w := CaddyfileTokenWeight(t.text)
+		sumWeight[k+1] = sumWeight[k] + w
+		sumRefs[k+1] = sumRefs[k] + b2i(ref[k])
+		sumDefWeight[k+1] = sumDefWeight[k] + b2i(def[k])*w
 		sumBlocks[k+1] = sumBlocks[k]
 		if cfBlockPlaceholder(t.text) {
 			sumBlocks[k+1]++
@@ -865,7 +888,7 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 		for len(within) > 0 && within[len(within)-1].to <= i {
 			within = within[:len(within)-1]
 		}
-		site := CaddyfileImport{Depth: depths[i], BlockPlaceholderDepth: -1, Opaque: bodyStart && argOf[i]}
+		site := CaddyfileImport{Depth: depths[i], BlockPlaceholderDepth: -1, Opaque: bodyStart && argOf[i], InMatcherDef: def[i]}
 		// Blocks that open after i belong to earlier imports on i's own
 		// line (i is one of their arguments); the one below them holds i.
 		for w := len(within) - 1; w >= 0; w-- {
@@ -885,7 +908,14 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 					site.BraceArg = true
 				}
 			}
+			for k := i + 2; k < j; k++ {
+				t := toks[k].text
+				site.ArgImport = site.ArgImport || strings.Contains(t, "import")
+				site.ArgNewline = site.ArgNewline || strings.ContainsAny(t, "\n\r") || toks[k].heredoc
+			}
 			site.ArgCount = j - (i + 2)
+			site.ArgWeight = sumWeight[j] - sumWeight[i+2]
+			site.ArgRefs = sumRefs[j] - sumRefs[i+2]
 			site.ArgBytes = sumBytes[j] - sumBytes[i+2]
 			site.ArgArgUses = sumArgs[j] - sumArgs[i+2]
 			site.ArgBlockUses = sumBlocks[j] - sumBlocks[i+2]
@@ -894,6 +924,9 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 		if j < n && !cfIsNewLine(toks, j) && isOpen(j) {
 			from, to := j+1, closeOf[j]
 			site.BlockBytes = sumBytes[to] - sumBytes[from]
+			site.BlockWeight = sumWeight[to] - sumWeight[from]
+			site.BlockRefs = sumRefs[to] - sumRefs[from]
+			site.BlockDefWeight = sumDefWeight[to] - sumDefWeight[from]
 			site.BlockArgUses = sumArgs[to] - sumArgs[from]
 			site.BlockBlockUses = sumBlocks[to] - sumBlocks[from]
 			site.BlockNest = innerMax[j] - (depths[j] + 1)
@@ -935,6 +968,15 @@ type CaddyfileImports struct {
 	// Imports describes, for each entry of Arguments, what the import
 	// passes to its snippet: its arguments and block (issue #184 round 11).
 	Imports []CaddyfileImport
+	// Weight weighs src's tokens as the tenant rules count them
+	// (CaddyfileTokenWeight), Refs counts those that may name a matcher,
+	// and DefWeight weighs its matcher definitions (issue #184 round 13;
+	// see cfMatcherFacts).
+	Weight, Refs, DefWeight int
+	// SiteListeners is the most distinct listener ports one site block of
+	// src names in its addresses, read as a whole Caddyfile (issue #184
+	// round 13; see cfSiteListeners).
+	SiteListeners int
 }
 
 // CaddyfileImportUse reports how src uses `import` and snippets, reading
@@ -1005,6 +1047,18 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 		use.ImportDepths = append(use.ImportDepths, depths[i])
 	}
 	use.Imports = cfImportSites(toks, depths, func(i int) bool { return toks[i].text == "import" && cfIsNewLine(toks, i) }, false)
+	use.SiteListeners = cfSiteListeners(toks)
+	ref, def := cfMatcherFacts(toks, depths)
+	for i, t := range toks {
+		w := CaddyfileTokenWeight(t.text)
+		use.Weight += w
+		if ref[i] {
+			use.Refs++
+		}
+		if def[i] {
+			use.DefWeight += w
+		}
+	}
 	return use, true
 }
 

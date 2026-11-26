@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -220,12 +221,14 @@ func lookalikeNeverReadsAFile(t *testing.T, name string, c [2]string) {
 func TestStoredTenantRouteThatHidTheAdminSnippetIsAdaptedAgain(t *testing.T) {
 	store := func(t *testing.T, conn *sql.DB, sid, owner int64, listen string) {
 		t.Helper()
-		if _, err := models.CreateRawRoute(conn, sid, owner, &models.RawRoute{Label: "legacy", Enabled: true,
+		id, err := models.CreateRawRoute(conn, sid, owner, &models.RawRoute{Label: "legacy", Enabled: true,
 			Listen:       models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(listen)),
 			CaddyfileSrc: strings.Replace(round10Lookalikes["backtick"][0], "bt.example.test", "bt.example.test"+listen, 1),
-			JSONData:     `{"match":[{"host":["bt.example.test"]}],"handle":[{"handler":"headers","response":{"set":{"X-Planted":["` + round10Secret + `"]}}}]}`}); err != nil {
+			JSONData:     `{"match":[{"host":["bt.example.test"]}],"handle":[{"handler":"headers","response":{"set":{"X-Planted":["` + round10Secret + `"]}}}]}`})
+		if err != nil {
 			t.Fatal(err)
 		}
+		markPreUpgrade(t, conn, id)
 	}
 	built := func(s *Server, conn *sql.DB, sid, admin int64) (string, string) {
 		raws, _ := models.ListRawRoutes(conn, sid, admin, true, nil)
@@ -258,12 +261,35 @@ func TestStoredTenantRouteThatHidTheAdminSnippetIsAdaptedAgain(t *testing.T) {
 			t.Errorf("the text adapted again lacks the administrator's snippet:\n%s", body)
 		}
 	}
-	// With Caddy: the route is deployed as its text adapts today.
+	// With Caddy: round 13 — its stored routes are not what its text
+	// adapts to today, so it is held (not deployed), with the stored
+	// routes kept for an administrator; saving its text again brings it
+	// back, adapted with the administrator's snippet.
 	s2, conn2, sid2, _, bin, admin2, tenant2 := newPlantedAdaptFixture(t)
 	requireCaddy(t, bin, "the stored route is adapted again with Caddy")
 	store(t, conn2, sid2, tenant2.ID, "")
 	s2.migrateTenantRawRoutes(sid2, s2.Caddy)
 	live, _ := built(s2, conn2, sid2, admin2.ID)
+	if strings.Contains(live, round10Secret) || strings.Contains(live, "bt.example.test") {
+		t.Errorf("want the route held: %s", live)
+	}
+	raws, _ := models.ListRawRoutes(conn2, sid2, admin2.ID, true, nil)
+	if len(raws) != 1 {
+		t.Fatalf("%d rows", len(raws))
+	}
+	if held, _ := models.GetRawRouteHeldJSON(conn2, raws[0].ID); !strings.Contains(held, round10Secret) {
+		t.Errorf("the held routes were not kept for review: %q", held)
+	}
+	body, _ := json.Marshal(map[string]any{"caddyfile_src": raws[0].CaddyfileSrc, "enabled": true})
+	id := strconv.FormatInt(raws[0].ID, 10)
+	req := asUser(httptest.NewRequest(http.MethodPut, "/api/v1/raw-routes/"+id, strings.NewReader(string(body))), sid2, tenant2, map[string]string{"id": id})
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s2.apiV1UpdateRawRoute(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save again: %d %s", w.Code, w.Body.String())
+	}
+	live, _ = built(s2, conn2, sid2, admin2.ID)
 	if strings.Contains(live, round10Secret) || !strings.Contains(live, "X-Tag") {
 		t.Errorf("want the route adapted again with the administrator's snippet: %s", live)
 	}
@@ -430,16 +456,18 @@ func hostFormValues(domain, adv string) map[string][]string {
 
 // Issue #184 round 10 (2): the budget arithmetic, exactly at its limits.
 func TestImportBudgetLimits(t *testing.T) {
+	// Round 13: names and the filler's words are 3+ characters long, so
+	// every token weighs exactly its bytes and a separator.
 	set := tenantSnippetSet{
 		"a":    {Name: "a", BodyBytes: 1000, Depth: 2},
-		"b":    {Name: "b", BodyBytes: 500, Depth: 1, Imports: []caddy.CaddyfileImport{{Name: "a", Depth: 1}, {Name: "a", Depth: 3}}},
+		"bbb":  {Name: "bbb", BodyBytes: 500, Depth: 1, Imports: []caddy.CaddyfileImport{{Name: "a", Depth: 1}, {Name: "a", Depth: 3}}},
 		"loop": {Name: "loop", Imports: []caddy.CaddyfileImport{{Name: "loop"}}},
 		"file": {Name: "file", Imports: []caddy.CaddyfileImport{{Name: "secrets"}}},
 		"tiny": {Name: "tiny"},
 	}
 	limit := 4096
-	fill := func(n int) string { return "header X \"" + strings.Repeat("x", n-len("header X \"\"\n")) + "\"\n" }
-	own := "import b\n"
+	fill := func(n int) string { return "header XYZ \"" + strings.Repeat("x", n-len("header XYZ \"\"\n")) + "\"\n" }
+	own := "import bbb\n"
 	// b = 500 + 2×1000; depth = max(1, 1+2, 3+2) = 5.
 	at := own + fill(limit-2500-len(own))
 	if len(at)+2500 != limit {
@@ -454,10 +482,10 @@ func TestImportBudgetLimits(t *testing.T) {
 	nested := func(levels int, line string) string {
 		return strings.Repeat("route {\n", levels) + line + strings.Repeat("}\n", levels)
 	}
-	if why := tenantTextRules(nested(27, "import b\n"), set, 32, 0); why != "" {
+	if why := tenantTextRules(nested(27, "import bbb\n"), set, 32, 0); why != "" {
 		t.Errorf("depth 27+5: %q", why)
 	}
-	if why := tenantTextRules(nested(28, "import b\n"), set, 32, 0); !strings.Contains(why, "33 levels deep once") {
+	if why := tenantTextRules(nested(28, "import bbb\n"), set, 32, 0); !strings.Contains(why, "33 levels deep once") {
 		t.Errorf("depth 28+5: %q", why)
 	}
 	if why := tenantTextRules(strings.Repeat("import tiny\n", tenantMaxImports), set, 32, limit); why != "" {

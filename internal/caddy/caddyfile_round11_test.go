@@ -358,11 +358,12 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 	var ranges [][2]int
 	argOf := map[int]bool{}
 	open := func(i int) bool { return !toks[i].quoted && toks[i].text == "{" }
+	ref, def := cfMatcherFacts(toks, depths)
 	for i := range toks {
 		if !isImport(i) {
 			continue
 		}
-		site := CaddyfileImport{Depth: depths[i], BlockPlaceholderDepth: -1, Opaque: bodyStart && argOf[i]}
+		site := CaddyfileImport{Depth: depths[i], BlockPlaceholderDepth: -1, Opaque: bodyStart && argOf[i], InMatcherDef: def[i]}
 		for p := len(sites) - 1; p >= 0; p-- {
 			if ranges[p][0] <= i && i < ranges[p][1] {
 				site.Within = p + 1
@@ -378,6 +379,12 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 				argOf[j] = true
 				site.ArgCount++
 				site.ArgBytes += len(t) + 1
+				site.ArgWeight += CaddyfileTokenWeight(t)
+				if ref[j] {
+					site.ArgRefs++
+				}
+				site.ArgImport = site.ArgImport || strings.Contains(t, "import")
+				site.ArgNewline = site.ArgNewline || strings.ContainsAny(t, "\n\r") || toks[j].heredoc
 				site.ArgArgUses += strings.Count(t, "{args")
 				if cfBlockPlaceholder(t) {
 					site.ArgBlockUses++
@@ -407,6 +414,13 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 			site.BlockNest = cfMaxNestingDepth(contents)
 			for k, t := range contents {
 				site.BlockBytes += len(t.text) + 1
+				site.BlockWeight += CaddyfileTokenWeight(t.text)
+				if ref[from+k] {
+					site.BlockRefs++
+				}
+				if def[from+k] {
+					site.BlockDefWeight += CaddyfileTokenWeight(t.text)
+				}
 				site.BlockArgUses += strings.Count(t.text, "{args")
 				if cfBlockPlaceholder(t.text) {
 					site.BlockBlockUses++

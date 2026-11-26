@@ -298,7 +298,17 @@ func round11StoredRow(t *testing.T, conn *sql.DB, sid, owner int64, label, src, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	markPreUpgrade(t, conn, id)
 	return id
+}
+
+// markPreUpgrade makes a row read as one an earlier version stored
+// (issue #184 round 13: rows this version writes are marked rules_184).
+func markPreUpgrade(t *testing.T, conn *sql.DB, id int64) {
+	t.Helper()
+	if _, err := conn.Exec(`UPDATE raw_routes SET rules_184 = 0 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // liveFor is the live config the sync would build from the stored rows.
@@ -335,11 +345,16 @@ func TestUpgradeMigrationAdaptsStoredTenantRoutesAgain(t *testing.T) {
 				t.Fatalf("a row waiting for the migration was deployed: %s", live)
 			}
 			s.migrateTenantRawRoutes(sid, s.Caddy)
+			// Round 13: its stored routes are not what its text adapts to
+			// today, so it is held, the routes kept for an administrator.
 			rr, _ := models.GetRawRoute(conn, id)
-			if strings.Contains(rr.JSONData, round11Secret) || !strings.Contains(rr.JSONData, "X-Tag") || !rr.Enabled {
+			if strings.Contains(rr.JSONData, round11Secret) || rr.Enabled {
 				t.Errorf("stored route after the migration: enabled=%v %s", rr.Enabled, rr.JSONData)
 			}
-			if live := liveFor(t, s, conn, sid, admin.ID); strings.Contains(live, round11Secret) || !strings.Contains(live, "X-Tag") {
+			if held, _ := models.GetRawRouteHeldJSON(conn, id); !strings.Contains(held, round11Secret) {
+				t.Errorf("held routes: %q", held)
+			}
+			if live := liveFor(t, s, conn, sid, admin.ID); strings.Contains(live, round11Secret) || strings.Contains(live, "ta.example.test") {
 				t.Errorf("live routes after the migration: %s", live)
 			}
 			if v, _ := models.GetSetting(conn, settingTenantRawRouteMigration); v != "done" {
@@ -370,8 +385,10 @@ func TestUpgradeMigrationFailsClosed(t *testing.T) {
 	s, conn, sid, rec, bin, admin, tenant := newRound11Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", map[string]string{"tag": "X-Planted " + round11Secret + "\n"})
 	requireCaddy(t, bin, "the stored routes are adapted again with Caddy")
 	site := func(host string) string { return host + " {\n\theader {\n\t\timport tag\n\t}\n\trespond 1\n}" }
-	onSrv0 := round11StoredRow(t, conn, sid, tenant.ID, "srv0", site("m1.example.test"), "m1.example.test", "")
-	onPort := round11StoredRow(t, conn, sid, tenant.ID, "port", site("m2.example.test:7070"), "m2.example.test", ":7070")
+	// Round 13: these two hold what their text adapts to today, so only
+	// reaching Caddy decides whether they are kept.
+	onSrv0 := round13Fresh(t, s, conn, sid, tenant.ID, "srv0", site("m1.example.test"))
+	onPort := round13Fresh(t, s, conn, sid, tenant.ID, "port", site("m2.example.test:7070"))
 	refused := round11StoredRow(t, conn, sid, tenant.ID, "refused", "m3.example.test {\n\timport secrets\n}", "m3.example.test", "")
 	textless := round11StoredRow(t, conn, sid, tenant.ID, "route[0] (no host match)", "", "m4.example.test", "")
 	adminRow := round11StoredRow(t, conn, sid, admin.ID, "admin", site("m5.example.test"), "m5.example.test", "")
@@ -553,8 +570,8 @@ func TestSyncRunsTheUpgradeMigration(t *testing.T) {
 	}
 	_ = s.syncCaddy(sid, false) // the push itself may fail against the stand-in; the migration runs first
 	rr, _ := models.GetRawRoute(conn, id)
-	if strings.Contains(rr.JSONData, round11Secret) || !strings.Contains(rr.JSONData, "X-Tag") {
-		t.Errorf("the sync did not migrate the row: %s", rr.JSONData)
+	if strings.Contains(rr.JSONData, round11Secret) || rr.Enabled { // round 13: held, its routes differ from its text's
+		t.Errorf("the sync did not migrate the row: enabled=%v %s", rr.Enabled, rr.JSONData)
 	}
 	if got, _ := s.rawRouteMigrationServers(); len(got) != 0 {
 		t.Errorf("servers still waiting: %v", got)

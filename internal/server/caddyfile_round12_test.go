@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/models"
@@ -111,6 +112,7 @@ func round12StoredRow(t *testing.T, conn *sql.DB, sid, owner int64, label, src, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	markPreUpgrade(t, conn, id)
 	return id
 }
 
@@ -162,12 +164,13 @@ func TestNestedImportBlocksAreRefusedBeforeCaddy(t *testing.T) {
 
 // Issue #184 round-12 review (1): which administrator snippets a
 // non-admin may import — one block placement is fine; two (`{block}` and
-// `{blocks.…}` counted together), a placement next to other importer
-// text, one at the start of the body, one passed on inside an import's
-// block, and a `}` followed by more text on its line (the differential
-// test against Caddy found Caddy then runs the block on into the
-// importer's text) are withheld; and the message a non-admin gets is the same as for
-// an undefined name (review (8)).
+// `{blocks.…}` counted together), a placement on a line with other text,
+// one passed on inside an import's block, and a `}` followed by more text
+// on its line (the differential test against Caddy found Caddy then runs
+// the block on into the importer's text) are withheld; and the message a
+// non-admin gets is the same as for an undefined name (review (8)). Round
+// 13: a snippet that starts with the block is available again (inside a
+// site; see TestSnippetPlaceholderPlacement).
 func TestSnippetsThatRepeatTheImportersBlockAreWithheld(t *testing.T) {
 	admin := "(one) {\n\troute {\n\t\t{block}\n\t}\n}\n" +
 		"(two) {\n\troute {\n\t\t{block}\n\t}\n\thandle {\n\t\t{block}\n\t}\n}\n" +
@@ -179,7 +182,7 @@ func TestSnippetsThatRepeatTheImportersBlockAreWithheld(t *testing.T) {
 		"(fixed) {\n\timport one {\n\t\theader X 1\n\t}\n}\n" +
 		"(midline) {\n\timport one {\n\t\theader X 1\n\t} import fixed\n}\n"
 	set := tenantSnippetSetFrom(caddy.CaddyfileSnippets(admin))
-	for name, withheld := range map[string]bool{"one": false, "fixed": false, "two": true, "ab": true, "adj": true, "first": true, "pass": true, "passargs": true, "midline": true} {
+	for name, withheld := range map[string]bool{"one": false, "fixed": false, "first": false, "two": true, "ab": true, "adj": true, "pass": true, "passargs": true, "midline": true} {
 		if got := set[name].Withheld != ""; got != withheld {
 			t.Errorf("%s: withheld=%v (%q), want %v", name, got, set[name].Withheld, withheld)
 		}
@@ -187,7 +190,7 @@ func TestSnippetsThatRepeatTheImportersBlockAreWithheld(t *testing.T) {
 			t.Errorf("%s: in the text adapted for a non-admin", name)
 		}
 	}
-	for _, name := range []string{"two", "ab", "adj", "first", "pass", "passargs", "midline", "nosuch"} {
+	for _, name := range []string{"two", "ab", "adj", "pass", "passargs", "midline", "nosuch"} {
 		why, _, _ := tenantTextCheck("x.test {\n\timport "+name+" {\n\t\theader X 1\n\t}\n}\n", set, tenantTextLimits{maxDepth: 32, maxBytes: maxTenantCaddyfileBytes})
 		if why != tenantSnippetUnavailable(name) {
 			t.Errorf("import %s: %q", name, why)
@@ -201,14 +204,23 @@ func TestSnippetsThatRepeatTheImportersBlockAreWithheld(t *testing.T) {
 // fails there with an index out of range, and the client sees EOF); inside
 // a site it is. With Caddy on PATH, the shape is shown to break Caddy's
 // parser when sent anyway.
+//
+// Round 13: a snippet whose first token is a placeholder is withheld
+// outright (an {args…} placeholder may not start a line), so `va` and the
+// snippets importing it are no longer available anywhere; the top-level
+// rule still applies to a snippet that starts with an `import` or the
+// importer's block, or runs an `import` outside any block of its own.
 func TestTopLevelImportsThatBreakCaddysParserAreRefused(t *testing.T) {
-	admin := "(va) {\n\t{args[:]}\n\theader X 1\n}\n(wrap) {\n\timport va\n}\n(late) {\n\ta.test {\n\t}\n\timport va\n}\n(ok) {\n\theader X 1\n}\n"
+	admin := "(va) {\n\t{args[:]}\n\theader X 1\n}\n(wrap) {\n\timport ok\n}\n(late) {\n\ta.test {\n\t}\n\timport ok\n}\n(blk) {\n\t{block}\n\theader X 1\n}\n(ok) {\n\theader X 1\n}\n"
 	s, conn, sid, rec, _, tenant := newAdaptRecorderFixture(t)
 	s.CaddyfilePath = filepath.Join(t.TempDir(), "Caddyfile")
 	if err := os.WriteFile(s.CaddyfilePath, []byte(admin), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"va", "wrap", "late"} {
+	if why := s.tenantAdaptTextViolation(s.withTenantSnippets("t.example.test {\n\timport va\n}\n")); why != tenantSnippetUnavailable("va") {
+		t.Errorf("import va: %q", why)
+	}
+	for _, name := range []string{"wrap", "late", "blk"} {
 		rec.reset()
 		raw := "import " + name + "\nt.example.test {\n\trespond 1\n}\n"
 		for path, resp := range tenantCaddyfilePaths(t, s, conn, sid, tenant, raw, "respond 1") {
@@ -228,13 +240,12 @@ func TestTopLevelImportsThatBreakCaddysParserAreRefused(t *testing.T) {
 			}
 		}
 	}
-	// Inside a site, and with arguments for the variadic, it is fine.
-	text := s.withTenantSnippets("t.example.test {\n\timport va\n}\n")
-	if why := s.tenantAdaptTextViolation(text); why != "" {
-		t.Errorf("import va inside a site: %q", why)
-	}
-	if why := s.tenantAdaptTextViolation(s.withTenantSnippets("import va x.test\n")); why != "" {
-		t.Errorf("import va x.test at the top level: %q", why)
+	// Inside a site it is fine.
+	for _, name := range []string{"wrap", "late", "blk"} {
+		text := s.withTenantSnippets("t.example.test {\n\timport " + name + "\n}\n")
+		if why := s.tenantAdaptTextViolation(text); why != "" {
+			t.Errorf("import %s inside a site: %q", name, why)
+		}
 	}
 	if why := s.tenantAdaptTextViolation(s.withTenantSnippets("import ok\n")); why != "" {
 		t.Errorf("import ok at the top level: %q", why)
@@ -348,32 +359,52 @@ func TestAdvancedFailureRouteIsSanitised(t *testing.T) {
 // owner saving new text — and a row changed meanwhile without a save
 // stays pending.
 func TestMigrationDoesNotOverwriteConcurrentChanges(t *testing.T) {
-	arrived := make(chan struct{}, 4)
-	release := make(chan struct{})
-	slow := func(body string) (int, string) {
-		if strings.Contains(body, "respond new") { // the owner's save
-			return 200, round12Adapted("cc.example.test", "X-New")
+	// Round 13 (code 6): each subtest has its own channels, and every
+	// wait is bounded, so a failure ends the test instead of hanging it.
+	type gate struct {
+		arrived, release chan struct{}
+		slow             func(body string) (int, string)
+	}
+	newGate := func() *gate {
+		g := &gate{arrived: make(chan struct{}, 4), release: make(chan struct{}, 4)}
+		g.slow = func(body string) (int, string) {
+			if strings.Contains(body, "respond new") { // the owner's save
+				return 200, round12Adapted("cc.example.test", "X-New")
+			}
+			if !strings.Contains(body, "import tag") { // anything else a sync adapts
+				return 200, round12Adapted("other.example.test", "X-Other")
+			}
+			g.arrived <- struct{}{}
+			select {
+			case <-g.release:
+			case <-time.After(10 * time.Second):
+			}
+			return 200, round12Adapted("cc.example.test", "X-Tag")
 		}
-		if !strings.Contains(body, "import tag") { // anything else a sync adapts
-			return 200, round12Adapted("other.example.test", "X-Other")
+		return g
+	}
+	wait := func(t *testing.T, ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out waiting for %s", what)
 		}
-		arrived <- struct{}{}
-		<-release
-		return 200, round12Adapted("cc.example.test", "X-Tag")
 	}
 	src := "cc.example.test {\n\theader {\n\t\timport tag\n\t}\n}"
 
 	t.Run("administrator disables", func(t *testing.T) {
-		s, conn, sid, _, admin, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", slow)
+		g := newGate()
+		s, conn, sid, _, admin, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", g.slow)
 		id := round12StoredRow(t, conn, sid, tenant.ID, "cc", src, "cc.example.test", "")
 		done := make(chan struct{})
 		go func() { s.migrateTenantRawRoutes(sid, s.Caddy); close(done) }()
-		<-arrived
+		wait(t, g.arrived, "the migration's adapt")
 		if _, err := conn.Exec(`UPDATE raw_routes SET enabled = 0 WHERE id = ?`, id); err != nil {
 			t.Fatal(err)
 		}
-		release <- struct{}{}
-		<-done
+		g.release <- struct{}{}
+		wait(t, done, "the migration run")
 		rr, _ := models.GetRawRoute(conn, id)
 		if rr.Enabled {
 			t.Errorf("the administrator's disable was overwritten")
@@ -384,21 +415,23 @@ func TestMigrationDoesNotOverwriteConcurrentChanges(t *testing.T) {
 		if live := liveFor(t, s, conn, sid, admin.ID); strings.Contains(live, round12Secret) {
 			t.Errorf("deployed: %s", live)
 		}
-		// The next run adapts it again and keeps it disabled.
-		go func() { <-arrived; release <- struct{}{} }()
+		// The next run adapts it again and keeps it disabled (round 13:
+		// held, its stored routes are not what its text adapts to).
+		g.release <- struct{}{}
 		s.migrateTenantRawRoutes(sid, s.Caddy)
 		rr, _ = models.GetRawRoute(conn, id)
-		if rr.Enabled || strings.Contains(rr.JSONData, round12Secret) || !strings.Contains(rr.JSONData, "X-Tag") {
+		if rr.Enabled || strings.Contains(rr.JSONData, round12Secret) || s.rawRouteMigrationPending(*rr) {
 			t.Errorf("after the next run: enabled=%v %s", rr.Enabled, rr.JSONData)
 		}
 	})
 
 	t.Run("owner saves new text", func(t *testing.T) {
-		s, conn, sid, _, _, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", slow)
+		g := newGate()
+		s, conn, sid, _, _, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", g.slow)
 		id := round12StoredRow(t, conn, sid, tenant.ID, "cc", src, "cc.example.test", "")
 		done := make(chan struct{})
 		go func() { s.migrateTenantRawRoutes(sid, s.Caddy); close(done) }()
-		<-arrived
+		wait(t, g.arrived, "the migration's adapt")
 		// The owner saves new text, adapted under today's rules, while the
 		// migration waits on Caddy; the save's own sync does not wait for
 		// the migration run.
@@ -411,8 +444,8 @@ func TestMigrationDoesNotOverwriteConcurrentChanges(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("save: %d %s", w.Code, w.Body.String())
 		}
-		release <- struct{}{}
-		<-done
+		g.release <- struct{}{}
+		wait(t, done, "the migration run")
 		rr, _ := models.GetRawRoute(conn, id)
 		if rr.CaddyfileSrc != newSrc {
 			t.Errorf("the owner's new text was overwritten: %q", rr.CaddyfileSrc)
@@ -431,13 +464,15 @@ func TestMigrationRetriesRefusalsThatDependOnTheAdministrator(t *testing.T) {
 	s, conn, sid, _, _, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", func(string) (int, string) {
 		return 200, round12Adapted("tr.example.test", "X-Tag")
 	})
-	id := round12StoredRow(t, conn, sid, tenant.ID, "tr", "tr.example.test {\n\theader {\n\t\timport tag\n\t}\n}", "tr.example.test", "")
+	// Round 13: the row holds what its text adapts to (a row whose routes
+	// differ is held whatever the snippets say).
+	id := round13Fresh(t, s, conn, sid, tenant.ID, "tr", "tr.example.test {\n\theader {\n\t\timport tag\n\t}\n}")
 	own := round12StoredRow(t, conn, sid, tenant.ID, "own", "ow.example.test {\n\timport tag\n\trespond {env.HOME}\n}", "ow.example.test", "")
 	path := s.CaddyfilePath
 	s.CaddyfilePath = path + ".missing"
 	s.migrateTenantRawRoutes(sid, s.Caddy)
 	rr, _ := models.GetRawRoute(conn, id)
-	if !rr.Enabled || !strings.Contains(rr.JSONData, round12Secret) || !s.rawRouteMigrationPending(*rr) {
+	if !rr.Enabled || !s.rawRouteMigrationPending(*rr) {
 		t.Errorf("with the snippets unreadable: enabled=%v pending=%v %s", rr.Enabled, s.rawRouteMigrationPending(*rr), rr.JSONData)
 	}
 	if o, _ := models.GetRawRoute(conn, own); o.Enabled || strings.Contains(o.JSONData, round12Secret) {
@@ -446,7 +481,7 @@ func TestMigrationRetriesRefusalsThatDependOnTheAdministrator(t *testing.T) {
 	s.CaddyfilePath = path
 	s.migrateTenantRawRoutes(sid, s.Caddy)
 	rr, _ = models.GetRawRoute(conn, id)
-	if !rr.Enabled || strings.Contains(rr.JSONData, round12Secret) || !strings.Contains(rr.JSONData, "X-Tag") || s.rawRouteMigrationPending(*rr) {
+	if !rr.Enabled || !strings.Contains(rr.JSONData, "X-Tag") || s.rawRouteMigrationPending(*rr) {
 		t.Errorf("with the snippets back: enabled=%v %s", rr.Enabled, rr.JSONData)
 	}
 }
@@ -578,7 +613,19 @@ func TestMigrationHoldsARowWhoseListenSetChanged(t *testing.T) {
 	s, conn, sid, _, admin, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", func(string) (int, string) {
 		return 200, round12Adapted("ls.example.test", "X-Tag") // on :443, the standard listener
 	})
-	id := round12StoredRow(t, conn, sid, tenant.ID, "ls", "ls.example.test:7070 {\n\theader {\n\t\timport tag\n\t}\n}", "ls.example.test", ":7070")
+	// Round 13 (code 6): the stored routes are exactly what the text
+	// adapts to today, so only the listen-set check can hold the row.
+	src := "ls.example.test:7070 {\n\theader {\n\t\timport tag\n\t}\n}"
+	js, _, _, err := s.adaptRawRouteCaddyfileResult(s.tenantAdaptClient(s.Caddy), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := models.CreateRawRoute(conn, sid, tenant.ID, &models.RawRoute{Label: "ls", Enabled: true, CaddyfileSrc: src, JSONData: js,
+		Listen: models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(":7070"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markPreUpgrade(t, conn, id)
 	s.migrateTenantRawRoutes(sid, s.Caddy)
 	rr, _ := models.GetRawRoute(conn, id)
 	if rr.Enabled || strings.Contains(rr.JSONData, "X-Tag") {

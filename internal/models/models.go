@@ -4219,8 +4219,8 @@ func CreateRawRoute(db *sql.DB, serverID int64, ownerID int64, r *RawRoute) (int
 	res, err := db.Exec(`INSERT INTO raw_routes (server_id, label, json_data, caddyfile_src, enabled,
             certificate_id, force_ssl, block_common_exploits,
             dns_provider, dns_zone_id, dns_zone_name, dns_record_id, dns_profile_id, dns_skip_record,
-            node_local, listen, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            node_local, listen, owner_id, rules_184)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		serverID, r.Label, r.JSONData, r.CaddyfileSrc, boolInt(r.Enabled),
 		nilIfZero(r.CertificateID), boolInt(r.ForceSSL), boolInt(r.BlockCommonExploits),
 		r.DNSProvider, r.DNSZoneID, r.DNSZoneName, r.DNSRecordID, r.DNSProfileID, boolInt(r.DNSSkipRecord),
@@ -4231,6 +4231,24 @@ func CreateRawRoute(db *sql.DB, serverID int64, ownerID int64, r *RawRoute) (int
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// MarkRawRouteCurrent records that the Advanced route id was written
+// under this version's rules (issue #184 round 13; see the rules_184
+// column): the one-time upgrade migration never takes it again.
+func MarkRawRouteCurrent(db *sql.DB, id int64) error {
+	_, err := db.Exec(`UPDATE raw_routes SET rules_184 = 1 WHERE id = ?`, id)
+	return err
+}
+
+// GetRawRouteHeldJSON returns the routes the upgrade migration took off
+// the Advanced route id when it held it (issue #184 round 13), or "". For
+// an administrator only: they may hold whatever an `import` read up to
+// v2.68.16.
+func GetRawRouteHeldJSON(db *sql.DB, id int64) (string, error) {
+	var v string
+	err := db.QueryRow(`SELECT COALESCE(held_json, '') FROM raw_routes WHERE id = ?`, id).Scan(&v)
+	return v, err
 }
 
 func GetRawRoute(db *sql.DB, id int64) (*RawRoute, error) {

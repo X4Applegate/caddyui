@@ -261,12 +261,36 @@ type CaddyfileSnippet struct {
 	// Caddy's parser fails on a snippet imported at the top level whose
 	// first token expands to nothing (issue #184 round 12).
 	First string
-	// BlockAdjacent is set when a `{block}` or `{blocks.…}` token sits
-	// right next to another token the importer supplies (another such
-	// token, or one holding an `{args…}` placeholder) — issue #184 round
-	// 12: Caddy decides where the importer's block ends by line numbers,
-	// and two of the importer's token runs back to back can merge.
-	BlockAdjacent bool
+	// BlockNotAlone is set when a `{block}` or `{blocks.…}` token shares
+	// its line with another token (issue #184 round 12, narrowed to one
+	// line in round 13: Caddy starts a new line after the importer's
+	// block wherever it is put, so only the same line matters).
+	BlockNotAlone bool
+	// PlaceholderLineStart is set when an `{args…}` token can be the
+	// first token of a line once the snippet is imported (issue #184
+	// round 13): no token earlier on its line is always put in by Caddy
+	// on that line (see cfSnippetPlacement). The importer's arguments
+	// would then choose the directive — `import` of a file among them.
+	PlaceholderLineStart bool
+	// PlaceholderNoLiteral is set when a token holds `{args…}`
+	// placeholders and no character of its own but braces, other than a
+	// token that is exactly one placeholder (round 13): the arguments
+	// alone decide what it is, `{` or `}` included.
+	PlaceholderNoLiteral bool
+	// DefBlock is set when the importer's block is put inside a matcher
+	// definition (round 13: its size then counts as the definition's).
+	DefBlock bool
+	// BodyWeight is the body's tokens weighed as the tenant rules count
+	// them (CaddyfileTokenWeight), and never less than BodyBytes;
+	// BodyRefs counts the tokens that may name a matcher; BodyDefWeight
+	// weighs the matcher definitions written in the body, and DefArgUses
+	// counts the `{args` placeholders in them (issue #184 round 13; see
+	// cfMatcherFacts).
+	BodyWeight, BodyRefs, BodyDefWeight, DefArgUses int
+	// HeadKeys is the most tokens a line at the body's depth 0 has before
+	// an opening brace (cfHeadKeys): imported at the top level of a file,
+	// they are a site block's addresses (issue #184 round 13).
+	HeadKeys int
 	// MidLineClose is set when a `}` in the body is followed by more of
 	// the body on its line (issue #184 round 12). Caddy finds the body's
 	// end by counting braces, but a block inside it ends only at a `}`
@@ -300,6 +324,19 @@ type CaddyfileImport struct {
 	// BraceArg is set when an argument is `{` or `}`: put in a snippet's
 	// place for {args…}, it opens or closes a block.
 	BraceArg bool
+	// ArgImport is set when an argument holds the word `import`, and
+	// ArgNewline when one holds a line break (issue #184 round 13): put
+	// in a snippet's place, a line break moves the tokens after it to a
+	// new line, where a directive starts.
+	ArgImport, ArgNewline bool
+	// ArgWeight and BlockWeight weigh the arguments' and the block's
+	// tokens as the tenant rules count them (CaddyfileTokenWeight);
+	// ArgRefs and BlockRefs count those that may name a matcher;
+	// BlockDefWeight weighs the matcher definitions in the block; and
+	// InMatcherDef is set when the import sits in a matcher definition
+	// (issue #184 round 13; see cfMatcherFacts).
+	ArgWeight, ArgRefs, BlockWeight, BlockRefs, BlockDefWeight int
+	InMatcherDef                                               bool
 	// BlockBytes is the size of the block written after the import (its
 	// contents, between the braces), 0 when there is none; BlockArgUses
 	// and BlockBlockUses count the snippet placeholders in it.
@@ -328,21 +365,30 @@ func CaddyfileSnippets(src string) []CaddyfileSnippet {
 		if len(body) > 0 {
 			s.First = body[0].text
 		}
+		ref, def := cfMatcherFacts(body, depths)
+		sh := cfSnippetPlacement(body, def)
+		s.BlockNotAlone, s.PlaceholderLineStart, s.PlaceholderNoLiteral, s.DefBlock = sh.blockNotAlone, sh.placeholderLineStart, sh.placeholderNoLiteral, sh.defBlock
+		weight := 0
 		for i, t := range body {
+			weight += CaddyfileTokenWeight(t.text)
 			if t.text == "}" && !t.quoted && i+1 < len(body) && !cfIsNewLine(body, i+1) {
 				s.MidLineClose = true
 			}
 			s.ArgUses += strings.Count(t.text, "{args")
+			if ref[i] {
+				s.BodyRefs++
+			}
+			if def[i] {
+				s.DefArgUses += strings.Count(t.text, "{args")
+				s.BodyDefWeight += CaddyfileTokenWeight(t.text)
+			}
 			if cfBlockPlaceholder(t.text) {
 				s.BlockUses++
 				s.BlockDepth = max(s.BlockDepth, depths[i])
-				for _, k := range []int{i - 1, i + 1} {
-					if k >= 0 && k < len(body) && (cfBlockPlaceholder(body[k].text) || strings.Contains(body[k].text, "{args")) {
-						s.BlockAdjacent = true
-					}
-				}
 			}
 		}
+		s.BodyWeight = max(weight, s.BodyBytes)
+		s.HeadKeys = cfHeadKeys(body, depths)
 		// The body's first token starts a line wherever it is written.
 		s.Imports = cfImportSites(body, depths, func(i int) bool { return body[i].text == "import" }, true)
 		out = append(out, s)

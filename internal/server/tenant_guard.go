@@ -96,8 +96,8 @@ func (s *Server) adminHostSet() map[string]bool {
 			out[h] = true
 		}
 	}
-	if s.Caddy != nil {
-		add(s.Caddy.AdminURL)
+	if cl := s.caddyClient(); cl != nil {
+		add(cl.AdminURL)
 	}
 	if s.DB != nil {
 		if servers, err := models.ListCaddyServers(s.DB); err == nil {
@@ -498,6 +498,15 @@ func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimit
 		if imp.BraceArg {
 			return "an `import` argument may not be a lone `{` or `}`: in the snippet it opens or closes a block", 0, 0
 		}
+		if imp.ArgImport {
+			return "an `import` argument may not hold the word `import`", 0, 0
+		}
+		if imp.ArgNewline {
+			return "an `import` argument may not hold a line break", 0, 0
+		}
+		if imp.InMatcherDef {
+			return "an `import` may not be written inside a matcher definition", 0, 0
+		}
 		if imp.Within != 0 {
 			return "an `import` may not be written inside the block of another `import`", 0, 0
 		}
@@ -505,24 +514,58 @@ func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimit
 			return fmt.Sprintf("the snippet %q can only be imported inside a site block", imp.Name), 0, 0
 		}
 	}
-	size, depth, why := snippets.importsCost(use.Imports)
+	size, depth, why := snippets.importsCost(use.Imports, viewSize)
 	if why != "" {
 		return why, 0, 0
 	}
-	size = satAdd(size, int64(len(text)))
+	// Issue #184 round 13: the text's own tokens are weighed too (an
+	// empty token costs Caddy as much as a short one).
+	size = satAdd(size, int64(max(len(text), use.Weight)))
+	// Issue #184 round 13: a site block is adapted once for every listener
+	// port its addresses name, so a whole Caddyfile is charged that many
+	// times over (a site on both http:// and https:// counts twice).
+	if lim.topLevel && use.SiteListeners > 1 {
+		size = satMul(size, int64(use.SiteListeners))
+	}
 	depth = max(depth, use.MaxDepth)
 	if maxBytes > 0 && size > int64(maxBytes) {
-		return fmt.Sprintf("the text is too large once the snippets it imports are counted (%d KiB; the limit is %d KiB)", (size+1023)>>10, maxBytes>>10), size, depth
+		return fmt.Sprintf("the text is too large once the snippets it imports are counted (%d KiB; the limit is %d KiB, and every token counts as at least %d bytes)", (size+1023)>>10, maxBytes>>10, caddy.CaddyfileMinTokenWeight), size, depth
 	}
 	if depth > maxDepth {
 		return fmt.Sprintf("blocks are nested %d levels deep once the snippets it imports are counted; the limit is %d", depth, maxDepth), size, depth
 	}
+	if copies := tenantMatcherCopies(use, snippets); copies > tenantMaxMatcherCopyBytes {
+		return fmt.Sprintf("named matchers would be copied into the adapted config too often (%d KiB of matcher definitions times references; the limit is %d KiB) — reference each named matcher fewer times, or keep matcher definitions short", (copies+1023)>>10, tenantMaxMatcherCopyBytes>>10), size, depth
+	}
 	return "", size, depth
+}
+
+// tenantMaxMatcherCopyBytes bounds how much named-matcher definition text
+// a non-admin's text may have Caddy copy (issue #184 round 13): Caddy puts
+// a named matcher's whole definition into every handler that names it, so
+// 3720 references to two 8000-token path matchers in 64 KiB of text
+// adapted to 119 MB of JSON and peaked at 2.6 GB. The product of every
+// reference and the weight of every definition (an upper bound: a
+// reference copies one definition) is held to this; see
+// MaxCaddyfileNestingDepth in the caddy package for the measurement.
+const tenantMaxMatcherCopyBytes = 1 << 20
+
+// tenantMatcherCopies is references × definition weight for text, the
+// snippets it imports included (viewRefs, viewDefs). Errors in the import
+// cost were already reported by the size view, which runs first.
+func tenantMatcherCopies(use caddy.CaddyfileImports, snippets tenantSnippetSet) int64 {
+	refs, _, _ := snippets.importsCost(use.Imports, viewRefs)
+	defs, _, _ := snippets.importsCost(use.Imports, viewDefs)
+	refs = satAdd(refs, int64(use.Refs))
+	defs = satAdd(defs, int64(use.DefWeight))
+	return satMul(refs, defs)
 }
 
 // snippetUnsafeAtTopLevel reports whether importing sn with nargs
 // arguments at the top level of the file, outside any site block, can make
-// Caddy's parser fail (issue #184 round 12): at the top level Caddy's
+// Caddy's parser fail (issue #184 round 12), or opens a site block on more
+// than one address there (round 13: the block is adapted once per
+// listener, which the size limit does not count): at the top level Caddy's
 // parser fails with an index out of range when the snippet's first token
 // expands to nothing (a variadic `{args[…]}` with an empty range, or the
 // importer's block), and an `import` the snippet holds outside any block
@@ -531,6 +574,11 @@ func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimit
 func snippetUnsafeAtTopLevel(sn caddy.CaddyfileSnippet, nargs int) bool {
 	if sn.First == "import" || caddy.CaddyfileVariadicEmpty(sn.First, nargs) ||
 		sn.First == "{block}" || strings.HasPrefix(sn.First, "{blocks.") {
+		return true
+	}
+	// Round 13: a block it opens there is a site block, adapted once per
+	// listener its addresses name; only a single address is counted for.
+	if sn.HeadKeys > 1 {
 		return true
 	}
 	for _, imp := range sn.Imports {
@@ -577,6 +625,72 @@ func tenantTextRefusalIsOwn(text string, lim tenantTextLimits) bool {
 // arguments and block are measured in; a snippet's own body counts its
 // source bytes, which is never less. Every sum saturates, so a pathological
 // chain cannot overflow — it is just refused.
+
+// costView is what the import cost model adds up (issue #184 round 13).
+// The same linear model serves three measures:
+//
+//   - viewSize: the tokens' weight (caddy.CaddyfileTokenWeight: bytes,
+//     but at least a few per token, since Caddy's adapter spends memory
+//     per token), what the size limit holds;
+//   - viewRefs: tokens that may name a matcher (cfMatcherFacts in the
+//     caddy package); each `{args…}` placeholder puts the importer's
+//     references in again, as it does the importer's bytes;
+//   - viewDefs: the weight of matcher definitions. A placeholder on a
+//     definition's line puts the importer's arguments — their whole
+//     weight — into the definition, so in this view A is the arguments'
+//     weight (as in viewSize) and B the definitions in the importer's
+//     block.
+//
+// Caddy copies a named matcher into every handler that names it, so the
+// adapted config grows with references × definitions; tenantTextCheck
+// bounds that product.
+type costView int
+
+const (
+	viewSize costView = iota
+	viewRefs
+	viewDefs
+)
+
+// snippet is k, a and b of the snippet's own body in view v.
+func (v costView) snippet(sn caddy.CaddyfileSnippet) (k, a, b int64) {
+	switch v {
+	case viewRefs:
+		return int64(sn.BodyRefs), int64(sn.ArgUses), int64(sn.BlockUses)
+	case viewDefs:
+		return int64(sn.BodyDefWeight), int64(sn.DefArgUses), int64(sn.BlockUses)
+	}
+	return int64(max(sn.BodyWeight, sn.BodyBytes)), int64(sn.ArgUses), int64(sn.BlockUses)
+}
+
+// inner is what an import inside a snippet's body passes its snippet,
+// as linear forms in the importing snippet's own A and B.
+func (v costView) inner(imp caddy.CaddyfileImport) (args, block linear) {
+	switch v {
+	case viewRefs:
+		return linear{int64(imp.ArgRefs), int64(imp.ArgArgUses), int64(imp.ArgBlockUses)},
+			linear{int64(imp.BlockRefs), int64(imp.BlockArgUses), int64(imp.BlockBlockUses)}
+	case viewDefs:
+		// A is a weight in this view; the block passes its definitions
+		// (a snippet that puts placeholders in an import's block is
+		// withheld, so the coefficients only err high).
+		return linear{int64(imp.ArgWeight), int64(imp.ArgArgUses), int64(imp.ArgBlockUses)},
+			linear{int64(imp.BlockDefWeight), int64(imp.BlockArgUses), int64(imp.BlockBlockUses)}
+	}
+	return linear{int64(imp.ArgWeight), int64(imp.ArgArgUses), int64(imp.ArgBlockUses)},
+		linear{int64(imp.BlockWeight), int64(imp.BlockArgUses), int64(imp.BlockBlockUses)}
+}
+
+// top is what a non-admin's own import passes its snippet.
+func (v costView) top(imp caddy.CaddyfileImport) (args, block linear) {
+	switch v {
+	case viewRefs:
+		return linear{k: int64(imp.ArgRefs)}, linear{k: int64(imp.BlockRefs)}
+	case viewDefs:
+		return linear{k: int64(imp.ArgWeight)}, linear{k: int64(imp.BlockDefWeight)}
+	}
+	return linear{k: int64(imp.ArgWeight)}, linear{k: int64(imp.BlockWeight)}
+}
 
 // tenantImportCost is the cost of one snippet as a function of what an
 // import passes it; see above.
@@ -642,7 +756,7 @@ func (c tenantImportCost) depthWith(n0, n1 int) (int, int) {
 // reads a file whose size is unknown, one placed where its expansion
 // cannot be bounded is refused too, and snippets that import each other
 // in a cycle never finish expanding (Caddy refuses those too).
-func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, visiting map[string]bool) (tenantImportCost, string) {
+func (set tenantSnippetSet) cost(name string, v costView, memo map[string]tenantImportCost, visiting map[string]bool) (tenantImportCost, string) {
 	if c, ok := memo[name]; ok {
 		return c, ""
 	}
@@ -658,7 +772,8 @@ func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, 
 	}
 	visiting[name] = true
 	defer delete(visiting, name)
-	c := tenantImportCost{k: int64(sn.BodyBytes), a: int64(sn.ArgUses), b: int64(sn.BlockUses), d0: sn.Depth, d1: noDepth}
+	k, a, b := v.snippet(sn)
+	c := tenantImportCost{k: k, a: a, b: b, d0: sn.Depth, d1: noDepth}
 	if sn.BlockDepth >= 0 {
 		c.d1 = sn.BlockDepth
 	}
@@ -668,13 +783,12 @@ func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, 
 		if imp.Opaque || imp.Name == "" {
 			return tenantImportCost{}, tenantSnippetUnavailable(name)
 		}
-		t, why := set.cost(imp.Name, memo, visiting)
+		t, why := set.cost(imp.Name, v, memo, visiting)
 		if why != "" {
 			return tenantImportCost{}, why
 		}
-		sites[i] = sites[i].finish(t, imp,
-			linear{int64(imp.ArgBytes), int64(imp.ArgArgUses), int64(imp.ArgBlockUses)},
-			linear{int64(imp.BlockBytes), int64(imp.BlockArgUses), int64(imp.BlockBlockUses)})
+		args, block := v.inner(imp)
+		sites[i] = sites[i].finish(t, imp, args, block)
 		if p := imp.Within - 1; p >= 0 {
 			sites[p] = sites[p].withChild(sites[i], imp.Depth-sn.Imports[p].Depth-1)
 		}
@@ -739,16 +853,17 @@ func (sc siteCost) finish(t tenantImportCost, imp caddy.CaddyfileImport, args, b
 // importsCost is what a non-admin's imports add: the expanded bytes of
 // every import outside another import's block (those inside one count
 // where that block is put), and the deepest nesting any of them reaches.
-func (set tenantSnippetSet) importsCost(imports []caddy.CaddyfileImport) (int64, int, string) {
+func (set tenantSnippetSet) importsCost(imports []caddy.CaddyfileImport, v costView) (int64, int, string) {
 	memo := map[string]tenantImportCost{}
 	sites := make([]siteCost, len(imports))
 	for i := len(imports) - 1; i >= 0; i-- {
 		imp := imports[i]
-		t, why := set.cost(imp.Name, memo, map[string]bool{})
+		t, why := set.cost(imp.Name, v, memo, map[string]bool{})
 		if why != "" {
 			return 0, 0, why
 		}
-		sites[i] = sites[i].finish(t, imp, linear{k: int64(imp.ArgBytes)}, linear{k: int64(imp.BlockBytes)})
+		args, block := v.top(imp)
+		sites[i] = sites[i].finish(t, imp, args, block)
 		if p := imp.Within - 1; p >= 0 {
 			sites[p] = sites[p].withChild(sites[i], imp.Depth-imports[p].Depth-1)
 		}
@@ -985,12 +1100,30 @@ func sortedStringKeys(m map[string]string) []string {
 // `import` written in the block swallows the next copy — which expands
 // without bound. So a snippet is also withheld when it puts the
 // importer's block in more than once (`{block}` and `{blocks.…}` counted
-// together), puts it right next to another token the importer supplies,
-// starts with it (Caddy's parser fails on that at the top level), passes
-// the importer's block or arguments on inside an `import`'s block, holds
-// a `}` with more text after it on its line (the block it closes then
-// runs on into the importer's text, as Caddy reads it), or imports
-// itself.
+// together), passes the importer's block or arguments on inside an
+// `import`'s block, holds a `}` with more text after it on its line (the
+// block it closes then runs on into the importer's text, as Caddy reads
+// it), or imports itself.
+//
+// Issue #184 round 13: Caddy replaces a snippet's `{args…}` placeholders
+// before it looks for directives, so a placeholder where a line starts —
+// or a token such as `im{args[0]}` there — lets the importer's arguments
+// choose the directive, `import` of any file among them, and a variadic
+// placeholder that expands to nothing there can end the importer's site
+// block early. A snippet is therefore withheld when an `{args…}` token
+// can start a line (cfSnippetPlacement in the caddy package: a token
+// before it on its line must always be put in, as one token); when a
+// token is made of placeholders and braces alone (the arguments would
+// decide whether it is `{` or `}`); when `{block}` / `{blocks.…}` shares
+// its line with any other token (round 12 looked at neighbouring tokens
+// across lines, which withheld snippets Caddy reads correctly; the
+// importer's block may start a snippet, inside a site block — at the top
+// level snippetUnsafeAtTopLevel refuses that import); when the block is
+// put inside a matcher definition, or an `import` is written in one; and
+// when an `import` in it passes a lone brace or a line break as an
+// argument. A placeholder inside a token after the first of its line
+// (`header Authorization "Bearer {args[0]}"`, `{args[0]}:{args[1]}`)
+// stays available.
 func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 	set := tenantSnippetSet{}
 	dup := map[string]bool{}
@@ -1016,11 +1149,17 @@ func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 		case sn.BlockUses > 1:
 			withhold(name, "it puts the importer's block ({block} / {blocks.…}) in more than once")
 			continue
-		case sn.BlockAdjacent:
-			withhold(name, "it puts the importer's block ({block} / {blocks.…}) right next to other text the importer supplies")
+		case sn.BlockNotAlone:
+			withhold(name, "it puts the importer's block ({block} / {blocks.…}) on a line with other text")
 			continue
-		case sn.First == "{block}" || strings.HasPrefix(sn.First, "{blocks.") && strings.HasSuffix(sn.First, "}"):
-			withhold(name, "it starts with the importer's block ({block} / {blocks.…})")
+		case sn.PlaceholderLineStart:
+			withhold(name, "an {args…} placeholder in it can start a line, where the importer's arguments would choose the directive")
+			continue
+		case sn.PlaceholderNoLiteral:
+			withhold(name, "a token in it is made of {args…} placeholders alone, so the importer's arguments decide what it is")
+			continue
+		case sn.DefBlock:
+			withhold(name, "it puts the importer's block ({block} / {blocks.…}) inside a matcher definition")
 			continue
 		case sn.MidLineClose:
 			withhold(name, "a `}` in it is followed by more text on its line, so Caddy reads the block it closes as running on past the snippet")
@@ -1033,6 +1172,14 @@ func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 			}
 			if imp.BlockBlockUses > 0 || imp.BlockArgUses > 0 {
 				withhold(name, "it passes the importer's block or arguments on inside the block of an `import`")
+				break
+			}
+			if imp.BraceArg || imp.ArgNewline {
+				withhold(name, "it passes a lone `{` or `}`, or a line break, as an argument of an `import`")
+				break
+			}
+			if imp.InMatcherDef {
+				withhold(name, "it imports a snippet inside a matcher definition")
 				break
 			}
 		}
@@ -1145,6 +1292,10 @@ func (s *Server) validateRawRouteForUser(cu *models.User, rr *models.RawRoute) s
 	}
 	if len(rr.CaddyfileSrc) > maxTenantCaddyfileBytes {
 		return tenantCaddyfileTooLarge("the Caddyfile")
+	}
+	// Issue #184 round 13: the stored routes are deployed on every sync.
+	if len(rr.JSONData) > maxTenantRawJSONBytes {
+		return fmt.Sprintf("Not allowed for a non-admin account: the route JSON is too large (the limit is %d MiB). Ask an administrator.", maxTenantRawJSONBytes>>20)
 	}
 	if why := s.tenantOwnTextViolation(rr.CaddyfileSrc); why != "" {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."

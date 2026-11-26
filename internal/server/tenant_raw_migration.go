@@ -27,35 +27,39 @@ import (
 // was left out read a file of that name instead, into the stored JSON. No
 // reading of the stored text can tell for sure which rows that happened
 // to, so every such row is adapted again, once, the way a save adapts it
-// today, and only the new JSON is kept.
+// today, and kept only when that gives exactly its stored routes (round
+// 13; round 12 stored the new JSON instead).
 //
-// The rows concerned are a non-admin's Advanced routes whose Caddyfile
-// text holds the word `import` (an `import` is the only way text reads a
-// file at adapt time; {$…} is refused by the tenant rules on every sync),
-// and every non-admin Advanced route with no Caddyfile text at all,
-// whatever its label: the paste import stored some blocks without their
-// text — labelled with their host names, or "route[N] (no host match)" —
-// and their JSON is what the whole paste adapted to, so it may hold a file
-// another block read. Such a row cannot be adapted again.
+// The rows concerned (issue #184 round 13) are every non-admin Advanced
+// route an earlier version stored — the rules_184 column marks the rows
+// this version wrote, which are never taken. Up to round 12 only rows
+// whose text held the word `import`, and rows with no text, were taken;
+// but a row's stored routes need not match its text at all (the paste
+// import could store routes another block of the paste produced, and a
+// carriage return inside the word hides `import` from a substring test),
+// so the text alone cannot clear a row.
 //
 // The set is taken the first time this version reads it, and kept in the
 // settings table; until a row has been migrated it is not deployed (fail
-// closed): not on srv0, not on its own listener. A row whose own content
-// shows it is not concerned (text without `import`) is never held back,
-// even when the state cannot be read. Each sync migrates the rows of the
-// server it syncs, with that server's Caddy, before it builds the config
-// (outside the sync lock: adapting may take seconds per row):
+// closed): not on srv0, not on its own listener, not copied by a fleet
+// sync. Each sync migrates the rows of the server it syncs, with that
+// server's Caddy, before it builds the config (outside the sync lock:
+// adapting may take seconds per row):
 //
-//   - the text adapts under today's rules → its JSON is stored and the row
-//     is deployed as before;
-//   - the text is refused for what it is — by the tenant rules on its own,
-//     or by Caddy (a 400 from /adapt) — or adapts to another listen set →
-//     the row is disabled and its stored JSON cleared, with the reason in
-//     the log and the activity log; the text is kept, so saving the row
-//     again brings it back;
-//   - the row has no text → it is held the same way (disabled, JSON
-//     cleared, in the activity log) until its owner or an administrator
-//     saves it again;
+//   - the text adapts under today's rules to exactly the stored routes →
+//     the row is kept (and marked) and deployed as before;
+//   - the stored routes differ from what the text adapts to now, the text
+//     is refused for what it is — by the tenant rules on its own, or by
+//     Caddy (a 400 from /adapt) — or it adapts to another listen set or to
+//     more routes than a non-admin may store → the row is disabled and
+//     its stored routes cleared, with the reason in the log and the
+//     activity log; the text is kept, so saving the row again brings it
+//     back, and the cleared routes are kept in held_json for an
+//     administrator (GET /api/v1/raw-routes/{id}/held-json), who may
+//     restore them;
+//   - the row has no text (the paste import's text-less rows, JSON-only
+//     rows made through the API) → it is held the same way, its routes
+//     kept for an administrator;
 //   - the text is refused because of the administrator's Caddyfile (a
 //     snippet it imports is missing, unreadable, renamed or withheld), or
 //     Caddy cannot be reached (or answers anything but a result or a 400)
@@ -93,16 +97,50 @@ type tenantRawMigration struct {
 	strikes map[int64]int
 	// unreadable is set once a corrupt state has been logged.
 	unreadable bool
+	// everPending is set once this process has seen a row waiting (issue
+	// #184 round 13): from then on a copy of a row read before the
+	// migration or a save cleared it may be stale (rawRouteMigrationBlocks).
+	everPending bool
 }
 
-// rawRouteMigrationShape reports whether a row is one the migration
-// covers by its content: owned by a non-admin, and with text that holds
-// `import`, or with no text at all.
+// rawRouteMigrationShape reports whether a row is one the migration may
+// cover: any non-admin's Advanced route (issue #184 round 13 — up to round
+// 12 only rows whose text held `import`, or no text; but a row's stored
+// routes need not match its text at all, whatever the text says).
 func (s *Server) rawRouteMigrationShape(rr models.RawRoute) bool {
-	if !s.isTenantOwner(rr.OwnerID) {
+	return s.isTenantOwner(rr.OwnerID)
+}
+
+// rawRouteMigrationBlocks reports whether rr, a copy of a row read from
+// the database, must not be deployed now: the row still waits for the
+// migration, or (issue #184 round 13) the copy may predate the write that
+// let it go. The migration and a save write the row first and only then
+// clear it from the pending set, so a copy read before that write can be
+// found not pending afterwards and still hold the routes stored before
+// the upgrade; it is compared with the row as stored now. Design choice:
+// this re-read, rather than taking the sync lock for the migration's
+// writes, also covers the fleet copy and the save path, which do not run
+// under that lock. A row that changed is left out of this sync; the sync
+// of the write that changed it (the migration's own, or the save's)
+// deploys it.
+func (s *Server) rawRouteMigrationBlocks(rr models.RawRoute) bool {
+	if s.rawRouteMigrationPending(rr) {
+		return true
+	}
+	if s == nil || s.DB == nil || !s.rawRouteMigrationShape(rr) {
 		return false
 	}
-	return strings.Contains(rr.CaddyfileSrc, "import") || strings.TrimSpace(rr.CaddyfileSrc) == ""
+	s.rawMigMu.Lock()
+	ever := s.rawMig.everPending
+	s.rawMigMu.Unlock()
+	if !ever {
+		return false
+	}
+	cur, err := models.GetRawRoute(s.DB, rr.ID)
+	if err != nil || cur == nil {
+		return true
+	}
+	return cur.JSONData != rr.JSONData || cur.CaddyfileSrc != rr.CaddyfileSrc || cur.Enabled != rr.Enabled || cur.Listen != rr.Listen
 }
 
 // rawRouteMigrationPending reports whether the Advanced route still waits
@@ -128,6 +166,11 @@ func (s *Server) rawRouteMigrationPending(rr models.RawRoute) bool {
 func (s *Server) rawRouteMigrationSaved(id int64) {
 	if s == nil || s.DB == nil {
 		return
+	}
+	// Issue #184 round 13: the row is marked as written under today's
+	// rules, so a state rebuild never takes it again.
+	if err := models.MarkRawRouteCurrent(s.DB, id); err != nil {
+		log.Printf("advanced route migration: route id=%d: %v", id, err)
 	}
 	s.rawMigMu.Lock()
 	defer s.rawMigMu.Unlock()
@@ -161,6 +204,7 @@ func (s *Server) loadRawRouteMigrationLocked() error {
 	case v == "done":
 		s.rawMig = fresh()
 		s.rawMig.done = true
+		s.rawMig.everPending = keep.everPending
 		return nil
 	case v != "":
 		var st struct {
@@ -171,6 +215,7 @@ func (s *Server) loadRawRouteMigrationLocked() error {
 			for _, id := range st.Pending {
 				s.rawMig.pending[id] = true
 			}
+			s.rawMig.everPending = keep.everPending || len(st.Pending) > 0
 			return nil
 		} else if !keep.unreadable {
 			log.Printf("advanced route migration: its saved state is unreadable (%v); the rows it covers are taken again from the database", err)
@@ -185,6 +230,7 @@ func (s *Server) loadRawRouteMigrationLocked() error {
 	for _, id := range ids {
 		s.rawMig.pending[id] = true
 	}
+	s.rawMig.everPending = keep.everPending || len(ids) > 0
 	if len(ids) > 0 {
 		log.Printf("advanced route migration: %d non-admin Advanced route(s) will be adapted again, or held, before they are deployed (issue #184)", len(ids))
 	}
@@ -207,9 +253,12 @@ func (s *Server) saveRawRouteMigrationLocked() error {
 }
 
 // rawRouteMigrationCandidates returns the rows the migration covers; see
-// the top of this file.
+// the top of this file. A row this version wrote (rules_184) is never
+// one (issue #184 round 13): a state rebuild must not take a row created
+// or saved again under today's rules — a JSON-only row made through the
+// API, for one — for a row stored before the upgrade.
 func (s *Server) rawRouteMigrationCandidates() ([]int64, error) {
-	rows, err := s.DB.Query(`SELECT id, COALESCE(caddyfile_src, ''), COALESCE(owner_id, 0) FROM raw_routes`)
+	rows, err := s.DB.Query(`SELECT id, COALESCE(caddyfile_src, ''), COALESCE(owner_id, 0) FROM raw_routes WHERE COALESCE(rules_184, 0) = 0`)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +417,7 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 			}
 			continue
 		case rawMigHold:
-			ok, err := migrationWrite(s.DB, w.rr, "[]", false)
+			ok, err := migrationWrite(s.DB, w.rr, "[]", false, true)
 			if err != nil {
 				log.Printf("advanced route migration: route id=%d: disable: %v", id, err)
 				continue
@@ -377,10 +426,10 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 				s.logRowChanged(id)
 				continue
 			}
-			log.Printf("advanced route migration: route id=%d (%q) disabled and its stored routes cleared: %s. Its owner or an administrator can save it again to bring it back.", id, w.rr.Label, strings.TrimSuffix(why, "."))
+			log.Printf("advanced route migration: route id=%d (%q) disabled and its stored routes cleared: %s. The routes it held are kept for an administrator (GET /api/v1/raw-routes/%d/held-json); saving its Caddyfile again, or an administrator restoring reviewed routes, brings it back.", id, w.rr.Label, strings.TrimSuffix(why, "."), id)
 			_ = models.LogActivity(s.DB, serverID, "system", "rawroute_migration_disabled", fmt.Sprintf("rr:%d", id), w.rr.Label+": "+why, false)
 		default:
-			ok, err := migrationWrite(s.DB, w.rr, w.json, w.rr.Enabled)
+			ok, err := migrationWrite(s.DB, w.rr, w.json, w.rr.Enabled, false)
 			if err != nil {
 				log.Printf("advanced route migration: route id=%d: store: %v", id, err)
 				continue
@@ -419,15 +468,22 @@ func (s *Server) logRowChanged(id int64) {
 // migrationWrite stores jsonData and enabled on the row read as rr, only
 // if the row still holds what rr holds (issue #184 round 12: adapting
 // takes time, and an administrator may disable the row or its owner save
-// new text meanwhile). It reports whether the row was written.
-func migrationWrite(db *sql.DB, rr models.RawRoute, jsonData string, enabled bool) (bool, error) {
+// new text meanwhile). It reports whether the row was written. The row is
+// marked as handled under today's rules (rules_184); held says the row is
+// being held, and its stored routes are then kept in held_json for an
+// administrator (issue #184 round 13), unless an earlier hold kept some.
+func migrationWrite(db *sql.DB, rr models.RawRoute, jsonData string, enabled, held bool) (bool, error) {
 	owner := int64(0)
 	if rr.OwnerID.Valid {
 		owner = rr.OwnerID.Int64
 	}
-	res, err := db.Exec(`UPDATE raw_routes SET json_data = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+	// held_json is assigned first: MariaDB evaluates the assignments of an
+	// UPDATE in order, so json_data on its right must still be the old one.
+	res, err := db.Exec(`UPDATE raw_routes SET
+			held_json = CASE WHEN ? = 1 AND COALESCE(held_json, '') = '' AND json_data NOT IN ('', '[]') THEN json_data ELSE COALESCE(held_json, '') END,
+			json_data = ?, enabled = ?, rules_184 = 1, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND COALESCE(caddyfile_src, '') = ? AND json_data = ? AND enabled = ? AND COALESCE(listen, '') = ? AND COALESCE(owner_id, 0) = ?`,
-		jsonData, boolToInt(enabled), rr.ID, rr.CaddyfileSrc, rr.JSONData, boolToInt(rr.Enabled), rr.Listen, owner)
+		boolToInt(held), jsonData, boolToInt(enabled), rr.ID, rr.CaddyfileSrc, rr.JSONData, boolToInt(rr.Enabled), rr.Listen, owner)
 	if err != nil {
 		return false, err
 	}
@@ -455,7 +511,7 @@ func caddyConnectionLost(why string) bool {
 // answered says Caddy's adapter answered (with a result or a 400).
 func (s *Server) readaptForMigration(rr models.RawRoute, cl *caddy.Client) (jsonData, why string, out rawMigOutcome, answered bool) {
 	if strings.TrimSpace(rr.CaddyfileSrc) == "" {
-		return "", "it has no Caddyfile text to adapt again (the Caddyfile paste import of earlier versions stored some routes that way), so it is held for review", rawMigHold, false
+		return "", "it has no Caddyfile text to adapt again (the Caddyfile paste import of earlier versions stored some routes that way, and the API stores JSON-only routes), so its routes cannot be checked against what made them; it is held for an administrator's review", rawMigHold, false
 	}
 	if msg := s.tenantRawRouteTextProblem(rr.CaddyfileSrc); msg != "" {
 		// Issue #184 round 12: a refusal that depends on the
@@ -491,6 +547,17 @@ func (s *Server) readaptForMigration(rr models.RawRoute, cl *caddy.Client) (json
 	}
 	if msg := s.tenantRawRouteAdaptedProblem(jsonData, listen, result); msg != "" {
 		return "", msg, rawMigHold, true
+	}
+	if len(jsonData) > maxTenantRawJSONBytes {
+		return "", fmt.Sprintf("its Caddyfile adapts to more than %d MiB of routes", maxTenantRawJSONBytes>>20), rawMigHold, true
+	}
+	// Issue #184 round 13: stored routes that are not what the text
+	// adapts to now did not come from that text the way a save makes them
+	// today — up to v2.68.16 an `import` the text does not show (one of a
+	// paste's other blocks, a file) could put them there — so the row is
+	// held, and its routes are kept for an administrator's review.
+	if !jsonEqual(rr.JSONData, jsonData) {
+		return "", "its stored routes differ from what its Caddyfile adapts to now", rawMigHold, true
 	}
 	return jsonData, "", rawMigStore, true
 }

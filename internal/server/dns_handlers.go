@@ -836,8 +836,8 @@ func (s *Server) caddyDialHost(serverID int64) string {
 			adminURL = srv.AdminURL
 		}
 	}
-	if adminURL == "" && s.Caddy != nil {
-		adminURL = s.Caddy.AdminURL
+	if cl := s.caddyClient(); adminURL == "" && cl != nil {
+		adminURL = cl.AdminURL
 	}
 	if adminURL == "" {
 		return ""

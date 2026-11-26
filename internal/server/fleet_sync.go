@@ -760,7 +760,7 @@ func (s *Server) syncFleetConfiguration(actor string, sourceServerID, targetServ
 		// migration is not deployed on its own server, and a copy would
 		// be a new row the migration does not know: it is skipped until
 		// the migration has adapted it again.
-		if s.rawRouteMigrationPending(rawRoute) {
+		if s.rawRouteMigrationBlocks(rawRoute) {
 			summary.RawRoutesSkipped++
 			summary.RawRoutesPending++
 			continue

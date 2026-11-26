@@ -463,7 +463,7 @@ func friendlyAdvancedRejection(err error) string {
 // than about the text: the sync then keeps the output the same text last
 // adapted to, when there is one (advancedGoodFor).
 func (s *Server) syncAdaptProxyAdvanced(p models.ProxyHost) (handlers []any, overrides map[string]any, why string, transient bool) {
-	cl := s.Caddy
+	cl := s.caddyClient()
 	if s.isTenantOwner(p.OwnerID) {
 		if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
 			return nil, nil, "not allowed for a non-admin owner: " + why, false

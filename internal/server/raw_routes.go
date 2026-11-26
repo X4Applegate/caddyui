@@ -254,11 +254,23 @@ func tenantClient(caddyCl *caddy.Client) bool {
 // adapts to the tenant text rules first (tenantAdaptTextViolation), as
 // caddyForRequest does for a non-admin's request. The live sync uses it
 // for rows a non-admin owns (issue #184 round 10).
+// maxTenantAdaptBytes is the largest adapted config CaddyUI reads from
+// Caddy for a non-admin's text, and maxTenantRawJSONBytes the largest
+// json_data it stores for a non-admin's Advanced route (issue #184 round
+// 13): the tenant text rules keep real output far below both, and an
+// answer past them is refused rather than stored and deployed on every
+// sync.
+const (
+	maxTenantAdaptBytes   = 4 << 20
+	maxTenantRawJSONBytes = 2 << 20
+)
+
 func (s *Server) tenantAdaptClient(cl *caddy.Client) *caddy.Client {
 	if cl == nil {
 		return nil
 	}
 	cp := *cl
+	cp.MaxAdaptBytes = maxTenantAdaptBytes
 	cp.AdaptTextCheck = func(text string) string {
 		if why := s.tenantAdaptTextViolation(text); why != "" {
 			return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
@@ -1034,7 +1046,7 @@ func (s *Server) trySyncCaddy(serverID int64, forceTLS bool) {
 // guard must still protect user routes, but metrics management should work on
 // a fresh server without forcing the administrator to create a dummy host.
 func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheusMetricsConfig) error {
-	current, currentJSON, err := s.Caddy.FetchConfig()
+	current, currentJSON, err := s.caddyClient().FetchConfig()
 	if err != nil {
 		return fmt.Errorf("fetch current config for metrics: %w", err)
 	}
@@ -1043,7 +1055,7 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 		return fmt.Errorf("clone config for metrics: %w", err)
 	}
 	applyPrometheusMetrics(proposed, metricsCfg, serverID)
-	if err := s.Caddy.Validate(proposed); err != nil {
+	if err := s.caddyClient().Validate(proposed); err != nil {
 		return fmt.Errorf("caddy rejected Prometheus metrics config: %w", err)
 	}
 	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
@@ -1067,11 +1079,11 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies []models.Layer4Proxy) error {
 	// v2.58.0 (issue #122): the raw Caddyfile block plus the managed Layer4
 	// proxy rows.
-	layer4App, err := layer4AppFor(s.Caddy, srv, proxies)
+	layer4App, err := layer4AppFor(s.caddyClient(), srv, proxies)
 	if err != nil {
 		return fmt.Errorf("layer4 Caddyfile: %w", err)
 	}
-	current, currentJSON, err := s.Caddy.FetchConfig()
+	current, currentJSON, err := s.caddyClient().FetchConfig()
 	if err != nil {
 		return fmt.Errorf("fetch current config for layer4: %w", err)
 	}
@@ -1081,7 +1093,7 @@ func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies
 	}
 	applyLayer4App(proposed, layer4App)
 	s.applyLayer4ListenerWrappers(proposed, serverID, proxies) // v2.61.0 (issue #126)
-	if err := s.Caddy.Validate(proposed); err != nil {
+	if err := s.caddyClient().Validate(proposed); err != nil {
 		return fmt.Errorf("caddy rejected layer4 config: %w", err)
 	}
 	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
@@ -1167,9 +1179,13 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// Build a per-server caddy client and swap it in for the duration of this call.
 	// syncCaddy is called from HTTP handlers (single goroutine per request) so this
 	// temporary swap is safe as long as we don't sync the same server concurrently.
-	origClient := s.Caddy
-	s.Caddy = newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
-	defer func() { s.Caddy = origClient }()
+	// Issue #184 round 13: the swap goes through setCaddyClient, and every
+	// read of s.Caddy through caddyClient, so a request reading it while a
+	// sync runs (the tenant guard's admin-host set, a save's adapt) is not
+	// a data race.
+	origClient := s.caddyClient()
+	s.setCaddyClient(newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword))
+	defer s.setCaddyClient(origClient)
 	metricsCfg := loadPrometheusMetricsConfig(s.DB)
 
 	// Use admin view for sync — all routes must be pushed to Caddy regardless of owner.
@@ -1208,7 +1224,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 		// v2.58.0 (issue #122): Layer4 proxy rows count too, and so does having
 		// had managed layer4 servers before — removing the LAST proxy on an
 		// otherwise empty server must still clear them from Caddy.
-		if strings.TrimSpace(srv.Layer4Caddyfile) != "" || len(layer4Proxies) > 0 || hasManagedLayer4Live(s.Caddy) {
+		if strings.TrimSpace(srv.Layer4Caddyfile) != "" || len(layer4Proxies) > 0 || hasManagedLayer4Live(s.caddyClient()) {
 			return s.syncLayer4Only(serverID, srv, layer4Proxies)
 		}
 		log.Printf("caddy sync skipped: no entries in DB for server %d (refusing to push empty routes)", serverID)
@@ -1282,12 +1298,12 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// this server's own admin API before fetching/mutating its config, so a
 	// typo'd block (or a build missing caddy-l4) fails the sync up front with
 	// a clear error instead of after other subtrees have already been written.
-	layer4App, err := layer4AppFor(s.Caddy, srv, layer4Proxies)
+	layer4App, err := layer4AppFor(s.caddyClient(), srv, layer4Proxies)
 	if err != nil {
 		return fmt.Errorf("layer4 Caddyfile for %s: %w", srv.Name, err)
 	}
 
-	current, currentJSON, err := s.Caddy.FetchConfig()
+	current, currentJSON, err := s.caddyClient().FetchConfig()
 	if err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_fetch_failed", "", err.Error(), false)
 		return fmt.Errorf("fetch current config: %w", err)
@@ -1321,7 +1337,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	applyErrorPages(proposed)
 
 	// Validate before touching anything. Caddy runs full provisioning.
-	if err := s.Caddy.Validate(proposed); err != nil {
+	if err := s.caddyClient().Validate(proposed); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_validation_failed", "", err.Error(), false)
 		return fmt.Errorf("caddy rejected proposed config: %s", friendlyCaddyError(err.Error()))
 	}
@@ -1435,7 +1451,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// same policies were included in validation above, so a missing Caddy DNS
 	// module is reported before any subtrees are modified.
 	if len(tlsAutomationPolicies) > 0 {
-		if err := pushAutomationPoliciesVia(s.Caddy, tlsAutomationPolicies); err != nil {
+		if err := pushAutomationPoliciesVia(s.caddyClient(), tlsAutomationPolicies); err != nil {
 			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_automation_failed", "", err.Error(), false)
 			return fmt.Errorf("apply TLS automation policies: %w", err)
 		}
@@ -1448,7 +1464,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	log.Printf("caddy synced server %d (%s): %s", serverID, srv.Name, detail)
 	// v2.38.0: post-apply expectations. `current` is the live config fetched
 	// before the apply; on failure it is loaded straight back.
-	if err := s.verifyAppliedConfig(serverID, srv.Name, s.Caddy, current); err != nil {
+	if err := s.verifyAppliedConfig(serverID, srv.Name, s.caddyClient(), current); err != nil {
 		return err
 	}
 	return nil
@@ -1634,7 +1650,7 @@ func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request
 // directive order inside the site block, so we get a handle[] list in the
 // correct order — we return that list untouched for the caller to splice in.
 func (s *Server) adaptProxyAdvanced(p models.ProxyHost) ([]any, map[string]any, error) {
-	return s.adaptProxyAdvancedWithClient(s.Caddy, p)
+	return s.adaptProxyAdvancedWithClient(s.caddyClient(), p)
 }
 
 // adaptProxyAdvancedWithClient adapts the Advanced config through Caddy and
@@ -1728,7 +1744,7 @@ func (s *Server) redirectExportVeto(rh models.RedirectionHost, text string) stri
 // server's own, or s.Caddy when there is no database to look it up in.
 func (s *Server) exportCaddyClient(serverID int64) *caddy.Client {
 	if s.DB == nil {
-		return s.Caddy
+		return s.caddyClient()
 	}
 	return s.caddyForServer(serverID)
 }
