@@ -286,12 +286,22 @@ jobs:
       # real filesystem. A multi-arch manifest cannot be `load`ed into the
       # daemon, and scanning only amd64 would miss an arm64-only package
       # regression — which is exactly what the subset gate is meant to catch.
+      #
+      # FLOOR_STRICT=1 on BOTH of these and on the publish build below (T-0753).
+      # A security floor raised past its pin fails this job rather than printing
+      # into a log nobody reads when the build is green. It is set here, in the
+      # unattended scan, and not only on the publish build, so the failure
+      # arrives BEFORE a human is asked to approve a refresh — a pipeline that
+      # passes review and then dies on the publish step has spent the review on
+      # an image it was never going to ship.
       - name: Build linux/amd64 (local, scannable)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.caddy
           platforms: linux/amd64
+          build-args: |
+            FLOOR_STRICT=1
           tags: caddy-refresh:amd64
           load: true
           push: false
@@ -304,6 +314,8 @@ jobs:
           context: .
           file: Dockerfile.caddy
           platforms: linux/arm64
+          build-args: |
+            FLOOR_STRICT=1
           tags: caddy-refresh:arm64
           load: true
           push: false
@@ -919,6 +931,9 @@ jobs:
           context: .
           file: Dockerfile.caddy
           platforms: linux/amd64,linux/arm64
+          # A floor lift fails this build rather than publishing (T-0753).
+          build-args: |
+            FLOOR_STRICT=1
           tags: ${{ env.IMAGE }}:${{ needs.build-scan.outputs.patch_tag }}
           push: true
           provenance: mode=max

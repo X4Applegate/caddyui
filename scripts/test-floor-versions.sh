@@ -533,6 +533,153 @@ check "21c says nothing was compared"    "1" "$(err | grep -c 'no .*pkg@version.
 # And the control: with all three left alone, the live file still passes.
 run "$LIVE_DF" "$WORK/G17" --expect "$LIVE_EXPECT_21"
 check "21 control: untouched still rc=0" "0" "$(rc)"
+echo
+echo "=== 22. --strict turns a divergence into a build failure ==="
+# The reporting/strict split IS the T-0753 decision, so both readings of the
+# same input are asserted rather than one. Same Dockerfile, same graph, one
+# flag apart.
+mk_dockerfile "$WORK/D20" '# pin-watch: floor pin=v1.7.8 against=v1.8.2 ref=T-0753 reason=test' \
+  '--with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \'
+mk_graph "$WORK/G20" <<< $'github.com/crowdsecurity/crowdsec\tv1.8.1'
+run "$WORK/D20" "$WORK/G20"
+check "reporting: lift exits 0"      "0" "$(rc)"
+check "reporting: names it diverged" "1" "$(out | grep -c '\[DIVERGED\]')"
+run "$WORK/D20" "$WORK/G20" --strict
+check "strict: lift exits 1"         "1" "$(rc)"
+check "strict: still names it"       "1" "$(out | grep -c '\[DIVERGED\]')"
+# --strict must not change the BELOW-pin answer, which was never optional.
+mk_graph "$WORK/G20b" <<< $'github.com/crowdsecurity/crowdsec\tv1.7.0'
+run "$WORK/D20" "$WORK/G20b"
+check "below pin fails without --strict too" "1" "$(rc)"
+# And a clean run is still clean under --strict: the flag escalates the
+# divergence and nothing else. Without this case a --strict that failed
+# unconditionally would satisfy every other assertion here.
+mk_graph "$WORK/G20c" <<< $'github.com/crowdsecurity/crowdsec\tv1.7.8'
+run "$WORK/D20" "$WORK/G20c" --strict
+check "strict: equal is still ok"    "0" "$(rc)"
+
+echo
+echo "=== 23. a pin BEHIND the artefact fails --strict, which is what T-0753 fixed ==="
+# The state this card found: go-jose written v4.1.7 while the binary shipped
+# v4.1.9, because the go.step.sm/crypto --replace (T-0718) requires v4.1.9.
+# Nothing reported it until the pins were asserted against the artefact. The
+# pre-T-0753 Dockerfile is reconstructed here so the regression cannot return
+# silently: whatever the live file says, THIS shape must still fail --strict.
+mk_dockerfile "$WORK/D21" '# pin-watch: security pin=v4.1.7 ref=T-0646 reason=test' \
+  '--with github.com/go-jose/go-jose/v4@v4.1.7 \'
+mk_graph "$WORK/G21" <<EOF
+github.com/go-jose/go-jose/v4	v4.1.9
+github.com/caddy-dns/route53	v1.6.2
+EOF
+run "$WORK/D21" "$WORK/G21"
+check "reporting: the stale pin builds"  "0" "$(rc)"
+check "reporting: and is named"          "1" "$(out | grep -c '\[DIVERGED\]')"
+run "$WORK/D21" "$WORK/G21" --strict
+check "strict: the stale pin does NOT"   "1" "$(rc)"
+
+echo
+echo "=== 24. every publish path passes FLOOR_STRICT=1 ==="
+# A build-arg is invisible to every other check in this repo. The Dockerfile
+# defaults to the REPORTING reading on purpose, so a publish step that loses
+# `FLOOR_STRICT=1` keeps building, keeps passing, and publishes under the
+# weaker standard with nothing to show it happened. Hence a structural
+# assertion against the workflows rather than a review habit.
+#
+# The step list is DERIVED from the YAML at run time, not written here: the set
+# of steps that build Dockerfile.caddy is whatever the workflows say today, so a
+# new publish step is covered the moment it is added rather than when somebody
+# remembers to extend a fixture.
+if python3 -c 'import yaml' 2>/dev/null; then
+  probe="$WORK/strict-probe.py"
+  cat > "$probe" <<'PY'
+import sys, pathlib, yaml
+root = pathlib.Path(sys.argv[1])
+bad, total = [], 0
+for wf in sorted(root.glob("*.yml")):
+    doc = yaml.safe_load(wf.read_text()) or {}
+    for jname, job in (doc.get("jobs") or {}).items():
+        for step in (job.get("steps") or []):
+            with_ = step.get("with") or {}
+            if str(with_.get("file", "")).strip() != "Dockerfile.caddy":
+                continue
+            total += 1
+            args = with_.get("build-args") or ""
+            if isinstance(args, list):
+                args = "\n".join(str(a) for a in args)
+            pairs = [l.strip() for l in str(args).splitlines() if l.strip()]
+            if "FLOOR_STRICT=1" not in pairs:
+                bad.append("%s:%s:%s" % (wf.name, jname, step.get("name", "?")))
+print("total=%d" % total)
+print("missing=%d" % len(bad))
+for b in bad:
+    print("BAD %s" % b)
+PY
+  python3 -I "$probe" "$REPO/.github/workflows" > "$WORK/strict.txt" 2>&1 || true
+  st_total="$(sed -n 's/^total=//p' "$WORK/strict.txt" | head -1)"
+  st_missing="$(sed -n 's/^missing=//p' "$WORK/strict.txt" | head -1)"
+  # A parse failure leaves both empty, and an empty total would let the
+  # missing-count check pass having examined nothing. "No publish step was
+  # found" and "every publish step is strict" must not share a result, so the
+  # count is asserted to be a positive number FIRST.
+  case "${st_total:-}" in
+    ''|*[!0-9]*) parsed="no: $(head -3 "$WORK/strict.txt" | tr '\n' ' ')" ;;
+    0)           parsed="no: found no Dockerfile.caddy build step at all" ;;
+    *)           parsed=yes ;;
+  esac
+  check "workflows parsed, steps found"          "yes" "$parsed"
+  check "every Dockerfile.caddy build is strict" "0"   "${st_missing:-unparsed}"
+  [ "${st_missing:-1}" = "0" ] || grep '^BAD ' "$WORK/strict.txt" || true
+  # The probe must be able to FAIL. A checker that cannot tell a missing flag
+  # from a present one certifies nothing, and this one is a few lines of YAML
+  # walking that nothing else exercises.
+  neg_dir="$WORK/wfneg"
+  mkdir -p "$neg_dir"
+  sed 's/^\( *\)FLOOR_STRICT=1$/\1FLOOR_STRICT=0/' \
+    "$REPO/.github/workflows/release-docker.yml" > "$neg_dir/release-docker.yml"
+  python3 -I "$probe" "$neg_dir" > "$WORK/strict-neg.txt" 2>&1 || true
+  check "the probe catches a dropped flag" "1" \
+    "$(sed -n 's/^missing=//p' "$WORK/strict-neg.txt" | head -1)"
+else
+  echo "SKIP  python3 yaml unavailable; cannot assert the workflows' FLOOR_STRICT"
+fi
+
+echo
+echo "=== 25. FLOOR_STRICT is validated, not interpolated ==="
+# The Dockerfile derives the flag from the ARG through a `case`. A typo must be
+# a hard error, because silently building the WEAKER way is the one outcome
+# that would make the strict reading losable by accident.
+dfp="$REPO/Dockerfile.caddy"
+check "ARG FLOOR_STRICT defaults to 0" "1" \
+  "$(grep -c '^ARG FLOOR_STRICT=0$' "$dfp")"
+# Comment lines are stripped first: the block above DOCUMENTS the unsafe form
+# in prose, so a grep over the whole file matches the explanation and reports
+# the very defect it is warning about. Checked in both directions — the raw ARG
+# must never reach the script's argument list, and the DERIVED variable must,
+# because "neither is passed" would satisfy a one-sided check while silently
+# dropping --strict everywhere.
+check "the ARG never reaches the arg list" "0" \
+  "$(grep -v '^[[:space:]]*#' "$dfp" | grep -cE '(assert-floor-versions\.sh|--expect).*\$FLOOR_STRICT' || true)"
+check "the derived flag does"              "1" \
+  "$(grep -cE '^[[:space:]]+\$strict$' "$dfp" || true)"
+check "an unknown value is rejected" "1" \
+  "$(grep -c 'FLOOR_STRICT must be 0 or 1' "$dfp")"
+# Runs the Dockerfile's OWN case statement, extracted from the file, so this
+# tests the shipped logic rather than a copy of it that can drift from it.
+case_src="$(sed -n '/^ARG FLOOR_STRICT=0$/,/^    sh \/tmp\/assert-floor-versions.sh/p' "$dfp" \
+            | sed -e '1d' -e '$d' -e 's/^RUN //' -e 's/\\$//')"
+check "the case statement was extracted" "1" \
+  "$(printf '%s' "$case_src" | grep -c 'case "\$FLOOR_STRICT" in')"
+strict_of() { # $1=FLOOR_STRICT value -> prints "rc=<n> strict=<selected flag>"
+  local v="$1" rc=0 res
+  res="$(FLOOR_STRICT="$v" sh -c "$case_src"' printf "%s" "${strict-}"' 2>/dev/null)" || rc=$?
+  printf 'rc=%s strict=%s' "$rc" "$res"
+}
+check "1 selects --strict"      "rc=0 strict=--strict" "$(strict_of 1)"
+check "0 selects reporting"     "rc=0 strict="         "$(strict_of 0)"
+check "empty selects reporting" "rc=0 strict="         "$(strict_of '')"
+check "true selects --strict"   "rc=0 strict=--strict" "$(strict_of true)"
+check "a typo is exit 2"        "rc=2 strict="         "$(strict_of stirct)"
+check "junk is exit 2"          "rc=2 strict="         "$(strict_of '--strict; echo pwned')"
 
 echo
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

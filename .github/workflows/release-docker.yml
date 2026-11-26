@@ -635,6 +635,15 @@ jobs:
           context: .
           file: Dockerfile.caddy
           platforms: linux/amd64,linux/arm64
+          # FLOOR_STRICT=1 (T-0753): a security floor linked PAST its pin fails
+          # this build. Upward movement is harmless for an ordinary dependency
+          # and is a stale reviewed decision for a floor, and this is the step
+          # that puts the result on Docker Hub, so the pin and its reason get
+          # updated before the image exists rather than after it is serving.
+          # Set on the unpushed path too — `push=false` still builds both
+          # arches, and a dry run that skipped the check would certify nothing.
+          build-args: |
+            FLOOR_STRICT=1
           outputs: ${{ needs.plan.outputs.push == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
           provenance: mode=max
           sbom: generator=docker.io/docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
