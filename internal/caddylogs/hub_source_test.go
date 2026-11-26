@@ -129,3 +129,49 @@ func TestHubKeepsCertificateStateAttributedAfterSourceIDRename(t *testing.T) {
 		t.Fatalf("lifecycle rows for edge after rename = %#v, want 2", got)
 	}
 }
+
+// The source-ID lookup is a query on the database connection the web UI
+// shares, so a line the hub throws away anyway must not pay for it. The
+// always-on certificate event stream subscribes to every DEBUG `events` line;
+// most are discarded before they reach the ring.
+func TestHubResolvesSourceIDOnlyForLinesItKeeps(t *testing.T) {
+	hub, conn, edgeID := newSourceHub(t)
+	lookups := 0
+	hub.resolveServer = func(db *sql.DB, sourceID string, numericID int64) (int64, string, bool) {
+		lookups++
+		return models.ResolveLogServer(db, sourceID, numericID)
+	}
+
+	// Discarded: an unrelated structured event on the certificate stream.
+	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000000,"logger":"events","msg":"event","name":"tls_get_certificate","caddyui_stream":"certificates","caddyui_source_id":"edge-home"}`))
+	// Discarded: a verbose TLS line on the certificate stream that is no lifecycle step.
+	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000000,"logger":"tls.handshake","msg":"choosing certificate","identifier":"x.example","caddyui_stream":"certificates","caddyui_source_id":"edge-home"}`))
+	// Discarded: access logs belong to the analytics ingest.
+	hub.AcceptLine([]byte(`{"ts":1700000000,"logger":"http.log.access.caddyui_access","msg":"handled request","caddyui_source_id":"edge-home"}`))
+	if lookups != 0 {
+		t.Fatalf("discarded lines cost %d source-ID lookup(s), want 0", lookups)
+	}
+	if got := hub.Since(0, 0, 50); len(got) != 0 {
+		t.Fatalf("ring = %#v, want the discarded lines left out", got)
+	}
+
+	// Kept: a cert_obtained event on the same stream is resolved and persisted.
+	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000001,"logger":"events","msg":"event","name":"cert_obtained","data":{"identifier":"kept.example"},"caddyui_stream":"certificates","caddyui_source_id":"edge-home"}`))
+	if lookups != 1 {
+		t.Fatalf("kept line cost %d lookup(s), want 1", lookups)
+	}
+	if got := lifecycleFor(t, conn, edgeID); len(got) != 1 || got[0].Identifier != "kept.example" || got[0].Phase != "active" {
+		t.Fatalf("lifecycle = %#v, want kept.example active on the edge server", got)
+	}
+
+	// A certificate-stream lifecycle line whose source ID resolves to nothing
+	// still stays out of the ring and stores nothing (behaviour unchanged).
+	hub.AcceptLine([]byte(`{"level":"debug","ts":1700000002,"logger":"events","msg":"event","name":"cert_obtained","data":{"identifier":"ghost.example"},"caddyui_stream":"certificates","caddyui_source_id":"not-registered"}`))
+	if got := hub.Since(0, 0, 50); len(got) != 1 {
+		t.Fatalf("ring has %d entries, want only the kept cert_obtained line", len(got))
+	}
+	var rows int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM certificate_lifecycle`).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("certificate_lifecycle rows = %d (err %v), want 1", rows, err)
+	}
+}

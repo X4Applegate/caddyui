@@ -253,6 +253,10 @@ start with a letter or digit, are never all digits (so they cannot be confused
 with a numeric ID), are case-insensitive and unique across the fleet. Rows are
 stored against the server's numeric ID when they arrive, so renaming the
 identifier later keeps existing history attributed to the server.
+The ingest listener does not authenticate senders, so a log source ID (like
+the numeric ID) is a label, not a credential: anyone who can reach the port
+can attribute lines to any server. Keep port 9019 on a private network or
+firewalled to your Caddy nodes.
 
 ### Operational
 
