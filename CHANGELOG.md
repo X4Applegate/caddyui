@@ -154,6 +154,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.68.15] - 2026-11-25 - Caddy image: otel/sdk/log and x/crypto floors take the image to 0 govulncheck and 0 Trivy findings
+
+### Security
+
+- **Two `--with` security floors clear the last two findings on the published Caddy image** ([[T-0840]]). Measured against `applegater/caddyui-caddy:stable` with the publish gate at `MODULE_DRIFT_POLICY=report` on both arches: `verdict=improved`, **2 findings → 0**, 0 newly introduced, and the absolute-floor check retains 237/237 modules.
+  - **`go.opentelemetry.io/otel/sdk/log@v1.47.0` is a real fix.** The package is linked into the binary, and this floor closes `GO-2026-6974` / `CVE-2026-128085`.
+  - **`golang.org/x/crypto/chacha20@v0.59.0` is preventive.** `GO-2026-5932` affects x/crypto's openpgp subtree. Each of the seven package paths the advisory lists (`openpgp`, `packet`, `armor`, `clearsign`, `errors`, `elgamal`, `s2k`) has **zero** symbols in the shipped binary. As positive controls from the same module, `ssh` has 226, `chacha20` 64, `bcrypt` 20, `argon2` 20 and `hkdf` 4. The floor costs nothing and clears the scanner's row.
+  - **The module set did not change.** Both images contain the same 199 modules. All six version changes are upgrades, with no downgrades.
+  - **Each floor is checked against the built binary during the build.** The version regex must not be followed by `-`, so a later prerelease or pseudo-version pin (for example `v1.47.0-rc.1`) cannot meet the floor while still shipping the vulnerable code. `scripts/test-image-gate-floor-greps.sh` (44 cases, wired into `ci.yml`) reads its patterns from the live `Dockerfile.caddy` and fails 8 cases against the old regex. As a negative control, two full builds that each drop one floor fail on that floor's own error message.
+
 ## [2.68.14] - 2026-11-25 - Caddy image: `go-jose/v3` is gone from the binary, clearing the image's last HIGH and 7 advisories with no v3 fix
 
 ### Security
