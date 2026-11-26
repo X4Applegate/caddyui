@@ -205,7 +205,16 @@ fail_unknown() {
   gh_out "verdict=unknown"
   gh_out "rc=3"
   gh_out "pinned=${pinned:-unknown}"
+  # `advisories` stays `unknown` rather than `0`, because 0 is a CLAIM and
+  # nothing was established. But a consumer that only tests "is it non-zero
+  # and non-empty" reads `unknown` as "advisories were found" -- which made
+  # the weekly issue assert that a published advisory covered the pin, naming
+  # "unknown advisory/advisories", on what is usually an ordinary network
+  # flake. So the unknown state also gets its OWN flag, the same shape
+  # `advisory_unknown` already has in the pin watch, and the alert keys the
+  # two reasons off different outputs.
   gh_out "advisories=unknown"
+  gh_out "toolchain_unknown=1"
   printf '::error::%s: the Go toolchain watch could not run, so its result is UNKNOWN, not clean\n' "$PROG"
   for n in "${notes[@]}"; do printf '::error::%s\n' "$n"; done
   exit 3
@@ -343,6 +352,46 @@ while IFS=$'\037' read -r path id fixed; do
   if [ "$c" = "1" ]; then candidates+=("$path|$id|$fixed"); fi
 done < "$index_rows"
 
+# DEDUPE ON path|id. `index/modules.json` publishes ONE ROW PER `affected`
+# ENTRY, so an advisory patched on two release branches appears twice under
+# the same path and id. Each copy was then fetched, walked and appended
+# separately, so one advisory contributed two rows to the report and two to
+# the count: measured at pin go1.26.5, 45 candidates and "43 applying" with
+# GO-2026-6603 listed twice. That count is what the weekly issue quotes, so
+# it has to be a count of ADVISORIES, not of index rows.
+#
+# The highest `fixed` is kept, which is what the shortlist comparison already
+# used; the decision itself is made from the advisory's own ranges further
+# down, so nothing about affectedness depends on which copy survives here.
+if [ "${#candidates[@]}" -gt 0 ]; then
+  deduped=()
+  seen_keys=""
+  for cand in "${candidates[@]}"; do
+    key="${cand%|*}"
+    case "$seen_keys" in
+      *"<$key>"*) continue ;;
+    esac
+    seen_keys="$seen_keys<$key>"
+    best="$cand"
+    best_fixed="${cand##*|}"
+    for other in "${candidates[@]}"; do
+      [ "${other%|*}" = "$key" ] || continue
+      of="${other##*|}"
+      # An empty `fixed` means "no fix at all", which already made it an
+      # unconditional candidate; it must not be displaced by a version.
+      if [ -z "$best_fixed" ] || [ -z "$of" ]; then
+        if [ -z "$of" ]; then best="$other"; best_fixed=""; fi
+        continue
+      fi
+      if c2="$(go_version_cmp "$of" "$best_fixed")"; then
+        [ "$c2" = "1" ] && { best="$other"; best_fixed="$of"; }
+      fi
+    done
+    deduped+=("$best")
+  done
+  candidates=("${deduped[@]}")
+fi
+
 # ---------------------------------------------------------------------------
 # Decide each candidate against its own OSV ranges.
 #
@@ -360,6 +409,21 @@ mkdir -p "$adv_dir"
 
 for cand in "${candidates[@]}"; do
   IFS='|' read -r c_path c_id _ <<<"$cand"
+  # THE ID COMES FROM A REMOTE INDEX AND IS ABOUT TO BECOME A PATH AND A URL,
+  # so its shape is asserted first. `GO-2026-6859` is the only form the Go
+  # advisory DB publishes; anything else means the index is not what this
+  # script thinks it is, and an id containing `../` would write outside
+  # $adv_dir. Cheap, and it fails to unknown rather than to a guess.
+  case "$c_id" in
+    GO-[0-9][0-9][0-9][0-9]-[0-9]) ;;
+    GO-[0-9][0-9][0-9][0-9]-[0-9][0-9]) ;;
+    GO-[0-9][0-9][0-9][0-9]-[0-9][0-9][0-9]) ;;
+    GO-[0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]) ;;
+    GO-[0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9]) ;;
+    *)
+      note "the advisory index offered an id that is not in the \`GO-YYYY-NNNN\` form (\`$c_id\`), so it was not fetched and whether it covers \`$pinned\` is unknown. An id from a remote index becomes a path and a URL here, so its shape is asserted rather than assumed."
+      fail_unknown ;;
+  esac
   f="$adv_dir/$c_id.json"
   if [ -n "$ADVISORY_DIR" ]; then
     if [ -f "$ADVISORY_DIR/$c_id.json" ]; then
@@ -565,6 +629,7 @@ gh_out "pinned=$pinned"
 gh_out "latest_stable=${latest_stable:-}"
 gh_out "branch_latest=${branch_latest:-}"
 gh_out "advisories=${#affected_rows[@]}"
+gh_out "toolchain_unknown=0"
 gh_out "candidates=${#candidates[@]}"
 gh_out "behind=$behind"
 

@@ -489,6 +489,15 @@ jobs:
       toolchain_verdict: ${{ steps.toolchain.outputs.verdict }}
       toolchain_advisories: ${{ steps.toolchain.outputs.advisories }}
       toolchain_pinned: ${{ steps.toolchain.outputs.pinned }}
+      # A SEPARATE FLAG FOR "COULD NOT ESTABLISH", not a value smuggled into
+      # the count. `advisories` is deliberately `unknown` rather than `0` on
+      # the could-not-run path, because 0 is a claim -- but a condition that
+      # only asks "non-zero and non-empty" then reads `unknown` as "an
+      # advisory was found", and the issue body went on to assert that a
+      # published advisory covered the pin, naming "unknown
+      # advisory/advisories". That is a false security claim produced by an
+      # ordinary network flake. Same split `advisory_unknown` already uses.
+      toolchain_unknown: ${{ steps.toolchain.outputs.toolchain_unknown }}
     steps:
       # main's checkout, not the release tag's: this asks whether the pins we
       # ship TODAY are current, and the script only exists on main. Checking
@@ -1062,9 +1071,12 @@ jobs:
   #     3) is visible as an annotation and a summary without failing the
   #     scheduled run;
   #   - it is NOT wired into `alert`. Measured against :stable on 2026-11-25
-  #     this job reports two linked findings — GO-2026-6974 (otel, "Fixed in:
-  #     N/A", i.e. no release to take) and GO-2026-5932 (x/crypto/openpgp,
-  #     unmaintained by design). Alerting on those would open or comment on
+  #     this job reports two linked findings — GO-2026-6974 (otel; the
+  #     `go.opentelemetry.io/otel/sdk/log` module DOES have a fix, v1.47.0,
+  #     and T-0851 carries the floor that takes it) and GO-2026-5932
+  #     (x/crypto/openpgp, unmaintained by design, so its "fix" is a
+  #     pseudo-version rather than a release). Alerting on those would open or
+  #     comment on
   #     the standing issue EVERY week for findings with nothing to take, which
   #     is exactly the noise that job's single-issue design exists to avoid.
   #     Acknowledge them in scripts/govulncheck-acks.txt and the count goes to
@@ -1250,10 +1262,14 @@ jobs:
     # current -- 0 today at go1.27.4 -- so it does not reintroduce the weekly
     # noise the paragraphs above reject.
     #
-    # The COUNT is used, not the verdict, for the same reason as
-    # `advisory_unknown`: `attention` also covers "a patch release exists",
-    # which is work rather than an interruption, and `unknown` covers an
-    # ordinary network hiccup. Both are in the step summary and the log.
+    # The COUNT is used rather than the verdict, because `attention` also
+    # covers "a patch release exists", which is work rather than an
+    # interruption. But the count alone is NOT enough: on the could-not-run
+    # path `advisories` is the string `unknown`, which satisfies "non-zero and
+    # non-empty" and made this job assert that a published advisory covered
+    # the pin. So `unknown` is excluded from the count clause and
+    # `toolchain_unknown` is its own clause with its own wording -- the same
+    # split `advisory_unknown` uses above, and for the same reason.
     if: >-
       always() && (
         needs.build-scan.result == 'failure' ||
@@ -1266,7 +1282,10 @@ jobs:
         (needs.watch-pins.outputs.image_unswept != '0' &&
          needs.watch-pins.outputs.image_unswept != '') ||
         (needs.watch-pins.outputs.toolchain_advisories != '0' &&
-         needs.watch-pins.outputs.toolchain_advisories != '') ||
+         needs.watch-pins.outputs.toolchain_advisories != '' &&
+         needs.watch-pins.outputs.toolchain_advisories != 'unknown') ||
+        (needs.watch-pins.outputs.toolchain_unknown != '0' &&
+         needs.watch-pins.outputs.toolchain_unknown != '') ||
         (github.event_name == 'workflow_dispatch' && inputs.force_alert)
       )
     runs-on: ubuntu-latest
@@ -1285,12 +1304,14 @@ jobs:
           PIN_REPORT: ${{ needs.watch-pins.outputs.report }}
           TOOLCHAIN_ADVISORIES: ${{ needs.watch-pins.outputs.toolchain_advisories }}
           TOOLCHAIN_PINNED: ${{ needs.watch-pins.outputs.toolchain_pinned }}
+          TOOLCHAIN_UNKNOWN: ${{ needs.watch-pins.outputs.toolchain_unknown }}
         with:
           script: |
             const LABEL = 'caddy-image-refresh';
             const TITLE = 'Caddy image refresh needs a look';
             const { VERDICT, RESULT, PATCH_TAG, SUMMARY, PIN_VERDICT, PIN_REPORT,
-                    TOOLCHAIN_ADVISORIES, TOOLCHAIN_PINNED } = process.env;
+                    TOOLCHAIN_ADVISORIES, TOOLCHAIN_PINNED,
+                    TOOLCHAIN_UNKNOWN } = process.env;
             const runUrl =
               `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
               `/actions/runs/${context.runId}`;
@@ -1313,7 +1334,11 @@ jobs:
             // Counted, not a verdict: see this job's `if`. An empty string
             // means the watch produced no count, which is reported in the
             // job summary rather than asserted here as zero.
-            if (TOOLCHAIN_ADVISORIES && TOOLCHAIN_ADVISORIES !== '0') {
+            if (TOOLCHAIN_UNKNOWN && TOOLCHAIN_UNKNOWN !== '0') {
+              reasons.push(`The **Go toolchain watch could not establish** whether an advisory covers the pinned toolchain (\`${TOOLCHAIN_PINNED || 'unknown'}\`). This is NOT a report that an advisory applies, and it is NOT a clean result: the check reached its could-not-run status (exit 3), most often an unreachable \`go.dev/dl\` or \`vuln.go.dev\`, or one advisory record it could not fetch or parse. Re-run the workflow; if it persists, read the \`toolchain-watch/\` artefact for the reason it gave.`);
+            }
+
+            if (TOOLCHAIN_ADVISORIES && TOOLCHAIN_ADVISORIES !== '0' && TOOLCHAIN_ADVISORIES !== 'unknown') {
               reasons.push(`A **published Go advisory covers the pinned toolchain** (\`${TOOLCHAIN_PINNED || 'unknown'}\`, ${TOOLCHAIN_ADVISORIES} advisory/advisories). This is fixed by a one-line change: raise the \`toolchain\` directive in \`go.mod\` to a release at or above one of the fixed versions in the job summary. CI reads that line through \`go-version-file: go.mod\`, so the bump is the whole fix. Nothing else in this pipeline watches the toolchain — Dependabot tracks module requirements, and the image gate compares a rebuild against the previous image.`);
             }
             if (reasons.length === 0) {
