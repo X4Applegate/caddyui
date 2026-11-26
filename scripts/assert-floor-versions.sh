@@ -16,6 +16,10 @@
 #             directive was never read. A mismatch here is exit 2.
 #             Only checks the pins NAMED in the list; it is a tripwire for
 #             reading the wrong file, not a second pin list.
+#   --min-floors N
+#             fewer than N parsed `# pin-watch: floor|security` directives is
+#             exit 2 (T-0906). Dockerfile.caddy passes ARG FLOOR_MIN.
+#   --strict  also makes zero directives exit 2 instead of "nothing to assert".
 #
 # Why this exists
 # ---------------------------------------------------------------------------
@@ -152,6 +156,9 @@ JSON=0
 # Space-separated `pkg@version` list naming the pins THIS build actually used,
 # cross-checked against the Dockerfile that was read. See --expect below.
 EXPECT=""
+# Minimum number of parsed floor/security directives. Empty = no floor on the
+# count. See --min-floors below (T-0906).
+MIN_FLOORS=""
 
 die() {
   echo "assert-floor-versions: $*" >&2
@@ -184,6 +191,10 @@ while [ $# -gt 0 ]; do
     --expect)
       [ -n "${2:-}" ] || die "option --expect requires a value"
       EXPECT="$2"; shift; shift ;;
+    --min-floors)
+      [ -n "${2:-}" ] || die "option --min-floors requires a value"
+      case "$2" in *[!0-9]*) die "--min-floors must be a non-negative integer, got '$2'" ;; esac
+      MIN_FLOORS="$2"; shift; shift ;;
     --strict) STRICT=1; shift ;;
     --json)   JSON=1;   shift ;;
     -h|--help) usage ;;
@@ -442,6 +453,22 @@ if [ -n "$EXPECT" ]; then
 fi
 
 floor_count="$(wc -l < "$floors" | tr -d ' ')"
+
+# T-0906: "nothing established" must never share exit 0 with "checked and
+# fine". --expect already catches a stripped file on every build path, but a
+# hand run without it got exit 0 on zero directives. Two ways to close that:
+#   --min-floors N  a hand-kept count next to the pins (Dockerfile.caddy passes
+#                   it); fewer parsed directives than N is a hard error.
+#   --strict        zero directives is a hard error: a strict reading that
+#                   asserted nothing has not been strict about anything.
+# Without either, zero directives stays "nothing to assert", exit 0 -- a
+# Dockerfile may legitimately declare no pins.
+if [ -n "$MIN_FLOORS" ] && [ "$floor_count" -lt "$MIN_FLOORS" ]; then
+  die "parsed $floor_count \`# pin-watch:\` floor/security directive(s) in $DOCKERFILE, --min-floors requires at least $MIN_FLOORS; directives were removed or mistyped, so the pins are present and UNASSERTED"
+fi
+if [ "$floor_count" -eq 0 ] && [ "$STRICT" -eq 1 ]; then
+  die "no \`# pin-watch: floor\` or \`# pin-watch: security\` directive in $DOCKERFILE under --strict; nothing was asserted, and that is not a strict pass"
+fi
 if [ "$floor_count" -eq 0 ]; then
   # Not a pass and not an error: a Dockerfile may legitimately declare no
   # pins of either kind. Say so explicitly rather than printing an all-clear

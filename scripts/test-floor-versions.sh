@@ -735,5 +735,28 @@ check "a typo is exit 2"        "rc=2 strict="         "$(strict_of stirct)"
 check "junk is exit 2"          "rc=2 strict="         "$(strict_of '--strict; echo pwned')"
 
 echo
+echo "=== 26. zero directives without --expect (T-0906) ==="
+# 21a covers the stripped file WITH --expect. Without it, a hand run used to
+# get "nothing to assert", exit 0 -- the fail-open this pins shut.
+run "$WORK/D21a" "$WORK/G17" --strict
+check "26a stripped, --strict, no --expect -> rc=2" "2" "$(rc)"
+check "26a names the cause" "1" "$(err | grep -c 'under --strict; nothing was asserted')"
+run "$WORK/D21a" "$WORK/G17" --min-floors 1
+check "26b stripped, --min-floors 1 -> rc=2" "2" "$(rc)"
+check "26b names the count" "1" "$(err | grep -c 'parsed 0 .*--min-floors requires at least 1')"
+LIVE_MIN_22="$(sed -n 's/^ARG FLOOR_MIN=\([0-9]*\)$/\1/p' "$LIVE_DF" | head -1)"
+check "26c the live FLOOR_MIN is readable" "0" "$( [ -n "$LIVE_MIN_22" ] && echo 0 || echo 1 )"
+check "26c FLOOR_MIN equals the pins in FLOOR_SELFCHECK" "$(echo $LIVE_EXPECT_21 | wc -w | tr -d ' ')" "$LIVE_MIN_22"
+run "$LIVE_DF" "$WORK/G17" --expect "$LIVE_EXPECT_21" --min-floors "$LIVE_MIN_22" --strict
+check "26d live file at its own FLOOR_MIN -> rc=0" "0" "$(rc)"
+run "$LIVE_DF" "$WORK/G17" --min-floors "$(( LIVE_MIN_22 + 1 ))"
+check "26e one more than the live count -> rc=2" "2" "$(rc)"
+run "$WORK/D21a" "$WORK/G17" --min-floors 'x1'
+check "26f non-integer --min-floors -> rc=2" "2" "$(rc)"
+check "26g Dockerfile passes --min-floors" "1" "$(grep -c -- '--min-floors "\$FLOOR_MIN"' "$LIVE_DF")"
+# Case 1 is unchanged on purpose: no --strict, no --min-floors, zero
+# directives is still "nothing to assert", exit 0.
+
+echo
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

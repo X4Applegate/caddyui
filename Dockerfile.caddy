@@ -523,6 +523,10 @@ ARG FLOOR_SELFCHECK="github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.8.1 gola
 # than building the weaker way, and the workflows' values are asserted by
 # scripts/test-floor-versions.sh so a publish path cannot drop the flag
 # without a test failing.
+# Hand-kept count of `# pin-watch: floor|security` directives above (T-0906).
+# Fewer parsed directives than this fails the build even if --expect were
+# dropped. Keep it in step with FLOOR_SELFCHECK.
+ARG FLOOR_MIN=6
 ARG FLOOR_STRICT=0
 RUN set -e; \
     case "$FLOOR_STRICT" in \
@@ -534,6 +538,7 @@ RUN set -e; \
       --binary /usr/bin/caddy \
       --dockerfile /tmp/Dockerfile.caddy \
       --expect "$FLOOR_SELFCHECK" \
+      --min-floors "$FLOOR_MIN" \
       $strict
 
 FROM caddy:2.11.9-alpine
