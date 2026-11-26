@@ -874,6 +874,104 @@ jobs:
             release-gate-combined.md
           retention-days: 90
 
+      # -----------------------------------------------------------------
+      # Reachability against the binary this release will publish (T-0746).
+      #
+      # WHY HERE AS WELL AS ON THE WEEKLY REFRESH. This workflow is the one
+      # that creates :vX.Y.Z and moves :stable and :latest, and a release
+      # EDITS Dockerfile.caddy, so it can change the Caddy module set
+      # arbitrarily. A check that only ran weekly would first see a new
+      # module one scheduled run AFTER the fleet was already pulling it.
+      # GO-2026-6865 (HIGH, klauspost/compress) is the measured case: Trivy
+      # could not name it because the advisory names the package
+      # `klauspost/compress/zstd` while the binary records the module
+      # `klauspost/compress`, and govulncheck found it where Trivy
+      # structurally could not (T-0729).
+      #
+      # REPORT-ONLY, AND IT DOES NOT GATE THE TAG. `continue-on-error`, and
+      # nothing downstream reads its result: the tag steps key off
+      # `steps.gate.outputs.passed` and are untouched by this. That is
+      # deliberate at this stage (T-0746 asks for report-only first) and it
+      # is also the honest position while binary mode reports symbols LINKED
+      # rather than called -- T-0729 measured govulncheck naming a symbol in
+      # a binary whose decoder the linker had dropped. Promoting this to a
+      # blocking check is a separate decision with the :stable move behind
+      # it, not something to switch on in passing.
+      #
+      # Runs only on a pushing run, because it reads the pushed digest.
+      # `setup-go` with `go-version-file: go.mod` then a fresh `go install`
+      # is what keeps the scanner from being older than what it scans
+      # (T-0740); the gate script asserts that pair itself as well.
+      - name: Set up Go for the reachability scan
+        if: needs.plan.outputs.push == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        if: needs.plan.outputs.push == 'true'
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Reachability of the pushed digest (report-only)
+        id: reachability
+        if: needs.plan.outputs.push == 'true'
+        continue-on-error: true
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          [ -x scripts/govulncheck-gate.sh ] || {
+            echo "::error::scripts/govulncheck-gate.sh is missing or not executable on this ref; the pushed binary is unscanned for reachability"
+            exit 1
+          }
+          [ -n "${DIGEST:-}" ] || { echo "::error::no pushed digest to scan"; exit 1; }
+          docker pull --quiet "${IMAGE}@${DIGEST}"
+          # The digest is a multi-arch manifest and `docker create` resolves
+          # to the runner's architecture, so this is an amd64 statement. The
+          # script says so in its summary rather than implying both arches;
+          # the Trivy gate above is the one that covers each arch separately.
+          ./scripts/govulncheck-gate.sh \
+            --binary "image:${IMAGE}@${DIGEST}" \
+            --out-dir reachability \
+            --label "${IMAGE}@${DIGEST} (/usr/bin/caddy, linux/amd64)"
+
+      - name: Upload the reachability report
+        if: always() && needs.plan.outputs.push == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: caddy-reachability-${{ needs.plan.outputs.version }}
+          path: reachability/
+          retention-days: 90
+          if-no-files-found: warn
+
+      # Restated outside the collapsed step, with the failure as the DEFAULT
+      # arm: a scan that could not run must not be indistinguishable from one
+      # that found nothing, which is the whole subject of T-0740.
+      - name: Flag the reachability result
+        if: always() && needs.plan.outputs.push == 'true'
+        env:
+          VERDICT: ${{ steps.reachability.outputs.verdict }}
+          CALLED: ${{ steps.reachability.outputs.called }}
+          OUTCOME: ${{ steps.reachability.outcome }}
+        shell: bash
+        run: |
+          case "$VERDICT" in
+            ok)
+              echo "::notice::no advisory matches a symbol linked into the caddy binary being published" ;;
+            attention)
+              echo "::warning::${CALLED:-some} advisory symbol(s) are linked into the caddy binary being published - report-only, and LINKED is not proven reachable; see the job summary" ;;
+            advisory)
+              echo "::error::linked findings on the caddy binary being published - see the job summary" ;;
+            unknown)
+              echo "::error::the reachability scan of the pushed digest COULD NOT RUN, so this release ships a binary whose reachability is unknown rather than clean" ;;
+            '')
+              echo "::error::the reachability scan produced no verdict (step outcome: $OUTCOME); the pushed binary was not checked" ;;
+            *)
+              echo "::error::the reachability scan returned an unrecognised verdict ($VERDICT); treat the pushed binary as unchecked" ;;
+          esac
+
       # THE VERSION TAG IS CREATED HERE, not by the build (T-0627).
       #
       # Guarded on steps.gate.outputs.passed, NOT merely on the gate step

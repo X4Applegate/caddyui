@@ -461,6 +461,13 @@ jobs:
       image_out_of_scope: ${{ steps.check.outputs.image_out_of_scope }}
       image_base: ${{ steps.check.outputs.image_base }}
       image_graph: ${{ steps.check.outputs.image_graph }}
+      # The Go toolchain watch (T-0745). `toolchain_advisories` is the one
+      # `alert` keys off: it counts published GO- advisories whose affected
+      # range covers the toolchain this repo PINS, which is rare, actionable
+      # by a one-line edit, and 0 whenever the pin is current.
+      toolchain_verdict: ${{ steps.toolchain.outputs.verdict }}
+      toolchain_advisories: ${{ steps.toolchain.outputs.advisories }}
+      toolchain_pinned: ${{ steps.toolchain.outputs.pinned }}
     steps:
       # main's checkout, not the release tag's: this asks whether the pins we
       # ship TODAY are current, and the script only exists on main. Checking
@@ -564,12 +571,50 @@ jobs:
           esac
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
+      # ---------------------------------------------------------------------
+      # The FOURTH input to this watch: the Go toolchain itself (T-0745).
+      #
+      # It is a step in this job rather than a new workflow because it is the
+      # same question on the same schedule -- "has upstream moved past what we
+      # pinned, and does an advisory cover what we pinned" -- and the three
+      # existing inputs (`--with` pins, the image graph, go.mod) already live
+      # here. Nothing watched the toolchain: Dependabot's `gomod` ecosystem
+      # tracks module requirements and not the `go`/`toolchain` directive, and
+      # the image gate compares a rebuild against the PREVIOUS image, so a
+      # toolchain behind upstream is never a diff.
+      #
+      # AFTER the pin check, deliberately: the pin check is this job's primary
+      # deliverable and must not be displaced by a newer, cheaper one.
+      #
+      # The exit status is a RESULT (0 ok / 1 behind / 2 advisory / 3
+      # could-not-run), the same convention as the step above, so it is
+      # captured rather than propagated and the verdict is read from the
+      # output. `alert` keys off `toolchain_advisories`, not off this step's
+      # status.
+      - name: Check the pinned Go toolchain against go.dev/dl and vuln.go.dev
+        id: toolchain
+        shell: bash
+        run: |
+          set -uo pipefail
+          [ -x scripts/check-go-toolchain.sh ] \
+            || { echo "::error::scripts/check-go-toolchain.sh is missing or not executable"; exit 1; }
+          set +e
+          ./scripts/check-go-toolchain.sh --out-dir toolchain-watch
+          rc=$?
+          set -e
+          case "$rc" in
+            0|1|2|3) ;;
+            *) echo "::error::check-go-toolchain.sh exited unexpectedly ($rc)"; exit 1 ;;
+          esac
+
       - name: Upload the pin report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: pinned-module-watch
-          path: pinwatch/
+          path: |
+            pinwatch/
+            toolchain-watch/
           retention-days: 90
 
       # An advisory against a version the fleet is running is the case this job
@@ -597,6 +642,9 @@ jobs:
           GOMOD: ${{ steps.check.outputs.gomod }}
           GOMOD_FINDINGS: ${{ steps.check.outputs.gomod_findings }}
           GOMOD_UNSWEPT: ${{ steps.check.outputs.gomod_unswept }}
+          TOOLCHAIN_VERDICT: ${{ steps.toolchain.outputs.verdict }}
+          TOOLCHAIN_PINNED: ${{ steps.toolchain.outputs.pinned }}
+          TOOLCHAIN_BEHIND: ${{ steps.toolchain.outputs.branch_latest }}
           SUITES: ${{ steps.suites.outcome }}
         shell: bash
         run: |
@@ -624,6 +672,24 @@ jobs:
               echo "::warning::the pin check produced no verdict, so nothing was verified; an unchecked pin is not a clean pin" ;;
             *)
               echo "::warning::the pin check could not complete (verdict: $VERDICT); an unchecked pin is not a clean pin" ;;
+          esac
+
+          # The toolchain watch, flagged the same way and with the same
+          # discipline: `ok` is matched explicitly, an empty verdict is a
+          # warning rather than silence, and the default arm is the failure.
+          # Before T-0745 nothing asked this question at all, so the absence
+          # of a line here used to be indistinguishable from a clean answer.
+          case "$TOOLCHAIN_VERDICT" in
+            advisory)
+              echo "::error::a published Go advisory covers the PINNED toolchain ($TOOLCHAIN_PINNED) - bump the toolchain line in go.mod; see the job summary" ;;
+            attention)
+              echo "::notice::the pinned Go toolchain ($TOOLCHAIN_PINNED) is behind ${TOOLCHAIN_BEHIND:-upstream} or sits on an unsupported branch; no advisory covers it" ;;
+            ok)
+              echo "::notice::the pinned Go toolchain ($TOOLCHAIN_PINNED) is a current stable release and no published advisory covers it" ;;
+            '')
+              echo "::warning::the Go toolchain watch produced no verdict, so the toolchain was not checked; an unchecked toolchain is not a clean toolchain" ;;
+            *)
+              echo "::warning::the Go toolchain watch could not complete (verdict: $TOOLCHAIN_VERDICT); an unchecked toolchain is not a clean toolchain" ;;
           esac
 
           # Called out separately from the verdict because "could not establish"
@@ -922,6 +988,140 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
+  # 2b. govulncheck-image — reachability against the PUBLISHED Caddy binary.
+  #
+  # THE GAP (T-0746). `govulncheck ./...` in ci.yml covers CaddyUI's own
+  # module set, which builds the `caddyui` server. The `caddy` binary inside
+  # `applegater/caddyui-caddy` is a different artefact with a different module
+  # graph, and until this job existed NOTHING ran govulncheck against it.
+  #
+  # That is not hypothetical. GO-2026-6865 / CVE-2026-116591 (HIGH, CWE-190,
+  # klauspost/compress) sat on the published image and Trivy structurally
+  # could not report it: the advisory names the package
+  # `klauspost/compress/zstd` while the binary records the module
+  # `klauspost/compress`, so Trivy's name match missed it (T-0729). It was
+  # found by a review running govulncheck by hand. This is the third
+  # mechanism by which a real finding has hidden from Trivy in this repo, and
+  # it is the only one no existing check covered: `check-pinned-modules.sh`
+  # closes the CVE-less gap (T-0646/T-0675) and the `--replace` gap (T-0710),
+  # and neither of those helps with a package-vs-module naming mismatch.
+  # govulncheck is immune because the Go advisory DB names modules correctly
+  # and matches on symbols.
+  #
+  # ITS OWN JOB, not a step in watch-pins, because it needs a Go toolchain, a
+  # fresh govulncheck and the Docker daemon, none of which that job has. It is
+  # also deliberately NOT a dependency of `publish`, for the reason watch-pins
+  # is not: a Go advisory a human has to read must not block an Alpine CVE fix
+  # from shipping. That inverts the priority.
+  #
+  # REPORT-ONLY, and that is the card's own instruction rather than an
+  # oversight. Two things follow from it:
+  #   - `continue-on-error` so a finding (exit 2) or an unreadable scan (exit
+  #     3) is visible as an annotation and a summary without failing the
+  #     scheduled run;
+  #   - it is NOT wired into `alert`. Measured against :stable on 2026-11-25
+  #     this job reports two linked findings — GO-2026-6974 (otel, "Fixed in:
+  #     N/A", i.e. no release to take) and GO-2026-5932 (x/crypto/openpgp,
+  #     unmaintained by design). Alerting on those would open or comment on
+  #     the standing issue EVERY week for findings with nothing to take, which
+  #     is exactly the noise that job's single-issue design exists to avoid.
+  #     Acknowledge them in scripts/govulncheck-acks.txt and the count goes to
+  #     zero; THEN wiring it into `alert` is safe, and that is a decision for
+  #     Richard rather than something to switch on unasked.
+  #
+  # BINARY MODE REPORTS SYMBOLS LINKED, NOT CALLED, and the script's summary
+  # says so on every run: in T-0729 govulncheck named `huff0.ReadTable` on a
+  # binary whose zstd decoder the linker had dropped entirely. A finding here
+  # still needs a reachability read before it is treated as live.
+  # ---------------------------------------------------------------------------
+  govulncheck-image:
+    name: Reachability of the published Caddy binary (report-only)
+    runs-on: ubuntu-latest
+    # Every failure mode here is a network call or a pull, same reasoning as
+    # watch-pins: the six-hour default would hold a runner all day and report
+    # nothing, which reads as "still working" rather than "never answered".
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      # main's checkout, not the release tag's: the question is about the
+      # image the fleet is running today, and the script only exists on main.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `go-version-file: go.mod` then a fresh `go install` is what guarantees
+      # the scanner is not older than what it scans (T-0740). A govulncheck
+      # built with an older Go cannot analyse a newer one and fails with a
+      # `package patterns` error that reads as a bad invocation. The gate
+      # script checks the pair itself as well, so this is belt and braces
+      # rather than the only protection.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # The PUBLISHED `:stable` rather than a fresh build, matching watch-pins:
+      # the question worth asking weekly is about the image in service on the
+      # six boxes, not one that exists only in CI.
+      - name: Scan /usr/bin/caddy from the published :stable image
+        id: govulncheck
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          [ -x scripts/govulncheck-gate.sh ] \
+            || { echo "::error::scripts/govulncheck-gate.sh is missing or not executable"; exit 1; }
+          docker pull --quiet "${IMAGE}:stable"
+          # Report-only: --fail-on is left at its default (`never`), so a
+          # linked finding is exit 1 rather than 2. Exit 3 (could not scan)
+          # still raises ::error:: annotations from inside the script, because
+          # an unreadable result must not look like a clean one.
+          ./scripts/govulncheck-gate.sh \
+            --binary "image:${IMAGE}:stable" \
+            --out-dir govulncheck-image \
+            --label "${IMAGE}:stable (/usr/bin/caddy)"
+
+      - name: Upload the reachability report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: govulncheck-image
+          path: govulncheck-image/
+          retention-days: 90
+
+      # The scan ran with `continue-on-error`, so its outcome would otherwise
+      # be visible only to someone who expanded the step. Restated here with
+      # the failure as the DEFAULT arm and `ok` matched explicitly, the same
+      # control shape as watch-pins' `Flag the result`: an empty or
+      # unrecognised verdict must not read as a clean scan.
+      - name: Flag the result
+        if: always()
+        env:
+          VERDICT: ${{ steps.govulncheck.outputs.verdict }}
+          CALLED: ${{ steps.govulncheck.outputs.called }}
+          OUTCOME: ${{ steps.govulncheck.outcome }}
+        shell: bash
+        run: |
+          case "$VERDICT" in
+            ok)
+              echo "::notice::no advisory matches a symbol linked into the published caddy binary" ;;
+            attention)
+              echo "::warning::${CALLED:-some} advisory symbol(s) are linked into the published caddy binary - report-only; see the job summary, and note that LINKED is not proven reachable" ;;
+            advisory)
+              echo "::error::linked findings on the published caddy binary - see the job summary" ;;
+            unknown)
+              echo "::error::the reachability scan of the published caddy binary COULD NOT RUN, so its result is unknown rather than clean - see the job summary" ;;
+            '')
+              echo "::error::the reachability scan produced no verdict (step outcome: $OUTCOME), so the published binary was not checked; an unchecked binary is not a clean binary" ;;
+            *)
+              echo "::error::the reachability scan returned an unrecognised verdict ($VERDICT); treat the published binary as unchecked" ;;
+          esac
+
+  # ---------------------------------------------------------------------------
   # 3. alert — exactly ONE issue, ever. Comment on it, never open a second.
   # ---------------------------------------------------------------------------
   alert:
@@ -984,6 +1184,20 @@ jobs:
     # run rather than a broken one, it is already a log warning and a report
     # sentence, and this job passes `--binary`, so a graph that stops being
     # read surfaces as `image_unswept` or as a read error instead.
+    #
+    # `toolchain_advisories` alerts on the same grounds (T-0745). A published
+    # GO- advisory whose affected range covers the toolchain this repo PINS is
+    # the condition nothing asked about before: Dependabot does not track the
+    # `toolchain` directive, and the image gate compares a rebuild against the
+    # previous image, so a toolchain behind upstream is not a diff. It is
+    # rare, it is fixed by a one-line edit, and it is 0 whenever the pin is
+    # current -- 0 today at go1.27.4 -- so it does not reintroduce the weekly
+    # noise the paragraphs above reject.
+    #
+    # The COUNT is used, not the verdict, for the same reason as
+    # `advisory_unknown`: `attention` also covers "a patch release exists",
+    # which is work rather than an interruption, and `unknown` covers an
+    # ordinary network hiccup. Both are in the step summary and the log.
     if: >-
       always() && (
         needs.build-scan.result == 'failure' ||
@@ -995,6 +1209,8 @@ jobs:
          needs.watch-pins.outputs.image_findings != '') ||
         (needs.watch-pins.outputs.image_unswept != '0' &&
          needs.watch-pins.outputs.image_unswept != '') ||
+        (needs.watch-pins.outputs.toolchain_advisories != '0' &&
+         needs.watch-pins.outputs.toolchain_advisories != '') ||
         (github.event_name == 'workflow_dispatch' && inputs.force_alert)
       )
     runs-on: ubuntu-latest
@@ -1011,11 +1227,14 @@ jobs:
           SUMMARY: ${{ needs.build-scan.outputs.summary }}
           PIN_VERDICT: ${{ needs.watch-pins.outputs.verdict }}
           PIN_REPORT: ${{ needs.watch-pins.outputs.report }}
+          TOOLCHAIN_ADVISORIES: ${{ needs.watch-pins.outputs.toolchain_advisories }}
+          TOOLCHAIN_PINNED: ${{ needs.watch-pins.outputs.toolchain_pinned }}
         with:
           script: |
             const LABEL = 'caddy-image-refresh';
             const TITLE = 'Caddy image refresh needs a look';
-            const { VERDICT, RESULT, PATCH_TAG, SUMMARY, PIN_VERDICT, PIN_REPORT } = process.env;
+            const { VERDICT, RESULT, PATCH_TAG, SUMMARY, PIN_VERDICT, PIN_REPORT,
+                    TOOLCHAIN_ADVISORIES, TOOLCHAIN_PINNED } = process.env;
             const runUrl =
               `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
               `/actions/runs/${context.runId}`;
@@ -1034,6 +1253,12 @@ jobs:
             }
             if (pinAdvisory) {
               reasons.push('A **published advisory matches a pinned plugin version** — i.e. the version the six boxes are running, not merely something in that module\'s history. Pins do not move on their own, so this needs a deliberate bump in `Dockerfile.caddy` and a release. The pin table is below.');
+            }
+            // Counted, not a verdict: see this job's `if`. An empty string
+            // means the watch produced no count, which is reported in the
+            // job summary rather than asserted here as zero.
+            if (TOOLCHAIN_ADVISORIES && TOOLCHAIN_ADVISORIES !== '0') {
+              reasons.push(`A **published Go advisory covers the pinned toolchain** (\`${TOOLCHAIN_PINNED || 'unknown'}\`, ${TOOLCHAIN_ADVISORIES} advisory/advisories). This is fixed by a one-line change: raise the \`toolchain\` directive in \`go.mod\` to a release at or above one of the fixed versions in the job summary. CI reads that line through \`go-version-file: go.mod\`, so the bump is the whole fix. Nothing else in this pipeline watches the toolchain — Dependabot tracks module requirements, and the image gate compares a rebuild against the previous image.`);
             }
             if (reasons.length === 0) {
               reasons.push('Alert path exercised by hand (`force_alert`). Nothing is wrong.');
