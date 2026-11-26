@@ -154,6 +154,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ---
 
+## [2.68.16] - 2026-11-25 - Fleet table sorting, a log source ID for External servers, clearer SSO diagnostics
+
+### Added
+
+- **The Caddy Fleet environment inventory can be sorted by column** ([#154](https://github.com/X4Applegate/caddyui/issues/154)). Environment, Health, Admin endpoint, Policy and Last contact sort on click, toggling ascending/descending with an arrow and `aria-sort`; Actions does not sort. Nothing is reordered until a column is chosen, so the stored order stays the default. Health sorts by state (offline, unknown, online), Last contact by the underlying timestamp, and servers that have never been contacted stay last in both directions.
+- **External servers can carry a user-defined Log source ID** ([#164](https://github.com/X4Applegate/caddyui/issues/164)). Forwarded logs may send `caddyui_source_id` instead of the numeric `caddyui_server_id`, so a provisioning tool such as Ansible can choose the identifier in advance. It applies to access logs, certificate events and runtime logs.
+  - Existing `caddyui_server_id` configurations keep working unchanged. When both arrive and the source ID matches a server, the source ID wins.
+  - IDs are up to 64 characters of `a-z 0-9 . _ -`, case-insensitive, never digits only, and unique (checked on save and by a unique index on SQLite and MariaDB).
+  - Rows are attributed to the server's numeric ID when they arrive, so renaming a source ID later keeps history attached.
+  - The ingest listener does not authenticate senders: a source ID, like the numeric ID, is a label rather than a credential. Keep the ingest port on a private network.
+
+### Fixed
+
+- **SSO sign-ins that are refused now say why in the server log** ([#158](https://github.com/X4Applegate/caddyui/issues/158)). A claim that fails to decode is named with the JSON type it arrived as (for example `email_verified` sent as the string `"true"`), the email rejection says whether `email`/`email_verified` were absent, null, empty or false, and the previously silent state, nonce, missing-`id_token` and SSO-not-configured paths each log a line. Tokens, state, nonce and claim values are never logged. **No sign-in decision changed.**
+  - The provider `error` parameter is now logged escaped, so a crafted callback URL can no longer forge extra log lines.
+  - The settings page and README now state that every SSO sign-in (existing and invited accounts included, not only auto-created ones) needs a non-empty `email` and `email_verified` set to boolean `true`, and that providers which do not send it, such as Microsoft Entra ID, are not supported yet. A configurable verification policy remains open on #158.
+- **The i18n fallback test no longer fails when a translation is completed** ([#189](https://github.com/X4Applegate/caddyui/issues/189)). It asserted English fallback against the real `ru`/`zh-CN` catalogs, so finishing either one broke it (and blocked #188). It now checks fallback against a catalog that is incomplete by construction.
+
+### Security
+
+- **Caddy image: `aws-sdk-go-v2/service/route53` is floored at `v1.59.4`** ([#182](https://github.com/X4Applegate/caddyui/issues/182)), clearing GHSA-3jcv-796g-cpjg (low; region host-label validation), which affected the `v1.58.3` the image linked. The floor moves exactly one module; the build asserts it against the built binary.
+- **The pinned-plugin watcher no longer reports `--replace` pins as "lowered" by mistake** ([#182](https://github.com/X4Applegate/caddyui/issues/182)). It read the requirement row of a replaced module instead of the replacement row.
+
 ## [2.68.15] - 2026-11-25 - Caddy image: otel/sdk/log and x/crypto floors take the image to 0 govulncheck and 0 Trivy findings
 
 ### Security
