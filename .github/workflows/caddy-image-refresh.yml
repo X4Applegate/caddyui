@@ -243,6 +243,22 @@ jobs:
           cp scripts/caddy-image-gate.sh "$RUNNER_TEMP/caddy-image-gate.sh"
           chmod +x "$RUNNER_TEMP/caddy-image-gate.sh"
 
+          # The absolute coverage floor (gate check 5e, T-0811) is TOOLING, not
+          # a build input, so it is staged here for exactly the reason the gate
+          # script above is: the tag checkout below replaces the whole tree, and
+          # no release tag cut before the fixture existed contains it. Left in
+          # the tree it would be deleted, the gate would resolve its default
+          # path to a missing file, and 5e would SKIP -- silently dropping the
+          # one check that is not relative to the baseline, on the path that
+          # moves :stable and :latest.
+          #
+          # Asserted rather than copied best-effort: a missing fixture on this
+          # ref is a repo fault to fix, not a reason to publish to a weaker
+          # standard.
+          [ -r scripts/fixtures/caddy-image-coverage-floor.json ] \
+            || { echo "::error::scripts/fixtures/caddy-image-coverage-floor.json is missing on this ref; the absolute coverage floor (gate check 5e) would silently skip. Refusing to gate to a weaker standard."; exit 1; }
+          cp scripts/fixtures/caddy-image-coverage-floor.json "$RUNNER_TEMP/caddy-image-coverage-floor.json"
+
       - name: Check out the release tag being refreshed
         shell: bash
         run: |
@@ -331,6 +347,11 @@ jobs:
           # v2.68.11 -> v2.68.12 bump asserts only a benign libnghttp2 soname
           # pair. The raw diff is still carried into the summary either way.
           FS_DELTA: "on"
+          # Point check 5e at the copy staged outside the working tree. The
+          # gate's own default is repo-relative, and the tag checkout has
+          # already replaced the tree by the time this runs, so the default
+          # would resolve to a missing file and 5e would skip.
+          COVERAGE_FLOOR_FILE: ${{ runner.temp }}/caddy-image-coverage-floor.json
         run: |
           set -euo pipefail
           gate="$RUNNER_TEMP/caddy-image-gate.sh"
@@ -818,6 +839,22 @@ jobs:
           cp scripts/caddy-image-gate.sh "$RUNNER_TEMP/caddy-image-gate.sh"
           chmod +x "$RUNNER_TEMP/caddy-image-gate.sh"
 
+          # The absolute coverage floor (gate check 5e, T-0811) is TOOLING, not
+          # a build input, so it is staged here for exactly the reason the gate
+          # script above is: the tag checkout below replaces the whole tree, and
+          # no release tag cut before the fixture existed contains it. Left in
+          # the tree it would be deleted, the gate would resolve its default
+          # path to a missing file, and 5e would SKIP -- silently dropping the
+          # one check that is not relative to the baseline, on the path that
+          # moves :stable and :latest.
+          #
+          # Asserted rather than copied best-effort: a missing fixture on this
+          # ref is a repo fault to fix, not a reason to publish to a weaker
+          # standard.
+          [ -r scripts/fixtures/caddy-image-coverage-floor.json ] \
+            || { echo "::error::scripts/fixtures/caddy-image-coverage-floor.json is missing on this ref; the absolute coverage floor (gate check 5e) would silently skip. Refusing to gate to a weaker standard."; exit 1; }
+          cp scripts/fixtures/caddy-image-coverage-floor.json "$RUNNER_TEMP/caddy-image-coverage-floor.json"
+
       # -pN claims the source is vX.Y.Z's, so it must actually be. `clean: true`
       # (the default) replaces the tree with the tag's contents, which is why
       # the script was staged above first.
@@ -910,6 +947,11 @@ jobs:
           # approving on a filesystem-checked verdict and publishing on an
           # unchecked one.
           FS_DELTA: "on"
+          # Point check 5e at the copy staged outside the working tree. The
+          # gate's own default is repo-relative, and the tag checkout has
+          # already replaced the tree by the time this runs, so the default
+          # would resolve to a missing file and 5e would skip.
+          COVERAGE_FLOOR_FILE: ${{ runner.temp }}/caddy-image-coverage-floor.json
         shell: bash
         run: |
           set -euo pipefail

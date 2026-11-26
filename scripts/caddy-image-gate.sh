@@ -38,6 +38,15 @@
 #                       one. The name predates gate 3 and is kept because all
 #                       three call sites set it; it reads as "how strict is
 #                       drift", which is what it now means for both gates.
+#   COVERAGE_FLOOR_FILE Path to the committed absolute coverage floor for
+#                       coverage check 5e. Default
+#                       scripts/fixtures/caddy-image-coverage-floor.json,
+#                       resolved against the REPO (cwd), because both CI callers
+#                       `cp` this script into $RUNNER_TEMP and run it from the
+#                       checkout. Set EMPTY to run with no absolute floor. An
+#                       absent file is a visible skip; a file that is present
+#                       but unparseable, empty or wrongly typed is a hard stop.
+#                       See scripts/fixtures/README-caddy-image-coverage-floor.md.
 #
 # Requires: trivy, jq, docker. Trivy's DB must already be downloaded
 # (`trivy image --download-db-only`): the caller does that ONCE so every scan
@@ -404,8 +413,8 @@ rm -f "$OUT/verdict" "$OUT/summary.md" \
 # for it in a way it is not for the diffs: keep the name prefixed `cfg-` if it
 # is ever renamed.
 #
-# .cov-*.names are the scratch files of coverage checks 5, 5b, 5c, 5d and 7
-# (T-0638, T-0810). Each is removed as soon as its target has been compared,
+# .cov-*.names are the scratch files of coverage checks 5, 5b, 5c, 5d, 5e and 7
+# (T-0638, T-0810, T-0811). Each is removed as soon as its target has been compared,
 # so they do not normally survive a run -- but a `die` from a LATER target, or
 # a kill between the two writes, leaves one behind. Cleared for the same
 # reason: this directory is reused on a local run, and those checks read the
@@ -464,6 +473,21 @@ case "$FS_DELTA" in
   on|off) ;;
   *) die "FS_DELTA must be 'on' or 'off' (got: $FS_DELTA)" ;;
 esac
+
+# The committed absolute coverage floor (T-0811). See check 5e.
+#
+# Resolved relative to the REPO, not to this script's own directory, because
+# both CI callers `cp` the script into $RUNNER_TEMP and run it from the repo
+# checkout as cwd -- so `dirname $0` points at a temp directory holding one
+# file, and a fixture looked up there would be permanently absent, i.e. the
+# check would be silently off on the exact path it exists to guard. cwd is the
+# repo on both paths and for a local run from the repo root.
+#
+# Overridable so the test harness can point at a crafted fixture, and so a
+# local run from elsewhere can still find it. An EMPTY value is accepted and
+# means "no fixture", which is how a caller deliberately turns 5e off; it is
+# distinct from a path that is set but unreadable, which 5e treats as a fault.
+COVERAGE_FLOOR_FILE="${COVERAGE_FLOOR_FILE-scripts/fixtures/caddy-image-coverage-floor.json}"
 
 # Paths a NEW file may legitimately appear at without the gate objecting.
 #
@@ -1491,6 +1515,189 @@ assert_scan_coverage() {
   # `for _ in $ARCHES` and the module-diff paths), and a `die` above exits the
   # whole script anyway, so this only needs to cover the success path.
   set +f
+
+  # 5e. An ABSOLUTE floor, pinned to a committed fixture (T-0811).
+  #
+  # WHAT THIS IS FOR, AND WHY THE RELATIVE FLOORS ARE NOT ENOUGH.
+  # ------------------------------------------------------------
+  # Every floor above is RELATIVE to the baseline: the published image defines
+  # what "scanned properly" means. 5b and 5c anchor the findings-bearing
+  # packages to observed vulnerabilities, which closed the carry channel where
+  # fabricated names became next release's baseline names. What they do not
+  # anchor is the DENOMINATOR -- the 50% name floor and the count floor both
+  # take their scale from whatever :stable happens to report, so a baseline
+  # that is itself partially degraded permanently lowers the bar for every
+  # later release, and nothing above can see that it has happened.
+  #
+  # Measured under T-0811 against the real :stable scan, using checks 1-7 as
+  # they stand: each step keeping every findings-bearing package at its
+  # baseline VERSION (so 5b and 5c are satisfied honestly, not evaded) and the
+  # minimum number of others at their baseline name@version (so 5 and 5d are),
+  # then publishing and becoming the next baseline --
+  #
+  #   237 -> 119 -> 60 -> 30 -> 15 -> 8 -> 6 Go modules, in SIX releases,
+  #   rc=0 and "scan coverage OK" printed at every single step.
+  #
+  # The floor is multiplicative, so each step halves. And the end state buys
+  # real blindness: binary-searched, a healthy 237-package baseline accepts a
+  # smallest rebuild of 119 (49% may be unobserved), while the degraded
+  # 6-package baseline accepts 1 (83%). The SAME 6-package image is exit 2
+  # against the healthy baseline and "coverage OK" against the degraded one --
+  # the standard itself moved, which is precisely what no relative check can
+  # detect.
+  #
+  # A fixture stops that at step 2 outright: pinned at 237 names, the ratchet's
+  # steps are 50% / 25% / 12% / ... intersections against the fixture, so step 2
+  # (60/237 = 25%) blocks and step 1 (119/237 = 50%) is marginal. Nothing the
+  # rebuild fabricates can raise that number, because the fixture is not
+  # derived from the rebuild.
+  #
+  # WHY A COMMITTED FILE IS ACCEPTABLE HERE, GIVEN T-0638 DECLINED ONE.
+  # ------------------------------------------------------------------
+  # T-0638 rejected an absolute floor on the grounds that a file committed next
+  # to the Dockerfile "is editable by the same release it constrains", which is
+  # the actor the gate exists to constrain. That objection is real but it is
+  # comparative, and it comes out the other way: the edit is a REVIEWABLE DIFF
+  # in the PR Richard approves per release, whereas the baseline's erosion is
+  # invisible -- it happens in the published image, with no diff anywhere. A
+  # change that has to be shown to a human beats one that does not.
+  #
+  # THREE DELIBERATE SCOPINGS, each measured rather than assumed.
+  #
+  #   (1) `gobinary` ONLY; no OS-layer fixture. `apk upgrade --no-cache` is
+  #       unpinned by design and `FROM caddy:2.11.9-alpine` is a moving tag, so
+  #       the alpine name set legitimately drops to 65% on a minor bump -- the
+  #       3.23->3.24 figure measured under T-0810. A rule that blocks the
+  #       refresh it exists to protect gets switched off, which is the same
+  #       reason 5c is scoped the way it is. The OS layer keeps the relative
+  #       floors it already has. Enforced here by reading the fixture's own
+  #       declared `type` rather than by looping: a fixture that names a type
+  #       whose churn is legitimate is a mistake this check should not make
+  #       easy to write.
+  #
+  #   (2) NAMES, not versions, and not counts alone. Versions are 5c/5d's
+  #       business and churn legitimately every release. A raw COUNT floor --
+  #       the `gobinary >= 100` form T-0638's card proposed -- is the strictly
+  #       weaker shape, because a padded list of fabricated names clears it:
+  #       exactly the gap T-0638 closed for the relative checks, and it must
+  #       not be reintroduced here one level out.
+  #
+  #   (3) REFRESHED AT RELEASE, in the release PR. See the fixture's own
+  #       _comment field and the release runbook.
+  #
+  # WHY STALENESS CANNOT BLOCK A LEGITIMATE RELEASE.
+  # -----------------------------------------------
+  # This is an INTERSECTION against an old set, so a fixture that is behind
+  # simply asserts LESS: names the fixture does not know about cannot be missed
+  # from it. It degrades permissively, never restrictively. That removes the
+  # "a release blocked by a stale fixture" failure mode, which was the main
+  # argument against doing this at all -- the cost the card weighed does not
+  # exist in this shape.
+  #
+  # MEASURED COST, from every captured real pair on this host (21 pairs,
+  # v2.55-era through v2.68.12): Go-module NAME retention is 99-100%, with 20
+  # of 21 at exactly 100%; the widest span available (the 236-package era vs
+  # the current 237) is also 100%. The attack is 2% (6 of 237). So a 50% floor
+  # sits in open space rather than on a boundary: legitimate releases move
+  # module VERSIONS, not module NAMES.
+  #
+  # Compared PER TARGET, not per type, and against the fixture's declared
+  # target. Check 7 exists because `gobinary` is a type that can appear more
+  # than once, and a type-level intersection is payable with a decoy binary:
+  # ship usr/bin/caddy gutted to one package and a second Go binary elsewhere
+  # carrying all 237 fixture names, and a type-level 5e reads 237/237 while the
+  # binary the image actually runs is unobserved. That is the bypass check 7
+  # was written for, reproduced end to end against the real scan, and this
+  # check must not reopen it one level out.
+  if [ -n "$COVERAGE_FLOOR_FILE" ]; then
+    if [ ! -f "$COVERAGE_FLOOR_FILE" ]; then
+      # ABSENT is not a fault. The script is run by hand and from worktrees
+      # that predate the fixture, and every check above still ran. Noted
+      # rather than silent, so "5e did not run" is visible in the log and in
+      # the summary instead of being indistinguishable from "5e passed".
+      printf 'NOTE (linux/%s): no committed coverage floor at %s, so the absolute floor (check 5e) did not run; the relative floors above still did.\n' \
+        "$arch" "$(safe_text "$COVERAGE_FLOOR_FILE")"
+      # Wording asserted on by the test harness, which checks that this skip
+      # is VISIBLE rather than silent -- a silent skip reads exactly like a
+      # pass, and that is how a check stays off after someone moves the file.
+    else
+      # PRESENT BUT UNUSABLE IS A HARD STOP, unlike absent.
+      #
+      # The two cases are deliberately asymmetric. "No fixture" is a
+      # configuration this repo supports; "a fixture that cannot be read" is
+      # the fail-open shape this entire function exists to close, and it is
+      # the one an attacker reaches for -- truncate the file, or corrupt one
+      # byte of it, and a skip-on-error check turns itself off while still
+      # printing coverage OK. Validated as a whole document before any field
+      # is trusted.
+      local fx_type fx_target fx_pct fx_names_f fx_count fx_retained fx_floor
+      local fx_new_f fx_valid
+      fx_valid="$(jq -r '
+        if (type == "object")
+           and ((.schema // 0) == 1)
+           and (((.type // "") | type) == "string") and ((.type // "") != "")
+           and (((.target // "") | type) == "string") and ((.target // "") != "")
+           and ((.floor_percent // null) | type == "number")
+           and ((.names | type) == "array")
+        then "ok" else "bad" end' "$COVERAGE_FLOOR_FILE" 2>/dev/null || echo bad)"
+      [ "$fx_valid" = ok ] \
+        || die "the committed coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") is not a readable schema-1 floor document (needs object with schema=1, non-empty string type and target, numeric floor_percent, array names). A floor that cannot be parsed asserts nothing while still appearing to be configured, which is the fail-open shape every check in this function exists to close. Fix or remove the file; do not leave it unparseable."
+
+      fx_type="$(jq -r '.type' "$COVERAGE_FLOOR_FILE")"
+      fx_target="$(jq -r '.target' "$COVERAGE_FLOOR_FILE")"
+      fx_pct="$(jq -r '.floor_percent | floor' "$COVERAGE_FLOOR_FILE")"
+
+      # Scoping (1), enforced rather than documented. An OS-layer fixture
+      # would block the base-image bump it exists to protect (alpine names
+      # drop to 65% on a legitimate minor bump), and the first time it did,
+      # the check would be switched off for everything.
+      [ "$fx_type" = gobinary ] \
+        || die "the committed coverage floor declares type '$(safe_text "$fx_type")', but this check is deliberately scoped to 'gobinary' only. The OS layer's package names legitimately drop to ~65% on an alpine minor bump because 'apk upgrade --no-cache' is unpinned by design and the base tag moves, so an absolute floor there would block the refresh it exists to protect. Keep the OS layer on the relative floors above."
+
+      [ "$fx_pct" -ge 1 ] && [ "$fx_pct" -le 100 ] \
+        || die "the committed coverage floor declares floor_percent=$(safe_text "$fx_pct"), which is outside 1-100. A floor of 0 asserts nothing and a floor above 100 can never be met; neither is a usable setting."
+
+      fx_names_f="$OUT/.cov-fixture-$arch.names"
+      # Sanitized and sorted through the SAME transformation as
+      # pkg_names_for_target, because the two outputs are fed to `comm`. A
+      # fixture rendered even slightly differently from the scan side would
+      # under-report the intersection and block legitimate releases -- the
+      # noisy-check failure mode that gets a check switched off. Same LC_ALL=C
+      # ordering, for the reason documented on pkg_names_for_type.
+      jq -r '[ .names[]? | select(. != null and . != "")
+               | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+             | unique | .[]' "$COVERAGE_FLOOR_FILE" | LC_ALL=C sort -u > "$fx_names_f"
+      fx_count=$(wc -l < "$fx_names_f")
+      fx_count=${fx_count//[[:space:]]/}
+
+      if [ "$fx_count" -eq 0 ]; then
+        # An EMPTY names array parses fine and asserts nothing, so it is the
+        # quietest possible way to disable this check while leaving a
+        # plausible-looking fixture committed. A caller that means to turn 5e
+        # off sets COVERAGE_FLOOR_FILE= explicitly, which is visible.
+        rm -f "$fx_names_f"
+        die "the committed coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") lists zero package names, so it imposes no floor at all while still being present and parseable. To run without an absolute floor, unset the file or pass COVERAGE_FLOOR_FILE= explicitly; do not commit an empty one."
+      fi
+
+      # Per TARGET (see above), so a decoy Go binary cannot pay for the real
+      # one's coverage.
+      fx_new_f="$OUT/.cov-fixnew-$arch.names"
+      pkg_names_for_target "$new" "$fx_target" > "$fx_new_f"
+      fx_retained=$(LC_ALL=C comm -12 "$fx_names_f" "$fx_new_f" | wc -l)
+      fx_retained=${fx_retained//[[:space:]]/}
+      # Rounded UP, for the reason check 4's floor is: rounded down, a small
+      # fixture yields floor 0 and "the rebuild retains none of them" would
+      # pass.
+      fx_floor=$(( (fx_count * fx_pct + 99) / 100 ))
+      rm -f "$fx_names_f" "$fx_new_f"
+
+      if [ "$fx_retained" -lt "$fx_floor" ]; then
+        die "the rebuild's '$(safe_text "$fx_target")' scan of linux/$arch retains only $fx_retained of the $fx_count Go module name(s) recorded at the last tagged release (floor $fx_floor = $fx_pct%), as pinned in $(safe_text "$COVERAGE_FLOOR_FILE"). Unlike the floors above, this one is NOT relative to the published baseline, so a baseline that has itself lost coverage cannot lower it. Either this rebuild sees far less of the shipped binary than the last release did, or the baseline it is being compared against has already degraded. If the drop is deliberate -- a plugin removed with its dependency subtree -- refresh the fixture in this release's PR so the change is reviewed as a diff."
+      fi
+      printf 'absolute floor (linux/%s): %s retains %s/%s pinned Go module name(s) (floor %s = %s%%)\n' \
+        "$arch" "$(safe_text "$fx_target")" "$fx_retained" "$fx_count" "$fx_floor" "$fx_pct"
+    fi
+  fi
 
   # 6. The scanned binary is the SHIPPED binary (T-0638).
   #

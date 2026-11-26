@@ -700,6 +700,24 @@ jobs:
           cp scripts/caddy-image-gate.sh "$RUNNER_TEMP/caddy-image-gate.sh"
           chmod +x "$RUNNER_TEMP/caddy-image-gate.sh"
 
+          # The absolute coverage floor (gate check 5e, T-0811) must be present
+          # on THIS path specifically, because this is the job that moves
+          # :stable and :latest -- the tags all six boxes pull.
+          #
+          # The gate treats an ABSENT fixture as a visible skip rather than a
+          # fault, which is right for a local run or an old worktree and wrong
+          # here: 5e is the only check that is not relative to the baseline, so
+          # losing it is exactly the silent degradation it exists to prevent,
+          # and a skip reads like a pass in the log. Asserted rather than
+          # trusted, for the same reason the gate script itself is above: a tag
+          # cut from before the fixture existed cannot be gated to this
+          # standard, so say so instead of publishing to a weaker one.
+          [ -r scripts/fixtures/caddy-image-coverage-floor.json ] || {
+            echo "::error::scripts/fixtures/caddy-image-coverage-floor.json is missing on ${VERSION}; the absolute coverage floor (gate check 5e) would silently skip, and this job moves :stable and :latest. Refusing to publish without it."
+            exit 1
+          }
+          cp scripts/fixtures/caddy-image-coverage-floor.json "$RUNNER_TEMP/caddy-image-coverage-floor.json"
+
       - name: Install Trivy
         if: needs.plan.outputs.push == 'true'
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
@@ -727,6 +745,9 @@ jobs:
           # same standard as the weekly refresh: the module set had no reason
           # to move, so if it moved that is a fault, not an intention.
           MODULE_DRIFT_POLICY: ${{ needs.plan.outputs.caddy_changed == 'true' && 'report' || 'block' }}
+          # Check 5e's committed floor, staged outside the tree alongside the
+          # gate script so this does not depend on cwd remaining the checkout.
+          COVERAGE_FLOOR_FILE: ${{ runner.temp }}/caddy-image-coverage-floor.json
         shell: bash
         run: |
           set -euo pipefail

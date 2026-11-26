@@ -42,6 +42,17 @@ FAIL=0
 # variable.
 DRIFT_POLICY="${MODULE_DRIFT_POLICY:-block}"
 
+# Check 5e reads this, and it is set OUTSIDE the extracted function range too,
+# so `set -u` would abort the harness on the first case without it.
+#
+# Defaults to EMPTY -- i.e. no absolute floor -- deliberately, so the 47 cases
+# that predate T-0811 exercise exactly the checks they were written for and
+# cannot be made to pass or fail by a fixture they do not know about. The 5e
+# cases set it per-case instead.
+#
+# shellcheck disable=SC2034  # read by assert_scan_coverage, which is sourced above
+COVERAGE_FLOOR_FILE=""
+
 # Source the gate's functions WITHOUT running its body.
 #
 # The script is `set -euo pipefail` with an argument check and a dependency
@@ -729,6 +740,157 @@ jq '(.Results[] | select(.Type == "gobinary") | .Vulnerabilities) |=
    "$BVV" > "$WORK/t47-base.json"
 run_cov "$WORK/t46.json" "$WORK/t47-base.json"
 check "an absent VulnerabilityID key behaves like an empty one" block
+
+# ---------------------------------------------------------------------------
+# T-0811: check 5e, the ABSOLUTE floor pinned to a committed fixture.
+#
+# These cases use a DEGRADED baseline, because that is the whole point of 5e:
+# against a healthy baseline the relative floors already block, so a case run
+# against "$B" would not distinguish 5e from check 5 and would still pass if
+# 5e were deleted. The baseline here is the T-0811 ratchet's late output (8 Go
+# modules), which every relative floor is satisfied by -- measured as rc=0
+# "scan coverage OK" -- and which only a fixture can object to.
+
+# A fixture document in the committed shape.
+mkfixture() {
+  local out="$1" n="$2" pct="$3" type="${4:-gobinary}" target="${5:-usr/bin/caddy}"
+  jq -n --argjson n "$n" --argjson pct "$pct" \
+        --arg type "$type" --arg target "$target" '
+    { schema: 1, captured: "2026-11-25", source_digest: "sha256:test",
+      type: $type, target: $target, floor_percent: $pct,
+      names: [ range(0; $n) | "example.com/mod-" + (. | tostring) ] }' > "$out"
+}
+
+FX="$WORK/floor.json"
+mkfixture "$FX" 237 50
+
+# The degraded baseline the ratchet reaches, and a rebuild below it.
+mkscan "$WORK/t48-base.json" 32 8 real usr/bin/caddy
+mkscan "$WORK/t48.json" 32 4 real usr/bin/caddy
+
+# 48. CONTROL, fixture OFF. The degraded baseline accepts a 4-module rebuild.
+#     Asserted as a PASS so the cases below cannot be satisfied by a relative
+#     floor having changed: this is the hole, demonstrated.
+COVERAGE_FLOOR_FILE="" run_cov "$WORK/t48.json" "$WORK/t48-base.json"
+check "control: degraded baseline accepts a 4-module rebuild with no fixture" pass
+
+# 49. THE CARD'S THESIS. Same pair, fixture ON: 4/237 is 2%, floor is 119.
+#     Nothing about the baseline changed -- only that the standard is now
+#     pinned to a release rather than to whatever :stable reports.
+COVERAGE_FLOOR_FILE="$FX" run_cov "$WORK/t48.json" "$WORK/t48-base.json"
+check "fixture blocks what a degraded baseline accepts (5e)" block
+
+# 50. The ratchet's step 2, which T-0811 measured as the first one a fixture
+#     stops outright: 60/237 = 25% against a 119 floor.
+mkscan "$WORK/t50-base.json" 32 119 real usr/bin/caddy
+mkscan "$WORK/t50.json" 32 60 real usr/bin/caddy
+COVERAGE_FLOOR_FILE="$FX" run_cov "$WORK/t50.json" "$WORK/t50-base.json"
+check "ratchet step 2 (60/237) blocks against the fixture" block
+
+# 51. Step 1 is MARGINAL by design: 119/237 is exactly the 50% floor, so it
+#     passes. Documented rather than tightened -- the floor is loose for the
+#     same reason every other floor here is, and this is the boundary.
+mkscan "$WORK/t51.json" 32 119 real usr/bin/caddy
+COVERAGE_FLOOR_FILE="$FX" run_cov "$WORK/t51.json" "$B"
+check "ratchet step 1 (119/237) is exactly at the floor and passes" pass
+
+# 52. A healthy rebuild passes with the fixture on. This is the legitimacy
+#     case: measured Go-module name retention across 21 real captured pairs is
+#     99-100%, so an ordinary release must not notice 5e at all.
+COVERAGE_FLOOR_FILE="$FX" run_cov "$WORK/t1.json" "$B"
+check "identical rebuild still passes with the fixture on" pass
+
+# 53. Ordinary upward churn passes too (the real release shape: names retained,
+#     a few added).
+COVERAGE_FLOOR_FILE="$FX" run_cov "$WORK/t2.json" "$B"
+check "ordinary upward churn passes with the fixture on" pass
+
+# 54. A STALE fixture degrades PERMISSIVELY, never restrictively. This is the
+#     claim that removed the card's main objection -- "a release blocked by a
+#     stale fixture" -- so it is asserted rather than argued. A fixture pinning
+#     only 100 names (behind the real 237) asserts LESS, and cannot block.
+mkfixture "$WORK/t54-fx.json" 100 50
+COVERAGE_FLOOR_FILE="$WORK/t54-fx.json" run_cov "$WORK/t1.json" "$B"
+check "a stale (behind) fixture asserts less and cannot block" pass
+
+# 55. THE DECOY-BINARY BYPASS, which check 7 was written for and which 5e must
+#     not reopen one level out. usr/bin/caddy is gutted to 4 modules while a
+#     SECOND Go binary at usr/bin/helper carries all 237 fixture names. A
+#     type-level intersection reads 237/237; the per-target one reads 4/237.
+jq --argjson n 237 '
+  .Results += [ { Target: "usr/bin/helper", Class: "lang-pkgs", Type: "gobinary",
+                  Packages: [ range(0; $n)
+                              | { Name: ("example.com/mod-" + (. | tostring)) } ],
+                  Vulnerabilities: [] } ]' "$WORK/t48.json" > "$WORK/t55.json"
+COVERAGE_FLOOR_FILE="$FX" run_cov "$WORK/t55.json" "$WORK/t48-base.json"
+check "a decoy Go binary cannot pay for the shipped binary's floor (5e per-target)" block
+
+# 56. An UNPARSEABLE fixture is a hard stop, not a skip. A check that turns
+#     itself off when its own input is corrupted is the fail-open shape this
+#     whole function exists to close, and it is the cheapest thing to attack:
+#     truncate one byte.
+printf '{ "schema": 1, "names": [ ' > "$WORK/t56-fx.json"
+COVERAGE_FLOOR_FILE="$WORK/t56-fx.json" run_cov "$WORK/t1.json" "$B"
+check "a truncated fixture blocks rather than skipping the check" block
+
+# 57. A fixture of the WRONG SCHEMA blocks. Separate from 56 because valid JSON
+#     missing the fields reads as null rather than failing to parse, and a
+#     `// 0` default on the wrong side would accept it.
+printf '{ "names": ["example.com/mod-0"] }' > "$WORK/t57-fx.json"
+COVERAGE_FLOOR_FILE="$WORK/t57-fx.json" run_cov "$WORK/t1.json" "$B"
+check "a fixture with no schema/type/target blocks" block
+
+# 58. An EMPTY names array blocks. It parses, it looks configured, and it
+#     asserts nothing -- the quietest way to disable 5e while leaving a
+#     plausible file committed.
+mkfixture "$WORK/t58-fx.json" 0 50
+COVERAGE_FLOOR_FILE="$WORK/t58-fx.json" run_cov "$WORK/t1.json" "$B"
+check "an empty fixture names array blocks rather than asserting nothing" block
+
+# 59. An OS-LAYER fixture is REFUSED, enforcing scoping (1) rather than only
+#     documenting it. alpine names legitimately drop to ~65% on a minor bump
+#     (measured under T-0810), so such a fixture would block the refresh it
+#     exists to protect, and would then be switched off for everything.
+mkfixture "$WORK/t59-fx.json" 32 50 alpine "applegater/caddyui-caddy:stable (alpine 3.24.4)"
+COVERAGE_FLOOR_FILE="$WORK/t59-fx.json" run_cov "$WORK/t1.json" "$B"
+check "an alpine-typed fixture is refused (gobinary-only scoping)" block
+
+# 60. A floor_percent outside 1-100 blocks. 0 asserts nothing, which is the
+#     same quiet-disable shape as case 58 by a different field.
+mkfixture "$WORK/t60-fx.json" 237 0
+COVERAGE_FLOOR_FILE="$WORK/t60-fx.json" run_cov "$WORK/t1.json" "$B"
+check "floor_percent=0 blocks rather than asserting nothing" block
+
+# 61. An ABSENT fixture is NOT a fault: the script is run by hand and from
+#     worktrees predating the file, and every check above still ran. Passes,
+#     and the NOTE is what makes "5e did not run" visible.
+COVERAGE_FLOOR_FILE="$WORK/does-not-exist.json" run_cov "$WORK/t1.json" "$B"
+check "an absent fixture skips 5e and passes" pass
+
+# 62. ...and the skip is NOTED, not silent. Asserted on the output, because a
+#     silent skip is indistinguishable from a pass and that is how a check
+#     stays off after someone moves the file.
+if printf '%s' "$COV_OUT" | grep -q 'absolute floor (check 5e) did not run'; then
+  printf 'ok   an absent fixture says so in the output\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL an absent fixture says so in the output\n     %s\n' "$COV_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# 63. The COMMITTED fixture, against the real :stable scan shape it was built
+#     from. Guards the thing most likely to break silently: a fixture rendered
+#     differently from the scan side (sanitization, sort order, locale) would
+#     under-report the intersection and block legitimate releases. Skipped
+#     rather than failed when the real scan is not available locally, since
+#     this harness is meant to run in seconds without a scan.
+REAL_FX="$HERE/fixtures/caddy-image-coverage-floor.json"
+REAL_SCAN="${T0811_REAL_SCAN:-}"
+if [ -r "$REAL_FX" ] && [ -n "$REAL_SCAN" ] && [ -r "$REAL_SCAN" ]; then
+  COVERAGE_FLOOR_FILE="$REAL_FX" run_cov "$REAL_SCAN" "$REAL_SCAN"
+  check "the committed fixture matches the real :stable scan it was built from" pass
+else
+  printf 'skip the committed fixture vs the real scan (set T0811_REAL_SCAN to run)\n'
+fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
