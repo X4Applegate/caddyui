@@ -5,8 +5,8 @@
 #
 # Security pins:
 #   - The FLOOR --with lines (crowdsec/pkg/apiclient, x/net/http2, chi/v5,
-#     go-jose/v4, klauspost/compress -- currently the first FIVE) are version
-#     floors. Keep every floor above the plugin lines, and update this list
+#     go-jose/v4, aws-sdk-go-v2/service/route53, klauspost/compress --
+#     currently the first SIX) are version floors. Keep every floor above the plugin lines, and update this list
 #     when one is added. xcaddy runs `go get` once
 #     per --with, in order, and `go get pkg@ver` sets exactly that version, so
 #     they must come first: a plugin fetched after them can still raise these
@@ -364,6 +364,8 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/go-chi/chi/v5@v5.5.0 \
     # pin-watch: security pin=v4.1.7 ref=T-0646 reason=lifts go-jose past SIX live advisories: CVE-2026-116587 plus five CVE-less ones (v6h2, c67m, p9j4, r39w, 27pc) each vulnerable at <= v4.1.6 and patched only in v4.1.7. 4.1.6 would be insufficient. Five are absent from OSV and from GitHub's global index, so an OSV-clean reading proves nothing here.
     --with github.com/go-jose/go-jose/v4@v4.1.7 \
+    # pin-watch: security pin=v1.59.4 ref=I182 reason=lifts aws-sdk-go-v2/service/route53 past GHSA-3jcv-796g-cpjg (low, no CVE id: the SDK never validated that the configured AWS region is a valid host label before building the endpoint URL, so a bad region value could send API calls to a non-AWS host). The route53 DNS plugin pinned below stays at v1.6.2 (see its floor), and that pulls in service/route53 v1.58.3, which is inside the advisory range (< v1.59.4). The fixed code IS linked: route53.bindRegion and bindEndpointParams are both in the shipped binary. It is low-risk in practice because the region comes from the admin's own Caddy config, and route53 is not configured anywhere in the fleet (see the caddy-dns/route53 floor). v1.59.4 is the exact fixed version, not latest (v1.73.1), on purpose. Its go.mod asks only for aws-sdk-go-v2 v1.39.6, smithy-go v1.23.2, configsources v1.4.13 and endpoints/v2 v2.7.13, all lower than what this image already links, so MVS moves this one module and nothing else. The source diff v1.58.3..v1.59.4 is the region check plus two new us-isob-west-1 enum values and doc comments. GitHub's per-repository index is the only place this advisory appears (it has no CVE id). The watcher's "< v1.108.8" range for it on the aws-sdk-go-v2 umbrella module is service/rds's boundary misattributed (T-0889). EXPECT the watcher to show CVE-2026-89090 against THIS pin, and do not treat it as real. OSV's CVE-2026-89090 record is a GIT range over the whole aws-sdk-go-v2 monorepo (fixed at commit ef3322b8, 2026-03-23), so a commit-scoped query matches any SDK module tagged before that date. Its only vulnerable package is aws/protocol/eventstream, which is absent from both the module graph and the binary (0 strings). The package+version OSV query for service/route53 is clean at v1.58.3, v1.59.4 and v1.73.1. The first route53 tag past that commit is v1.62.5 (also safe by MVS), but it brings about 4.8k lines of generated SDK churn. That trade is the release owner's call, not this floor's. Mark this `security`, not `floor`: it is a minimum, and the weekly watcher should still say it is behind upstream.
+    --with github.com/aws/aws-sdk-go-v2/service/route53@v1.59.4 \
     --with github.com/klauspost/compress@v1.20.4 \
     --with github.com/caddy-dns/cloudflare@v0.2.4 \
     --with github.com/caddy-dns/porkbun@v0.3.1 \
@@ -494,7 +496,7 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
 # the build if they drift, which is the point.
 COPY scripts/assert-floor-versions.sh /tmp/assert-floor-versions.sh
 COPY Dockerfile.caddy /tmp/Dockerfile.caddy
-ARG FLOOR_SELFCHECK="github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 golang.org/x/net/http2@v0.62.0 github.com/go-chi/chi/v5@v5.5.0 github.com/go-jose/go-jose/v4@v4.1.7 github.com/caddy-dns/route53@v1.6.2"
+ARG FLOOR_SELFCHECK="github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 golang.org/x/net/http2@v0.62.0 github.com/go-chi/chi/v5@v5.5.0 github.com/go-jose/go-jose/v4@v4.1.7 github.com/aws/aws-sdk-go-v2/service/route53@v1.59.4 github.com/caddy-dns/route53@v1.6.2"
 RUN sh /tmp/assert-floor-versions.sh \
       --binary /usr/bin/caddy \
       --dockerfile /tmp/Dockerfile.caddy \
