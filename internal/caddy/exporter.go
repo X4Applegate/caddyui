@@ -241,6 +241,21 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 		}
 	}
 
+	// Issue #184: the Path matcher narrows the JSON route to matching paths,
+	// so the Caddyfile must carry the same matcher on reverse_proxy — without
+	// it the excerpt proxies every path on the host. Strip prefix mirrors the
+	// route's `rewrite strip_path_prefix` handler under that same matcher.
+	proxyMatcher := ""
+	if def := caddyfilePathMatcherDef(p.PathMatcher, p.PathMatcherType); def != "" {
+		fmt.Fprintf(&b, "\t@%s %s\n", caddyfilePathMatcherName, def)
+		proxyMatcher = "@" + caddyfilePathMatcherName + " "
+		if p.StripPathPrefix {
+			if prefix := strings.TrimRight(p.PathMatcher, "/*"); prefix != "" {
+				fmt.Fprintf(&b, "\turi @%s strip_prefix %s\n", caddyfilePathMatcherName, caddyfileToken(prefix))
+			}
+		}
+	}
+
 	// reverse_proxy block — primary upstream + extras + transport tweaks.
 	upstreamSpec := upstreamDial(p.ForwardScheme, p.ForwardHost, p.ForwardPort)
 	for _, eu := range p.ExtraUpstreamList() {
@@ -249,7 +264,7 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 			upstreamSpec += " " + eu
 		}
 	}
-	fmt.Fprintf(&b, "\treverse_proxy %s {\n", upstreamSpec)
+	fmt.Fprintf(&b, "\treverse_proxy %s%s {\n", proxyMatcher, upstreamSpec)
 
 	// header_up — custom request headers + the X-Forwarded-* trio.
 	if p.UpstreamHostOverride != "" {
@@ -406,6 +421,56 @@ func RenderRawRouteCaddyfile(r models.RawRoute) string {
 		b.WriteString("# (JSON-typed raw route — open it in CaddyUI → Advanced to see / edit)\n")
 	}
 	return b.String()
+}
+
+// caddyfilePathMatcherName names the matcher that carries a proxy host's
+// Path matcher in the Caddyfile excerpt (issue #184).
+const caddyfilePathMatcherName = "caddyui_path"
+
+// caddyfilePathMatcherDef returns the Caddyfile matcher (without the @name)
+// equivalent to the `path` / `path_regexp` match BuildProxyRoute adds for
+// pathMatcher, or "" when the route has no path matcher. Keep the cases in
+// step with BuildProxyRoute.
+func caddyfilePathMatcherDef(pathMatcher, matcherType string) string {
+	if pathMatcher == "" {
+		return ""
+	}
+	switch matcherType {
+	case "exact":
+		return "path " + caddyfileToken(pathMatcher)
+	case "regexp":
+		return "path_regexp " + caddyfileToken(pathMatcher)
+	default:
+		prefix := strings.TrimRight(pathMatcher, "/*")
+		if prefix == "" {
+			return ""
+		}
+		return "path " + caddyfileToken(prefix) + " " + caddyfileToken(prefix+"/*")
+	}
+}
+
+// caddyfileToken renders s as one Caddyfile token. Plain path/regexp text is
+// left bare; anything the Caddyfile lexer would split, escape or read as
+// syntax (whitespace, quotes, braces, `#`, backslashes, heredoc `<<`, …) is
+// quoted — with backticks, which the lexer takes literally, or with escaped
+// double quotes when the value itself contains a backtick.
+func caddyfileToken(s string) string {
+	bare := s != ""
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("/.-_*^$()[]|+?:~!%&=,;", r):
+		default:
+			bare = false
+		}
+	}
+	if bare {
+		return s
+	}
+	if !strings.Contains(s, "`") {
+		return "`" + s + "`"
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
 }
 
 // upstreamDial — produce a Caddyfile reverse_proxy upstream argument.
