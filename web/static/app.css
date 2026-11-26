@@ -2537,6 +2537,25 @@ html.dark .domain-pill:hover {
   font-size: 0.75rem;
 }
 .fleet-table { min-width: 62rem; }
+/* Issue #154: sortable inventory headers — the button inherits the th look. */
+.fleet-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.fleet-sort:hover,
+th[aria-sort] .fleet-sort { color: var(--ui-text); }
+.fleet-sort__arrow { opacity: 0.45; font-size: 0.75rem; letter-spacing: 0; }
+th[aria-sort] .fleet-sort__arrow { opacity: 1; }
 .fleet-name {
   display: flex;
   align-items: center;

@@ -47,20 +47,26 @@
     </div>
 
     <div class="hidden md:block ui-table-wrap">
-      <table class="ui-table fleet-table">
+      {{/* Issue #154: opt-in column sorting. Rows keep the server order until a
+           header is clicked; each row carries its sort keys so the script below
+           never parses display text. data-sort-health ranks by state, problems
+           first (offline 0, unknown 1, online 2); data-sort-policy is managed 0,
+           external 1; data-sort-contact is the last-contact Unix time, empty when
+           the server was never contacted — those rows stay last both ways. */}}
+      <table class="ui-table fleet-table" data-fleet-sort-table>
         <thead>
           <tr>
-            <th>Environment</th>
-            <th>Health</th>
-            <th>Admin endpoint</th>
-            <th>Policy</th>
-            <th>Last contact</th>
+            <th data-fleet-sort-col="name"><button type="button" class="fleet-sort" data-fleet-sort="name">Environment<span class="fleet-sort__arrow" aria-hidden="true">↕</span></button></th>
+            <th data-fleet-sort-col="health"><button type="button" class="fleet-sort" data-fleet-sort="health">Health<span class="fleet-sort__arrow" aria-hidden="true">↕</span></button></th>
+            <th data-fleet-sort-col="endpoint"><button type="button" class="fleet-sort" data-fleet-sort="endpoint">Admin endpoint<span class="fleet-sort__arrow" aria-hidden="true">↕</span></button></th>
+            <th data-fleet-sort-col="policy"><button type="button" class="fleet-sort" data-fleet-sort="policy">Policy<span class="fleet-sort__arrow" aria-hidden="true">↕</span></button></th>
+            <th data-fleet-sort-col="contact"><button type="button" class="fleet-sort" data-fleet-sort="contact">Last contact<span class="fleet-sort__arrow" aria-hidden="true">↕</span></button></th>
             <th class="text-right">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody data-fleet-sort-body>
           {{range .Servers}}
-          <tr>
+          <tr data-fleet-row data-sort-name="{{.Name}}" data-sort-health="{{if eq .Status "offline"}}0{{else if eq .Status "online"}}2{{else}}1{{end}}" data-sort-endpoint="{{.AdminURL}}" data-sort-policy="{{if eq .Type "managed"}}0{{else}}1{{end}}" data-sort-contact="{{if .LastContactAt.Valid}}{{.LastContactAt.Time.Unix}}{{end}}">
             <td>
               <div class="fleet-name">
                 <strong>{{.Name}}</strong>
@@ -173,4 +179,54 @@
     <p>Protect TCP admin endpoints with a private network, WireGuard/Tailscale, or an authenticated reverse proxy. For local Caddy, a Unix socket avoids network exposure entirely.</p>
   </div>
 </div>
+<script>
+{{/* Issue #154: sortable environment inventory. Click a header to sort
+     ascending, click again for descending. Nothing is reordered (and nothing is
+     remembered) until a header is clicked, so the stored server order stays the
+     default on every load. Ties fall back to that original order. */}}
+(function() {
+  var table = document.querySelector('[data-fleet-sort-table]');
+  if (!table) return;
+  var body = table.querySelector('[data-fleet-sort-body]');
+  var rows = Array.prototype.slice.call(body.querySelectorAll('[data-fleet-row]'));
+  if (rows.length < 2) return;
+  rows.forEach(function(row, i) { row.dataset.sortOrigin = String(i); });
+  var numeric = { health: true, policy: true, contact: true };
+  var active = '';
+  var direction = 1;
+
+  function key(row, column) {
+    return row.getAttribute('data-sort-' + column) || '';
+  }
+
+  function compare(a, b) {
+    var av = key(a, active), bv = key(b, active), result;
+    // A never-contacted server has no timestamp; keep it last in both directions.
+    if (active === 'contact' && (av === '' || bv === '')) {
+      if (av === bv) return Number(a.dataset.sortOrigin) - Number(b.dataset.sortOrigin);
+      return av === '' ? 1 : -1;
+    }
+    if (numeric[active]) result = Number(av) - Number(bv);
+    else result = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
+    if (result !== 0) return result * direction;
+    return Number(a.dataset.sortOrigin) - Number(b.dataset.sortOrigin);
+  }
+
+  table.querySelectorAll('[data-fleet-sort]').forEach(function(button) {
+    button.addEventListener('click', function() {
+      var column = button.getAttribute('data-fleet-sort');
+      if (active === column) direction *= -1;
+      else { active = column; direction = 1; }
+      table.querySelectorAll('[data-fleet-sort-col]').forEach(function(th) {
+        var on = th.getAttribute('data-fleet-sort-col') === active;
+        if (on) th.setAttribute('aria-sort', direction === 1 ? 'ascending' : 'descending');
+        else th.removeAttribute('aria-sort');
+        var arrow = th.querySelector('.fleet-sort__arrow');
+        if (arrow) arrow.textContent = on ? (direction === 1 ? '↑' : '↓') : '↕';
+      });
+      rows.slice().sort(compare).forEach(function(row) { body.appendChild(row); });
+    });
+  });
+})();
+</script>
 {{end}}
