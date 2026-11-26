@@ -408,12 +408,18 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with go.opentelemetry.io/otel/sdk/log@v1.47.0 \
     # SECURITY FLOOR (T-0840), PROPHYLACTIC: lifts golang.org/x/crypto past GO-2026-5932 (the
     # openpgp package is unmaintained and unsafe by design). This buys no REACHABLE fix --
-    # openpgp is NOT LINKED here: 0 strings for `x/crypto/openpgp` in the shipped binary against
-    # working controls in the same module (x/crypto/ssh 238, chacha20 64, bcrypt 20, argon2 20).
-    # The module ships; the vulnerable package is not compiled in. The advisory is PACKAGE-scoped
-    # with no `symbols` key on any imports entry, which is why govulncheck renders its 7
-    # "vulnerable symbols" as package globs (`org/x/crypto/openpgp/armor/*`) rather than function
-    # names, and its "fix" version is a deprecation commit (go.dev/issue/81227), not a code change.
+    # openpgp is NOT LINKED here. The advisory is PACKAGE-scoped with no `symbols` key on any
+    # imports entry, which is why govulncheck renders its 7 "vulnerable symbols" as package globs
+    # rather than function names, and its "fix" version is a deprecation commit
+    # (go.dev/issue/81227) not a code change. ALL SEVEN of those paths were enumerated from OSV
+    # and counted individually in the shipped binary rather than inferred from one prefix grep,
+    # because a prefix only covers them if every glob sits under that subtree. They all do, and
+    # each is absent:
+    #     x/crypto/openpgp 0, openpgp/packet 0, openpgp/armor 0, openpgp/clearsign 0,
+    #     openpgp/errors 0, openpgp/elgamal 0, openpgp/s2k 0
+    # against working positive controls in the SAME module, which is what makes a zero mean
+    # anything: x/crypto/ssh 226, chacha20 64, bcrypt 20, argon2 20, hkdf 4.
+    # The module ships; the vulnerable package is not compiled in.
     # Pinned anyway because the floor is FREE: v0.59.0 is a plain TAG above the advisory's
     # pseudo-version fix, OSV-clean, needs no --replace, and holds the module set at 199 with no
     # downgrade. It also removes a standing UNKNOWN-severity row from the gate's Trivy view.
