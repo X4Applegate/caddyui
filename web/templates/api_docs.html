@@ -381,5 +381,42 @@
   </div>
 </section>
 
+
+{{/* ── Raw Routes ── */}}
+<section id="raw-routes" class="scroll-mt-20">
+  <h2 class="text-xl font-semibold text-ink-900 mb-3 flex items-center gap-2">
+    <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-brand-50 text-brand-600">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+    </span>
+    Raw Routes
+  </h2>
+
+  <div class="bg-white border border-ink-200 rounded-xl shadow-card divide-y divide-ink-100">
+
+    <div class="p-5 space-y-3">
+      <div class="flex items-center gap-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700 font-mono">POST</span>
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700 font-mono">PUT</span>
+        <code class="font-mono text-sm text-ink-800">/api/v1/raw-routes</code>, <code class="font-mono text-sm text-ink-800">/api/v1/raw-routes/{id}</code>
+      </div>
+      <p class="text-sm text-ink-600">Create or update an Advanced (raw) route from either <code class="font-mono">caddyfile_src</code> or <code class="font-mono">json_data</code>.</p>
+      <ul class="text-sm text-ink-600 list-disc pl-5 space-y-1">
+        <li><strong>With <code class="font-mono">caddyfile_src</code></strong>, the Caddyfile is authoritative: CaddyUI adapts it through Caddy and stores the result as <code class="font-mono">json_data</code> (any <code class="font-mono">json_data</code> sent alongside is ignored), and its listen set is derived from the site addresses — text that only uses the standard ports clears a custom listen set.</li>
+        <li><strong>A <code class="font-mono">PUT</code> with <code class="font-mono">json_data</code> and no <code class="font-mono">caddyfile_src</code></strong> replaces the route's JSON and <strong>clears its stored <code class="font-mono">caddyfile_src</code></strong>, which no longer describes the route.</li>
+        <li>For a non-admin account the Caddyfile may only produce routes: text that also adapts to site-level settings the route cannot carry (<code class="font-mono">log</code>, <code class="font-mono">bind</code>, <code class="font-mono">tls</code> issuers or certificate files, <code class="font-mono">handle_errors</code>) is refused with <span class="font-mono">400</span>.</li>
+      </ul>
+      <div>
+        <p class="text-xs font-medium text-ink-500 uppercase tracking-wider mb-1">Request body</p>
+        <pre class="bg-ink-50 border border-ink-200 rounded-lg p-3 font-mono text-xs text-ink-800 overflow-x-auto">{
+  "label": "app",
+  "enabled": true,
+  "caddyfile_src": "app.example.com {\n\treverse_proxy 10.0.0.5:8080\n}"
+}</pre>
+      </div>
+    </div>
+
+  </div>
+</section>
+
 </div>
 {{end}}

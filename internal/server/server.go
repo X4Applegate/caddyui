@@ -7248,7 +7248,7 @@ func (s *Server) exportProxyHostCaddyfile(w http.ResponseWriter, r *http.Request
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	body := caddy.RenderProxyHostCaddyfileWithOptions(*ph, s.certificateForCaddyfile(ph.CertificateID), s.caddyfileExportOptions(ph.ServerID))
+	body := caddy.RenderProxyHostCaddyfileWithOptions(*ph, s.certificateForCaddyfile(ph.CertificateID), s.caddyfileExportOptions(ph.ServerID, isAdminUser(s.currentUser(r))))
 	fname := strings.ReplaceAll(strings.SplitN(ph.Domains, ",", 2)[0], "*", "_")
 	fname = strings.TrimSpace(fname)
 	if fname == "" {
@@ -7327,7 +7327,7 @@ func (s *Server) exportServerCaddyfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	certs, _ := models.ListCertificates(s.DB, sid)
-	body := caddy.RenderServerCaddyfile(serverName, hosts, redirects, raws, certs, s.caddyfileExportOptions(sid))
+	body := caddy.RenderServerCaddyfile(serverName, hosts, redirects, raws, certs, s.caddyfileExportOptions(sid, isAdminUser(cu)))
 	ts := time.Now().Format("20060102-150405")
 	fname := "Caddyfile"
 	if serverName != "" {

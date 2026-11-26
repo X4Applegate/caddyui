@@ -41,20 +41,16 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 	for i := range certs {
 		certByID[certs[i].ID] = &certs[i]
 	}
-	var b strings.Builder
+	var head strings.Builder
 	if serverName != "" {
-		fmt.Fprintf(&b, "# CaddyUI export — %s\n", caddyfileComment(serverName))
+		fmt.Fprintf(&head, "# CaddyUI export — %s\n", caddyfileComment(serverName))
 	}
-	fmt.Fprintf(&b, "# Generated: %s\n", time.Now().UTC().Format(time.RFC3339))
-	b.WriteString("# Hosts/redirects/raw routes that are disabled in the UI are not included.\n")
-	b.WriteString("# This output is round-trip safe via /caddyfile-import for the directives it contains.\n\n")
-	if byName, order := o.validSnippets(); len(order) > 0 {
-		b.WriteString("# Snippets from the server Caddyfile, for the `import` lines below.\n")
-		for _, name := range order {
-			b.WriteString(byName[name])
-			b.WriteString("\n\n")
-		}
-	}
+	fmt.Fprintf(&head, "# Generated: %s\n", time.Now().UTC().Format(time.RFC3339))
+	head.WriteString("# Hosts/redirects/raw routes that are disabled in the UI are not included.\n")
+	head.WriteString("# This output is round-trip safe via /caddyfile-import for the directives it contains.\n\n")
+	// The sites are rendered first so that only the snippets they import
+	// are written ahead of them (issue #184 review).
+	var b strings.Builder
 
 	// Stable ordering across runs so two exports of the same DB diff cleanly.
 	sort.SliceStable(hosts, func(i, j int) bool {
@@ -69,7 +65,7 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 		if !ph.Enabled {
 			continue
 		}
-		b.WriteString(RenderProxyHostCaddyfileWithOptions(ph, certByID[ph.CertificateID], o))
+		b.WriteString(renderProxyHost(ph, certByID[ph.CertificateID], o))
 		b.WriteString("\n")
 	}
 	for _, rh := range redirects {
@@ -86,7 +82,7 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 		b.WriteString(renderRawRoute(rr, o))
 		b.WriteString("\n")
 	}
-	return b.String()
+	return head.String() + o.withSnippetDefinitions(b.String())
 }
 
 // RenderProxyHostCaddyfile emits a single proxy host as a Caddyfile site
@@ -114,8 +110,14 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 
 // RenderProxyHostCaddyfileWithOptions is RenderProxyHostCaddyfileWithCertificate
 // with the server's context: an admin-owned host's Advanced config may then
-// keep `import <snippet>` for a snippet in opts.Snippets.
+// keep `import <snippet>` for a snippet in opts.Snippets, whose definition
+// is written ahead of the site when opts.IncludeSnippets is set, and a
+// tenant's Advanced config is re-checked with opts.ProxyHostVeto.
 func RenderProxyHostCaddyfileWithOptions(p models.ProxyHost, cert *models.Certificate, opts ExportOptions) string {
+	return opts.withSnippetDefinitions(renderProxyHost(p, cert, opts))
+}
+
+func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOptions) string {
 	domains := p.DomainList()
 	if len(domains) == 0 {
 		return ""
@@ -128,9 +130,20 @@ func RenderProxyHostCaddyfileWithOptions(p models.ProxyHost, cert *models.Certif
 		return caddyfileFailClosedSite(domains, why)
 	}
 	imports := opts.importsFor(p.OwnerID)
-	tenant := opts.TenantOwned != nil && opts.TenantOwned(p.OwnerID)
-	if why := caddyfileImportProblem(p.AdvancedConfig, imports, tenant); why != "" {
+	if why := opts.importProblem(p.AdvancedConfig, p.OwnerID); why != "" {
 		return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
+	}
+	// Issue #184 review: a tenant's Advanced config is re-checked through
+	// Caddy — the live route keeps only its handlers, and only when they
+	// pass the tenant checks, while the export writes the text verbatim.
+	if strings.TrimSpace(p.AdvancedConfig) != "" && opts.tenant(p.OwnerID) {
+		why := "it could not be re-checked"
+		if opts.ProxyHostVeto != nil {
+			why = opts.ProxyHostVeto(p)
+		}
+		if why != "" {
+			return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
+		}
 	}
 	out, why := renderProxyHostSite(p, cert, domains)
 	if why != "" {
@@ -539,19 +552,21 @@ func renderRawRoute(r models.RawRoute, opts ExportOptions) string {
 	src := strings.TrimSpace(r.CaddyfileSrc)
 	why := ""
 	if src != "" {
-		imports := opts.importsFor(r.OwnerID)
-		tenant := opts.TenantOwned != nil && opts.TenantOwned(r.OwnerID)
-		sites, err := checkCaddyfileSites(src, imports)
+		sites, err := checkCaddyfileSites(src, opts.importsFor(r.OwnerID))
 		switch {
 		case err != nil || len(sites) == 0:
-			why = caddyfileImportProblem(src, imports, tenant)
+			why = opts.importProblem(src, r.OwnerID)
 			if why == "" {
 				why = "its Caddyfile is not a set of self-contained site blocks"
 			}
 		default:
 			why = rawRouteTextProblem(r, sites)
-			if why == "" && opts.RawRouteVeto != nil {
-				why = opts.RawRouteVeto(r)
+			if why == "" && opts.tenant(r.OwnerID) {
+				if opts.RawRouteVeto == nil {
+					why = "its Caddyfile could not be re-checked"
+				} else {
+					why = opts.RawRouteVeto(r)
+				}
 			}
 		}
 	}

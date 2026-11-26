@@ -1039,8 +1039,9 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	route = redactProxyRoutePreview(route).(map[string]any)
 	// The host being previewed will belong to the requester when they are
 	// not an admin (or to its current owner when editing).
-	exportOpts := s.caddyfileExportOptions(s.currentServerID(r))
-	if !isAdminUser(s.currentUser(r)) {
+	previewAdmin := isAdminUser(s.currentUser(r))
+	exportOpts := s.caddyfileExportOptions(s.currentServerID(r), previewAdmin)
+	if !previewAdmin {
 		exportOpts.TenantOwned = func(sql.NullInt64) bool { return true }
 	}
 	caddyfile := caddy.RenderProxyHostCaddyfileWithOptions(*p, s.certificateForCaddyfile(p.CertificateID), exportOpts)
@@ -1499,7 +1500,14 @@ func (s *Server) apiValidateRawRoute(w http.ResponseWriter, r *http.Request) {
 		// pipeline — that catches the bulk of bugs (unknown directives,
 		// missing args, malformed blocks). It does NOT apply the config
 		// to Caddy's running state.
-		_, _, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
+		adaptedJSON, adaptedListen, result, err := s.adaptRawRouteCaddyfileResult(s.caddyForRequest(r), cfSrc)
+		if err == nil && !isAdminUser(s.currentUser(r)) {
+			// Issue #184 review: the same allowlist the save applies.
+			if why := s.tenantRawRouteAdaptedProblem(adaptedJSON, adaptedListen, result); why != "" {
+				respond(false, why)
+				return
+			}
+		}
 		if err != nil {
 			// Caddy adapts a client_auth block happily; it is CaddyUI that
 			// turns it down, so don't put the words in Caddy's mouth.

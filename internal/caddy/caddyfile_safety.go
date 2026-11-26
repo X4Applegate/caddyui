@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -254,14 +255,23 @@ func caddyfileBareSafe(values ...string) bool {
 
 // caddyfileAddressSafe is caddyfileBareSafe for site addresses, which also
 // must not start with `(` or `&(` — that would define a snippet or a named
-// route instead of a site.
+// route instead of a site — nor be `import`, hold a brace (a token ending
+// in `{` opens the block early) or a comma (which splits the address).
+// Every caller writes these addresses at least into the fail-closed
+// stand-in, so that stand-in must itself parse as exactly one site with
+// exactly these addresses; otherwise one bad host would break the export.
 func caddyfileAddressSafe(values ...string) bool {
+	if len(values) == 0 {
+		return false
+	}
 	for _, s := range values {
-		if !caddyfileBareSafe(s) || strings.HasPrefix(s, "(") || strings.HasPrefix(s, "&") {
+		if !caddyfileBareSafe(s) || strings.HasPrefix(s, "(") || strings.HasPrefix(s, "&") ||
+			s == "import" || strings.ContainsAny(s, "{},") {
 			return false
 		}
 	}
-	return true
+	sites, err := checkCaddyfileSites(strings.Join(values, ", ")+" {\n\trespond 503\n}\n", nil)
+	return err == nil && len(sites) == 1 && slices.Equal(sites[0].addrs, values)
 }
 
 // caddyfileHeaderNameRe is an RFC 9110 field name that starts with a letter
@@ -380,15 +390,29 @@ func splitAdvancedForRoute(src string) (site, inRoute string, ok bool) {
 type ExportOptions struct {
 	// Snippets are the `(name) { … }` blocks from the server's Caddyfile
 	// (CADDYFILE_PATH, issue #119). Those that pass checkCaddyfileSnippet
-	// may be imported by admin-owned content; the server-wide export
-	// prepends them so the file is complete.
+	// may be imported by admin-owned content.
 	Snippets []string
+	// IncludeSnippets writes the definitions of the snippets the exported
+	// text imports, so the file is complete. Set it only when the export
+	// is for an administrator: snippets are the administrator's and may
+	// hold anything. Without it, an import of a snippet cannot be kept.
+	IncludeSnippets bool
 	// TenantOwned reports whether a resource belongs to a non-admin. Such
 	// content never keeps an `import`, even of a known snippet.
 	TenantOwned func(owner sql.NullInt64) bool
-	// RawRouteVeto returns why a raw route's Caddyfile must not be
-	// exported (for example, it does not adapt to its stored routes), or "".
+	// RawRouteVeto returns why a tenant-owned raw route's Caddyfile must
+	// not be exported (for example, it does not adapt to its stored
+	// routes, or adapts to more than routes), or "". It is consulted only
+	// for content TenantOwned reports as a tenant's.
 	RawRouteVeto func(models.RawRoute) string
+	// ProxyHostVeto is RawRouteVeto for a tenant-owned proxy host's
+	// Advanced config; it is consulted only when that config is not empty.
+	ProxyHostVeto func(models.ProxyHost) string
+}
+
+// tenant reports whether content owned by owner is a tenant's.
+func (o ExportOptions) tenant(owner sql.NullInt64) bool {
+	return o.TenantOwned != nil && o.TenantOwned(owner)
 }
 
 // snippetNameRe is the snippet name form CaddyUI accepts in `import`.
@@ -410,9 +434,10 @@ func (o ExportOptions) validSnippets() (map[string]string, []string) {
 	return byName, order
 }
 
-// importsFor is the snippet-name set content owned by owner may import.
+// importsFor is the snippet-name set content owned by owner may import:
+// none for a tenant, and none unless the export carries the definitions.
 func (o ExportOptions) importsFor(owner sql.NullInt64) map[string]bool {
-	if o.TenantOwned != nil && o.TenantOwned(owner) {
+	if o.tenant(owner) || !o.IncludeSnippets {
 		return nil
 	}
 	byName, _ := o.validSnippets()
@@ -441,6 +466,72 @@ func checkCaddyfileSnippet(src string) (string, bool) {
 		return "", false
 	}
 	return head[1 : len(head)-1], true
+}
+
+// withSnippetDefinitions prepends to body the definitions of the snippets
+// its `import` lines name — and of those the snippets themselves import —
+// when the export carries snippets. Only snippets body actually uses are
+// written: the others may hold anything the administrator put there.
+func (o ExportOptions) withSnippetDefinitions(body string) string {
+	if !o.IncludeSnippets {
+		return body
+	}
+	byName, order := o.validSnippets()
+	used := map[string]bool{}
+	for pending := []string{body}; len(pending) > 0; {
+		src := pending[0]
+		pending = pending[1:]
+		for _, name := range caddyfileImportedNames(src) {
+			if byName[name] != "" && !used[name] {
+				used[name] = true
+				pending = append(pending, byName[name])
+			}
+		}
+	}
+	if len(used) == 0 {
+		return body
+	}
+	var b strings.Builder
+	b.WriteString("# Snippets from the server Caddyfile, for the `import` lines below.\n")
+	for _, name := range order {
+		if used[name] {
+			b.WriteString(byName[name])
+			b.WriteString("\n\n")
+		}
+	}
+	b.WriteString(body)
+	return b.String()
+}
+
+// caddyfileImportedNames returns the argument of every `import` directive
+// (the first token of a line) in src.
+func caddyfileImportedNames(src string) []string {
+	toks, err := lexCaddyfile(src)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for i, t := range toks {
+		if t.text == "import" && !t.quoted && cfIsNewLine(toks, i) && i+1 < len(toks) && !cfIsNewLine(toks, i+1) {
+			names = append(names, toks[i+1].text)
+		}
+	}
+	return names
+}
+
+// importProblem explains why the `import` directives in src, owned by
+// owner, cannot be kept, or returns "".
+func (o ExportOptions) importProblem(src string, owner sql.NullInt64) string {
+	allowed := o.importsFor(owner)
+	if !o.tenant(owner) && !o.IncludeSnippets {
+		byName, _ := o.validSnippets()
+		for _, name := range caddyfileImportedNames(src) {
+			if byName[name] != "" {
+				return "it imports snippet " + name + ", whose definition only an administrator's export includes"
+			}
+		}
+	}
+	return caddyfileImportProblem(src, allowed, o.tenant(owner))
 }
 
 // caddyfileImportProblem explains why the `import` directives in src cannot

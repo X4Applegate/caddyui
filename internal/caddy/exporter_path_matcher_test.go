@@ -825,7 +825,7 @@ func TestCheckCaddyfileSitesAgreesWithCaddy(t *testing.T) {
 // omitted route was 9 of 24 on the round-2 code; it must now be 0.
 func TestRealisticCaddyfileCorpusExports(t *testing.T) {
 	snippets := []string{"(common_headers) {\n\theader X-Frame-Options DENY\n}"}
-	admin := ExportOptions{Snippets: snippets, TenantOwned: func(sql.NullInt64) bool { return false }}
+	admin := ExportOptions{Snippets: snippets, IncludeSnippets: true, TenantOwned: func(sql.NullInt64) bool { return false }}
 	advanced := []string{
 		"encode gzip zstd",
 		"header {\n\t-Server\n\tX-Robots-Tag \"noindex\"\n}",
@@ -893,7 +893,7 @@ func TestRealisticCaddyfileCorpusExports(t *testing.T) {
 		{tenant, "import common_headers", "imports are kept only for admin-owned hosts"},
 		{admin, "import missing_snippet", "not a self-contained snippet in the server Caddyfile"},
 		{admin, "import /etc/caddy/*.caddy", "file imports are never exported"},
-		{ExportOptions{Snippets: []string{"(bad) {\n\timport /etc/passwd\n}"}}, "import bad", "not a self-contained snippet"},
+		{ExportOptions{Snippets: []string{"(bad) {\n\timport /etc/passwd\n}"}, IncludeSnippets: true}, "import bad", "not a self-contained snippet"},
 	} {
 		p.AdvancedConfig = tc.adv
 		if out := RenderProxyHostCaddyfileWithOptions(p, nil, tc.opts); !strings.Contains(out, "respond 503") || !strings.Contains(out, tc.wants) {

@@ -1334,26 +1334,31 @@ func (s *Server) apiV1DeleteCertificate(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 
-// deriveRawRouteJSON replaces rr.JSONData (and, for a custom port, Listen)
-// with what Caddy adapts rr.CaddyfileSrc to, as the Advanced route form
-// does. A route without Caddyfile text is left alone. Returns an error
-// message for the client, or "".
+// deriveRawRouteJSON replaces rr.JSONData and rr.Listen with what Caddy
+// adapts rr.CaddyfileSrc to. A route without Caddyfile text is left alone.
+// The derived listen set is authoritative: text on the standard ports
+// clears a custom listen set, so the route never serves on a port its text
+// does not name. Returns an error message for the client, or "".
 func (s *Server) deriveRawRouteJSON(r *http.Request, rr *models.RawRoute) string {
 	src := strings.TrimSpace(rr.CaddyfileSrc)
 	if src == "" {
 		return ""
 	}
-	if why := tenantTextViolation(src); why != "" && !isAdminUser(s.currentUser(r)) {
+	tenant := !isAdminUser(s.currentUser(r))
+	if why := tenantTextViolation(src); why != "" && tenant {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
-	jsonData, listen, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), src)
+	jsonData, listen, result, err := s.adaptRawRouteCaddyfileResult(s.caddyForRequest(r), src)
 	if err != nil {
 		return "Caddyfile rejected by Caddy: " + err.Error()
 	}
+	if tenant {
+		if why := s.tenantRawRouteAdaptedProblem(jsonData, listen, result); why != "" {
+			return why
+		}
+	}
 	rr.CaddyfileSrc = src
 	rr.JSONData = jsonData
-	if listen != "" {
-		rr.Listen = listen
-	}
+	rr.Listen = listen
 	return ""
 }
