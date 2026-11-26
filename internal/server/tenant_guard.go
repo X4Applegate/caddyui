@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
@@ -362,7 +363,7 @@ const (
 // maxTenantCaddyfileBytes caps a non-admin's own Caddyfile text: a proxy
 // host's Advanced config (parseProxyHostForm) and an Advanced route's
 // source (issue #184 round 8), checked before the text is adapted.
-const maxTenantCaddyfileBytes = 64 << 10
+const maxTenantCaddyfileBytes = caddy.MaxTenantCaddyfileBytes
 
 // tenantCaddyfileTooLarge is the refusal for text over maxTenantCaddyfileBytes.
 func tenantCaddyfileTooLarge(what string) string {
@@ -377,8 +378,30 @@ func tenantTextViolation(text string) string {
 	return tenantTextViolationWith(text, nil, tenantMaxNestingDepth, maxTenantCaddyfileBytes)
 }
 
-// tenantTextViolationWith checks free text a non-admin submits that Caddy
-// will parse as a Caddyfile (a proxy host's Advanced config, an Advanced
+// tenantMaxImports is how many `import` lines a non-admin's own text may
+// hold (issue #184 round 10). A snippet is imported where it is needed —
+// a site's headers, its logging, its TLS — so real configurations import a
+// few; 16 leaves ample room. Each import is also charged its expanded
+// size and depth (tenantImportCost).
+const tenantMaxImports = 16
+
+// tenantTextViolationWith is tenantTextRules for text whose imports may
+// only name the snippets in names, each counted as empty.
+func tenantTextViolationWith(text string, names map[string]bool, maxDepth, maxBytes int) string {
+	snippets := tenantSnippetSet{}
+	for n := range names {
+		snippets[n] = caddy.CaddyfileSnippet{Name: n}
+	}
+	return tenantTextRules(text, snippets, maxDepth, maxBytes)
+}
+
+// tenantSnippetSet is the administrator's snippets, by name, as the tenant
+// text rules see them: what a non-admin may import, and what each import
+// costs.
+type tenantSnippetSet map[string]caddy.CaddyfileSnippet
+
+// tenantTextRules checks free text a non-admin submits that Caddy will
+// parse as a Caddyfile (a proxy host's Advanced config, an Advanced
 // route's Caddyfile source, a pasted Caddyfile), reading it the way
 // Caddy's lexer does. It refuses:
 //   - env/file placeholders and {$…}, anywhere in the raw text ({$…} is
@@ -386,7 +409,10 @@ func tenantTextViolation(text string) string {
 //   - text over maxBytes, when maxBytes is not 0, and blocks nested deeper
 //     than maxDepth (issue #184 round 8): Caddy's adapter needs memory in
 //     proportion to the text's tokens times their depth, and a non-admin's
-//     text is adapted by the live Caddy on every sync;
+//     text is adapted by the live Caddy on every sync. An `import` counts
+//     as the snippet it expands to (round 10): its size is added to the
+//     text's, and its nesting to the depth the import sits at;
+//   - more than tenantMaxImports `import` lines (round 10);
 //   - text that cannot be read as a Caddyfile, so nothing CaddyUI cannot
 //     read that way reaches Caddy;
 //   - snippet definitions, in any form Caddy reads as one, and the
@@ -395,7 +421,7 @@ func tenantTextViolation(text string) string {
 //     nested `import` of a file (round 7);
 //   - the word `import` anywhere but at the head of a line;
 //   - an `import` of anything but a snippet the administrator defined
-//     (snippets: the names in CADDYFILE_PATH, see adminSnippetNames).
+//     (snippets: the definitions in CADDYFILE_PATH, see adminSnippetSet).
 //     Caddy reads any other name as a file path relative to its working
 //     directory, so `import secrets` reads a file there and a parse error
 //     echoes it (round 8). With no administrator snippets, every `import`
@@ -403,7 +429,7 @@ func tenantTextViolation(text string) string {
 //
 // The checks that need tokens run on tokens, so a comment, or text inside
 // one quoted value, is never mistaken for a directive.
-func tenantTextViolationWith(text string, snippets map[string]bool, maxDepth, maxBytes int) string {
+func tenantTextRules(text string, snippets tenantSnippetSet, maxDepth, maxBytes int) string {
 	if maxBytes > 0 && len(text) > maxBytes {
 		return fmt.Sprintf("the text is too large (the limit is %d KiB)", maxBytes>>10)
 	}
@@ -427,18 +453,74 @@ func tenantTextViolationWith(text string, snippets map[string]bool, maxDepth, ma
 		return "`import` may only start a line that imports a snippet by name"
 	}
 	for _, arg := range use.Arguments {
-		if !snippetNameRe.MatchString(arg) || !snippets[arg] {
+		if _, ok := snippets[arg]; !ok || !snippetNameRe.MatchString(arg) {
 			return "`import` may only name a snippet the administrator defined in the server Caddyfile; any other name is read as a file on the Caddy server"
 		}
 	}
+	if len(use.Arguments) > tenantMaxImports {
+		return fmt.Sprintf("the text has %d `import` lines; the limit is %d", len(use.Arguments), tenantMaxImports)
+	}
+	size, depth := len(text), use.MaxDepth
+	memo := map[string]tenantImportCost{}
+	for i, arg := range use.Arguments {
+		c, why := snippets.cost(arg, memo, map[string]bool{})
+		if why != "" {
+			return why
+		}
+		size += c.bytes
+		depth = max(depth, use.ImportDepths[i]+c.depth)
+	}
+	if maxBytes > 0 && size > maxBytes {
+		return fmt.Sprintf("the text is too large once the snippets it imports are counted (%d KiB; the limit is %d KiB)", (size+1023)>>10, maxBytes>>10)
+	}
+	if depth > maxDepth {
+		return fmt.Sprintf("blocks are nested %d levels deep once the snippets it imports are counted; the limit is %d", depth, maxDepth)
+	}
 	return ""
+}
+
+// tenantImportCost is what one `import` of a snippet adds to a non-admin's
+// text: the bytes of the snippet's body and of every snippet it imports in
+// turn, and how deeply all of that nests blocks below the import.
+type tenantImportCost struct {
+	bytes, depth int
+}
+
+// cost returns the expanded cost of importing name, or why it cannot be
+// counted: an `import` inside the administrator's snippets that names no
+// snippet reads a file whose size is unknown, and snippets that import
+// each other in a cycle never finish expanding (Caddy refuses those too).
+func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, visiting map[string]bool) (tenantImportCost, string) {
+	if c, ok := memo[name]; ok {
+		return c, ""
+	}
+	sn, ok := set[name]
+	if !ok {
+		return tenantImportCost{}, fmt.Sprintf("an administrator snippet imports %q, which is not a snippet, so what it adds cannot be counted", name)
+	}
+	if visiting[name] {
+		return tenantImportCost{}, fmt.Sprintf("the administrator's snippet %q imports itself, directly or through another snippet", name)
+	}
+	visiting[name] = true
+	defer delete(visiting, name)
+	c := tenantImportCost{bytes: sn.BodyBytes, depth: sn.Depth}
+	for _, imp := range sn.Imports {
+		child, why := set.cost(imp.Name, memo, visiting)
+		if why != "" {
+			return tenantImportCost{}, why
+		}
+		c.bytes += child.bytes
+		c.depth = max(c.depth, imp.Depth+child.depth)
+	}
+	memo[name] = c
+	return c, ""
 }
 
 // tenantOwnTextViolation is tenantTextViolationWith for a non-admin's own
 // Caddyfile text as written — an Advanced config, an Advanced route's
 // source — which may import the administrator's snippets by name.
 func (s *Server) tenantOwnTextViolation(text string) string {
-	return tenantTextViolationWith(text, s.adminSnippetNames(), tenantMaxNestingDepth, maxTenantCaddyfileBytes)
+	return tenantTextRules(text, s.adminSnippetSet(), tenantMaxNestingDepth, maxTenantCaddyfileBytes)
 }
 
 // tenantBlockTextViolation is tenantOwnTextViolation for text CaddyUI
@@ -447,20 +529,27 @@ func (s *Server) tenantOwnTextViolation(text string) string {
 // holds CaddyUI's own directives besides; the size of the non-admin's part
 // is checked where that text is taken in.
 func (s *Server) tenantBlockTextViolation(text string) string {
-	return tenantTextViolationWith(text, s.adminSnippetNames(), tenantMaxBlockNestingDepth, 0)
+	return tenantTextRules(text, s.adminSnippetSet(), tenantMaxBlockNestingDepth, 0)
 }
 
 // tenantAdaptTextViolation is the check for text on its way to Caddy's
-// adapter on a non-admin's behalf, which may start with the
-// administrator's snippet definitions from CADDYFILE_PATH
-// (withAutoLoadedSnippets). The placeholder and file-import rules apply to
-// the whole text, as they always have; the rest apply to the part after
-// exactly that prefix, which is the non-admin's own (plus the synthetic
-// site CaddyUI may have wrapped it in). When the prefix is not found the
-// whole text is the non-admin's, so the stricter reading wins.
+// adapter on a non-admin's behalf, which starts with the administrator's
+// snippet definitions from CADDYFILE_PATH (withTenantSnippets). The
+// placeholder and file-import rules apply to the whole text, as they
+// always have; the rest apply to the part after exactly that prefix, which
+// is the non-admin's own (plus the synthetic site CaddyUI may have wrapped
+// it in). When the prefix is not found the whole text is the non-admin's,
+// so the stricter reading wins.
+//
+// Issue #184 round 10: it then checks the text as Caddy will receive it —
+// every snippet the non-admin's part imports, directly or through another
+// snippet, must be defined in that text, read the way Caddy's parser
+// reads it. Whatever built the prefix, an import that would fall through
+// to a file is refused here, before Caddy sees it.
 func (s *Server) tenantAdaptTextViolation(text string) string {
 	own := text
-	if prefix := s.autoLoadedSnippetPrefix(); prefix != "" && strings.HasPrefix(text, prefix) {
+	snippets := s.adminSnippetSet()
+	if prefix := tenantSnippetPrefix(snippets); prefix != "" && strings.HasPrefix(text, prefix) {
 		own = text[len(prefix):]
 		if containsDangerousPlaceholder(prefix) {
 			return s.tenantBlockTextViolation(text)
@@ -474,25 +563,76 @@ func (s *Server) tenantAdaptTextViolation(text string) string {
 	// Issue #184 round 8: every path that adapts a non-admin's text checks
 	// its size where it takes the text in; this bounds any path that does
 	// not, leaving room for the synthetic site around an Advanced config.
-	if len(own) > maxTenantCaddyfileBytes+4<<10 {
-		return fmt.Sprintf("the text is too large (the limit is %d KiB)", maxTenantCaddyfileBytes>>10)
+	// Round 10: imports count at their expanded size.
+	if why := tenantTextRules(own, snippets, tenantMaxBlockNestingDepth, maxTenantCaddyfileBytes+4<<10); why != "" {
+		if strings.HasPrefix(why, "the text is too large") {
+			return fmt.Sprintf("the text is too large (the limit is %d KiB)", maxTenantCaddyfileBytes>>10)
+		}
+		return why
 	}
-	return s.tenantBlockTextViolation(own)
-}
-
-// autoLoadedSnippetPrefix is what withAutoLoadedSnippets prepends to text
-// that defines none of the snippets itself, or "".
-func (s *Server) autoLoadedSnippetPrefix() string {
-	snips := s.adminSnippets()
-	if len(snips) == 0 {
+	args, _ := caddy.CaddyfileImportArguments(own)
+	if len(args) == 0 {
 		return ""
 	}
-	return strings.Join(snips, "\n\n") + "\n\n"
+	defined := map[string]bool{}
+	for _, sn := range caddy.CaddyfileSnippets(text) {
+		defined[sn.Name] = true
+	}
+	for pending, seen := args, map[string]bool{}; len(pending) > 0; {
+		name := pending[0]
+		pending = pending[1:]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if !defined[name] {
+			return fmt.Sprintf("the administrator's snippet %q is not defined ahead of the text Caddy would adapt, so its `import` would read a file", name)
+		}
+		for _, imp := range snippets[name].Imports {
+			pending = append(pending, imp.Name)
+		}
+	}
+	return ""
 }
 
-// adminSnippets returns the snippet definitions in the administrator's
-// Caddyfile (CADDYFILE_PATH), or nil.
-func (s *Server) adminSnippets() []string {
+// tenantSnippetPrefix is what withTenantSnippets puts ahead of a
+// non-admin's text: every administrator snippet, or "".
+func tenantSnippetPrefix(snippets tenantSnippetSet) string {
+	return snippetPrefix(snippets.ordered())
+}
+
+// snippetPrefix joins snippet definitions into the prefix put ahead of
+// text sent to the adapter.
+func snippetPrefix(texts []string) string {
+	if len(texts) == 0 {
+		return ""
+	}
+	return strings.Join(texts, "\n\n") + "\n\n"
+}
+
+// ordered returns the snippets' definitions in the order of the
+// administrator's Caddyfile.
+func (set tenantSnippetSet) ordered() []string {
+	list := make([]caddy.CaddyfileSnippet, 0, len(set))
+	for _, sn := range set {
+		list = append(list, sn)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Order < list[j].Order })
+	out := make([]string, 0, len(list))
+	for _, sn := range list {
+		out = append(out, sn.Text)
+	}
+	return out
+}
+
+// autoLoadedSnippetPrefix is what withTenantSnippets prepends, or "".
+func (s *Server) autoLoadedSnippetPrefix() string {
+	return tenantSnippetPrefix(s.adminSnippetSet())
+}
+
+// adminSnippetDefs returns the snippet definitions in the administrator's
+// Caddyfile (CADDYFILE_PATH), read the way Caddy reads them, or nil.
+func (s *Server) adminSnippetDefs() []caddy.CaddyfileSnippet {
 	if s == nil || s.CaddyfilePath == "" {
 		return nil
 	}
@@ -500,19 +640,43 @@ func (s *Server) adminSnippets() []string {
 	if err != nil {
 		return nil
 	}
-	return caddy.ExtractSnippets(string(b))
+	return caddy.CaddyfileSnippets(string(b))
 }
 
-// adminSnippetNames returns the names of the snippets withAutoLoadedSnippets
-// puts ahead of a non-admin's text — the only names a non-admin may
-// `import` (issue #184 round 8).
+// adminSnippets returns the text of the administrator's snippet
+// definitions, or nil.
+func (s *Server) adminSnippets() []string {
+	var out []string
+	for _, sn := range s.adminSnippetDefs() {
+		out = append(out, sn.Text)
+	}
+	return out
+}
+
+// adminSnippetSet returns the administrator's snippets by name — the only
+// names a non-admin may `import` (issue #184 round 8) — with what each
+// costs (round 10). Caddy refuses a name defined twice, so does this:
+// such a name is left out, and an import of it is refused.
+func (s *Server) adminSnippetSet() tenantSnippetSet {
+	set := tenantSnippetSet{}
+	dup := map[string]bool{}
+	for _, sn := range s.adminSnippetDefs() {
+		if _, ok := set[sn.Name]; ok {
+			dup[sn.Name] = true
+		}
+		set[sn.Name] = sn
+	}
+	for n := range dup {
+		delete(set, n)
+	}
+	return set
+}
+
+// adminSnippetNames returns the names in adminSnippetSet.
 func (s *Server) adminSnippetNames() map[string]bool {
 	names := map[string]bool{}
-	for _, snip := range s.adminSnippets() {
-		head := caddy.HeadOfBlock(snip)
-		if strings.HasPrefix(head, "(") && strings.HasSuffix(head, ")") {
-			names[head[1:len(head)-1]] = true
-		}
+	for n := range s.adminSnippetSet() {
+		names[n] = true
 	}
 	return names
 }
@@ -644,4 +808,46 @@ func (s *Server) tenantRawRouteTextProblem(src string) string {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
 	return ""
+}
+
+// legacySnippetShadow reports whether CaddyUI up to v2.68.16 would have
+// left an administrator's snippet that src imports out of the text it
+// adapted for src (issue #184 round 10; see caddy.LegacySnippetHeads).
+func (s *Server) legacySnippetShadow(src string) bool {
+	if s == nil || s.CaddyfilePath == "" {
+		return false
+	}
+	args, _ := caddy.CaddyfileImportArguments(src)
+	if len(args) == 0 {
+		return false
+	}
+	b, err := os.ReadFile(s.CaddyfilePath)
+	if err != nil {
+		return false
+	}
+	own := caddy.LegacySnippetHeads(src)
+	admin := caddy.LegacySnippetHeads(string(b))
+	for _, name := range args {
+		head := "(" + name + ")"
+		if own[head] && admin[head] {
+			return true
+		}
+	}
+	return false
+}
+
+// readaptTenantRawRoute adapts a non-admin's Advanced route text again,
+// exactly as a save does today, and returns the JSON to deploy; ok is
+// false when that fails or the result differs in kind from the stored row
+// (another listen set, or anything the tenant rules refuse).
+func (s *Server) readaptTenantRawRoute(rr models.RawRoute) (string, bool) {
+	cl := s.tenantAdaptClient(s.Caddy)
+	if cl == nil {
+		return "", false
+	}
+	jsonData, listen, result, err := s.adaptRawRouteCaddyfileResult(cl, rr.CaddyfileSrc)
+	if err != nil || listen != rr.Listen || s.tenantRawRouteAdaptedProblem(jsonData, listen, result) != "" {
+		return "", false
+	}
+	return jsonData, true
 }

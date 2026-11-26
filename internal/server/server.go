@@ -3652,7 +3652,7 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-load snippet definitions from the mounted Caddyfile so users can use
 	// `import <name>` without pasting the definition (see withAutoLoadedSnippets).
-	fullPaste := s.withAutoLoadedSnippets(src)
+	fullPaste := s.snippetsFor(src, !isAdminUser(s.currentUser(r)))
 
 	// Adapt the ENTIRE paste as a single unit so cross-block references work:
 	// `import <snippet>` must see `(<snippet>) { ... }` defined in the same paste,
@@ -4732,14 +4732,7 @@ func (s *Server) caddyForRequest(r *http.Request) *caddy.Client {
 	// Caddy server's environment or files BEFORE it is adapted (see
 	// Client.AdaptTextCheck). Copy first — s.Caddy is shared.
 	if cl != nil && !isAdminUser(s.currentUser(r)) {
-		cp := *cl
-		cp.AdaptTextCheck = func(text string) string {
-			if why := s.tenantAdaptTextViolation(text); why != "" {
-				return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
-			}
-			return ""
-		}
-		return &cp
+		return s.tenantAdaptClient(cl)
 	}
 	return cl
 }
@@ -5184,7 +5177,16 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 			// nested text costs the live Caddy's adapter its memory.
 			log.Printf("caddy sync: proxy id=%d advanced_config skipped, not allowed for a non-admin owner: %s", p.ID, s.tenantOwnTextViolation(p.AdvancedConfig))
 		} else if strings.TrimSpace(p.AdvancedConfig) != "" {
-			h, overrides, err := s.adaptProxyAdvanced(p)
+			// Issue #184 round 10: a non-admin's text is adapted through the
+			// same check as at save — the administrator's snippets always
+			// ahead of it, every import resolved to one and counted at its
+			// expanded size — so a row stored by an earlier version, or by a
+			// path that skipped a check, is held to today's rules.
+			cl := s.Caddy
+			if s.isTenantOwner(p.OwnerID) {
+				cl = s.tenantAdaptClient(cl)
+			}
+			h, overrides, err := s.adaptProxyAdvancedWithClient(cl, p)
 			if err != nil {
 				// Don't fail the whole sync — log and push the route without advanced
 				// handlers. The form-level validation should have caught bad syntax
@@ -5452,18 +5454,34 @@ func applyPlainHTTPServer(cfg map[string]any, routes []any) {
 // tenantSafeRawEntries is rawRouteEntries with the non-admin enforcement of
 // tenant_guard.go applied to each entry (v2.57.1).
 func (s *Server) tenantSafeRawEntries(rr models.RawRoute) []any {
-	entries := rawRouteEntries(rr)
 	if !s.isTenantOwner(rr.OwnerID) {
-		return entries
+		return rawRouteEntries(rr)
 	}
 	// Issue #184 round 8: a route whose Caddyfile breaks the tenant text
 	// rules is not deployed. Its stored JSON was adapted from that text, so
 	// a file the text imported may be baked into it (as header names, for
-	// one); the Caddyfile export leaves the same route out.
+	// one); the Caddyfile export leaves the same route out. Round 10: the
+	// rules count imports at their expanded size, so an over-budget row is
+	// not deployed either.
 	if strings.TrimSpace(rr.CaddyfileSrc) != "" && s.tenantOwnTextViolation(rr.CaddyfileSrc) != "" {
 		log.Printf("caddy sync: advanced route id=%d skipped, its Caddyfile is not allowed for a non-admin owner", rr.ID)
 		return nil
 	}
+	// Issue #184 round 10: up to v2.68.16 the administrator's snippet
+	// could be left out of the text adapted for such a row (see
+	// caddy.LegacySnippetHeads), and an `import` of it then read a file
+	// into the stored JSON. Such a row's stored JSON is not trusted: its
+	// text is adapted again, the way a save adapts it today, and only that
+	// result is deployed.
+	if strings.TrimSpace(rr.CaddyfileSrc) != "" && s.legacySnippetShadow(rr.CaddyfileSrc) {
+		jsonData, ok := s.readaptTenantRawRoute(rr)
+		if !ok {
+			log.Printf("caddy sync: advanced route id=%d skipped, its Caddyfile could not be adapted again for a non-admin owner", rr.ID)
+			return nil
+		}
+		rr.JSONData = jsonData
+	}
+	entries := rawRouteEntries(rr)
 	out := make([]any, 0, len(entries))
 	for _, e := range entries {
 		if safe, ok := s.sanitizeTenantRoute(rr.OwnerID, "advanced route "+rr.Label, e); ok {
@@ -5531,12 +5549,18 @@ func (s *Server) buildRawListenServers(raws []models.RawRoute) map[string]map[st
 		if name == "" {
 			continue
 		}
+		// Issue #184 round 10: a route that is not deployed — a non-admin's
+		// whose Caddyfile or routes are refused — opens no listener either.
+		entries := s.tenantSafeRawEntries(rr)
+		if len(entries) == 0 {
+			continue
+		}
 		g, ok := groups[name]
 		if !ok {
 			g = &group{addrs: addrs}
 			groups[name] = g
 		}
-		g.routes = append(g.routes, s.tenantSafeRawEntries(rr)...)
+		g.routes = append(g.routes, entries...)
 	}
 	out := make(map[string]map[string]any, len(groups))
 	for name, g := range groups {

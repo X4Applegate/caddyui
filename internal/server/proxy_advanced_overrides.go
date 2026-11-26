@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/X4Applegate/caddyui/internal/caddy"
 )
 
 // v2.40.0: the proxy host's Advanced config box wraps its directives in a
@@ -269,7 +271,15 @@ var transportSubdirectives = []string{
 // before it is adapted or saved: bare reverse_proxy sub-directives wrapped
 // (v2.42.1), JSON-style transport names respelled, and transport options
 // under reverse_proxy moved into its transport block.
+//
+// The repairs work line by line, so text with a value that spans lines (a
+// quoted or backtick string, a heredoc) is left exactly as written: a
+// repair would otherwise move or edit lines inside the value (issue #184
+// round 10). Such text is adapted as typed.
 func normalizeProxyAdvancedConfig(src string) string {
+	if caddy.CaddyfileHasMultilineValue(src) {
+		return src
+	}
 	return relocateTransportSubdirectives(respellTransportAliases(wrapBareReverseProxySubdirectives(src)))
 }
 

@@ -118,11 +118,15 @@ func TestTenantTextRulesRound8(t *testing.T) {
 func TestSnippetPlaceholderKeysAgreeWithCaddy(t *testing.T) {
 	_, _, _, caddyBin, _, _ := newExportFixture(t)
 	requireCaddy(t, caddyBin, "the snippet is adapted with Caddy")
-	values := map[string]string{"X-Exact": "{args[0]}", "X-Dot": "{args.0}", "X-Prefixed": "{x args.0}", "X-Query": "{http.request.uri.query.args[0]}"}
-	substituted := map[string]bool{"X-Exact": true, "X-Dot": true, "X-Prefixed": false, "X-Query": false}
+	// Issue #184 round 10 (7): `{args.x}` and `${args.x}` (a JavaScript
+	// template literal) are text to Caddy, `{args.+0}` is not.
+	values := map[string]string{"X-Exact": "{args[0]}", "X-Dot": "{args.0}", "X-Prefixed": "{x args.0}", "X-Query": "{http.request.uri.query.args[0]}",
+		"X-Name": "{args.x}", "X-Js": "${args.x}", "X-Signed": "{args.+0}"}
+	substituted := map[string]bool{"X-Exact": true, "X-Dot": true, "X-Prefixed": false, "X-Query": false,
+		"X-Name": false, "X-Js": false, "X-Signed": true}
 	var b strings.Builder
 	b.WriteString("(s) {\n")
-	for _, hdr := range []string{"X-Exact", "X-Dot", "X-Prefixed", "X-Query"} {
+	for _, hdr := range []string{"X-Exact", "X-Dot", "X-Prefixed", "X-Query", "X-Name", "X-Js", "X-Signed"} {
 		fmt.Fprintf(&b, "\theader %s \"%s\"\n", hdr, values[hdr])
 	}
 	b.WriteString("}\nk.example.test {\n\timport s SUBSTITUTED\n}\n")
@@ -137,6 +141,9 @@ func TestSnippetPlaceholderKeysAgreeWithCaddy(t *testing.T) {
 			t.Fatalf("%s missing from %s", hdr, got)
 		}
 		val := got[i:min(len(got), i+120)]
+		if j := strings.Index(val, "]"); j >= 0 {
+			val = val[:j] // this header's value only
+		}
 		if strings.Contains(val, "SUBSTITUTED") != want {
 			t.Errorf("%s: Caddy substituted=%v, the tenant rule assumes %v: %s", hdr, !want, want, val)
 		}

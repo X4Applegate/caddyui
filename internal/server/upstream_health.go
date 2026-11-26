@@ -1007,7 +1007,17 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	advancedError := ""
 	var previewOverrides map[string]any
 	if strings.TrimSpace(p.AdvancedConfig) != "" {
-		if validationError := validateProxyAdvancedDirectives(p.AdvancedConfig); validationError != "" {
+		tenantWhy := ""
+		if s.DB != nil && !isAdminUser(s.currentUser(r)) {
+			// Issue #184 round 10: the same tenant text rules as the save
+			// (validateProxyAdvanced), before Caddy sees the text.
+			if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
+				tenantWhy = "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+			}
+		}
+		if tenantWhy != "" {
+			advancedError = tenantWhy
+		} else if validationError := validateProxyAdvancedDirectives(p.AdvancedConfig); validationError != "" {
 			advancedError = validationError
 		} else {
 			caddyClient := s.Caddy

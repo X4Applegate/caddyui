@@ -136,6 +136,11 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 	if why := proxyHostFieldsProblem(p, cert); why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
+	// Issue #184 round 10: a tenant's oversized text (a row stored before
+	// the limit) is refused before anything lexes it.
+	if opts.tenant(p.OwnerID) && len(p.AdvancedConfig) > MaxTenantCaddyfileBytes {
+		return caddyfileFailClosedSite(domains, "this host cannot be exported: its Advanced config is larger than a non-admin account may save")
+	}
 	imports := opts.importsFor(p.OwnerID)
 	if why := opts.importProblem(p.AdvancedConfig, p.OwnerID); why != "" {
 		return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
@@ -643,7 +648,12 @@ func renderRawRoute(r models.RawRoute, opts ExportOptions) string {
 		src += "\n"
 	}
 	why := ""
-	if src != "" {
+	if src != "" && opts.tenant(r.OwnerID) && len(src) > MaxTenantCaddyfileBytes+1 {
+		// Issue #184 round 10: a tenant's oversized text (a row stored
+		// before the limit) is refused before anything lexes it; +1 is the
+		// newline added above.
+		why = "its Caddyfile is larger than a non-admin account may save"
+	} else if src != "" {
 		sites, err := checkCaddyfileSites(src, opts.importsFor(r.OwnerID))
 		switch {
 		case err != nil || len(sites) == 0:

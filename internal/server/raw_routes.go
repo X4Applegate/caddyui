@@ -190,10 +190,16 @@ func httpsRawRoutes(raws []models.RawRoute) []models.RawRoute {
 // duplicate-definition error. If CADDYFILE_PATH is unset or unreadable, or
 // holds no snippets, src is returned unchanged.
 //
+// This is for an administrator's text. A non-admin's goes through
+// withTenantSnippets, which never skips a snippet (issue #184 round 10).
+// Both files are read the way Caddy's lexer reads them, so a quoted,
+// backtick or heredoc value that looks like `(name) {` defines nothing,
+// for Caddy or here.
+//
 // Every path that hands user-written Caddyfile text to /adapt must go through
-// this: Advanced routes, the Caddyfile paste importer, and a proxy host's
-// Advanced config (issue #119 — that last one was missed and rejected any
-// `import <snippet>` with "File to import not found").
+// this or withTenantSnippets: Advanced routes, the Caddyfile paste importer,
+// and a proxy host's Advanced config (issue #119 — that last one was missed
+// and rejected any `import <snippet>` with "File to import not found").
 func (s *Server) withAutoLoadedSnippets(src string) string {
 	if s.CaddyfilePath == "" {
 		return src
@@ -203,19 +209,63 @@ func (s *Server) withAutoLoadedSnippets(src string) string {
 		return src
 	}
 	already := map[string]bool{}
-	for _, snip := range caddy.ExtractSnippets(src) {
-		already[caddy.HeadOfBlock(snip)] = true
+	for _, snip := range caddy.CaddyfileSnippets(src) {
+		already[snip.Name] = true
 	}
 	var loaded []string
-	for _, snip := range caddy.ExtractSnippets(string(b)) {
-		if !already[caddy.HeadOfBlock(snip)] {
-			loaded = append(loaded, snip)
+	for _, snip := range caddy.CaddyfileSnippets(string(b)) {
+		if !already[snip.Name] {
+			loaded = append(loaded, snip.Text)
 		}
 	}
 	if len(loaded) == 0 {
 		return src
 	}
-	return strings.Join(loaded, "\n\n") + "\n\n" + src
+	return snippetPrefix(loaded) + src
+}
+
+// withTenantSnippets puts the administrator's snippets (adminSnippetSet)
+// ahead of a non-admin's text, all of them, always (issue #184 round 10).
+// A non-admin may not define snippets (tenantTextRules), so nothing in the
+// text can stand in for one: were a definition skipped because the text
+// seemed to hold it, an `import` of that name would read a file of that
+// name instead. tenantAdaptTextViolation recognises exactly this prefix.
+func (s *Server) withTenantSnippets(src string) string {
+	return s.autoLoadedSnippetPrefix() + src
+}
+
+// snippetsFor is withTenantSnippets for a non-admin's text and
+// withAutoLoadedSnippets for an administrator's.
+func (s *Server) snippetsFor(src string, tenant bool) string {
+	if tenant {
+		return s.withTenantSnippets(src)
+	}
+	return s.withAutoLoadedSnippets(src)
+}
+
+// tenantClient reports whether caddyCl adapts on a non-admin's behalf:
+// such a client carries the tenant text check (caddyForRequest,
+// tenantAdaptClient).
+func tenantClient(caddyCl *caddy.Client) bool {
+	return caddyCl != nil && caddyCl.AdaptTextCheck != nil
+}
+
+// tenantAdaptClient returns a copy of cl that holds every Caddyfile it
+// adapts to the tenant text rules first (tenantAdaptTextViolation), as
+// caddyForRequest does for a non-admin's request. The live sync uses it
+// for rows a non-admin owns (issue #184 round 10).
+func (s *Server) tenantAdaptClient(cl *caddy.Client) *caddy.Client {
+	if cl == nil {
+		return nil
+	}
+	cp := *cl
+	cp.AdaptTextCheck = func(text string) string {
+		if why := s.tenantAdaptTextViolation(text); why != "" {
+			return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+		}
+		return ""
+	}
+	return &cp
 }
 
 // errClientAuthInRawRoute marks the one rejection adaptRawRouteCaddyfile makes
@@ -246,7 +296,7 @@ func (s *Server) adaptRawRouteCaddyfileResult(caddyCl *caddy.Client, src string)
 	if caddyCl == nil {
 		return "", "", nil, fmt.Errorf("the Caddy adapter is unavailable")
 	}
-	adapted, err := caddyCl.Adapt(s.withAutoLoadedSnippets(src))
+	adapted, err := caddyCl.Adapt(s.snippetsFor(src, tenantClient(caddyCl)))
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -1501,7 +1551,21 @@ func validateProxyAdvancedDirectives(src string) string {
 // in src whose name matches any entry in banned, or "" if none. Used to reject
 // terminal handlers in per-host AdvancedConfig before they reach Caddy's
 // adapter, which would happily accept them and produce a broken config.
+// Issue #184 round 10: lines are read on Caddy's tokens, so a brace or a
+// line inside a quoted, backtick or heredoc value is never taken for
+// structure. Text Caddy's lexer refuses falls back to the plain line scan
+// (Caddy then refuses it anyway).
 func scanTopLevelDirective(src string, banned []string) string {
+	if heads, ok := caddy.CaddyfileLineHeads(src); ok {
+		for _, h := range heads {
+			for _, b := range banned {
+				if h == b {
+					return b
+				}
+			}
+		}
+		return ""
+	}
 	depth := 0
 	for _, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -1588,7 +1652,7 @@ func (s *Server) adaptProxyAdvancedResult(caddyCl *caddy.Client, p models.ProxyH
 	src := fmt.Sprintf("%s {\n%s\n}\n", proxyAdvancedSite, normalizeProxyAdvancedConfig(p.AdvancedConfig))
 	// Issue #119: `import <snippet>` must see the snippets from CADDYFILE_PATH,
 	// exactly as it does in Advanced routes.
-	adapted, err := caddyCl.Adapt(s.withAutoLoadedSnippets(src))
+	adapted, err := caddyCl.Adapt(s.snippetsFor(src, tenantClient(caddyCl) || s.isTenantOwner(p.OwnerID)))
 	if err != nil {
 		return nil, err
 	}

@@ -660,6 +660,13 @@ func TestTenantImportsOnlyAdministratorSnippets(t *testing.T) {
 		if rec.Code != want {
 			t.Errorf("%q: want %d, got %d %s", src, want, rec.Code, rec.Body.String())
 		}
+		// Issue #184 round 10 (6): the refusal is CaddyUI's own, made
+		// before Caddy is asked — not Caddy's file-not-found error.
+		if want == http.StatusBadRequest {
+			if b := rec.Body.String(); !strings.Contains(b, "may only name a snippet the administrator defined") || strings.Contains(b, "File to import not found") {
+				t.Errorf("%q: want CaddyUI's own refusal, got %s", src, b)
+			}
+		}
 	}
 	// The live sync keeps a tenant's Advanced config that imports one.
 	p := models.ProxyHost{ID: 9, Domains: "snipadv.example.test", ForwardScheme: "http", ForwardHost: "203.0.113.10", ForwardPort: 8080,

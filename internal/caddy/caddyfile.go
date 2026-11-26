@@ -13,93 +13,129 @@ import (
 // returned as the first element with an empty site-address line so callers can
 // distinguish it — or simply discard it since it doesn't map to a route.
 //
-// This is a brace-depth parser, not a full Caddyfile lexer. It handles:
-//   - Line comments starting with '#'
-//   - Double-quoted strings (with \\ and \" escapes) so braces inside strings
-//     don't affect depth
-//   - Single-line directives with no braces (e.g. top-level "import ...") —
-//     these are NOT returned as blocks, only "... { ... }" snippets are.
-//
-// It does NOT handle Caddyfile snippets "(name) { ... }" specially — those will
-// appear as their own blocks and callers should filter by whether the head starts
-// with '('.
+// Blocks are found on the tokens Caddy's own lexer produces
+// (lexCaddyfileLenient, issue #184 round 10), so quotes, backtick strings,
+// heredocs and comments delimit text exactly as they do for Caddy, and only
+// an unquoted `{` or `}` token opens or closes a block — the rule of
+// Caddy's parser (isOpenCurlyBrace / isCloseCurlyBrace). A top-level
+// `import` line is not part of any block. Snippet definitions "(name) { ... }"
+// appear as their own blocks; see ExtractSnippets and CaddyfileSnippets.
+// Text Caddy's lexer refuses (a malformed heredoc) yields no blocks.
 func SplitCaddyfileBlocks(src string) []string {
-	var blocks []string
-	var cur strings.Builder
-	depth := 0
-	// blockStart marks the index in cur where the current top-level block began.
-	// When we close the block (depth returns to 0), we emit cur[blockStart:].
-	blockStart := -1
-
-	writeAndMaybeStart := func(b byte) {
-		if depth == 0 && blockStart == -1 {
-			// Starting a new potential block — but only if this byte is non-whitespace
-			// and not a separator. Whitespace/newlines between blocks are ignored.
-			if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
-				blockStart = cur.Len()
-				cur.WriteByte(b)
-			}
-			return
-		}
-		cur.WriteByte(b)
+	blocks, _ := caddyfileBlocks(src)
+	out := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, b.text)
 	}
+	return out
+}
 
-	i := 0
-	for i < len(src) {
-		c := src[i]
-		switch c {
-		case '#':
-			// Line comment — include in the current block (if any) but don't scan for braces.
-			for i < len(src) && src[i] != '\n' {
-				writeAndMaybeStart(src[i])
-				i++
+// cfBlock is one top-level block found by caddyfileBlocks.
+type cfBlock struct {
+	text    string // source text, first head token through the closing brace
+	head    string // source text before the opening brace, trimmed
+	snippet string // the snippet name when the block defines one, else ""
+	// first indexes the block's first token in toks, open and close its
+	// braces; bodyBytes is the size of the source between the braces.
+	first, open, close int
+	bodyBytes          int
+}
+
+// caddyfileBlocks returns the top-level blocks of src and its tokens. A
+// block starts at the first token after the previous block (a top-level
+// `import` line is skipped) and ends at the unquoted `}` that balances its
+// first unquoted `{`. Text after the last balanced block is ignored.
+func caddyfileBlocks(src string) ([]cfBlock, []cfToken) {
+	toks, startByte, endByte, err := lexCaddyfileLenient(src)
+	if err != nil {
+		return nil, nil
+	}
+	open := func(i int) bool { return toks[i].text == "{" && !toks[i].quoted }
+	closing := func(i int) bool { return toks[i].text == "}" && !toks[i].quoted }
+	// first returns where token i's source starts, including a backslash
+	// that escapes its first character: the lexer's start skips it, and
+	// Caddy's lexer keeps it pending across spaces and tabs.
+	first := func(i int) int {
+		b := startByte[i]
+		j := b
+		for j > 0 && (src[j-1] == ' ' || src[j-1] == '\t' || src[j-1] == '\r') {
+			j--
+		}
+		if j > 0 && src[j-1] == '\\' && (i == 0 || j-1 >= endByte[i-1]) {
+			return j - 1
+		}
+		return b
+	}
+	var blocks []cfBlock
+	for i := 0; i < len(toks); {
+		if toks[i].text == "import" && cfIsNewLine(toks, i) {
+			for i++; i < len(toks) && !cfIsNewLine(toks, i); i++ {
 			}
-		case '"':
-			writeAndMaybeStart(c)
-			i++
-			for i < len(src) {
-				if src[i] == '\\' && i+1 < len(src) {
-					cur.WriteByte(src[i])
-					cur.WriteByte(src[i+1])
-					i += 2
-					continue
-				}
-				cur.WriteByte(src[i])
-				if src[i] == '"' {
-					i++
-					break
-				}
-				i++
+			continue
+		}
+		head := i
+		for i < len(toks) && !open(i) {
+			if closing(i) {
+				return blocks, toks // a stray `}`: Caddy refuses the file
 			}
-		case '{':
-			writeAndMaybeStart(c)
-			depth++
-			i++
-		case '}':
-			cur.WriteByte(c)
-			depth--
-			i++
-			if depth == 0 && blockStart != -1 {
-				blocks = append(blocks, strings.TrimSpace(cur.String()[blockStart:]))
-				// Truncate cur back to the block's start so leftover text between
-				// blocks doesn't accumulate.
-				s := cur.String()[:blockStart]
-				cur.Reset()
-				cur.WriteString(s)
-				blockStart = -1
-			}
-		default:
-			writeAndMaybeStart(c)
 			i++
 		}
+		if i >= len(toks) {
+			break
+		}
+		openIdx := i
+		depth := 1
+		for i++; i < len(toks) && depth > 0; i++ {
+			if open(i) {
+				depth++
+			} else if closing(i) {
+				depth--
+			}
+		}
+		if depth != 0 {
+			break
+		}
+		closeIdx := i - 1
+		b := cfBlock{
+			// A token's span runs over the carriage returns Caddy's lexer
+			// skips after it; the block ends at its brace.
+			text:      strings.TrimRight(src[first(head):endByte[closeIdx]], "\r"),
+			head:      strings.TrimSpace(src[first(head):startByte[openIdx]]),
+			first:     head,
+			open:      openIdx,
+			close:     closeIdx,
+			bodyBytes: startByte[closeIdx] - endByte[openIdx],
+		}
+		// Caddy's isSnippet: the block's one key is `(name)`. CaddyUI also
+		// requires the `{` on the key's line, as Caddy's addresses() does
+		// for any block.
+		// The closing brace must be written as one: at the end of the
+		// text Caddy also reads `"}` or `}\` as `}`, but such a block would
+		// swallow whatever is put after it.
+		if k := toks[head].text; openIdx == head+1 && !cfIsNewLine(toks, openIdx) &&
+			len(k) >= 2 && strings.HasPrefix(k, "(") && strings.HasSuffix(k, ")") &&
+			strings.TrimRight(src[startByte[closeIdx]:endByte[closeIdx]], "\r") == "}" {
+			b.snippet = k[1 : len(k)-1]
+		}
+		blocks = append(blocks, b)
 	}
-	return blocks
+	return blocks, toks
 }
 
 // HeadOfBlock returns the site-address line(s) before a block's opening brace.
 // For "example.com, www.example.com {\n  ...\n}" it returns
 // "example.com, www.example.com". For a global-options block "{ ... }" it returns "".
+// The brace is the first unquoted `{` token, read as Caddy's lexer reads
+// the block (issue #184 round 10).
 func HeadOfBlock(block string) string {
+	if toks, startByte, _, err := lexCaddyfileLenient(block); err == nil {
+		for i, t := range toks {
+			if t.text == "{" && !t.quoted {
+				return strings.TrimSpace(block[:startByte[i]])
+			}
+		}
+		return strings.TrimSpace(block)
+	}
 	i := strings.IndexByte(block, '{')
 	if i < 0 {
 		return strings.TrimSpace(block)
@@ -113,11 +149,59 @@ func HeadOfBlock(block string) string {
 // `import` them without re-typing the definition.
 func ExtractSnippets(src string) []string {
 	var out []string
-	for _, block := range SplitCaddyfileBlocks(src) {
-		head := HeadOfBlock(block)
-		if strings.HasPrefix(head, "(") && strings.HasSuffix(head, ")") {
-			out = append(out, block)
+	for _, s := range CaddyfileSnippets(src) {
+		out = append(out, s.Text)
+	}
+	return out
+}
+
+// CaddyfileSnippet is one snippet definition found by CaddyfileSnippets,
+// with what it costs Caddy's adapter when imported (issue #184 round 10).
+type CaddyfileSnippet struct {
+	Name string
+	// Order is the definition's position among the snippets of its file.
+	Order int
+	// Text is the definition's source, `(name) {` through its `}`.
+	Text string
+	// BodyBytes is the size of the source between the braces.
+	BodyBytes int
+	// Depth is how deeply the body nests blocks (0 for a flat body).
+	Depth int
+	// Imports are the `import` directives in the body, with the block
+	// depth (within the body) each one sits at.
+	Imports []CaddyfileImport
+}
+
+// CaddyfileImport is one `import` directive: the name it imports ("" when
+// it has none) and the block depth it sits at.
+type CaddyfileImport struct {
+	Name  string
+	Depth int
+}
+
+// CaddyfileSnippets returns the snippet definitions of src, read the way
+// Caddy's lexer and parser read them (see SplitCaddyfileBlocks), in order.
+func CaddyfileSnippets(src string) []CaddyfileSnippet {
+	blocks, toks := caddyfileBlocks(src)
+	var out []CaddyfileSnippet
+	for _, b := range blocks {
+		if b.snippet == "" {
+			continue
 		}
+		body := toks[b.open+1 : b.close]
+		depths := cfDepths(body)
+		s := CaddyfileSnippet{Name: b.snippet, Order: len(out), Text: b.text, BodyBytes: b.bodyBytes, Depth: cfMaxNestingDepth(body)}
+		for i, t := range body {
+			if t.text != "import" || !cfIsNewLine(toks, b.open+1+i) {
+				continue
+			}
+			name := ""
+			if i+1 < len(body) && !cfIsNewLine(toks, b.open+2+i) {
+				name = body[i+1].text
+			}
+			s.Imports = append(s.Imports, CaddyfileImport{Name: name, Depth: depths[i]})
+		}
+		out = append(out, s)
 	}
 	return out
 }
@@ -180,4 +264,39 @@ func stripCaddyfileComments(head string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// CaddyfileLineHeads returns the first token of every line of src that sits
+// at block depth 0, read the way Caddy's lexer reads src (a quoted,
+// backtick or heredoc value is one token, wherever its newlines fall); ok
+// is false when Caddy's lexer would refuse src.
+func CaddyfileLineHeads(src string) (heads []string, ok bool) {
+	toks, _, _, err := lexCaddyfileLenient(src)
+	if err != nil {
+		return nil, false
+	}
+	depths := cfDepths(toks)
+	for i, t := range toks {
+		if depths[i] == 0 && cfIsNewLine(toks, i) && !(t.text == "}" && !t.quoted) {
+			heads = append(heads, t.text)
+		}
+	}
+	return heads, true
+}
+
+// CaddyfileHasMultilineValue reports whether a value in src — a quoted or
+// backtick string, or a heredoc — spans more than one line, or whether
+// src cannot be lexed at all. Line-based rewrites of such text would edit
+// inside the value.
+func CaddyfileHasMultilineValue(src string) bool {
+	toks, _, _, err := lexCaddyfileLenient(src)
+	if err != nil {
+		return true
+	}
+	for _, t := range toks {
+		if t.heredoc || strings.Contains(t.text, "\n") {
+			return true
+		}
+	}
+	return false
 }

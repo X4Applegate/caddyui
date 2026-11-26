@@ -638,17 +638,31 @@ func CaddyfileImportArguments(src string) (args []string, ok bool) {
 // alone does not bound the adapter's memory for large text — that cost is
 // still up to 100× the token count (measured on Caddy 2.11.9: 1 MB nested
 // 10 deep peaked at ~760 MB, 1 MB nested 100 deep exceeded 3 GB). Non-admin
-// text is held to 64 KiB and 32 levels by the server, which together keep
-// one adapt under ~200 MB; an administrator's text is trusted beyond this
-// depth limit.
+// text is held by the server to 64 KiB, 32 levels and 16 imports, each
+// import counted at the size and depth it expands to (issue #184 round 10);
+// the heaviest text built within those limits peaked at ~185 MB in one
+// adapt (cgroup memory.peak), ~250 MB at the looser bound for text CaddyUI
+// wraps around it. An administrator's text is trusted beyond this depth
+// limit. The depth is counted the way Caddy's own lexer reads the text, so
+// text CaddyUI's strict lexer refuses is limited too.
 const MaxCaddyfileNestingDepth = 100
 
-// CaddyfileNestingDepth returns how deeply src nests blocks, read the way
-// Caddy's lexer reads it; ok is false when src cannot be lexed. The count
-// errs high: every unquoted `{` opens a block, and an unquoted `}` closes
-// one only when it ends its line, as Caddy's dispenser requires.
+// MaxTenantCaddyfileBytes is the most Caddyfile text a non-admin account
+// may save in one Advanced config or Advanced route (issue #184 round 8);
+// the snippets it imports count toward it (round 10). The exporter refuses
+// a tenant's stored text over it before lexing it.
+const MaxTenantCaddyfileBytes = 64 << 10
+
+// CaddyfileNestingDepth returns how deeply src nests blocks, read exactly
+// the way Caddy's own lexer reads it (lexCaddyfileLenient: a byte-order
+// mark mid-text and invalid UTF-8 are ordinary characters there, as they
+// are for Caddy — issue #184 round 10). ok is false only when Caddy's
+// lexer would refuse src too, so Caddy never parses text whose depth was
+// not counted. The count errs high: every unquoted `{` opens a block, and
+// an unquoted `}` closes one only when it ends its line, as Caddy's
+// dispenser requires.
 func CaddyfileNestingDepth(src string) (depth int, ok bool) {
-	toks, err := lexCaddyfile(src)
+	toks, _, _, err := lexCaddyfileLenient(src)
 	if err != nil {
 		return 0, false
 	}
@@ -657,32 +671,47 @@ func CaddyfileNestingDepth(src string) (depth int, ok bool) {
 
 // cfMaxNestingDepth is CaddyfileNestingDepth on lexed tokens.
 func cfMaxNestingDepth(toks []cfToken) int {
-	depth, deepest := 0, 0
+	deepest := 0
+	for i, d := range cfDepths(toks) {
+		if !toks[i].quoted && toks[i].text == "{" {
+			deepest = max(deepest, d+1)
+		}
+	}
+	return deepest
+}
+
+// cfDepths returns, for each token, the block depth before it, counted as
+// cfMaxNestingDepth counts.
+func cfDepths(toks []cfToken) []int {
+	out := make([]int, len(toks))
+	depth := 0
 	for i, t := range toks {
+		out[i] = depth
 		if t.quoted {
 			continue
 		}
 		switch t.text {
 		case "{":
 			depth++
-			deepest = max(deepest, depth)
 		case "}":
 			if depth > 0 && (i+1 >= len(toks) || cfIsNewLine(toks, i+1)) {
 				depth--
 			}
 		}
 	}
-	return deepest
+	return out
 }
 
 // cfSnippetPlaceholder reports whether a token's text holds a placeholder
 // that Caddy replaces in a snippet's tokens when the snippet is imported
 // (caddyfile/parse.go doImport, importargs.go, v2.11): the token `{block}`
-// or `{blocks.NAME}`, or a placeholder whose key is exactly `args.N` or
-// `args[…]`. Caddy compares the whole key, so `{http.request.uri.query.args[0]}`
-// or `{x args.1}` is not one. A key ends at the first `}` that is not
-// escaped; escapes are not modelled, so any later `}` is also taken as a
-// possible end, which only finds more.
+// or `{blocks.NAME}`, or a placeholder whose key is exactly `args[…]` or
+// `args.N`. Caddy compares the whole key, so `{http.request.uri.query.args[0]}`
+// or `{x args.1}` is not one. For `args.` Caddy replaces the key only when
+// the rest is an integer (strconv.Atoi); `{args.x}`, as in a JavaScript
+// template literal, is left as text (issue #184 round 10). A key ends at
+// the first `}` that is not escaped; escapes are not modelled, so any later
+// `}` is also taken as a possible end, which only finds more.
 func cfSnippetPlaceholder(text string) bool {
 	if text == "{block}" || (strings.HasPrefix(text, "{blocks.") && strings.HasSuffix(text, "}")) {
 		return true
@@ -690,13 +719,21 @@ func cfSnippetPlaceholder(text string) bool {
 	if !strings.Contains(text, "{args") {
 		return false
 	}
-	lastClose := strings.LastIndexByte(text, '}')
 	lastBracketClose := strings.LastIndex(text, "]}")
 	for i := strings.Index(text, "{args"); i >= 0; {
 		rest := text[i+1:]
 		switch {
-		case strings.HasPrefix(rest, "args.") && lastClose > i+6:
-			return true // {args.N}: at least one character after the dot
+		case strings.HasPrefix(rest, "args."):
+			for j := strings.IndexByte(rest, '}'); j >= 0; {
+				if cfArgsIndexKeyRe.MatchString(rest[:j]) {
+					return true
+				}
+				next := strings.IndexByte(rest[j+1:], '}')
+				if next < 0 {
+					break
+				}
+				j += 1 + next
+			}
 		case strings.HasPrefix(rest, "args[") && lastBracketClose > i+6:
 			return true // {args[…]}: at least one character inside
 		}
@@ -708,6 +745,10 @@ func cfSnippetPlaceholder(text string) bool {
 	}
 	return false
 }
+
+// cfArgsIndexKeyRe is a deprecated `{args.N}` key Caddy replaces: the
+// index must parse with strconv.Atoi.
+var cfArgsIndexKeyRe = regexp.MustCompile(`^args\.[+-]?[0-9]+$`)
 
 // CaddyfileImports is what CaddyfileImportUse finds in a Caddyfile.
 type CaddyfileImports struct {
@@ -730,6 +771,10 @@ type CaddyfileImports struct {
 	SnippetPlaceholder bool
 	// MaxDepth is how deeply src nests blocks (see CaddyfileNestingDepth).
 	MaxDepth int
+	// ImportDepths holds, for each entry of Arguments, the block depth the
+	// `import` sits at (issue #184 round 10: what a snippet nests is added
+	// to it).
+	ImportDepths []int
 }
 
 // CaddyfileImportUse reports how src uses `import` and snippets, reading
@@ -741,6 +786,7 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 		return use, false
 	}
 	use.MaxDepth = cfMaxNestingDepth(toks)
+	depths := cfDepths(toks)
 	// depth is the block nesting before the token; at depth 0 tokens are
 	// site addresses (parse.go addresses()). onlyDropped is true while the
 	// current address list has held nothing but keys Caddy drops; a list
@@ -791,6 +837,7 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 			arg = toks[i+1].text
 		}
 		use.Arguments = append(use.Arguments, arg)
+		use.ImportDepths = append(use.ImportDepths, depths[i])
 	}
 	return use, true
 }

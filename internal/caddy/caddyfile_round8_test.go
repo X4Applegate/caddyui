@@ -30,8 +30,13 @@ func TestCaddyfileNestingDepth(t *testing.T) {
 			t.Errorf("%q: got %d ok=%v, want %d", src, got, ok, want)
 		}
 	}
-	if _, ok := CaddyfileNestingDepth("x.test {\n\trespond \"open\n}"); ok {
-		t.Errorf("text that does not lex must be reported")
+	// Issue #184 round 10: only what Caddy's own lexer refuses is
+	// reported; an unclosed quote at the end is a token for Caddy.
+	if _, ok := CaddyfileNestingDepth("x.test {\n\trespond <<\n}"); ok {
+		t.Errorf("text Caddy's lexer refuses must be reported")
+	}
+	if d, ok := CaddyfileNestingDepth("x.test {\n\thandle {\n\t\trespond \"open\n}"); !ok || d != 2 {
+		t.Errorf("an unclosed quote at the end: got %d ok=%v, want 2 true", d, ok)
 	}
 }
 

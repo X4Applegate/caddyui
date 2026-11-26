@@ -40,7 +40,49 @@ func lexCaddyfile(src string) ([]cfToken, error) {
 	if !utf8.ValidString(src) || strings.ContainsRune(src, '\uFEFF') {
 		return nil, errCaddyfileUnsafe
 	}
-	l := cfLexer{runes: []rune(src), line: 1}
+	return lexCaddyfileRunes([]rune(src), false)
+}
+
+// lexCaddyfileLenient tokenizes src the way Caddy itself does, without
+// lexCaddyfile's extra refusals (issue #184 round 10): a byte-order mark
+// is dropped only at the very start and is an ordinary character anywhere
+// else, each invalid UTF-8 byte reads as U+FFFD (bufio's ReadRune, which
+// Caddy's lexer uses, does the same), and input that ends inside a quote
+// or after a backslash yields the token read so far, unquoted. Only what
+// Caddy's lexer itself refuses — a malformed or unterminated heredoc — is
+// an error. It also returns, for each token, its byte offsets in src
+// (startByte, endByte), so callers can cut src at token boundaries.
+func lexCaddyfileLenient(src string) (toks []cfToken, startByte, endByte []int, err error) {
+	runes := make([]rune, 0, len(src))
+	offs := make([]int, 0, len(src)+1)
+	for i, r := range src {
+		runes = append(runes, r)
+		offs = append(offs, i)
+	}
+	offs = append(offs, len(src))
+	skip := 0
+	if len(runes) > 0 && runes[0] == '\uFEFF' {
+		skip = 1
+	}
+	toks, err = lexCaddyfileRunes(runes[skip:], true)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	startByte = make([]int, len(toks))
+	endByte = make([]int, len(toks))
+	for i := range toks {
+		toks[i].start += skip
+		toks[i].end += skip
+		startByte[i] = offs[toks[i].start]
+		endByte[i] = offs[toks[i].end]
+	}
+	return toks, startByte, endByte, nil
+}
+
+// lexCaddyfileRunes is the shared tokenizer; lenient selects Caddy's own
+// end-of-input behaviour (see lexCaddyfileLenient).
+func lexCaddyfileRunes(runes []rune, lenient bool) ([]cfToken, error) {
+	l := cfLexer{runes: runes, line: 1, lenient: lenient}
 	var toks []cfToken
 	for {
 		tok, found, err := l.next()
@@ -63,6 +105,7 @@ type cfLexer struct {
 	pos          int
 	line         int
 	skippedLines int
+	lenient      bool
 }
 
 func (l *cfLexer) next() (cfToken, bool, error) {
@@ -75,6 +118,19 @@ func (l *cfLexer) next() (cfToken, bool, error) {
 
 	for {
 		if l.pos >= len(l.runes) {
+			if l.lenient {
+				// Caddy's lexer at end of input: a pending value becomes
+				// an unquoted token, except inside a heredoc.
+				if len(val) == 0 {
+					return tok, false, nil
+				}
+				if inHeredoc {
+					return tok, false, errCaddyfileUnsafe
+				}
+				tok.text = string(val)
+				tok.end = l.pos
+				return tok, true, nil
+			}
 			if quoted || btQuoted || escaped || inHeredoc {
 				return tok, false, errCaddyfileUnsafe
 			}
@@ -232,21 +288,25 @@ func cfFinalizeHeredoc(val []rune, marker string) ([]rune, error) {
 	lastNewline := strings.LastIndex(stringVal, "\n")
 	lines := strings.Split(stringVal[:lastNewline+1], "\n")
 	paddingToStrip := stringVal[lastNewline+1 : len(stringVal)-len(marker)]
-	var out string
+	// Issue #184 round 10: a strings.Builder, not Caddy's `out +=`, which
+	// is quadratic in the heredoc's line count. The result is identical.
+	var out strings.Builder
+	out.Grow(lastNewline + 1)
 	for _, lineText := range lines[:len(lines)-1] {
 		if lineText == "" || lineText == "\r" {
-			out += "\n"
+			out.WriteByte('\n')
 			continue
 		}
 		if strings.Index(lineText, paddingToStrip) != 0 {
 			return nil, errCaddyfileUnsafe
 		}
-		out += strings.ReplaceAll(lineText[len(paddingToStrip):]+"\n", "\r", "")
+		out.WriteString(strings.ReplaceAll(lineText[len(paddingToStrip):]+"\n", "\r", ""))
 	}
-	if len(out) > 0 && out[len(out)-1] == '\n' {
-		out = out[:len(out)-1]
+	res := out.String()
+	if len(res) > 0 && res[len(res)-1] == '\n' {
+		res = res[:len(res)-1]
 	}
-	return []rune(out), nil
+	return []rune(res), nil
 }
 
 func cfIsHeredocMarker(marker string) bool {
