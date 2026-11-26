@@ -1963,6 +1963,92 @@ EOF
     "$arch" "$(safe_text "$os_family")" "$(safe_text "$(printf '%s' "$new_types" | tr '\n' ' ')")"
 }
 
+# The baseline must not be NEWER than the rebuild (T-0863).
+# ---------------------------------------------------------
+# Nothing else in this script has any notion of the two images' AGES, so
+# comparing a rebuild against a newer baseline -- which is caller error, not a
+# defect in the image -- presents as an ordinary gate 1 block. Measured on
+# `dd8b020` with the gate otherwise unmodified, `v2.68.12` vs `:stable` on
+# arm64 under `block`: rc=1, verdict=blocked, 15 added findings, 3 of them
+# go-jose. That is indistinguishable from "the new coverage floors broke a
+# legitimate release", and it cost one session a full control run against the
+# gate's own unmodified code to rule out. Gate 1 is set arithmetic on two
+# scans: run it backwards and every finding the baseline has FIXED since is
+# reported as newly ADDED, which is arithmetically correct and completely
+# misleading.
+#
+# So say it instead, before either scan is compared. This is a PRECONDITION in
+# the same sense as scan coverage -- it produces no verdict, it exits 2 ("the
+# gate could not run"), which all three call sites already treat as blocking.
+#
+# Three properties, each with a case in scripts/test-caddy-image-gate-age.sh:
+#
+#   1. AN UNREADABLE TIMESTAMP IS NOT A PASS. An absent, empty or unparseable
+#      `.Created` on either side exits 2. Skipping it silently is §3b's
+#      fail-open shape -- a skipped check and a passed check must not look the
+#      same -- and the comparison is cheap enough that there is no case for
+#      degrading instead of stopping.
+#
+#   2. EQUAL TIMESTAMPS PASS. `:stable` vs `:stable` is a legitimate degenerate
+#      call and is the free control this repo uses to prove the gate
+#      discriminates, so the test is STRICTLY newer, not newer-or-equal.
+#
+#   3. THE MESSAGE NAMES THE CAUSE, not the symptom, with both timestamps
+#      echoed so the reader does not re-derive them.
+#
+# WHY THE FORM IS VALIDATED BEFORE `date` SEES IT. `date -d` accepts relative
+# expressions -- `now`, `yesterday`, `@0` -- and `.Created` is part of the
+# image CONFIG, i.e. it comes out of the artefact under test on the rebuild
+# side. Handing such a string to `date` would make the check report the
+# current time for an image that declares a word, so only an absolute RFC3339
+# instant is accepted and anything else takes property 1's exit 2. The zero
+# time (0001-01-01, what a timestamp-rewriting reproducible build emits) is
+# refused by name rather than compared, because comparing it would block every
+# legitimate release with a message blaming the baseline.
+assert_baseline_not_newer() {
+  local new_created="$1" base_created="$2" arch="$3"
+  local new_epoch base_epoch
+
+  # RFC3339, as both docker spellings produce: a `Z` or a numeric offset, with
+  # or without fractional seconds. Anchored at both ends -- an unanchored
+  # pattern matches the instant INSIDE a longer hostile string, and `date`
+  # would then read the whole string.
+  local rfc3339='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$'
+
+  local side ts
+  for side in rebuild baseline; do
+    if [ "$side" = rebuild ]; then ts="$new_created"; else ts="$base_created"; fi
+
+    [ -n "$ts" ] \
+      || die "the $side image for linux/$arch reports no creation timestamp, so the gate cannot tell which of the two images is newer. A gate 1 comparison run backwards reports every finding the baseline has since FIXED as newly ADDED, so this is refused rather than skipped: an unreadable precondition is not a passed one. Re-pull or rebuild the image, or check that \`docker image inspect --format '{{.Created}}'\` answers for it."
+
+    printf '%s' "$ts" | grep -Eq "$rfc3339" \
+      || die "the $side image for linux/$arch reports a creation timestamp the gate will not read: '$(safe_text "$ts")'. Only an absolute RFC3339 instant is accepted, because \`date -d\` also resolves relative words like 'now' and this value comes out of the image's own config. Refused rather than skipped, for the same reason as an absent timestamp."
+
+    case "$ts" in
+      0001-01-01T*)
+        die "the $side image for linux/$arch declares the ZERO creation timestamp ($(safe_text "$ts")), which is what a build that rewrites timestamps for reproducibility emits. The gate cannot order the two images by age on that, and comparing it would block this release while blaming the other image. Either keep real build timestamps on the gated image (the workflows build with provenance disabled and no SOURCE_DATE_EPOCH, which does), or this check needs a deliberate exemption -- do not make it skip silently." ;;
+    esac
+  done
+
+  new_epoch="$(date -u -d "$new_created" +%s 2>/dev/null || true)"
+  base_epoch="$(date -u -d "$base_created" +%s 2>/dev/null || true)"
+
+  # Form-valid but still unparseable (a 13th month, a 32nd day) lands here.
+  # Guarded explicitly because `[ "" -gt "" ]` is a shell ERROR, and an error
+  # inside a `$(...)` elsewhere is exactly how a check turns into a no-op.
+  case "$new_epoch:$base_epoch" in
+    *[!0-9:]*|:*|*:)
+      die "the gate could not convert the creation timestamps for linux/$arch to a comparable non-negative instant (rebuild: '$(safe_text "$new_created")', published: '$(safe_text "$base_created")'), so it cannot tell which image is newer. A form-valid date that is not a real one (a 13th month) or predates 1970 lands here. Refused rather than skipped." ;;
+  esac
+
+  [ "$base_epoch" -le "$new_epoch" ] \
+    || die "the PUBLISHED image is NEWER than the image being gated for linux/$arch (published: $(safe_text "$base_created"), rebuild: $(safe_text "$new_created")) -- the comparison is the wrong way round. This is caller error, not a defect in either image: gate 1 is set arithmetic over two scans, so run backwards it reports every finding the published image has FIXED since as newly ADDED by this build, and the run blocks for a reason that has nothing to do with the image under test. Gate the newer image against the older one, or refresh the baseline you are comparing to."
+
+  printf 'age OK (linux/%s): published %s <= rebuild %s\n' \
+    "$arch" "$(safe_text "$base_created")" "$(safe_text "$new_created")"
+}
+
 # `caddy list-modules --versions` from inside the image. The image is
 # distroless-ish with caddy as its entrypoint, so --entrypoint is required;
 # without it the binary boots a server instead of answering.
@@ -2353,6 +2439,18 @@ for arch in $ARCHES; do
 
   base_ref="$(resolve_ref "$BASELINE"  "$arch" baseline)"
   new_ref="$(resolve_ref "$NEW_IMAGE" "$arch" rebuild)"
+
+  # Before either scan: the two images must be the right way round in time.
+  # Placed HERE, immediately after resolve_ref, because both images are local
+  # at the gated arch by this point -- so this needs no extra pull and no
+  # extra scan -- and because a backwards comparison should be named before
+  # two Trivy runs and a coverage assertion have produced a verdict-shaped
+  # answer to the wrong question. Reads the resolved per-arch refs, not the
+  # mutable tags, for the same reason gate 3 does.
+  assert_baseline_not_newer \
+    "$(docker image inspect --format '{{.Created}}' "$new_ref"  2>/dev/null || true)" \
+    "$(docker image inspect --format '{{.Created}}' "$base_ref" 2>/dev/null || true)" \
+    "$arch"
 
   trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
     --format json --output "$OUT/new-$arch.json" "$new_ref"
