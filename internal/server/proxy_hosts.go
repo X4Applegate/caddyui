@@ -2033,6 +2033,14 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Issue #184 round 8: a non-admin's oversized Advanced config is a form
+	// error that keeps what was typed, before any adapt.
+	if errMsg := s.advancedConfigSizeRefusal(r); errMsg != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	s.applyDNSFormSelection(p)
 	if errMsg := validateSSLFlags(p.SSLEnabled, p.SSLForced, p.CertificateID); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
@@ -2226,6 +2234,14 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID = id
+	// Issue #184 round 8: a non-admin's oversized Advanced config is a form
+	// error that keeps what was typed, before any adapt.
+	if errMsg := s.advancedConfigSizeRefusal(r); errMsg != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	s.applyDNSFormSelection(p)
 	if errMsg := validateSSLFlags(p.SSLEnabled, p.SSLForced, p.CertificateID); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)

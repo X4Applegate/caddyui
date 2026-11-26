@@ -304,6 +304,12 @@ func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
 			return nil, fmt.Errorf("%s", msg)
 		}
 	}
+	// Issue #184 round 8: deeply nested text makes Caddy's adapter use
+	// memory that grows with tokens × depth; see MaxCaddyfileNestingDepth.
+	// Text the lexer cannot read is left for Caddy to reject.
+	if depth, ok := CaddyfileNestingDepth(caddyfile); ok && depth > MaxCaddyfileNestingDepth {
+		return nil, fmt.Errorf("the Caddyfile nests blocks %d levels deep; the limit is %d", depth, MaxCaddyfileNestingDepth)
+	}
 	req, err := http.NewRequest(http.MethodPost, c.AdminURL+"/adapt", strings.NewReader(caddyfile))
 	if err != nil {
 		return nil, err

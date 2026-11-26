@@ -72,6 +72,10 @@ func checkCaddyfileSites(src string, imports map[string]bool) ([]cfSite, error) 
 	if err != nil {
 		return nil, err
 	}
+	// Issue #184 round 8: the scope checks below cost tokens × depth.
+	if cfMaxNestingDepth(toks) > MaxCaddyfileNestingDepth {
+		return nil, errCaddyfileUnsafe
+	}
 	open := func(i int) bool { return toks[i].text == "{" && !toks[i].quoted }
 	closing := func(i int) bool { return toks[i].text == "}" && !toks[i].quoted }
 	var sites []cfSite
@@ -624,6 +628,87 @@ func CaddyfileImportArguments(src string) (args []string, ok bool) {
 	return use.Arguments, ok
 }
 
+// MaxCaddyfileNestingDepth is the deepest block nesting CaddyUI sends to
+// Caddy's adapter or writes into an export, for any account (issue #184
+// round 8). Caddy's adapter copies a block's tokens once per enclosing
+// block, so its memory grows with tokens × depth: 4000 nested `handle`
+// blocks in 44 KB made `caddy adapt` run out of 3 GB. Real configurations
+// nest a handful of levels (site → handle → reverse_proxy → transport →
+// tls is five), so 100 leaves room for anything written by hand. The limit
+// alone does not bound the adapter's memory for large text — that cost is
+// still up to 100× the token count (measured on Caddy 2.11.9: 1 MB nested
+// 10 deep peaked at ~760 MB, 1 MB nested 100 deep exceeded 3 GB). Non-admin
+// text is held to 64 KiB and 32 levels by the server, which together keep
+// one adapt under ~200 MB; an administrator's text is trusted beyond this
+// depth limit.
+const MaxCaddyfileNestingDepth = 100
+
+// CaddyfileNestingDepth returns how deeply src nests blocks, read the way
+// Caddy's lexer reads it; ok is false when src cannot be lexed. The count
+// errs high: every unquoted `{` opens a block, and an unquoted `}` closes
+// one only when it ends its line, as Caddy's dispenser requires.
+func CaddyfileNestingDepth(src string) (depth int, ok bool) {
+	toks, err := lexCaddyfile(src)
+	if err != nil {
+		return 0, false
+	}
+	return cfMaxNestingDepth(toks), true
+}
+
+// cfMaxNestingDepth is CaddyfileNestingDepth on lexed tokens.
+func cfMaxNestingDepth(toks []cfToken) int {
+	depth, deepest := 0, 0
+	for i, t := range toks {
+		if t.quoted {
+			continue
+		}
+		switch t.text {
+		case "{":
+			depth++
+			deepest = max(deepest, depth)
+		case "}":
+			if depth > 0 && (i+1 >= len(toks) || cfIsNewLine(toks, i+1)) {
+				depth--
+			}
+		}
+	}
+	return deepest
+}
+
+// cfSnippetPlaceholder reports whether a token's text holds a placeholder
+// that Caddy replaces in a snippet's tokens when the snippet is imported
+// (caddyfile/parse.go doImport, importargs.go, v2.11): the token `{block}`
+// or `{blocks.NAME}`, or a placeholder whose key is exactly `args.N` or
+// `args[…]`. Caddy compares the whole key, so `{http.request.uri.query.args[0]}`
+// or `{x args.1}` is not one. A key ends at the first `}` that is not
+// escaped; escapes are not modelled, so any later `}` is also taken as a
+// possible end, which only finds more.
+func cfSnippetPlaceholder(text string) bool {
+	if text == "{block}" || (strings.HasPrefix(text, "{blocks.") && strings.HasSuffix(text, "}")) {
+		return true
+	}
+	if !strings.Contains(text, "{args") {
+		return false
+	}
+	lastClose := strings.LastIndexByte(text, '}')
+	lastBracketClose := strings.LastIndex(text, "]}")
+	for i := strings.Index(text, "{args"); i >= 0; {
+		rest := text[i+1:]
+		switch {
+		case strings.HasPrefix(rest, "args.") && lastClose > i+6:
+			return true // {args.N}: at least one character after the dot
+		case strings.HasPrefix(rest, "args[") && lastBracketClose > i+6:
+			return true // {args[…]}: at least one character inside
+		}
+		next := strings.Index(rest, "{args")
+		if next < 0 {
+			break
+		}
+		i += 1 + next
+	}
+	return false
+}
+
 // CaddyfileImports is what CaddyfileImportUse finds in a Caddyfile.
 type CaddyfileImports struct {
 	// Arguments holds the argument of every `import` Caddy's parser would
@@ -635,8 +720,16 @@ type CaddyfileImports struct {
 	// nested import of a file.
 	ImportAsArgument bool
 	// SnippetDefined is set when a line starts with a `(name)` token, the
-	// form Caddy reads as a snippet definition wherever a block begins.
+	// form Caddy reads as a snippet definition wherever a block begins,
+	// and when a top-level address list holds a `(name)` token after only
+	// keys Caddy drops (`""` and lone commas), which defines the snippet
+	// just the same (`"" (name) {`).
 	SnippetDefined bool
+	// SnippetPlaceholder is set when a token holds a placeholder Caddy
+	// replaces in a snippet on import (see cfSnippetPlaceholder).
+	SnippetPlaceholder bool
+	// MaxDepth is how deeply src nests blocks (see CaddyfileNestingDepth).
+	MaxDepth int
 }
 
 // CaddyfileImportUse reports how src uses `import` and snippets, reading
@@ -647,10 +740,44 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 	if err != nil {
 		return use, false
 	}
+	use.MaxDepth = cfMaxNestingDepth(toks)
+	// depth is the block nesting before the token; at depth 0 tokens are
+	// site addresses (parse.go addresses()). onlyDropped is true while the
+	// current address list has held nothing but keys Caddy drops; a list
+	// starts on a new line unless the previous key ended with a comma.
+	depth, onlyDropped, continued := 0, false, false
 	for i, t := range toks {
 		newLine := cfIsNewLine(toks, i)
-		if newLine && len(t.text) >= 2 && strings.HasPrefix(t.text, "(") && strings.HasSuffix(t.text, ")") {
+		paren := func(s string) bool { return len(s) >= 2 && strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") }
+		if newLine && paren(t.text) {
 			use.SnippetDefined = true
+		}
+		if cfSnippetPlaceholder(t.text) {
+			use.SnippetPlaceholder = true
+		}
+		structural := !t.quoted && (t.text == "{" || t.text == "}")
+		if depth == 0 && !structural {
+			if newLine && !continued {
+				onlyDropped = true
+			}
+			key := strings.TrimSuffix(t.text, ",")
+			switch {
+			case key == "":
+			case onlyDropped && paren(key):
+				use.SnippetDefined = true
+				onlyDropped = false
+			default:
+				onlyDropped = false
+			}
+			continued = strings.HasSuffix(t.text, ",")
+		}
+		if structural {
+			continued = false
+			if t.text == "{" {
+				depth++
+			} else if depth > 0 {
+				depth--
+			}
 		}
 		if t.text != "import" {
 			continue

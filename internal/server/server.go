@@ -5177,10 +5177,12 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		}
 		var advanced []any
 		var advancedOverrides map[string]any
-		if strings.TrimSpace(p.AdvancedConfig) != "" && s.isTenantOwner(p.OwnerID) && tenantTextViolation(p.AdvancedConfig) != "" {
+		if strings.TrimSpace(p.AdvancedConfig) != "" && s.isTenantOwner(p.OwnerID) && s.tenantOwnTextViolation(p.AdvancedConfig) != "" {
 			// {$ENV} is substituted by Caddy while ADAPTING, so the value would
 			// already be baked into the handlers; refuse before adapting.
-			log.Printf("caddy sync: proxy id=%d advanced_config skipped, not allowed for a non-admin owner: %s", p.ID, tenantTextViolation(p.AdvancedConfig))
+			// Issue #184 round 8: so is an `import` of a file, and deeply
+			// nested text costs the live Caddy's adapter its memory.
+			log.Printf("caddy sync: proxy id=%d advanced_config skipped, not allowed for a non-admin owner: %s", p.ID, s.tenantOwnTextViolation(p.AdvancedConfig))
 		} else if strings.TrimSpace(p.AdvancedConfig) != "" {
 			h, overrides, err := s.adaptProxyAdvanced(p)
 			if err != nil {
@@ -5453,6 +5455,14 @@ func (s *Server) tenantSafeRawEntries(rr models.RawRoute) []any {
 	entries := rawRouteEntries(rr)
 	if !s.isTenantOwner(rr.OwnerID) {
 		return entries
+	}
+	// Issue #184 round 8: a route whose Caddyfile breaks the tenant text
+	// rules is not deployed. Its stored JSON was adapted from that text, so
+	// a file the text imported may be baked into it (as header names, for
+	// one); the Caddyfile export leaves the same route out.
+	if strings.TrimSpace(rr.CaddyfileSrc) != "" && s.tenantOwnTextViolation(rr.CaddyfileSrc) != "" {
+		log.Printf("caddy sync: advanced route id=%d skipped, its Caddyfile is not allowed for a non-admin owner", rr.ID)
+		return nil
 	}
 	out := make([]any, 0, len(entries))
 	for _, e := range entries {

@@ -1345,8 +1345,8 @@ func (s *Server) deriveRawRouteJSON(r *http.Request, rr *models.RawRoute) string
 		return ""
 	}
 	tenant := !isAdminUser(s.currentUser(r))
-	if why := tenantTextViolation(src); why != "" && tenant {
-		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+	if why := s.tenantRawRouteTextProblem(src); why != "" && tenant {
+		return why
 	}
 	jsonData, listen, result, err := s.adaptRawRouteCaddyfileResult(s.caddyForRequest(r), src)
 	if err != nil {

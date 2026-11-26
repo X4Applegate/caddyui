@@ -983,11 +983,13 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	pad("forward_host", "(your-upstream)")
 	pad("domains", "example.com")
 
+	if errMsg := s.advancedConfigSizeRefusal(r); errMsg != "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
 	p, err := parseProxyHostForm(r)
 	if err != nil {
-		if errors.Is(err, errAdvancedConfigTooLarge) {
-			w.WriteHeader(http.StatusBadRequest)
-		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
@@ -1498,6 +1500,13 @@ func (s *Server) apiValidateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	cfSrc := strings.TrimSpace(r.FormValue("caddyfile_src"))
 	jsonData := strings.TrimSpace(r.FormValue("json_data"))
+	if cfSrc != "" && !isAdminUser(s.currentUser(r)) {
+		// Issue #184 round 8: the save's checks, before Caddy sees the text.
+		if why := s.tenantRawRouteTextProblem(cfSrc); why != "" {
+			respond(false, why)
+			return
+		}
+	}
 	if cfSrc != "" {
 		// Caddy's /adapt parses Caddyfile syntax and runs the adapter
 		// pipeline — that catches the bulk of bugs (unknown directives,

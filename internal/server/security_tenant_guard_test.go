@@ -141,9 +141,13 @@ func TestTenantTextViolation(t *testing.T) {
 		// Issue #184 round 7: a snippet defined in tenant text can turn its
 		// arguments into a nested file import, so tenants may not define one.
 		"snippet definition": "(common) {\n\theader X-A 1\n}\nexample.com {\n\timport common\n}",
+		// Issue #184 round 8: a name the administrator did not define as a
+		// snippet is read as a file in Caddy's working directory.
+		"import of an undefined name": "example.com {\n\timport mysecret\n}",
 	}
+	snippets := map[string]bool{"my_snippet": true, "secure-headers": true}
 	for name, txt := range bad {
-		if tenantTextViolation(txt) == "" {
+		if tenantTextViolationWith(txt, snippets, tenantMaxNestingDepth, maxTenantCaddyfileBytes) == "" {
 			t.Errorf("%s: allowed", name)
 		}
 	}
@@ -154,7 +158,7 @@ func TestTenantTextViolation(t *testing.T) {
 		"request placeholders":     "example.com {\n\theader X-Host {http.request.host}\n}",
 	}
 	for name, txt := range good {
-		if why := tenantTextViolation(txt); why != "" {
+		if why := tenantTextViolationWith(txt, snippets, tenantMaxNestingDepth, maxTenantCaddyfileBytes); why != "" {
 			t.Errorf("%s: refused: %s", name, why)
 		}
 	}

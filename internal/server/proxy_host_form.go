@@ -14,16 +14,23 @@ import (
 	"github.com/X4Applegate/caddyui/internal/models"
 )
 
-// maxProxyAdvancedConfigBytes caps a proxy host's Advanced config (issue
-// #184 round 7). An Advanced config is a handful of directives spliced into
-// one site block; 64 KiB is room for well over a thousand lines of them, and
-// keeps the save-time adapt and the Caddyfile preview cheap however the text
-// is shaped.
-const maxProxyAdvancedConfigBytes = 64 << 10
+// maxProxyAdvancedConfigBytes caps a non-admin's proxy host Advanced config
+// (issue #184 rounds 7 and 8). An Advanced config is a handful of
+// directives spliced into one site block; 64 KiB is room for well over a
+// thousand lines of them. The cap bounds the text's size, not its cost on
+// its own: how much work Caddy's adapter does also depends on how deeply
+// the text nests blocks, which the tenant text rules limit separately
+// (tenantMaxNestingDepth). Administrators are not capped.
+const maxProxyAdvancedConfigBytes = maxTenantCaddyfileBytes
 
-// errAdvancedConfigTooLarge is parseProxyHostForm's error for an Advanced
-// config over maxProxyAdvancedConfigBytes.
-var errAdvancedConfigTooLarge = fmt.Errorf("the Advanced config is too large (the limit is %d KiB)", maxProxyAdvancedConfigBytes>>10)
+// advancedConfigSizeRefusal returns the form error for a non-admin's
+// Advanced config over maxProxyAdvancedConfigBytes, or "".
+func (s *Server) advancedConfigSizeRefusal(r *http.Request) string {
+	if isAdminUser(s.currentUser(r)) || len(r.FormValue("advanced_config")) <= maxProxyAdvancedConfigBytes {
+		return ""
+	}
+	return tenantCaddyfileTooLarge("the Advanced config")
+}
 
 // Proxy-host form parsing.
 //
@@ -55,11 +62,6 @@ func clampAtoi(raw string, zeroValue, min, max int) int {
 
 func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	_ = r.ParseForm()
-	// Issue #184 round 7: refuse an oversized Advanced config before any
-	// work is done on it (repairs, adapting, the Caddyfile preview).
-	if len(r.FormValue("advanced_config")) > maxProxyAdvancedConfigBytes {
-		return nil, errAdvancedConfigTooLarge
-	}
 	port, err := strconv.Atoi(r.FormValue("forward_port"))
 	if err != nil {
 		return nil, err

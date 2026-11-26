@@ -76,6 +76,13 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 	// through Caddy and let the resulting JSON replace json_data. This is what
 	// makes the Caddyfile block editable after import.
 	if cfSrc != "" {
+		// Issue #184 round 8: a non-admin's text is checked before Caddy
+		// sees it, size first.
+		if !isAdminUser(s.currentUser(r)) {
+			if why := s.tenantRawRouteTextProblem(cfSrc); why != "" {
+				return nil, why
+			}
+		}
 		jsonData, adaptedListen, result, err := s.adaptRawRouteCaddyfileResult(s.caddyForRequest(r), cfSrc)
 		if err != nil {
 			return nil, "Caddyfile rejected by Caddy: " + err.Error()
@@ -1433,6 +1440,14 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if strings.TrimSpace(p.AdvancedConfig) == "" {
 		return ""
 	}
+	// Issue #184 round 8: a non-admin's text (the client carries
+	// AdaptTextCheck) is held to the tenant text rules before anything else
+	// is done with it.
+	if caddyCl != nil && caddyCl.AdaptTextCheck != nil {
+		if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
+			return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+		}
+	}
 	// v2.42.2: judge the repaired config, exactly what the adapter sees.
 	if errMsg := validateProxyAdvancedDirectives(normalizeProxyAdvancedConfig(p.AdvancedConfig)); errMsg != "" {
 		return errMsg
@@ -1629,7 +1644,7 @@ func (s *Server) caddyfileExportOptions(serverID int64, forAdmin bool) caddy.Exp
 // live sync neutralises). The reason is generic: it is written into the
 // export, and the row's values are not.
 func (s *Server) redirectExportVeto(rh models.RedirectionHost, text string) string {
-	if tenantTextViolation(text) != "" || s.tenantRouteViolation(caddy.BuildRedirectRoute(rh)) != "" {
+	if s.tenantBlockTextViolation(text) != "" || s.tenantRouteViolation(caddy.BuildRedirectRoute(rh)) != "" {
 		return "its settings are not allowed for a non-admin owner"
 	}
 	return ""
@@ -1720,7 +1735,7 @@ func adaptExportText(caddyCl *caddy.Client, text string) (map[string]any, error)
 // (tenantAdaptedConfigProblem), or serves hosts its stored routes do not.
 // "" means the text may be written.
 func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute, text string) string {
-	if tenantTextViolation(rr.CaddyfileSrc) != "" || tenantTextViolation(text) != "" {
+	if s.tenantOwnTextViolation(rr.CaddyfileSrc) != "" || s.tenantBlockTextViolation(text) != "" {
 		return "its Caddyfile is not allowed for a non-admin owner"
 	}
 	result, err := adaptExportText(caddyCl, text)
@@ -1756,7 +1771,7 @@ func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute, tex
 // and serve only the host's own domains. Any objection, adapt error or
 // unreachable Caddy means the host fails closed.
 func (s *Server) proxyAdvancedExportVeto(caddyCl *caddy.Client, p models.ProxyHost, site string) string {
-	if tenantTextViolation(p.AdvancedConfig) != "" || tenantTextViolation(site) != "" {
+	if s.tenantOwnTextViolation(p.AdvancedConfig) != "" || s.tenantBlockTextViolation(site) != "" {
 		return "it is not allowed for a non-admin owner"
 	}
 	// Issue #184 round 7: the host's own fields, judged the way the live

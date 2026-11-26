@@ -140,7 +140,7 @@ func TestTenantTextViolationImportRules(t *testing.T) {
 		"snippet definition":      "(s) {\n\theader X-A a\n}\nx.test {\n\trespond hi\n}",
 		"quoted snippet def":      "\"(s)\" {\n\theader X-A a\n}",
 		"args placeholder":        "x.test {\n\theader X-A {args[0]}\n}",
-		"args in a longer key":    "x.test {\n\theader X-A {foo args.1}\n}",
+		"args in a quoted word":   "x.test {\n\theader X-A \"a{args.1}b\"\n}",
 		"block placeholder":       "x.test {\n\t{block}\n}",
 		"blocks placeholder":      "x.test {\n\theader X-A {blocks.a}\n}",
 		"import as an argument":   "x.test {\n\timport common import\n}",
@@ -148,18 +148,22 @@ func TestTenantTextViolationImportRules(t *testing.T) {
 		"import mid-line":         "x.test {\n\theader X-A b import common\n}",
 		"import after open brace": "x.test { import common\n}",
 	} {
-		if why := tenantTextViolation(txt); why == "" {
+		if why := tenantTextViolationWith(txt, map[string]bool{"common": true}, tenantMaxNestingDepth, maxTenantCaddyfileBytes); why == "" {
 			t.Errorf("%s: want refused:\n%s", name, txt)
 		}
 	}
+	// Issue #184 round 8: Caddy substitutes only a whole key, so a key
+	// that merely contains `args.` is not a snippet placeholder; and an
+	// import must name one of the administrator's snippets.
 	for name, txt := range map[string]string{
 		"snippet import":          "x.test {\n\timport common\n}",
 		"snippet import with arg": "x.test {\n\timport common v1\n}",
 		"word containing import":  "x.test {\n\theader X-Important yes\n}",
 		"placeholder":             "x.test {\n\theader X-A {http.request.uri}\n}",
 		"parenthesised argument":  "x.test {\n\t@m path_regexp (a|b)\n}",
+		"args in a longer key":    "x.test {\n\theader X-A \"{foo args.1}\"\n}",
 	} {
-		if why := tenantTextViolation(txt); why != "" {
+		if why := tenantTextViolationWith(txt, map[string]bool{"common": true}, tenantMaxNestingDepth, maxTenantCaddyfileBytes); why != "" {
 			t.Errorf("%s: want allowed, got %q:\n%s", name, why, txt)
 		}
 	}
@@ -199,20 +203,21 @@ func TestTenantAdaptTextCheckSetsAdminSnippetsAside(t *testing.T) {
 // every token. A large Advanced config now renders in linear time, and
 // the form refuses one over the size limit.
 func TestLargeAdvancedConfigRendersQuicklyAndIsCapped(t *testing.T) {
-	s, _, sid, _, admin, _ := newExportFixture(t)
+	s, _, sid, _, admin, tenant := newExportFixture(t)
 	big := strings.Repeat("header X-A \"a\"\n", maxProxyAdvancedConfigBytes/15+10)
 	if len(big) <= maxProxyAdvancedConfigBytes {
 		t.Fatalf("fixture: %d bytes is not over the limit", len(big))
 	}
 	form := url.Values{"domains": {"big.example.test"}, "forward_scheme": {"http"}, "forward_host": {"203.0.113.10"},
 		"forward_port": {"8080"}, "enabled": {"on"}, "ssl_enabled": {"on"}, "advanced_config": {big}}
+	// Issue #184 round 8: the limit is for non-admin accounts.
 	rec := httptest.NewRecorder()
-	s.createProxyHost(rec, asUser(postForm(t, "/proxy-hosts", form), sid, admin, nil))
+	s.createProxyHost(rec, asUser(postForm(t, "/proxy-hosts", form), sid, tenant, nil))
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "too large") {
 		t.Errorf("save: want 400 too large, got %d %s", rec.Code, rec.Body.String())
 	}
 	rec = httptest.NewRecorder()
-	s.apiPreviewProxyHost(rec, asUser(postForm(t, "/api/proxy-hosts/preview", form), sid, admin, nil))
+	s.apiPreviewProxyHost(rec, asUser(postForm(t, "/api/proxy-hosts/preview", form), sid, tenant, nil))
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "too large") {
 		t.Errorf("preview: want 400 too large, got %d %s", rec.Code, rec.Body.String())
 	}

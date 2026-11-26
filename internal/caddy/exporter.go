@@ -4,6 +4,7 @@ package caddy
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"slices"
 	"sort"
@@ -170,14 +171,27 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 // renderRedirection is RenderRedirectionCaddyfile with the server's
 // context: a tenant's redirect is written only when opts.RedirectVeto has
 // no objection to the block, and otherwise fails closed (issue #184 round 7).
+//
+// A tenant's redirect is written with the host names its live route
+// matches (BuildRedirectRoute: lower-cased, trailing dot and scheme
+// removed), so the site serves what the live route serves (round 8). A
+// redirect whose domain carries a port is left out: the live route matches
+// that host on the standard listeners, while a port in a site address
+// opens a listener of its own, which a non-admin may not.
 func renderRedirection(r models.RedirectionHost, opts ExportOptions) string {
-	out := RenderRedirectionCaddyfile(r)
-	domains := r.DomainList()
-	if out == "" || !opts.tenant(r.OwnerID) || !caddyfileAddressSafe(domains...) {
-		return out
+	if !opts.tenant(r.OwnerID) || len(r.DomainList()) == 0 {
+		return RenderRedirectionCaddyfile(r)
 	}
-	if !caddyfilePlainHosts(domains) {
-		return fmt.Sprintf("# Redirection host #%d omitted: its domains are not plain host names, which a non-admin owner cannot use; see it in CaddyUI.\n", r.ID)
+	names, ok := redirectLiveHosts(r.DomainList())
+	if !ok {
+		return fmt.Sprintf("# Redirection host #%d omitted: its domains are not plain host names (a port, path or other address form), which a non-admin owner cannot use; see it in CaddyUI.\n", r.ID)
+	}
+	live := r
+	live.Domains = strings.Join(names, ", ")
+	out := RenderRedirectionCaddyfile(live)
+	domains := live.DomainList()
+	if out == "" || !caddyfileAddressSafe(domains...) {
+		return out
 	}
 	why := "it could not be re-checked"
 	if opts.RedirectVeto != nil {
@@ -190,11 +204,36 @@ func renderRedirection(r models.RedirectionHost, opts ExportOptions) string {
 }
 
 // caddyfilePlainHostRe is a plain DNS name with an optional leading "*." —
-// no scheme, port or path — the only domain form a non-admin may save.
-// A row stored before that rule may hold more: such a domain matches
-// nothing in the live route, but as a site address a port opens a
+// no scheme, port or path — the only proxy host domain form a non-admin
+// may save. A row stored before that rule may hold more: such a domain
+// matches nothing in the live route, but as a site address a port opens a
 // listener (issue #184 round 7).
 var caddyfilePlainHostRe = regexp.MustCompile(`(?i)^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// redirectLiveHosts returns the host names a redirection host's live route
+// matches (models.NormalizeHostnames, as BuildRedirectRoute uses), without
+// repeats, when every one is a plain host name and no domain carries a
+// port; ok is false otherwise.
+func redirectLiveHosts(domains []string) (names []string, ok bool) {
+	seen := map[string]bool{}
+	for _, d := range domains {
+		d = strings.TrimSpace(d)
+		if !strings.Contains(d, "://") {
+			if _, port, err := net.SplitHostPort(d); err == nil && port != "" {
+				return nil, false
+			}
+		}
+		n := models.NormalizeHostname(d)
+		if !caddyfilePlainHostRe.MatchString(n) {
+			return nil, false
+		}
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	return names, len(names) > 0
+}
 
 // caddyfilePlainHosts reports whether every domain matches caddyfilePlainHostRe.
 func caddyfilePlainHosts(domains []string) bool {
