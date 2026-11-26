@@ -1,10 +1,28 @@
 # Layer4 listener-wrapper concurrency test (T-0631)
 
-Run this **before the first shared-port Layer4 proxy goes live on any host.**
-
 ```bash
 ./scripts/layer4-concurrency/run.sh --prove
 ```
+
+## When to run it (decided in T-0714)
+
+This harness is **on demand, not in CI.** It runs on two triggers, and nothing
+else schedules it:
+
+1. **Before the first shared-port Layer4 proxy goes live on any host.** As of
+   2026-11-25 no host runs layer4 — all six report only the `http` and `tls`
+   apps — so nothing is unguarded today. The first host that enables it must
+   not be the test.
+2. **Before any `caddy-l4` pin bump in `Dockerfile.caddy`.** The reminder lives
+   on a comment directly above the pin, so a bumper cannot miss it. Record the
+   `--prove` result in the bump's card.
+
+It is deliberately **not** wired into `release-docker.yml` or run weekly. It
+guards a *configuration* change plus one specific pin, so a calendar schedule
+would re-prove an unchanged pin and become noise — the alert-fatigue failure
+mode already documented for the pin watcher in T-0636. Wiring it into the
+release gate, conditional on the `caddy-l4` pin moving, stays the right answer
+the first time such a bump is actually proposed (see T-0714 for that follow-up).
 
 `--prove` is the only run worth trusting. It tests the fixed image (must pass)
 *and* the buggy one (must fail). A concurrency test that passes on the buggy

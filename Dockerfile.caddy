@@ -373,6 +373,24 @@ RUN set -o pipefail && GOOS=${TARGETOS} GOARCH=${TARGETARCH} xcaddy build \
     --with github.com/caddy-dns/gandi@v1.2.1 \
     --with github.com/hslatman/caddy-crowdsec-bouncer/http@v0.15.0 \
     --with github.com/mholt/caddy-ratelimit@v0.1.0 \
+    # BEFORE MOVING THIS PIN: run `./scripts/layer4-concurrency/run.sh --prove`
+    # against the candidate image and record the result in the bump's card.
+    # Not a `pin-watch:` directive on purpose -- this is not a floor (v0.1.3 IS
+    # upstream latest), and check-pinned-modules.sh errors on any directive kind
+    # other than `floor`, so a made-up kind would break the image gate.
+    # v0.1.3's two headline fixes (#483 buffer reuse, #482/#492 reload deadlock)
+    # live on the listener-wrapper path, which the release e2e suite CANNOT
+    # reach: it drives a dedicated layer4 server with sequential single
+    # connections, so the hijacked path never executes. Both were verified for
+    # that release by READING THE SOURCE DIFF -- a bump that regresses either one
+    # would therefore pass every check in this repo. That is exactly how #483
+    # reached a release upstream. Takes ~4 min and needs docker plus the
+    # previous image for the differential. Avoid shell operator characters in
+    # this block -- check-pinned-modules.sh prints comment lines into the pin
+    # region before filtering them, so a stray one could truncate it.
+    # `--prove` is not optional: a run that does not ALSO fail
+    # on the pre-fix image establishes nothing, and this harness caught itself
+    # passing on the buggy image twice while being built (T-0631, T-0714).
     --with github.com/mholt/caddy-l4@v0.1.3 \
     --with github.com/corazawaf/coraza-caddy/v2@v2.6.2 \
     2>&1 | tee /tmp/xcaddy.log \
