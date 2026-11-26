@@ -2098,6 +2098,10 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
 	deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r))
 	cu := s.currentUser(r)
+	if msg := s.pathMatcherError(r, p); msg != "" { // issue #184 review
+		s.renderProxyHostFormError(w, r, p, msg)
+		return
+	}
 	// SSRF guard (GHSA-r4wm-rgc5-q834): block non-admins from pointing the
 	// upstream (host, extra upstreams, or Host override) at loopback/link-local/
 	// internal management addresses such as the Caddy admin API.
@@ -2279,6 +2283,10 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	// Parse extra upstreams (Feature D).
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
+	if msg := s.pathMatcherError(r, p); msg != "" { // issue #184 review
+		s.renderProxyHostFormError(w, r, p, msg)
+		return
+	}
 	// SSRF guard (GHSA-r4wm-rgc5-q834): re-validate on edit so a non-admin can't
 	// switch an existing host's upstream to an internal management address.
 	if msg := s.validateProxyUpstreamsForUser(cu, p); msg != "" {

@@ -2653,6 +2653,9 @@ func NormalizeMonitorMode(mode string) string {
 
 // CreateProxyHost inserts a new proxy host. ownerID 0 means global/admin-owned (NULL in DB).
 func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (int64, error) {
+	if err := validatePathMatcher(p); err != nil {
+		return 0, err
+	}
 	if p.ForwardScheme == "" {
 		p.ForwardScheme = "http"
 	}
@@ -2932,6 +2935,9 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 }
 
 func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
+	if err := validatePathMatcher(p); err != nil {
+		return err
+	}
 	if p.ForwardScheme == "" {
 		p.ForwardScheme = "http"
 	}

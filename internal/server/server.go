@@ -7376,6 +7376,10 @@ func (s *Server) importProxyHost(w http.ResponseWriter, r *http.Request) {
 	if cu != nil {
 		ownerID = cu.ID
 	}
+	if msg := s.pathMatcherError(r, &ph); msg != "" { // issue #184 review
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
 	// GHSA-r4wm-rgc5-q834 (3rd finding) follow-up: this handler builds a
 	// ProxyHost straight from attacker-controlled uploaded JSON, including
 	// ForwardHost/ForwardPort/ExtraUpstreams/UpstreamHostOverride, so it

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/X4Applegate/caddyui/internal/models"
 )
@@ -35,7 +37,7 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 	}
 	var b strings.Builder
 	if serverName != "" {
-		fmt.Fprintf(&b, "# CaddyUI export — %s\n", serverName)
+		fmt.Fprintf(&b, "# CaddyUI export — %s\n", caddyfileComment(serverName))
 	}
 	fmt.Fprintf(&b, "# Generated: %s\n", time.Now().UTC().Format(time.RFC3339))
 	b.WriteString("# Hosts/redirects/raw routes that are disabled in the UI are not included.\n")
@@ -96,6 +98,12 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 	if len(domains) == 0 {
 		return ""
 	}
+	// Issue #184 review: fields written as bare tokens must not be able to
+	// split into extra tokens, lines or blocks. When one can, the site is
+	// left out (no directive at all is less permissive than a wrong one).
+	if !proxyHostBareFieldsSafe(p, cert) {
+		return fmt.Sprintf("# Proxy host #%d omitted: a value cannot be written safely as Caddyfile syntax; see it in CaddyUI.\n", p.ID)
+	}
 
 	// Note any non-roundtrippable settings up front so users see them.
 	var elided []string
@@ -106,7 +114,7 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 		elided = append(elided, "scheduled maintenance window")
 	}
 	if p.HealthCheckURI != "" {
-		elided = append(elided, fmt.Sprintf("active health check on %s", p.HealthCheckURI))
+		elided = append(elided, fmt.Sprintf("active health check on %s", caddyfileComment(p.HealthCheckURI)))
 	}
 	if p.BasicAuthEnabled {
 		elided = append(elided, "basic auth users (passwords are bcrypt-hashed; not in plaintext form)")
@@ -130,10 +138,10 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 		elided = append(elided, "path-based redirect rules")
 	}
 	if p.OwnerEmail != "" {
-		fmt.Fprintf(&b, "# Owner: %s\n", p.OwnerEmail)
+		fmt.Fprintf(&b, "# Owner: %s\n", caddyfileComment(p.OwnerEmail))
 	}
 	if p.Tags != "" {
-		fmt.Fprintf(&b, "# Tags: %s\n", p.Tags)
+		fmt.Fprintf(&b, "# Tags: %s\n", caddyfileComment(p.Tags))
 	}
 	if len(elided) > 0 {
 		b.WriteString("# Notes (these settings live in CaddyUI but don't fit cleanly into Caddyfile syntax):\n")
@@ -154,7 +162,7 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 		case cert != nil && cert.Source == models.CertSourcePEM:
 			fmt.Fprintf(&b, "\t# tls: stored PEM certificate %q — CaddyUI loads it into Caddy's certificate pool directly (load_pem); a Caddyfile would need the files on disk\n", cert.Name)
 		case cert != nil && cert.Source == models.CertSourceManaged:
-			fmt.Fprintf(&b, "\t# tls: managed certificate %q (%s) — Caddy obtains it via DNS-01 and serves it by SNI\n", cert.Name, cert.Domains)
+			fmt.Fprintf(&b, "\t# tls: managed certificate %q (%s) — Caddy obtains it via DNS-01 and serves it by SNI\n", cert.Name, caddyfileComment(cert.Domains))
 		default:
 			fmt.Fprintf(&b, "\t# Custom certificate ID %d (uploaded via CaddyUI; not represented in Caddyfile — Caddy will use its automatic cert resolution at runtime)\n", p.CertificateID)
 		}
@@ -180,11 +188,21 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 		b.WriteString("\t\t}\n\t}\n")
 	}
 
+	// Issue #184: the Path matcher narrows the JSON route to matching paths,
+	// so the Caddyfile carries the same matcher on reverse_proxy. pathOK is
+	// false when a value cannot be written as one safe Caddyfile token; the
+	// site then fails closed below rather than proxying every path.
+	pathDef, stripToken, pathOK := caddyfilePathMatcher(p)
+	// With Strip prefix the order-sensitive directives go in a `route` block:
+	// Caddyfile sorting would otherwise run `uri strip_prefix` before
+	// `respond @blocked`, checking the exploit list against the stripped
+	// path where the JSON route checks the original one.
+	wrapInRoute := pathOK && stripToken != ""
+
 	// Path blocking (the "block common exploits" toggle that defaults on in
 	// CaddyUI v2.11+). Mirrors the CaddyUI prompt's standard block list.
-	if p.BlockCommonExploits {
-		b.WriteString("\t@blocked path /.env* /wp-admin* /wp-login* /phpmyadmin* /.git/* /xmlrpc.php\n")
-		b.WriteString("\trespond @blocked 403\n")
+	if p.BlockCommonExploits && !wrapInRoute {
+		b.WriteString(caddyfileExploitBlocker)
 	}
 
 	// Compression
@@ -241,18 +259,20 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 		}
 	}
 
-	// Issue #184: the Path matcher narrows the JSON route to matching paths,
-	// so the Caddyfile must carry the same matcher on reverse_proxy — without
-	// it the excerpt proxies every path on the host. Strip prefix mirrors the
-	// route's `rewrite strip_path_prefix` handler under that same matcher.
+	// Everything from here to the end of the reverse_proxy block is either
+	// wrapped in `route { }` or replaced by the fail-closed response.
+	proxyStart := b.Len()
+	if wrapInRoute && p.BlockCommonExploits {
+		b.WriteString(caddyfileExploitBlocker)
+	}
 	proxyMatcher := ""
-	if def := caddyfilePathMatcherDef(p.PathMatcher, p.PathMatcherType); def != "" {
-		fmt.Fprintf(&b, "\t@%s %s\n", caddyfilePathMatcherName, def)
+	if pathDef != "" {
+		fmt.Fprintf(&b, "\t@%s %s\n", caddyfilePathMatcherName, pathDef)
 		proxyMatcher = "@" + caddyfilePathMatcherName + " "
-		if p.StripPathPrefix {
-			if prefix := strings.TrimRight(p.PathMatcher, "/*"); prefix != "" {
-				fmt.Fprintf(&b, "\turi @%s strip_prefix %s\n", caddyfilePathMatcherName, caddyfileToken(prefix))
-			}
+		// Strip prefix mirrors the route's `rewrite strip_path_prefix`
+		// handler under the same matcher.
+		if stripToken != "" {
+			fmt.Fprintf(&b, "\turi @%s strip_prefix %s\n", caddyfilePathMatcherName, stripToken)
 		}
 	}
 
@@ -341,6 +361,26 @@ func RenderProxyHostCaddyfileWithCertificate(p models.ProxyHost, cert *models.Ce
 		}
 	}
 	b.WriteString("\t}\n")
+	if !pathOK || wrapInRoute {
+		site := b.String()
+		b.Reset()
+		b.WriteString(site[:proxyStart])
+		if !pathOK {
+			// Dropping the matcher would make the excerpt less restrictive
+			// than the live route, and quoting it risks breaking out of the
+			// token, so the site refuses every request instead.
+			b.WriteString("\t# Path matcher not representable in Caddyfile syntax; this excerpt fails closed instead of proxying.\n")
+			b.WriteString("\trespond 503\n")
+		} else {
+			b.WriteString("\troute {\n")
+			for _, line := range strings.SplitAfter(site[proxyStart:], "\n") {
+				if line != "" {
+					b.WriteString("\t" + line)
+				}
+			}
+			b.WriteString("\t}\n")
+		}
+	}
 
 	// Advanced raw config — verbatim user input, indented to match the site
 	// block. Trailing newline preserved.
@@ -367,8 +407,11 @@ func RenderRedirectionCaddyfile(r models.RedirectionHost) string {
 	if len(domains) == 0 {
 		return ""
 	}
+	if !caddyfileBareSafe(append(append([]string{}, domains...), r.ForwardDomain)...) {
+		return fmt.Sprintf("# Redirection host #%d omitted: a value cannot be written safely as Caddyfile syntax; see it in CaddyUI.\n", r.ID)
+	}
 	if r.OwnerEmail != "" {
-		fmt.Fprintf(&b, "# Owner: %s\n", r.OwnerEmail)
+		fmt.Fprintf(&b, "# Owner: %s\n", caddyfileComment(r.OwnerEmail))
 	}
 	fmt.Fprintf(&b, "%s {\n", strings.Join(domains, ", "))
 	scheme := r.ForwardScheme
@@ -410,7 +453,7 @@ func RenderRawRouteCaddyfile(r models.RawRoute) string {
 	if label == "" {
 		label = fmt.Sprintf("raw-%d", r.ID)
 	}
-	fmt.Fprintf(&b, "# Raw route #%d — %s\n", r.ID, label)
+	fmt.Fprintf(&b, "# Raw route #%d — %s\n", r.ID, caddyfileComment(label))
 	src := strings.TrimSpace(r.CaddyfileSrc)
 	if src != "" {
 		b.WriteString(src)
@@ -427,37 +470,70 @@ func RenderRawRouteCaddyfile(r models.RawRoute) string {
 // Path matcher in the Caddyfile excerpt (issue #184).
 const caddyfilePathMatcherName = "caddyui_path"
 
-// caddyfilePathMatcherDef returns the Caddyfile matcher (without the @name)
+// caddyfileExploitBlocker is the Caddyfile form of the "block common
+// exploits" handler.
+const caddyfileExploitBlocker = "\t@blocked path /.env* /wp-admin* /wp-login* /phpmyadmin* /.git/* /xmlrpc.php\n\trespond @blocked 403\n"
+
+// caddyfilePathMatcher returns the Caddyfile matcher (without the @name)
 // equivalent to the `path` / `path_regexp` match BuildProxyRoute adds for
-// pathMatcher, or "" when the route has no path matcher. Keep the cases in
-// step with BuildProxyRoute.
-func caddyfilePathMatcherDef(pathMatcher, matcherType string) string {
-	if pathMatcher == "" {
-		return ""
+// the host's Path matcher, and the token for its strip_path_prefix rewrite.
+// def is "" when the route has no path matcher; ok is false when a value
+// cannot be written as a single safe token. Keep the cases in step with
+// BuildProxyRoute.
+func caddyfilePathMatcher(p models.ProxyHost) (def, strip string, ok bool) {
+	if p.PathMatcher == "" {
+		return "", "", true
 	}
-	switch matcherType {
+	var tokens []string
+	switch p.PathMatcherType {
 	case "exact":
-		return "path " + caddyfileToken(pathMatcher)
+		def, tokens = "path", []string{p.PathMatcher}
 	case "regexp":
-		return "path_regexp " + caddyfileToken(pathMatcher)
+		def, tokens = "path_regexp", []string{p.PathMatcher}
 	default:
-		prefix := strings.TrimRight(pathMatcher, "/*")
+		prefix := strings.TrimRight(p.PathMatcher, "/*")
 		if prefix == "" {
-			return ""
+			return "", "", true
 		}
-		return "path " + caddyfileToken(prefix) + " " + caddyfileToken(prefix+"/*")
+		def, tokens = "path", []string{prefix, prefix + "/*"}
 	}
+	for _, t := range tokens {
+		tok, safe := caddyfileToken(t)
+		if !safe {
+			return "", "", false
+		}
+		def += " " + tok
+	}
+	if p.StripPathPrefix {
+		if prefix := strings.TrimRight(p.PathMatcher, "/*"); prefix != "" {
+			if strip, ok = caddyfileToken(prefix); !ok {
+				return "", "", false
+			}
+		}
+	}
+	return def, strip, true
 }
 
-// caddyfileToken renders s as one Caddyfile token. Plain path/regexp text is
-// left bare; anything the Caddyfile lexer would split, escape or read as
-// syntax (whitespace, quotes, braces, `#`, backslashes, heredoc `<<`, …) is
-// quoted — with backticks, which the lexer takes literally, or with escaped
-// double quotes when the value itself contains a backtick.
-func caddyfileToken(s string) string {
-	bare := s != ""
-	for _, r := range s {
+// caddyfileToken renders s as one Caddyfile token whose value Caddy reads
+// back unchanged. Plain path/regexp text is left bare; anything else is
+// wrapped in backticks, which the lexer takes literally up to the next
+// backtick. ok is false — and the caller must fail closed — when no such
+// token exists: a backtick (would end the quote; backslash escaping is
+// deliberately not attempted), control characters and Unicode line
+// separators, invalid UTF-8, and `{` followed by a letter, `_` or `$`, which
+// the Caddyfile adapter rewrites as an environment variable or placeholder
+// shorthand ({$VAR}, {host}, …). Regexp quantifiers such as {2,3} are fine.
+func caddyfileToken(s string) (string, bool) {
+	if s == "" || !utf8.ValidString(s) {
+		return "", false
+	}
+	bare := true
+	for i, r := range s {
 		switch {
+		case r == '`', unicode.IsControl(r), r == ' ', r == ' ':
+			return "", false
+		case r == '{' && braceStartsPlaceholder(s[i+1:]):
+			return "", false
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case strings.ContainsRune("/.-_*^$()[]|+?:~!%&=,;", r):
 		default:
@@ -465,12 +541,85 @@ func caddyfileToken(s string) string {
 		}
 	}
 	if bare {
-		return s
+		return s, true
 	}
-	if !strings.Contains(s, "`") {
-		return "`" + s + "`"
+	return "`" + s + "`", true
+}
+
+// braceStartsPlaceholder reports whether the text after a `{` would make
+// the Caddyfile adapter read it as {$ENV} or a placeholder shorthand.
+func braceStartsPlaceholder(rest string) bool {
+	next, _ := utf8.DecodeRuneInString(rest)
+	return next == '$' || next == '_' || unicode.IsLetter(next)
+}
+
+// caddyfileBareSafe reports whether every value can be written as one
+// unquoted Caddyfile token that Caddy reads back unchanged: no whitespace,
+// control characters or backslashes (which split or escape), no `{$` (env
+// expansion), and no token-initial `"`, backtick, `#`, `@`, `<<` or a lone
+// brace, which open a quote, comment, matcher, heredoc or block.
+func caddyfileBareSafe(values ...string) bool {
+	for _, s := range values {
+		if s == "" || !utf8.ValidString(s) || s == "{" || s == "}" ||
+			strings.ContainsAny(s[:1], "\"`#@") || strings.HasPrefix(s, "<<") ||
+			strings.Contains(s, "{$") || strings.ContainsRune(s, '\\') {
+			return false
+		}
+		for _, r := range s {
+			if unicode.IsSpace(r) || unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+				return false
+			}
+		}
 	}
-	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+	return true
+}
+
+// proxyHostBareFieldsSafe applies caddyfileBareSafe to every user-supplied
+// value RenderProxyHostCaddyfileWithCertificate writes as a bare token.
+// Values written with %q or inside comments are not covered here.
+func proxyHostBareFieldsSafe(p models.ProxyHost, cert *models.Certificate) bool {
+	vals := append([]string{}, p.DomainList()...)
+	if p.ForwardHost != "" {
+		vals = append(vals, p.ForwardHost)
+	}
+	for _, eu := range p.ExtraUpstreamList() {
+		if eu = strings.TrimSpace(eu); eu != "" {
+			vals = append(vals, eu)
+		}
+	}
+	for _, v := range []string{p.UpstreamSNI, p.LBPolicy} {
+		if v != "" {
+			vals = append(vals, v)
+		}
+	}
+	if p.ClientAuthEnabled() {
+		vals = append(vals, p.ClientAuthMode)
+		vals = append(vals, p.ClientAuthCAFileList()...)
+	}
+	for k := range p.CustomReqHeaderMap() {
+		vals = append(vals, k)
+	}
+	for k := range p.CustomRespHeaderMap() {
+		vals = append(vals, k)
+	}
+	vals = append(vals, splitCSV(p.StripReqHeaders)...)
+	vals = append(vals, splitCSV(p.StripRespHeaders)...)
+	if p.CertificateID > 0 && cert != nil && cert.Source == models.CertSourcePath && cert.CertPath != "" && cert.KeyPath != "" {
+		vals = append(vals, cert.CertPath, cert.KeyPath)
+	}
+	return caddyfileBareSafe(vals...)
+}
+
+// caddyfileComment makes s safe inside a `#` comment line: anything that
+// could end the line (or that a reader would take as a line break) becomes
+// a space.
+func caddyfileComment(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // upstreamDial — produce a Caddyfile reverse_proxy upstream argument.

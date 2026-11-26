@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -788,4 +789,20 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	// v2.38.0: expectations_json — post-apply checks; stored canonicalised.
 	ph.Expectations = models.NormalizeHostExpectationsJSON(r.FormValue("expectations_json"))
 	return ph, nil
+}
+
+// pathMatcherError returns the translated error for a Path matcher that
+// models.PathMatcherProblem rejects, or "" when it is acceptable (issue #184
+// review: control characters let the value break out of the Caddyfile
+// export, and Caddy refuses a regexp that does not compile).
+func (s *Server) pathMatcherError(r *http.Request, p *models.ProxyHost) string {
+	switch models.PathMatcherProblem(p.PathMatcher, p.PathMatcherType) {
+	case models.PathMatcherOK:
+		return ""
+	case models.PathMatcherBadRegexp:
+		_, err := regexp.Compile(p.PathMatcher)
+		return s.tr(r, "proxy_host.error.path_matcher_regexp", "error", err)
+	default:
+		return s.tr(r, "proxy_host.error.path_matcher_control")
+	}
 }
