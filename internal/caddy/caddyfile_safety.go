@@ -656,7 +656,9 @@ func CaddyfileImportArguments(src string) (args []string, ok bool) {
 // arguments), a site on 2 and 16 ports — peaked at 118 MB on the
 // Advanced-route path and 114 MB on the proxy-host path (matcher shapes at
 // most 40 MB), and 160 MB at the adapt hook's looser bound for text
-// CaddyUI wraps around a non-admin's (40 levels, 68 KiB).
+// CaddyUI wraps around a non-admin's (40 levels, 68 KiB). Round 15 measured
+// the deep shapes again, nine runs each: 107–118 MB on either path, so
+// 118 MB is the figure for both.
 // An administrator's text is trusted beyond this depth limit. The depth is counted the way Caddy's own lexer reads the text, so
 // text CaddyUI's strict lexer refuses is limited too.
 const MaxCaddyfileNestingDepth = 100
@@ -673,8 +675,7 @@ const MaxTenantCaddyfileBytes = 64 << 10
 // are for Caddy — issue #184 round 10). ok is false only when Caddy's
 // lexer would refuse src too, so Caddy never parses text whose depth was
 // not counted. The count errs high: every unquoted `{` opens a block, and
-// an unquoted `}` closes one only when it ends its line, as Caddy's
-// dispenser requires.
+// an unquoted `}` closes one only when it ends its line (cfDepthsUpper).
 func CaddyfileNestingDepth(src string) (depth int, ok bool) {
 	toks, _, _, err := lexCaddyfileLenient(src)
 	if err != nil {
@@ -686,7 +687,7 @@ func CaddyfileNestingDepth(src string) (depth int, ok bool) {
 // cfMaxNestingDepth is CaddyfileNestingDepth on lexed tokens.
 func cfMaxNestingDepth(toks []cfToken) int {
 	deepest := 0
-	for i, d := range cfDepths(toks) {
+	for i, d := range cfDepthsUpper(toks) {
 		if !toks[i].quoted && toks[i].text == "{" {
 			deepest = max(deepest, d+1)
 		}
@@ -694,9 +695,14 @@ func cfMaxNestingDepth(toks []cfToken) int {
 	return deepest
 }
 
-// cfDepths returns, for each token, the block depth before it, counted as
-// cfMaxNestingDepth counts.
-func cfDepths(toks []cfToken) []int {
+// cfDepthsUpper returns, for each token, a block depth before it that is
+// never below the one Caddy's parser reaches: an unquoted `}` closes a
+// block only when it ends its line. It bounds the nesting
+// (cfMaxNestingDepth) and finds an Advanced config's top-level lines
+// (CaddyfileLineHeads), as it always has, so an administrator's text is
+// judged as before. Non-admin text may not have anything after a `}` on
+// its line (issue #184 round 15), so for it this is cfDepths exactly.
+func cfDepthsUpper(toks []cfToken) []int {
 	out := make([]int, len(toks))
 	depth := 0
 	for i, t := range toks {
@@ -714,6 +720,43 @@ func cfDepths(toks []cfToken) []int {
 		}
 	}
 	return out
+}
+
+// cfDepths returns, for each token, the block depth before it, the way
+// Caddy's parser counts it (parse.go directive, v2.11): every unquoted `{`
+// opens a block, and every unquoted `}` closes one while a block is open,
+// wherever it sits on its line (issue #184 round 15).
+func cfDepths(toks []cfToken) []int {
+	out := make([]int, len(toks))
+	depth := 0
+	for i, t := range toks {
+		out[i] = depth
+		if t.quoted {
+			continue
+		}
+		switch t.text {
+		case "{":
+			depth++
+		case "}":
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return out
+}
+
+// cfCloseNotLast reports whether an unquoted `}` among toks has another
+// token after it on its line, as Caddy's lexer reads lines: a comment is
+// no token, and a line continued with a trailing backslash is the same
+// line (issue #184 round 15).
+func cfCloseNotLast(toks []cfToken) bool {
+	for i, t := range toks {
+		if !t.quoted && t.text == "}" && i+1 < len(toks) && !cfIsNewLine(toks, i+1) {
+			return true
+		}
+	}
+	return false
 }
 
 // cfSnippetPlaceholder reports whether a token's text holds a placeholder
@@ -807,8 +850,8 @@ func cfBlockPlaceholder(text string) bool {
 // cfDepths(toks)): those at the indexes isImport accepts. An import's
 // arguments are the tokens after its name on its line, up to an unquoted
 // `{`; a `{` that ends the arguments opens the import's block, which runs
-// to the `}` that brings the depth back (as cfDepths counts it, which
-// errs towards a longer block). bodyStart says toks is a snippet's body,
+// to the `}` that brings the depth back (as cfDepths counts it, the way
+// Caddy does). bodyStart says toks is a snippet's body,
 // whose imports Caddy may execute wherever they sit: an `import` that is
 // an argument of another import is then marked Opaque, as is one whose
 // arguments hold a `{block}`. Every block is measured in one pass over
@@ -883,7 +926,8 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 			closeOf[k], innerMax[k], phMax[k] = n, depths[k]+1, -1
 			stack = append(stack, k)
 		case "}":
-			if len(stack) > 0 && (k+1 >= n || cfIsNewLine(toks, k+1)) {
+			// Issue #184 round 15: as cfDepths, wherever the `}` sits.
+			if len(stack) > 0 {
 				pop(k)
 			}
 		}
@@ -911,7 +955,10 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 		// Blocks that open after i belong to earlier imports on i's own
 		// line (i is one of their arguments); the one below them holds i.
 		for w := len(within) - 1; w >= 0; w-- {
-			if within[w].from <= i {
+			// Issue #184 round 15: a block can close before a later one
+			// on its line opens (every `}` closes), so it must still be
+			// open at i.
+			if within[w].from <= i && i < within[w].to {
 				site.Within = within[w].site + 1
 				break
 			}
@@ -1012,6 +1059,9 @@ type CaddyfileImports struct {
 	// src names in its addresses, read as a whole Caddyfile (issue #184
 	// round 13; see cfSiteListeners).
 	SiteListeners int
+	// CloseNotLast is set when an unquoted `}` has another token after it
+	// on its line (issue #184 round 15; see cfCloseNotLast).
+	CloseNotLast bool
 }
 
 // CaddyfileImportUse reports how src uses `import` and snippets, reading
@@ -1023,6 +1073,7 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 		return use, false
 	}
 	use.MaxDepth = cfMaxNestingDepth(toks)
+	use.CloseNotLast = cfCloseNotLast(toks)
 	depths := cfDepths(toks)
 	// depth is the block nesting before the token; at depth 0 tokens are
 	// site addresses (parse.go addresses()). onlyDropped is true while the

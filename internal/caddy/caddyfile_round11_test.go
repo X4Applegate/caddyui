@@ -403,7 +403,7 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 			for k := from; k < len(toks); k++ {
 				if !toks[k].quoted && toks[k].text == "{" {
 					depth++
-				} else if !toks[k].quoted && toks[k].text == "}" && depth > 0 && (k+1 >= len(toks) || cfIsNewLine(toks, k+1)) {
+				} else if !toks[k].quoted && toks[k].text == "}" && depth > 0 { // every `}` closes (round 15)
 					depth--
 				}
 				if depth == depths[j] {
@@ -412,7 +412,13 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 				}
 			}
 			contents := toks[from:to]
-			site.BlockNest = cfMaxNestingDepth(contents)
+			// Round 15: nesting as Caddy closes blocks (cfDepths), not the
+			// upper bound cfMaxNestingDepth keeps for administrators' text.
+			for k, d := range cfDepths(contents) {
+				if !contents[k].quoted && contents[k].text == "{" {
+					site.BlockNest = max(site.BlockNest, d+1)
+				}
+			}
 			for k, t := range contents {
 				site.BlockBytes += len(t.text) + 1
 				site.BlockWeight += CaddyfileTokenWeight(t.text)
@@ -436,7 +442,10 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 					site.BlockBraceNotLast = true
 				}
 			}
-			for k := from; k+1 < to; k++ {
+			// Round 15: the block's closing `}` may have more after it on
+			// its line (every `}` closes); a line it starts counts too,
+			// which errs towards more key words.
+			for k := from; k <= to && k+1 < len(toks); k++ {
 				if depths[k] == depths[j]+1 && cfIsNewLine(toks, k) && !cfIsNewLine(toks, k+1) {
 					if a := toks[k+1]; a.quoted || (a.text != "{" && a.text != "}") {
 						site.KeyArgs = append(site.KeyArgs, CaddyfileTokenAt{Line: a.line, Text: a.text})

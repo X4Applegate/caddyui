@@ -196,7 +196,8 @@ func cfSiteListeners(toks []cfToken) int {
 				head = nil
 			}
 			depth++
-		} else if depth > 0 && (i+1 >= len(toks) || cfIsNewLine(toks, i+1)) {
+		} else if depth > 0 {
+			// Issue #184 round 15: every `}` closes a block, as in Caddy.
 			depth--
 		}
 	}

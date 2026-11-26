@@ -535,7 +535,7 @@ func CaddyfileLineHeads(src string) (heads []string, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	depths := cfDepths(toks)
+	depths := cfDepthsUpper(toks)
 	for i, t := range toks {
 		if depths[i] == 0 && cfIsNewLine(toks, i) && !(t.text == "}" && !t.quoted) {
 			heads = append(heads, t.text)

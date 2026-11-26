@@ -424,6 +424,8 @@ func tenantSnippetUnavailable(name string) string {
 //   - more than tenantMaxImports `import` lines (round 10);
 //   - text that cannot be read as a Caddyfile, so nothing CaddyUI cannot
 //     read that way reaches Caddy;
+//   - a `}` with another token after it on its line (round 15; a comment
+//     may follow it);
 //   - snippet definitions, in any form Caddy reads as one, and the
 //     placeholders Caddy replaces in a snippet's tokens on import — a
 //     snippet defined in the same text can turn an argument into a second,
@@ -487,6 +489,12 @@ func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimit
 	}
 	if use.SnippetPlaceholder {
 		return "{args…} and {block…} placeholders are for snippets, which non-admin accounts cannot define", 0, 0
+	}
+	// Issue #184 round 15: Caddy closes a block at a `}` wherever it sits
+	// on its line; text in which a `}` is followed by more on its line is
+	// refused, so the rules below read every block where Caddy does.
+	if use.CloseNotLast {
+		return "a closing `}` must end its line; put what follows it on the next line", 0, 0
 	}
 	if use.ImportAsArgument {
 		return "`import` may only start a line that imports a snippet by name", 0, 0
