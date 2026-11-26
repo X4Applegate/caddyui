@@ -257,6 +257,22 @@ type CaddyfileSnippet struct {
 	// BlockDepth is the deepest block depth (within the body) of such a
 	// token, or -1 when there is none.
 	BlockDepth int
+	// First is the text of the body's first token ("" for an empty body).
+	// Caddy's parser fails on a snippet imported at the top level whose
+	// first token expands to nothing (issue #184 round 12).
+	First string
+	// BlockAdjacent is set when a `{block}` or `{blocks.…}` token sits
+	// right next to another token the importer supplies (another such
+	// token, or one holding an `{args…}` placeholder) — issue #184 round
+	// 12: Caddy decides where the importer's block ends by line numbers,
+	// and two of the importer's token runs back to back can merge.
+	BlockAdjacent bool
+	// MidLineClose is set when a `}` in the body is followed by more of
+	// the body on its line (issue #184 round 12). Caddy finds the body's
+	// end by counting braces, but a block inside it ends only at a `}`
+	// that ends its line: such a block runs on past the body, into
+	// whatever the importer writes after the import.
+	MidLineClose bool
 	// Withheld is set by the server, not here: why a non-admin may not
 	// import the snippet, which is then also left out of the text CaddyUI
 	// adapts for one (issue #184 round 11).
@@ -278,6 +294,9 @@ type CaddyfileImport struct {
 	// ArgBytes is the size of the import's arguments; ArgArgUses and
 	// ArgBlockUses count the snippet placeholders among them.
 	ArgBytes, ArgArgUses, ArgBlockUses int
+	// ArgCount is how many arguments follow the name (issue #184 round
+	// 12: a variadic `{args[…]}` may expand to none).
+	ArgCount int
 	// BraceArg is set when an argument is `{` or `}`: put in a snippet's
 	// place for {args…}, it opens or closes a block.
 	BraceArg bool
@@ -306,11 +325,22 @@ func CaddyfileSnippets(src string) []CaddyfileSnippet {
 		body := toks[b.open+1 : b.close]
 		depths := cfDepths(body)
 		s := CaddyfileSnippet{Name: b.snippet, Order: len(out), Text: b.own, BodyBytes: b.bodyBytes, Depth: cfMaxNestingDepth(body), BlockDepth: -1}
+		if len(body) > 0 {
+			s.First = body[0].text
+		}
 		for i, t := range body {
+			if t.text == "}" && !t.quoted && i+1 < len(body) && !cfIsNewLine(body, i+1) {
+				s.MidLineClose = true
+			}
 			s.ArgUses += strings.Count(t.text, "{args")
 			if cfBlockPlaceholder(t.text) {
 				s.BlockUses++
 				s.BlockDepth = max(s.BlockDepth, depths[i])
+				for _, k := range []int{i - 1, i + 1} {
+					if k >= 0 && k < len(body) && (cfBlockPlaceholder(body[k].text) || strings.Contains(body[k].text, "{args")) {
+						s.BlockAdjacent = true
+					}
+				}
 			}
 		}
 		// The body's first token starts a line wherever it is written.

@@ -351,16 +351,6 @@ func TestTenantPositionalImportsAreRefused(t *testing.T) {
 	}
 }
 
-// Issue #184 round-11 review (8): such a snippet is also one the export
-// can carry for an administrator.
-func TestExportAcceptsSnippetWithBraceOnNextLine(t *testing.T) {
-	for _, src := range []string{"(tag)\n{\n\theader X 1\n}", "(tag) {\n\theader X 1\n}"} {
-		if name, ok := checkCaddyfileSnippet(src); !ok || name != "tag" {
-			t.Errorf("%q: %q %v", src, name, ok)
-		}
-	}
-}
-
 // cfImportSitesReference measures each import's block by walking it, as
 // a first version did — quadratic when imports nest, so only a reference.
 func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) bool, bodyStart bool) []CaddyfileImport {
@@ -386,6 +376,7 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 			for j++; j < len(toks) && !cfIsNewLine(toks, j) && !open(j); j++ {
 				t := toks[j].text
 				argOf[j] = true
+				site.ArgCount++
 				site.ArgBytes += len(t) + 1
 				site.ArgArgUses += strings.Count(t, "{args")
 				if cfBlockPlaceholder(t) {

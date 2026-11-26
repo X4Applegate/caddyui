@@ -1001,6 +1001,7 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	storedJSON := existing.JSONData
 	if inp.Label != "" {
 		existing.Label = inp.Label
 	}
@@ -1031,6 +1032,11 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 	if err := models.UpdateRawRoute(s.DB, existing); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Issue #184 round 12: text adapted by this save, or JSON other than
+	// what was stored, leaves the upgrade migration nothing to do.
+	if inp.CaddyfileSrc != "" || (inp.JSONData != "" && !jsonEqual(inp.JSONData, storedJSON)) {
+		s.rawRouteMigrationSaved(id)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "rawroute_update", fmt.Sprintf("rr:%d", id), existing.Label, true)
 	s.trySyncCaddy(s.currentServerID(r), false)

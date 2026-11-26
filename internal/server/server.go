@@ -69,6 +69,18 @@ type Server struct {
 	// failed to apply at sync (noteAdvancedFailure).
 	advFailMu sync.Mutex
 	advFail   map[int64]string
+	// advGood is the last Advanced config output, per proxy host, that
+	// applied at sync, with the text it came from: kept while Caddy cannot
+	// be reached (issue #184 round 12).
+	advGood map[int64]advancedGood
+	// withheld is the administrator's snippets last logged as withheld
+	// from non-admins, with why (logWithheldSnippets).
+	withheldMu sync.Mutex
+	withheld   map[string]string
+	// rawMigRunMu serializes runs of the upgrade migration; it is held
+	// while rows are adapted, rawMigMu only while the state is read or
+	// written (issue #184 round 12).
+	rawMigRunMu sync.Mutex
 	// pendingTOTPAttempts counts wrong second-factor codes per pending token
 	// (token → *int32) so one password check cannot buy unlimited guesses.
 	pendingTOTPAttempts sync.Map
@@ -5186,15 +5198,34 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 			// reverse_proxy: whatever the config added (authentication,
 			// an access rule) would be gone. The host answers 503 instead,
 			// for every owner, until the config is fixed.
-			h, overrides, why := s.syncAdaptProxyAdvanced(p)
+			//
+			// Round 12: when only reaching Caddy failed (no answer, a
+			// timeout), the host keeps the output the same config last
+			// adapted to in this process, if there is one; else it, too,
+			// answers 503 until the config adapts.
+			h, overrides, why, transient := s.syncAdaptProxyAdvanced(p)
+			if why != "" && transient {
+				h, overrides, ok := s.advancedGoodFor(p)
+				if ok {
+					log.Printf("caddy sync: proxy id=%d (%s): Caddy could not adapt its Advanced config just now, so the host keeps the config it last applied: %s", p.ID, p.Domains, why)
+					s.noteAdvancedFailure(p, why, true)
+					advanced, advancedOverrides = h, overrides
+					why = ""
+				}
+			} else if why == "" {
+				s.noteAdvancedFailure(p, "", false)
+				advanced, advancedOverrides = h, overrides
+			}
 			if why != "" {
-				log.Printf("caddy sync: proxy id=%d (%s): its Advanced config could not be applied, so the host answers 503 until it is fixed: %s", p.ID, p.Domains, why)
-				s.noteAdvancedFailure(p, why)
-				routes = append(routes, advancedFailedRoute(p))
+				log.Printf("caddy sync: proxy id=%d (%s): its Advanced config could not be applied, so the host answers 503 until it applies: %s", p.ID, p.Domains, why)
+				s.noteAdvancedFailure(p, why, false)
+				// Round 12: the 503 route carries the host's own match,
+				// held to the same rules as its normal route.
+				if safe, ok := s.sanitizeTenantRoute(p.OwnerID, "proxy host "+p.Domains, advancedFailedRoute(p)); ok {
+					routes = append(routes, safe)
+				}
 				continue
 			}
-			s.noteAdvancedFailure(p, "")
-			advanced, advancedOverrides = h, overrides
 		}
 		route := caddy.BuildProxyRoute(p, append(preHandlers, advanced...))
 		caddy.MergeReverseProxyOverrides(route, advancedOverrides)
@@ -5470,7 +5501,7 @@ func (s *Server) tenantSafeRawEntries(rr models.RawRoute) []any {
 	// Issue #184 round 11: a row the one-time upgrade migration has not
 	// adapted again yet is not deployed (tenant_raw_migration.go): its
 	// stored JSON may hold a file an `import` read up to v2.68.16.
-	if s.rawRouteMigrationPending(rr.ID) {
+	if s.rawRouteMigrationPending(rr) {
 		log.Printf("caddy sync: advanced route id=%d skipped until it is adapted again under the current rules (upgrade migration)", rr.ID)
 		return nil
 	}

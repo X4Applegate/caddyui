@@ -400,6 +400,15 @@ func tenantTextViolationWith(text string, names map[string]bool, maxDepth, maxBy
 // costs.
 type tenantSnippetSet map[string]caddy.CaddyfileSnippet
 
+// tenantSnippetUnavailable is the refusal for an `import` of a name a
+// non-admin may not import: one the administrator did not define, or one
+// withheld from non-admins (issue #184 round 12: the same words for both,
+// so the message does not tell a non-admin what the administrator's
+// Caddyfile holds; adminSnippetSet logs why a snippet is withheld).
+func tenantSnippetUnavailable(name string) string {
+	return fmt.Sprintf("the snippet %q is not available; `import` may only name a snippet the administrator made available in the server Caddyfile (any other name is read as a file on the Caddy server)", name)
+}
+
 // tenantTextRules checks free text a non-admin submits that Caddy will
 // parse as a Caddyfile (a proxy host's Advanced config, an Advanced
 // route's Caddyfile source, a pasted Caddyfile), reading it the way
@@ -425,63 +434,132 @@ type tenantSnippetSet map[string]caddy.CaddyfileSnippet
 //     Caddy reads any other name as a file path relative to its working
 //     directory, so `import secrets` reads a file there and a parse error
 //     echoes it (round 8). With no administrator snippets, every `import`
-//     is refused.
+//     is refused;
+//   - an `import` inside another `import`'s block (round 12): Caddy ends
+//     an import's block by comparing line numbers, which the copies a
+//     snippet makes of the importer's block repeat, so an import inside
+//     one can take the following copy as its own block, at every level —
+//     an expansion without bound.
 //
 // The checks that need tokens run on tokens, so a comment, or text inside
 // one quoted value, is never mistaken for a directive.
 func tenantTextRules(text string, snippets tenantSnippetSet, maxDepth, maxBytes int) string {
+	why, _, _ := tenantTextCheck(text, snippets, tenantTextLimits{maxDepth: maxDepth, maxBytes: maxBytes})
+	return why
+}
+
+// tenantTextLimits are the limits tenantTextCheck applies.
+type tenantTextLimits struct {
+	maxDepth, maxBytes int
+	// topLevel says that an import at block depth 0 of the text is at the
+	// top level of the file Caddy parses (the text is a whole Caddyfile,
+	// or exactly what is sent to the adapter), not inside a site block
+	// CaddyUI wraps around it.
+	topLevel bool
+}
+
+// tenantTextCheck is tenantTextRules; it also returns the size and depth
+// the text was counted at (what the limits were held against), for the
+// differential test of the cost model.
+func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimits) (string, int64, int) {
+	maxDepth, maxBytes := lim.maxDepth, lim.maxBytes
 	if maxBytes > 0 && len(text) > maxBytes {
-		return fmt.Sprintf("the text is too large (the limit is %d KiB)", maxBytes>>10)
+		return fmt.Sprintf("the text is too large (the limit is %d KiB)", maxBytes>>10), 0, 0
 	}
 	if containsDangerousPlaceholder(text) {
-		return "{env.…}, {file.…} and {$…} placeholders read the Caddy server's environment and files and are admin-only"
+		return "{env.…}, {file.…} and {$…} placeholders read the Caddy server's environment and files and are admin-only", 0, 0
 	}
 	use, ok := caddy.CaddyfileImportUse(text)
 	if !ok {
-		return "the text could not be read as a Caddyfile (check for an unclosed quote or heredoc, or a trailing backslash)"
+		return "the text could not be read as a Caddyfile (check for an unclosed quote or heredoc, or a trailing backslash)", 0, 0
 	}
 	if use.MaxDepth > maxDepth {
-		return fmt.Sprintf("blocks are nested %d levels deep; the limit is %d", use.MaxDepth, maxDepth)
+		return fmt.Sprintf("blocks are nested %d levels deep; the limit is %d", use.MaxDepth, maxDepth), 0, 0
 	}
 	if use.SnippetDefined {
-		return "snippet definitions — `(name) { … }` — are admin-only"
+		return "snippet definitions — `(name) { … }` — are admin-only", 0, 0
 	}
 	if use.SnippetPlaceholder {
-		return "{args…} and {block…} placeholders are for snippets, which non-admin accounts cannot define"
+		return "{args…} and {block…} placeholders are for snippets, which non-admin accounts cannot define", 0, 0
 	}
 	if use.ImportAsArgument {
-		return "`import` may only start a line that imports a snippet by name"
+		return "`import` may only start a line that imports a snippet by name", 0, 0
 	}
 	for _, arg := range use.Arguments {
 		sn, ok := snippets[arg]
-		if ok && sn.Withheld != "" {
-			return fmt.Sprintf("the administrator's snippet %q is not available to non-admin accounts: %s", arg, sn.Withheld)
-		}
-		if !ok || !snippetNameRe.MatchString(arg) {
-			return "`import` may only name a snippet the administrator defined in the server Caddyfile; any other name is read as a file on the Caddy server"
+		if !ok || sn.Withheld != "" || !snippetNameRe.MatchString(arg) {
+			return tenantSnippetUnavailable(arg), 0, 0
 		}
 	}
 	if len(use.Arguments) > tenantMaxImports {
-		return fmt.Sprintf("the text has %d `import` lines; the limit is %d", len(use.Arguments), tenantMaxImports)
+		return fmt.Sprintf("the text has %d `import` lines; the limit is %d", len(use.Arguments), tenantMaxImports), 0, 0
 	}
 	for _, imp := range use.Imports {
 		if imp.BraceArg {
-			return "an `import` argument may not be a lone `{` or `}`: in the snippet it opens or closes a block"
+			return "an `import` argument may not be a lone `{` or `}`: in the snippet it opens or closes a block", 0, 0
+		}
+		if imp.Within != 0 {
+			return "an `import` may not be written inside the block of another `import`", 0, 0
+		}
+		if lim.topLevel && imp.Depth == 0 && snippetUnsafeAtTopLevel(snippets[imp.Name], imp.ArgCount) {
+			return fmt.Sprintf("the snippet %q can only be imported inside a site block", imp.Name), 0, 0
 		}
 	}
 	size, depth, why := snippets.importsCost(use.Imports)
 	if why != "" {
-		return why
+		return why, 0, 0
 	}
 	size = satAdd(size, int64(len(text)))
 	depth = max(depth, use.MaxDepth)
 	if maxBytes > 0 && size > int64(maxBytes) {
-		return fmt.Sprintf("the text is too large once the snippets it imports are counted (%d KiB; the limit is %d KiB)", (size+1023)>>10, maxBytes>>10)
+		return fmt.Sprintf("the text is too large once the snippets it imports are counted (%d KiB; the limit is %d KiB)", (size+1023)>>10, maxBytes>>10), size, depth
 	}
 	if depth > maxDepth {
-		return fmt.Sprintf("blocks are nested %d levels deep once the snippets it imports are counted; the limit is %d", depth, maxDepth)
+		return fmt.Sprintf("blocks are nested %d levels deep once the snippets it imports are counted; the limit is %d", depth, maxDepth), size, depth
 	}
-	return ""
+	return "", size, depth
+}
+
+// snippetUnsafeAtTopLevel reports whether importing sn with nargs
+// arguments at the top level of the file, outside any site block, can make
+// Caddy's parser fail (issue #184 round 12): at the top level Caddy's
+// parser fails with an index out of range when the snippet's first token
+// expands to nothing (a variadic `{args[…]}` with an empty range, or the
+// importer's block), and an `import` the snippet holds outside any block
+// of its own runs at the top level too, with arguments that may expand to
+// any number of tokens.
+func snippetUnsafeAtTopLevel(sn caddy.CaddyfileSnippet, nargs int) bool {
+	if sn.First == "import" || caddy.CaddyfileVariadicEmpty(sn.First, nargs) ||
+		sn.First == "{block}" || strings.HasPrefix(sn.First, "{blocks.") {
+		return true
+	}
+	for _, imp := range sn.Imports {
+		if imp.Depth == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// tenantTextRefusalIsOwn reports whether text is refused by the tenant
+// rules on its own — whatever the administrator's snippets hold — rather
+// than because of them (issue #184 round 12, for the upgrade migration):
+// it is checked again with every name it imports defined as an empty
+// snippet. A refusal that goes away then depends on the administrator's
+// Caddyfile (a snippet missing, withheld, too large), which may change.
+func tenantTextRefusalIsOwn(text string, lim tenantTextLimits) bool {
+	names := map[string]bool{}
+	if args, ok := caddy.CaddyfileImportArguments(text); ok {
+		for _, a := range args {
+			names[a] = true
+		}
+	}
+	snippets := tenantSnippetSet{}
+	for n := range names {
+		snippets[n] = caddy.CaddyfileSnippet{Name: n, BlockDepth: -1}
+	}
+	why, _, _ := tenantTextCheck(text, snippets, lim)
+	return why != ""
 }
 
 // Import cost (issue #184 round 10, rebuilt in round 11). An `import` of
@@ -570,13 +648,13 @@ func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, 
 	}
 	sn, ok := set[name]
 	if !ok {
-		return tenantImportCost{}, fmt.Sprintf("an administrator snippet imports %q, which is not a snippet, so what it adds cannot be counted", name)
+		return tenantImportCost{}, tenantSnippetUnavailable(name)
 	}
-	if sn.Withheld != "" {
-		return tenantImportCost{}, fmt.Sprintf("the administrator's snippet %q is not available to non-admin accounts: %s", name, sn.Withheld)
-	}
-	if visiting[name] {
-		return tenantImportCost{}, fmt.Sprintf("the administrator's snippet %q imports itself, directly or through another snippet", name)
+	if sn.Withheld != "" || visiting[name] {
+		// adminSnippetSet withholds a snippet that imports a withheld one
+		// or itself, so a non-admin's import never gets here; the message
+		// is the same as for any unavailable name.
+		return tenantImportCost{}, tenantSnippetUnavailable(name)
 	}
 	visiting[name] = true
 	defer delete(visiting, name)
@@ -588,7 +666,7 @@ func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, 
 	for i := len(sn.Imports) - 1; i >= 0; i-- {
 		imp := sn.Imports[i]
 		if imp.Opaque || imp.Name == "" {
-			return tenantImportCost{}, fmt.Sprintf("the administrator's snippet %q places an `import` where what it adds cannot be counted", name)
+			return tenantImportCost{}, tenantSnippetUnavailable(name)
 		}
 		t, why := set.cost(imp.Name, memo, visiting)
 		if why != "" {
@@ -718,24 +796,32 @@ func (s *Server) tenantBlockTextViolation(text string) string {
 // reads it. Whatever built the prefix, an import that would fall through
 // to a file is refused here, before Caddy sees it.
 func (s *Server) tenantAdaptTextViolation(text string) string {
+	return tenantAdaptTextRules(text, s.adminSnippetSet())
+}
+
+// tenantAdaptTextRules is tenantAdaptTextViolation for the administrator's
+// snippets as given.
+func tenantAdaptTextRules(text string, snippets tenantSnippetSet) string {
 	own := text
-	snippets := s.adminSnippetSet()
 	if prefix := tenantSnippetPrefix(snippets); prefix != "" && strings.HasPrefix(text, prefix) {
 		own = text[len(prefix):]
 		if containsDangerousPlaceholder(prefix) {
-			return s.tenantBlockTextViolation(text)
+			return tenantTextRules(text, snippets, tenantMaxBlockNestingDepth, 0)
 		}
 		for _, m := range caddyfileImportRe.FindAllStringSubmatch(prefix, -1) {
 			if !snippetNameRe.MatchString(m[1]) {
-				return s.tenantBlockTextViolation(text)
+				return tenantTextRules(text, snippets, tenantMaxBlockNestingDepth, 0)
 			}
 		}
 	}
 	// Issue #184 round 8: every path that adapts a non-admin's text checks
 	// its size where it takes the text in; this bounds any path that does
 	// not, leaving room for the synthetic site around an Advanced config.
-	// Round 10: imports count at their expanded size.
-	if why := tenantTextRules(own, snippets, tenantMaxBlockNestingDepth, maxTenantCaddyfileBytes+4<<10); why != "" {
+	// Round 10: imports count at their expanded size. Round 12: this is
+	// the text exactly as Caddy parses it, so an import at depth 0 is at
+	// the top level of the file.
+	lim := tenantTextLimits{maxDepth: tenantMaxBlockNestingDepth, maxBytes: maxTenantCaddyfileBytes + 4<<10, topLevel: true}
+	if why, _, _ := tenantTextCheck(own, snippets, lim); why != "" {
 		if strings.HasPrefix(why, "the text is too large") {
 			return fmt.Sprintf("the text is too large (the limit is %d KiB)", maxTenantCaddyfileBytes>>10)
 		}
@@ -766,7 +852,9 @@ func undefinedSnippetImport(args []string, snippets tenantSnippetSet, defined ma
 		}
 		seen[name] = true
 		if !defined[name] {
-			return fmt.Sprintf("the administrator's snippet %q is not defined ahead of the text Caddy would adapt, so its `import` would read a file", name)
+			// Not defined ahead of the text Caddy would adapt, so its
+			// `import` would read a file.
+			return tenantSnippetUnavailable(name)
 		}
 		for _, imp := range snippets[name].Imports {
 			pending = append(pending, imp.Name)
@@ -838,7 +926,48 @@ func (s *Server) adminSnippets() []string {
 
 // adminSnippetSet returns the administrator's snippets by name — the only
 // names a non-admin may `import` (issue #184 round 8) — with what each
-// costs (round 10). Caddy refuses a name defined twice, so does this:
+// costs (round 10); see tenantSnippetSetFrom. A snippet withheld from
+// non-admins is logged with the reason, once per change, for the
+// administrator: a non-admin is only told it is not available.
+func (s *Server) adminSnippetSet() tenantSnippetSet {
+	set := tenantSnippetSetFrom(s.adminSnippetDefs())
+	s.logWithheldSnippets(set)
+	return set
+}
+
+// logWithheldSnippets logs each withheld snippet and why, when that
+// changes.
+func (s *Server) logWithheldSnippets(set tenantSnippetSet) {
+	if s == nil {
+		return
+	}
+	now := map[string]string{}
+	for name, sn := range set {
+		if sn.Withheld != "" {
+			now[name] = sn.Withheld
+		}
+	}
+	s.withheldMu.Lock()
+	defer s.withheldMu.Unlock()
+	for _, name := range sortedStringKeys(now) {
+		if s.withheld[name] != now[name] {
+			log.Printf("caddyfile snippets: the administrator's snippet %q is not available to non-admin accounts: %s", name, now[name])
+		}
+	}
+	s.withheld = now
+}
+
+func sortedStringKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// tenantSnippetSetFrom builds the tenant view of the administrator's
+// snippet definitions. Caddy refuses a name defined twice, so does this:
 // such a name is left out, and an import of it is refused.
 //
 // Issue #184 round 11: a snippet a non-admin may not import is marked
@@ -848,10 +977,24 @@ func (s *Server) adminSnippets() []string {
 // `import`s name anything but another snippet (a file), or one placed
 // where what it adds cannot be counted, and — transitively — one that
 // imports a withheld snippet.
-func (s *Server) adminSnippetSet() tenantSnippetSet {
+//
+// Issue #184 round 12: Caddy ends the block an import passes by comparing
+// line numbers, and the importer's block keeps its own line numbers
+// wherever a snippet puts it; two copies of it back to back read as one
+// line, so the `}` ending the first does not end anything, and an
+// `import` written in the block swallows the next copy — which expands
+// without bound. So a snippet is also withheld when it puts the
+// importer's block in more than once (`{block}` and `{blocks.…}` counted
+// together), puts it right next to another token the importer supplies,
+// starts with it (Caddy's parser fails on that at the top level), passes
+// the importer's block or arguments on inside an `import`'s block, holds
+// a `}` with more text after it on its line (the block it closes then
+// runs on into the importer's text, as Caddy reads it), or imports
+// itself.
+func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 	set := tenantSnippetSet{}
 	dup := map[string]bool{}
-	for _, sn := range s.adminSnippetDefs() {
+	for _, sn := range defs {
 		if _, ok := set[sn.Name]; ok {
 			dup[sn.Name] = true
 		}
@@ -866,8 +1009,21 @@ func (s *Server) adminSnippetSet() tenantSnippetSet {
 		set[name] = sn
 	}
 	for name, sn := range set {
-		if containsDangerousPlaceholder(sn.Text) {
+		switch {
+		case containsDangerousPlaceholder(sn.Text):
 			withhold(name, "it reads the Caddy server's environment or files ({env.…}, {file.…} or {$…})")
+			continue
+		case sn.BlockUses > 1:
+			withhold(name, "it puts the importer's block ({block} / {blocks.…}) in more than once")
+			continue
+		case sn.BlockAdjacent:
+			withhold(name, "it puts the importer's block ({block} / {blocks.…}) right next to other text the importer supplies")
+			continue
+		case sn.First == "{block}" || strings.HasPrefix(sn.First, "{blocks.") && strings.HasSuffix(sn.First, "}"):
+			withhold(name, "it starts with the importer's block ({block} / {blocks.…})")
+			continue
+		case sn.MidLineClose:
+			withhold(name, "a `}` in it is followed by more text on its line, so Caddy reads the block it closes as running on past the snippet")
 			continue
 		}
 		for _, imp := range sn.Imports {
@@ -875,6 +1031,42 @@ func (s *Server) adminSnippetSet() tenantSnippetSet {
 				withhold(name, "it imports something other than a snippet, such as a file")
 				break
 			}
+			if imp.BlockBlockUses > 0 || imp.BlockArgUses > 0 {
+				withhold(name, "it passes the importer's block or arguments on inside the block of an `import`")
+				break
+			}
+		}
+	}
+	// A snippet that imports itself, directly or through others, never
+	// finishes expanding (Caddy refuses it too).
+	const (
+		unseen = iota
+		onPath
+		finished
+	)
+	state := map[string]int{}
+	var visit func(name string) bool
+	visit = func(name string) bool {
+		switch state[name] {
+		case onPath:
+			return true
+		case finished:
+			return false
+		}
+		state[name] = onPath
+		cyclic := false
+		for _, imp := range set[name].Imports {
+			if _, ok := set[imp.Name]; ok && visit(imp.Name) {
+				cyclic = true
+			}
+		}
+		state[name] = finished
+		return cyclic
+	}
+	for _, name := range sortedSnippetNames(set) {
+		state = map[string]int{}
+		if visit(name) && set[name].Withheld == "" {
+			withhold(name, "it imports itself, directly or through another snippet")
 		}
 	}
 	for changed := true; changed; {
@@ -893,6 +1085,15 @@ func (s *Server) adminSnippetSet() tenantSnippetSet {
 		}
 	}
 	return set
+}
+
+func sortedSnippetNames(set tenantSnippetSet) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 var (
@@ -1018,7 +1219,10 @@ func (s *Server) tenantRawRouteTextProblem(src string) string {
 	if len(src) > maxTenantCaddyfileBytes {
 		return tenantCaddyfileTooLarge("the Caddyfile")
 	}
-	if why := s.tenantOwnTextViolation(src); why != "" {
+	// Issue #184 round 12: an Advanced route's text is a whole Caddyfile,
+	// so an import at its depth 0 is at the top level of the file.
+	lim := tenantTextLimits{maxDepth: tenantMaxNestingDepth, maxBytes: maxTenantCaddyfileBytes, topLevel: true}
+	if why, _, _ := tenantTextCheck(src, s.adminSnippetSet(), lim); why != "" {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
 	return ""

@@ -3,6 +3,8 @@
 package server
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -455,19 +457,71 @@ func friendlyAdvancedRejection(err error) string {
 // held to today's rules. why is "" on success, else why the config cannot
 // be applied ({$ENV} is substituted while adapting and an `import` of a
 // file reads it, so a refused text is never sent to Caddy).
-func (s *Server) syncAdaptProxyAdvanced(p models.ProxyHost) ([]any, map[string]any, string) {
+//
+// Issue #184 round 12: transient is set when why is about reaching Caddy
+// (no answer, a timeout, an answer other than a result or a 400) rather
+// than about the text: the sync then keeps the output the same text last
+// adapted to, when there is one (advancedGoodFor).
+func (s *Server) syncAdaptProxyAdvanced(p models.ProxyHost) (handlers []any, overrides map[string]any, why string, transient bool) {
 	cl := s.Caddy
 	if s.isTenantOwner(p.OwnerID) {
 		if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
-			return nil, nil, "not allowed for a non-admin owner: " + why
+			return nil, nil, "not allowed for a non-admin owner: " + why, false
 		}
 		cl = s.tenantAdaptClient(cl)
 	}
-	h, overrides, err := s.adaptProxyAdvancedWithClient(cl, p)
+	result, err := s.adaptProxyAdvancedResult(cl, p)
 	if err != nil {
-		return nil, nil, err.Error()
+		return nil, nil, err.Error(), !caddy.IsCaddyfileRejected(err)
 	}
-	return h, overrides, ""
+	h, overrides, err := proxyAdvancedHandlers(result)
+	if err != nil {
+		return nil, nil, err.Error(), false
+	}
+	s.rememberAdvancedGood(p, h, overrides)
+	return h, overrides, "", false
+}
+
+// advancedGood is the output a proxy host's Advanced config last adapted
+// to at sync, as JSON, with what it was adapted from.
+type advancedGood struct {
+	text      string
+	owner     sql.NullInt64
+	handlers  []byte
+	overrides []byte
+}
+
+// rememberAdvancedGood keeps p's adapted Advanced config output.
+func (s *Server) rememberAdvancedGood(p models.ProxyHost, h []any, overrides map[string]any) {
+	hb, err1 := json.Marshal(h)
+	ob, err2 := json.Marshal(overrides)
+	if err1 != nil || err2 != nil {
+		return
+	}
+	s.advFailMu.Lock()
+	defer s.advFailMu.Unlock()
+	if s.advGood == nil {
+		s.advGood = map[int64]advancedGood{}
+	}
+	s.advGood[p.ID] = advancedGood{text: p.AdvancedConfig, owner: p.OwnerID, handlers: hb, overrides: ob}
+}
+
+// advancedGoodFor returns a fresh copy of the output p's Advanced config
+// last adapted to in this process, if the config and owner are unchanged
+// since.
+func (s *Server) advancedGoodFor(p models.ProxyHost) ([]any, map[string]any, bool) {
+	s.advFailMu.Lock()
+	g, ok := s.advGood[p.ID]
+	s.advFailMu.Unlock()
+	if !ok || g.text != p.AdvancedConfig || g.owner != p.OwnerID {
+		return nil, nil, false
+	}
+	var h []any
+	var overrides map[string]any
+	if json.Unmarshal(g.handlers, &h) != nil || json.Unmarshal(g.overrides, &overrides) != nil {
+		return nil, nil, false
+	}
+	return h, overrides, true
 }
 
 // advancedFailedRoute is what a proxy host whose Advanced config cannot be
@@ -493,11 +547,18 @@ func advancedFailedRoute(p models.ProxyHost) map[string]any {
 
 // noteAdvancedFailure records, in the activity log, when a proxy host's
 // Advanced config starts failing to apply at sync — and when it applies
-// again — once per change rather than on every sync. why is "" when it
-// applied.
-func (s *Server) noteAdvancedFailure(p models.ProxyHost, why string) {
+// again — once per change rather than on every sync (per process: the
+// last state is kept in memory, so a restart records a failure that is
+// still there once more). why is "" when it applied. kept says the host
+// still serves the output the same config last adapted to, because Caddy
+// could not be reached (issue #184 round 12); otherwise it answers 503.
+func (s *Server) noteAdvancedFailure(p models.ProxyHost, why string, kept bool) {
 	if s == nil || s.DB == nil {
 		return
+	}
+	state := why
+	if why != "" && kept {
+		state = "kept: " + why
 	}
 	s.advFailMu.Lock()
 	prev, known := s.advFail[p.ID]
@@ -507,13 +568,16 @@ func (s *Server) noteAdvancedFailure(p models.ProxyHost, why string) {
 	if why == "" {
 		delete(s.advFail, p.ID)
 	} else {
-		s.advFail[p.ID] = why
+		s.advFail[p.ID] = state
 	}
 	s.advFailMu.Unlock()
 	switch {
-	case why != "" && prev != why:
+	case why != "" && prev != state && kept:
+		_ = models.LogActivity(s.DB, p.ServerID, "system", "proxy_advanced_kept", fmt.Sprintf("ph:%d", p.ID),
+			p.Domains+": Caddy could not adapt the Advanced config just now, so the host keeps the config it last applied: "+why, false)
+	case why != "" && prev != state:
 		_ = models.LogActivity(s.DB, p.ServerID, "system", "proxy_advanced_failed", fmt.Sprintf("ph:%d", p.ID),
-			p.Domains+": the Advanced config could not be applied, so the host answers 503 until it is fixed: "+why, false)
+			p.Domains+": the Advanced config could not be applied, so the host answers 503 until it applies: "+why, false)
 	case why == "" && known:
 		_ = models.LogActivity(s.DB, p.ServerID, "system", "proxy_advanced_restored", fmt.Sprintf("ph:%d", p.ID),
 			p.Domains+": the Advanced config applies again", true)

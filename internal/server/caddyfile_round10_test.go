@@ -466,10 +466,10 @@ func TestImportBudgetLimits(t *testing.T) {
 	if why := tenantTextRules(strings.Repeat("import tiny\n", tenantMaxImports+1), set, 32, limit); !strings.Contains(why, "`import` lines") {
 		t.Errorf("%d imports: %q", tenantMaxImports+1, why)
 	}
-	if why := tenantTextRules("import loop\n", set, 32, limit); !strings.Contains(why, "imports itself") {
+	if why := tenantTextRules("import loop\n", set, 32, limit); !strings.Contains(why, `snippet "loop" is not available`) {
 		t.Errorf("a cycle: %q", why)
 	}
-	if why := tenantTextRules("import file\n", set, 32, limit); !strings.Contains(why, "not a snippet") {
+	if why := tenantTextRules("import file\n", set, 32, limit); !strings.Contains(why, "is not available") {
 		t.Errorf("a file import inside a snippet: %q", why)
 	}
 }

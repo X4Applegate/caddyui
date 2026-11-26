@@ -663,7 +663,7 @@ func TestTenantImportsOnlyAdministratorSnippets(t *testing.T) {
 		// Issue #184 round 10 (6): the refusal is CaddyUI's own, made
 		// before Caddy is asked — not Caddy's file-not-found error.
 		if want == http.StatusBadRequest {
-			if b := rec.Body.String(); !strings.Contains(b, "may only name a snippet the administrator defined") || strings.Contains(b, "File to import not found") {
+			if b := rec.Body.String(); !strings.Contains(b, `the snippet \"tags\" is not available`) || strings.Contains(b, "File to import not found") {
 				t.Errorf("%q: want CaddyUI's own refusal, got %s", src, b)
 			}
 		}

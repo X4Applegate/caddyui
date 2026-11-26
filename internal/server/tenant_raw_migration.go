@@ -17,7 +17,7 @@ import (
 )
 
 // One-time upgrade migration of non-admin Advanced routes (issue #184
-// round 11).
+// round 11, reworked in round 12).
 //
 // An Advanced route stores the JSON Caddy adapted its Caddyfile text to,
 // and the live sync deploys that JSON. Up to v2.68.16 the text was adapted
@@ -29,26 +29,40 @@ import (
 // to, so every such row is adapted again, once, the way a save adapts it
 // today, and only the new JSON is kept.
 //
-// The rows concerned are the non-admin's Advanced routes whose Caddyfile
+// The rows concerned are a non-admin's Advanced routes whose Caddyfile
 // text holds the word `import` (an `import` is the only way text reads a
 // file at adapt time; {$…} is refused by the tenant rules on every sync),
-// and those the paste import stored without any text: a block whose site
-// has no host name could not be matched back to its text, so its row holds
-// only the JSON the whole paste adapted to. The set is taken once, the
-// first time this version reads it, and kept in the settings table; until
-// a row has been migrated it is not deployed (fail closed): not on srv0,
-// not on its own listener. The sync migrates the rows of the server it
-// syncs, with that server's Caddy, before it builds the config:
+// and every non-admin Advanced route with no Caddyfile text at all,
+// whatever its label: the paste import stored some blocks without their
+// text — labelled with their host names, or "route[N] (no host match)" —
+// and their JSON is what the whole paste adapted to, so it may hold a file
+// another block read. Such a row cannot be adapted again.
+//
+// The set is taken the first time this version reads it, and kept in the
+// settings table; until a row has been migrated it is not deployed (fail
+// closed): not on srv0, not on its own listener. A row whose own content
+// shows it is not concerned (text without `import`) is never held back,
+// even when the state cannot be read. Each sync migrates the rows of the
+// server it syncs, with that server's Caddy, before it builds the config
+// (outside the sync lock: adapting may take seconds per row):
 //
 //   - the text adapts under today's rules → its JSON is stored and the row
 //     is deployed as before;
-//   - the text is refused, by the tenant rules or by Caddy (a 400 from
-//     /adapt), or adapts to another listen set, or the row has no text →
+//   - the text is refused for what it is — by the tenant rules on its own,
+//     or by Caddy (a 400 from /adapt) — or adapts to another listen set →
 //     the row is disabled and its stored JSON cleared, with the reason in
 //     the log and the activity log; the text is kept, so saving the row
 //     again brings it back;
-//   - Caddy cannot be reached (or answers anything but a result or a
-//     400) → the row stays pending, and the next sync tries again.
+//   - the row has no text → it is held the same way (disabled, JSON
+//     cleared, in the activity log) until its owner or an administrator
+//     saves it again;
+//   - the text is refused because of the administrator's Caddyfile (a
+//     snippet it imports is missing, unreadable, renamed or withheld), or
+//     Caddy cannot be reached (or answers anything but a result or a 400)
+//     → the row stays pending, and is tried again later;
+//   - the row changed while it was being adapted → nothing is written; it
+//     stays pending unless the change was a save that adapted it under
+//     today's rules (rawRouteMigrationSaved).
 //
 // When no row is left, the migration is marked done and never runs again.
 
@@ -56,32 +70,81 @@ import (
 // {"pending":[ids]}.
 const settingTenantRawRouteMigration = "tenant_raw_route_migration_184"
 
+// rawMigMaxStrikes is how many runs may see one row break the connection
+// to Caddy while Caddy answers otherwise, before the row is held (issue
+// #184 round 12): text that crashes Caddy's parser is not retried for
+// ever.
+const rawMigMaxStrikes = 5
+
+// rawMigProbeText is what the migration adapts to tell whether Caddy
+// answers at all.
+const rawMigProbeText = "http://caddyui-probe.invalid {\n\trespond 204\n}\n"
+
 // tenantRawMigration is the in-memory copy of the migration state.
 type tenantRawMigration struct {
 	loaded  bool
 	done    bool
 	pending map[int64]bool
+	// lastWhy is the last reason logged per row that stays pending, so
+	// the log only says it again when it changes.
+	lastWhy map[int64]string
+	// strikes counts, per row, the runs in which adapting it failed to
+	// reach Caddy while another row adapted.
+	strikes map[int64]int
+	// unreadable is set once a corrupt state has been logged.
+	unreadable bool
 }
 
-// rawRouteMigrationPending reports whether the Advanced route id still
-// waits for the migration, and so must not be deployed.
-func (s *Server) rawRouteMigrationPending(id int64) bool {
-	if s == nil || s.DB == nil {
+// rawRouteMigrationShape reports whether a row is one the migration
+// covers by its content: owned by a non-admin, and with text that holds
+// `import`, or with no text at all.
+func (s *Server) rawRouteMigrationShape(rr models.RawRoute) bool {
+	if !s.isTenantOwner(rr.OwnerID) {
+		return false
+	}
+	return strings.Contains(rr.CaddyfileSrc, "import") || strings.TrimSpace(rr.CaddyfileSrc) == ""
+}
+
+// rawRouteMigrationPending reports whether the Advanced route still waits
+// for the migration, and so must not be deployed.
+func (s *Server) rawRouteMigrationPending(rr models.RawRoute) bool {
+	if s == nil || s.DB == nil || !s.rawRouteMigrationShape(rr) {
 		return false
 	}
 	s.rawMigMu.Lock()
 	defer s.rawMigMu.Unlock()
 	if err := s.loadRawRouteMigrationLocked(); err != nil {
-		// The state cannot be read, so it cannot be told which rows are
-		// safe: none of the candidates is deployed.
+		// The database cannot be read now, so it cannot be told whether
+		// this row is safe: it is not deployed.
 		log.Printf("advanced route migration: cannot read its state: %v", err)
 		return true
 	}
-	return !s.rawMig.done && s.rawMig.pending[id]
+	return !s.rawMig.done && s.rawMig.pending[rr.ID]
+}
+
+// rawRouteMigrationSaved notes that the Advanced route id was saved again
+// through a path that adapts its text under today's rules (or replaced its
+// JSON with new JSON), so the migration has nothing left to do for it.
+func (s *Server) rawRouteMigrationSaved(id int64) {
+	if s == nil || s.DB == nil {
+		return
+	}
+	s.rawMigMu.Lock()
+	defer s.rawMigMu.Unlock()
+	if err := s.loadRawRouteMigrationLocked(); err != nil || s.rawMig.done || !s.rawMig.pending[id] {
+		return
+	}
+	delete(s.rawMig.pending, id)
+	if err := s.saveRawRouteMigrationLocked(); err != nil {
+		log.Printf("advanced route migration: cannot save its state: %v", err)
+	}
 }
 
 // loadRawRouteMigrationLocked reads the state, taking the set of rows the
-// first time this version runs. s.rawMigMu is held.
+// first time this version runs. A state that cannot be read is logged
+// once and taken again from the database (issue #184 round 12): every row
+// the migration covers is adapted again, which is safe for a row already
+// migrated. s.rawMigMu is held.
 func (s *Server) loadRawRouteMigrationLocked() error {
 	if s.rawMig.loaded {
 		return nil
@@ -90,33 +153,40 @@ func (s *Server) loadRawRouteMigrationLocked() error {
 	if err != nil {
 		return err
 	}
+	keep := s.rawMig
+	fresh := func() tenantRawMigration {
+		return tenantRawMigration{loaded: true, pending: map[int64]bool{}, lastWhy: keep.lastWhy, strikes: keep.strikes, unreadable: keep.unreadable}
+	}
 	switch {
 	case v == "done":
-		s.rawMig = tenantRawMigration{loaded: true, done: true}
+		s.rawMig = fresh()
+		s.rawMig.done = true
 		return nil
 	case v != "":
 		var st struct {
 			Pending []int64 `json:"pending"`
 		}
-		if err := json.Unmarshal([]byte(v), &st); err != nil {
-			return fmt.Errorf("unreadable state %q: %w", v, err)
+		if err := json.Unmarshal([]byte(v), &st); err == nil {
+			s.rawMig = fresh()
+			for _, id := range st.Pending {
+				s.rawMig.pending[id] = true
+			}
+			return nil
+		} else if !keep.unreadable {
+			log.Printf("advanced route migration: its saved state is unreadable (%v); the rows it covers are taken again from the database", err)
+			keep.unreadable = true
 		}
-		s.rawMig = tenantRawMigration{loaded: true, pending: map[int64]bool{}}
-		for _, id := range st.Pending {
-			s.rawMig.pending[id] = true
-		}
-		return nil
 	}
 	ids, err := s.rawRouteMigrationCandidates()
 	if err != nil {
 		return err
 	}
-	s.rawMig = tenantRawMigration{loaded: true, pending: map[int64]bool{}}
+	s.rawMig = fresh()
 	for _, id := range ids {
 		s.rawMig.pending[id] = true
 	}
 	if len(ids) > 0 {
-		log.Printf("advanced route migration: %d non-admin Advanced route(s) will be adapted again before they are deployed (issue #184)", len(ids))
+		log.Printf("advanced route migration: %d non-admin Advanced route(s) will be adapted again, or held, before they are deployed (issue #184)", len(ids))
 	}
 	return s.saveRawRouteMigrationLocked()
 }
@@ -143,18 +213,15 @@ func (s *Server) rawRouteMigrationCandidates() ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	type row struct {
-		id    int64
-		src   string
-		owner int64
-	}
-	var all []row
+	var all []models.RawRoute
 	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.id, &r.src, &r.owner); err != nil {
+		var r models.RawRoute
+		var owner int64
+		if err := rows.Scan(&r.ID, &r.CaddyfileSrc, &owner); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		r.OwnerID = sql.NullInt64{Int64: owner, Valid: owner != 0}
 		all = append(all, r)
 	}
 	rows.Close()
@@ -163,56 +230,66 @@ func (s *Server) rawRouteMigrationCandidates() ([]int64, error) {
 	}
 	var ids []int64
 	for _, r := range all {
-		owner := sql.NullInt64{Int64: r.owner, Valid: r.owner != 0}
-		if !s.isTenantOwner(owner) {
-			continue
-		}
-		if strings.Contains(r.src, "import") || strings.TrimSpace(r.src) == "" && pasteImportTextless(r.id, s.DB) {
-			ids = append(ids, r.id)
+		if s.rawRouteMigrationShape(r) {
+			ids = append(ids, r.ID)
 		}
 	}
 	return ids, nil
 }
 
-// pasteImportTextless reports whether the row with no Caddyfile text was
-// stored by the Caddyfile paste import: that importer labels a route it
-// cannot match back to a block "route[N] (no host match)".
-func pasteImportTextless(id int64, db *sql.DB) bool {
-	var label string
-	if err := db.QueryRow(`SELECT label FROM raw_routes WHERE id = ?`, id).Scan(&label); err != nil {
-		return true // cannot tell: the safe reading
-	}
-	return strings.HasPrefix(label, "route[") && strings.HasSuffix(label, "(no host match)")
-}
+// rawMigOutcome is what adapting one row again came to.
+type rawMigOutcome int
+
+const (
+	rawMigStore rawMigOutcome = iota // store the new JSON
+	rawMigHold                       // disable the row, clear its JSON
+	rawMigRetry                      // leave it pending
+)
 
 // migrateTenantRawRoutes runs the migration for the rows of serverID, with
 // cl (that server's Caddy). It never fails the sync: a row it cannot
-// migrate now stays pending, and is not deployed.
-func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) {
+// migrate now stays pending, and is not deployed. It reports whether a
+// row still waits.
+func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 	if s == nil || s.DB == nil {
-		return
+		return false
 	}
+	// A run already in progress (another sync's) is not waited for: the
+	// rows it has not finished stay undeployed, and the retry loop comes
+	// back to them.
+	if !s.rawMigRunMu.TryLock() {
+		return true
+	}
+	defer s.rawMigRunMu.Unlock()
 	s.rawMigMu.Lock()
-	defer s.rawMigMu.Unlock()
 	if err := s.loadRawRouteMigrationLocked(); err != nil {
+		s.rawMigMu.Unlock()
 		log.Printf("advanced route migration: cannot read its state: %v", err)
-		return
-	}
-	if s.rawMig.done || len(s.rawMig.pending) == 0 {
-		return
+		return true
 	}
 	ids := make([]int64, 0, len(s.rawMig.pending))
 	for id := range s.rawMig.pending {
 		ids = append(ids, id)
 	}
+	s.rawMigMu.Unlock()
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	changed := false
+
+	type pendingRow struct {
+		rr   models.RawRoute
+		out  rawMigOutcome
+		json string
+		why  string
+		// broke is set when adapting the row lost the connection to Caddy.
+		broke bool
+	}
+	var work []pendingRow
+	drop := map[int64]bool{}
+	reached := false // Caddy answered for at least one row
 	for _, id := range ids {
 		var sid int64
 		switch err := s.DB.QueryRow(`SELECT server_id FROM raw_routes WHERE id = ?`, id).Scan(&sid); {
 		case errors.Is(err, sql.ErrNoRows):
-			delete(s.rawMig.pending, id) // deleted since
-			changed = true
+			drop[id] = true // deleted since
 			continue
 		case err != nil:
 			log.Printf("advanced route migration: route id=%d: %v", id, err)
@@ -228,33 +305,95 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) {
 		}
 		if !s.isTenantOwner(rr.OwnerID) {
 			// Now an administrator's: their rows are never restricted.
-			delete(s.rawMig.pending, id)
-			changed = true
+			drop[id] = true
 			continue
 		}
-		jsonData, why, retry := s.readaptForMigration(*rr, cl)
-		switch {
-		case retry:
-			log.Printf("advanced route migration: route id=%d: Caddy could not adapt it now (%s); it stays undeployed and is tried again on the next sync", id, why)
+		jsonData, why, out, answered := s.readaptForMigration(*rr, cl)
+		row := pendingRow{rr: *rr, out: out, json: jsonData, why: why}
+		if out == rawMigRetry {
+			row.broke = cl != nil && caddyConnectionLost(why)
+		}
+		reached = reached || answered
+		work = append(work, row)
+	}
+
+	// A row that broke the connection, in a run where no other row was
+	// answered: ask Caddy something harmless, to tell a row that breaks
+	// Caddy's adapter from Caddy being down.
+	if !reached && cl != nil {
+		for _, w := range work {
+			if w.broke {
+				_, err := cl.Adapt(rawMigProbeText)
+				reached = err == nil || caddy.IsCaddyfileRejected(err)
+				break
+			}
+		}
+	}
+
+	s.rawMigMu.Lock()
+	defer s.rawMigMu.Unlock()
+	if s.rawMig.strikes == nil {
+		s.rawMig.strikes = map[int64]int{}
+	}
+	if s.rawMig.lastWhy == nil {
+		s.rawMig.lastWhy = map[int64]string{}
+	}
+	changed := false
+	for id := range drop {
+		if s.rawMig.pending[id] {
+			delete(s.rawMig.pending, id)
+			changed = true
+		}
+	}
+	for _, w := range work {
+		id := w.rr.ID
+		if !s.rawMig.pending[id] {
+			continue // saved again meanwhile (rawRouteMigrationSaved)
+		}
+		out, why := w.out, w.why
+		if out == rawMigRetry && w.broke && reached {
+			// Caddy answers otherwise, so this row broke the connection
+			// itself. After a few runs it is held.
+			s.rawMig.strikes[id]++
+			if s.rawMig.strikes[id] >= rawMigMaxStrikes {
+				out = rawMigHold
+				why = fmt.Sprintf("adapting it broke the connection to Caddy %d times while other routes adapted (%s)", s.rawMig.strikes[id], why)
+			}
+		}
+		switch out {
+		case rawMigRetry:
+			if s.rawMig.lastWhy[id] != why {
+				log.Printf("advanced route migration: route id=%d: it could not be adapted again now (%s); it stays undeployed and is tried again", id, why)
+				s.rawMig.lastWhy[id] = why
+			}
 			continue
-		case why != "":
-			rr.Enabled = false
-			rr.JSONData = "[]"
-			if err := models.UpdateRawRoute(s.DB, rr); err != nil {
+		case rawMigHold:
+			ok, err := migrationWrite(s.DB, w.rr, "[]", false)
+			if err != nil {
 				log.Printf("advanced route migration: route id=%d: disable: %v", id, err)
 				continue
 			}
-			log.Printf("advanced route migration: route id=%d (%q) disabled and its stored routes cleared: %s. Save it again to bring it back.", id, rr.Label, why)
-			_ = models.LogActivity(s.DB, serverID, "system", "rawroute_migration_disabled", fmt.Sprintf("rr:%d", id), rr.Label+": "+why, false)
+			if !ok {
+				s.logRowChanged(id)
+				continue
+			}
+			log.Printf("advanced route migration: route id=%d (%q) disabled and its stored routes cleared: %s. Its owner or an administrator can save it again to bring it back.", id, w.rr.Label, strings.TrimSuffix(why, "."))
+			_ = models.LogActivity(s.DB, serverID, "system", "rawroute_migration_disabled", fmt.Sprintf("rr:%d", id), w.rr.Label+": "+why, false)
 		default:
-			rr.JSONData = jsonData
-			if err := models.UpdateRawRoute(s.DB, rr); err != nil {
+			ok, err := migrationWrite(s.DB, w.rr, w.json, w.rr.Enabled)
+			if err != nil {
 				log.Printf("advanced route migration: route id=%d: store: %v", id, err)
+				continue
+			}
+			if !ok {
+				s.logRowChanged(id)
 				continue
 			}
 			log.Printf("advanced route migration: route id=%d adapted again under the current rules", id)
 		}
 		delete(s.rawMig.pending, id)
+		delete(s.rawMig.lastWhy, id)
+		delete(s.rawMig.strikes, id)
 		changed = true
 	}
 	if changed {
@@ -264,71 +403,175 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) {
 			log.Printf("advanced route migration: done")
 		}
 	}
+	return !s.rawMig.done && len(s.rawMig.pending) > 0
+}
+
+// logRowChanged logs, once, that a row changed while it was adapted; it
+// stays pending. s.rawMigMu is held.
+func (s *Server) logRowChanged(id int64) {
+	const why = "the route changed while it was being adapted"
+	if s.rawMig.lastWhy[id] != why {
+		log.Printf("advanced route migration: route id=%d: %s; it stays undeployed and is adapted again", id, why)
+		s.rawMig.lastWhy[id] = why
+	}
+}
+
+// migrationWrite stores jsonData and enabled on the row read as rr, only
+// if the row still holds what rr holds (issue #184 round 12: adapting
+// takes time, and an administrator may disable the row or its owner save
+// new text meanwhile). It reports whether the row was written.
+func migrationWrite(db *sql.DB, rr models.RawRoute, jsonData string, enabled bool) (bool, error) {
+	owner := int64(0)
+	if rr.OwnerID.Valid {
+		owner = rr.OwnerID.Int64
+	}
+	res, err := db.Exec(`UPDATE raw_routes SET json_data = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND COALESCE(caddyfile_src, '') = ? AND json_data = ? AND enabled = ? AND COALESCE(listen, '') = ? AND COALESCE(owner_id, 0) = ?`,
+		jsonData, boolToInt(enabled), rr.ID, rr.CaddyfileSrc, rr.JSONData, boolToInt(rr.Enabled), rr.Listen, owner)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// caddyConnectionLost reports whether an adapt error says the connection
+// to Caddy broke mid-request (Caddy's handler panicked or the process
+// died), rather than that Caddy could not be reached at all.
+func caddyConnectionLost(why string) bool {
+	return strings.Contains(why, "EOF") || strings.Contains(why, "connection reset")
 }
 
 // readaptForMigration adapts a non-admin's Advanced route text the way a
-// save does today. It returns the JSON to store; or why the row cannot be
-// kept; or retry=true when Caddy could not be asked.
-func (s *Server) readaptForMigration(rr models.RawRoute, cl *caddy.Client) (jsonData, why string, retry bool) {
+// save does today. It returns the JSON to store, or why the row cannot be
+// kept (rawMigHold), or why it cannot be decided now (rawMigRetry);
+// answered says Caddy's adapter answered (with a result or a 400).
+func (s *Server) readaptForMigration(rr models.RawRoute, cl *caddy.Client) (jsonData, why string, out rawMigOutcome, answered bool) {
 	if strings.TrimSpace(rr.CaddyfileSrc) == "" {
-		return "", "it was stored by the Caddyfile paste import without its Caddyfile text, so it cannot be adapted again", false
+		return "", "it has no Caddyfile text to adapt again (the Caddyfile paste import of earlier versions stored some routes that way), so it is held for review", rawMigHold, false
 	}
 	if msg := s.tenantRawRouteTextProblem(rr.CaddyfileSrc); msg != "" {
-		return "", msg, false
+		// Issue #184 round 12: a refusal that depends on the
+		// administrator's Caddyfile — a snippet missing, unreadable,
+		// renamed, withheld — may go away, so the row waits.
+		if len(rr.CaddyfileSrc) > maxTenantCaddyfileBytes || tenantTextRefusalIsOwn(rr.CaddyfileSrc, tenantTextLimits{maxDepth: tenantMaxNestingDepth, maxBytes: maxTenantCaddyfileBytes, topLevel: true}) {
+			return "", msg, rawMigHold, false
+		}
+		return "", "it depends on the administrator's snippets, which do not allow it now: " + msg, rawMigRetry, false
 	}
 	tcl := s.tenantAdaptClient(cl)
 	if tcl == nil {
-		return "", "the Caddy adapter is unavailable", true
+		return "", "the Caddy adapter is unavailable", rawMigRetry, false
 	}
 	jsonData, listen, result, err := s.adaptRawRouteCaddyfileResult(tcl, rr.CaddyfileSrc)
 	if err != nil {
-		if caddy.IsCaddyfileRejected(err) || errors.Is(err, errClientAuthInRawRoute) || result != nil {
-			return "", "its Caddyfile no longer adapts: " + err.Error(), false
+		if errors.Is(err, errClientAuthInRawRoute) || result != nil {
+			return "", "its Caddyfile no longer adapts: " + err.Error(), rawMigHold, true
 		}
-		return "", err.Error(), true
+		if caddy.IsCaddyfileRejected(err) {
+			// The text passed the rules above; a refusal by the adapt
+			// check now comes from the administrator's snippets changing
+			// meanwhile. Anything else is Caddy's 400.
+			if s.tenantAdaptTextViolation(s.snippetsFor(rr.CaddyfileSrc, true)) != "" {
+				return "", "it depends on the administrator's snippets, which do not allow it now: " + err.Error(), rawMigRetry, false
+			}
+			return "", "its Caddyfile no longer adapts: " + err.Error(), rawMigHold, true
+		}
+		return "", err.Error(), rawMigRetry, false
 	}
 	if listen != rr.Listen {
-		return "", "its Caddyfile now adapts to other listen addresses than the stored route", false
+		return "", "its Caddyfile now adapts to other listen addresses than the stored route", rawMigHold, true
 	}
 	if msg := s.tenantRawRouteAdaptedProblem(jsonData, listen, result); msg != "" {
-		return "", msg, false
+		return "", msg, rawMigHold, true
 	}
-	return jsonData, "", false
+	return jsonData, "", rawMigStore, true
 }
 
-// runTenantRawRouteMigration syncs, shortly after startup and then every
-// minute, each managed server that still has rows waiting for the
+// migrateTenantRawRoutesFor runs the migration for serverID with its own
+// Caddy, ahead of a sync (issue #184 round 12: outside the sync lock).
+func (s *Server) migrateTenantRawRoutesFor(serverID int64) bool {
+	srv, err := models.GetCaddyServer(s.DB, serverID)
+	if err != nil || srv == nil || srv.Type == models.CaddyServerTypeExternal {
+		return false
+	}
+	return s.migrateTenantRawRoutes(serverID, newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword))
+}
+
+// runTenantRawRouteMigration syncs, shortly after startup and then from
+// time to time, each managed server that still has rows waiting for the
 // migration: the sync migrates them first, then replaces whatever the
-// live Caddy still carries from before the upgrade. It stops once no
-// such row is left.
+// live Caddy still carries from before the upgrade. While no row makes
+// progress it waits longer between rounds (one minute, doubling up to
+// thirty), and it logs a failing sync only when its error changes. It
+// stops once no such row is left.
 func (s *Server) runTenantRawRouteMigration() {
 	time.Sleep(10 * time.Second)
+	wait := time.Minute
+	lastErr := map[int64]string{}
 	for {
-		servers := s.rawRouteMigrationServers()
-		if len(servers) == 0 {
+		servers, err := s.rawRouteMigrationServers()
+		if err == nil && len(servers) == 0 {
 			return
 		}
+		before := s.rawRouteMigrationLeft()
 		for _, sid := range servers {
-			if err := s.syncCaddy(sid, false); err != nil {
-				log.Printf("advanced route migration: sync of server %d: %v", sid, err)
+			err := s.syncCaddy(sid, false)
+			msg := ""
+			if err != nil {
+				msg = err.Error()
+			}
+			if msg != lastErr[sid] {
+				if msg != "" {
+					log.Printf("advanced route migration: sync of server %d: %v", sid, err)
+				}
+				lastErr[sid] = msg
 			}
 		}
-		time.Sleep(time.Minute)
+		if after := s.rawRouteMigrationLeft(); err != nil || after >= before {
+			wait = min(wait*2, 30*time.Minute)
+		} else {
+			wait = time.Minute
+		}
+		time.Sleep(wait)
 	}
+}
+
+// rawRouteMigrationLeft is how many rows still wait, -1 when the state
+// cannot be read.
+func (s *Server) rawRouteMigrationLeft() int {
+	s.rawMigMu.Lock()
+	defer s.rawMigMu.Unlock()
+	if err := s.loadRawRouteMigrationLocked(); err != nil {
+		return -1
+	}
+	if s.rawMig.done {
+		return 0
+	}
+	return len(s.rawMig.pending)
 }
 
 // rawRouteMigrationServers returns the managed servers that hold rows
 // still waiting for the migration.
-func (s *Server) rawRouteMigrationServers() []int64 {
+func (s *Server) rawRouteMigrationServers() ([]int64, error) {
 	s.rawMigMu.Lock()
 	if err := s.loadRawRouteMigrationLocked(); err != nil {
 		s.rawMigMu.Unlock()
 		log.Printf("advanced route migration: cannot read its state: %v", err)
-		return nil
+		return nil, err
 	}
 	ids := make([]int64, 0, len(s.rawMig.pending))
-	for id := range s.rawMig.pending {
-		ids = append(ids, id)
+	if !s.rawMig.done {
+		for id := range s.rawMig.pending {
+			ids = append(ids, id)
+		}
 	}
 	s.rawMigMu.Unlock()
 	seen := map[int64]bool{}
@@ -344,5 +587,5 @@ func (s *Server) rawRouteMigrationServers() []int64 {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
+	return out, nil
 }

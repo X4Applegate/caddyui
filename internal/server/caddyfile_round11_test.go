@@ -361,9 +361,11 @@ func TestUpgradeMigrationAdaptsStoredTenantRoutesAgain(t *testing.T) {
 
 // Issue #184 round-11 review (4): while Caddy cannot be reached the rows
 // waiting for the migration stay undeployed — on srv0 and on their own
-// listener — and the migration is retried; rows refused for good are
-// disabled and their stored JSON cleared; an administrator's rows are not
-// touched.
+// listener — and the migration is retried; rows with no text are disabled
+// and their stored JSON cleared; an administrator's rows are not touched.
+// Round 12: a row that imports a name the administrator has not defined
+// is refused because of the server Caddyfile, which may change, so it
+// stays pending — undeployed — rather than being disabled.
 func TestUpgradeMigrationFailsClosed(t *testing.T) {
 	s, conn, sid, rec, bin, admin, tenant := newRound11Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", map[string]string{"tag": "X-Planted " + round11Secret + "\n"})
 	requireCaddy(t, bin, "the stored routes are adapted again with Caddy")
@@ -387,15 +389,15 @@ func TestUpgradeMigrationFailsClosed(t *testing.T) {
 		t.Errorf("the administrator's row is not deployed: %s", live)
 	}
 	for _, id := range []int64{onSrv0, onPort} {
-		if !s.rawRouteMigrationPending(id) {
+		if rr, _ := models.GetRawRoute(conn, id); !s.rawRouteMigrationPending(*rr) {
 			t.Errorf("row %d: no longer waiting although Caddy was not reached", id)
 		}
 	}
-	for _, id := range []int64{refused, textless} {
-		rr, _ := models.GetRawRoute(conn, id)
-		if rr.Enabled || strings.Contains(rr.JSONData, round11Secret) {
-			t.Errorf("row %d (%s): want disabled with its JSON cleared, got enabled=%v %s", id, rr.Label, rr.Enabled, rr.JSONData)
-		}
+	if rr, _ := models.GetRawRoute(conn, textless); rr.Enabled || strings.Contains(rr.JSONData, round11Secret) {
+		t.Errorf("row %d (%s): want disabled with its JSON cleared, got enabled=%v %s", textless, rr.Label, rr.Enabled, rr.JSONData)
+	}
+	if rr, _ := models.GetRawRoute(conn, refused); !s.rawRouteMigrationPending(*rr) || strings.Contains(live, "m3.example.test") {
+		t.Errorf("row %d (%s): want it pending and undeployed", refused, rr.Label)
 	}
 	if a, _ := models.GetRawRoute(conn, adminRow); !a.Enabled || !strings.Contains(a.JSONData, round11Secret) {
 		t.Errorf("the administrator's row was changed")
@@ -411,8 +413,8 @@ func TestUpgradeMigrationFailsClosed(t *testing.T) {
 	if strings.Count(live, round11Secret) != 1 { // the administrator's own row
 		t.Errorf("the planted content is deployed for a non-admin row: %s", live)
 	}
-	if v, _ := models.GetSetting(conn, settingTenantRawRouteMigration); v != "done" {
-		t.Errorf("migration state %q, want done", v)
+	if v, _ := models.GetSetting(conn, settingTenantRawRouteMigration); v != fmt.Sprintf(`{"pending":[%d]}`, refused) {
+		t.Errorf("migration state %q, want only the row importing an undefined name left", v)
 	}
 }
 
@@ -442,7 +444,7 @@ func TestWithheldAdminSnippetsDoNotBreakTenantText(t *testing.T) {
 		t.Errorf("the live route dropped the non-admin's headers: %s", live)
 	}
 	for _, name := range []string{"cf", "filey", "viafile"} {
-		if why := s.tenantOwnTextViolation("import " + name); !strings.Contains(why, "not available to non-admin accounts") {
+		if why := s.tenantOwnTextViolation("import " + name); why != tenantSnippetUnavailable(name) {
 			t.Errorf("import %s: %q", name, why)
 		}
 	}
@@ -458,6 +460,7 @@ func round11CostSnippets() string {
 	var b strings.Builder
 	b.WriteString("(a4) {\n\theader X-A {args[:]}\n\theader X-B {args[:]}\n\theader X-C {args[:]}\n\theader X-D {args[:]}\n}\n")
 	b.WriteString("(b3) {\n\troute {\n\t\t{block}\n\t}\n\troute {\n\t\t{block}\n\t}\n\troute {\n\t\t{block}\n\t}\n}\n")
+	b.WriteString("(b1) {\n\troute {\n\t\t{block}\n\t}\n}\n")
 	b.WriteString("(deepb) {\n\troute {\n\t\troute {\n\t\t\troute {\n\t\t\t\t{block}\n\t\t\t}\n\t\t}\n\t}\n}\n")
 	b.WriteString("(fw) {\n\timport a4 {args[:]}\n}\n")
 	b.WriteString("(big) {\n")
@@ -470,9 +473,10 @@ func round11CostSnippets() string {
 
 // Issue #184 round-11 review (6): the import budget is an upper bound on
 // what Caddy expands — the importer's arguments count once per `{args…}`
-// in the snippet (transitively), its block once per `{block}`, a block's
-// nesting where the snippet puts it, an import inside an import's block
-// as often as that block is put — and an argument may not be a lone brace.
+// in the snippet (transitively), its block where the snippet puts it, a
+// block's nesting where the snippet puts it — and an argument may not be
+// a lone brace. Round 12: a snippet that puts the block in more than once
+// is withheld, and an import inside an import's block is refused.
 func TestImportCostCountsArgumentsAndBlocks(t *testing.T) {
 	s, _, _, _, _, _ := newAdaptRecorderFixture(t)
 	s.CaddyfilePath = filepath.Join(t.TempDir(), "Caddyfile")
@@ -488,17 +492,17 @@ func TestImportCostCountsArgumentsAndBlocks(t *testing.T) {
 	for name, c := range map[string]struct {
 		text, want string
 	}{
-		"arguments ×4 within":       {site("\timport a4 " + args(8000) + "\n"), ""},
-		"arguments ×4 over":         {site("\timport a4 " + args(15000) + "\n"), "once the snippets it imports are counted"},
-		"forwarded arguments over":  {site("\timport fw " + args(15000) + "\n"), "once the snippets it imports are counted"},
-		"block ×3 within":           {site("\timport b3 {\n" + block(8000) + "\t}\n"), ""},
-		"block ×3 over":             {site("\timport b3 {\n" + block(20000) + "\t}\n"), "once the snippets it imports are counted"},
-		"import in a block ×3 over": {site("\timport b3 {\n\t\timport big\n\t\timport big\n\t}\n"), "once the snippets it imports are counted"},
-		"import in a block once":    {site("\timport deepb {\n\t\timport big\n\t}\n"), ""},
-		"block depth within":        {site("\timport deepb {\n" + nest(27, "respond 1\n") + "\t}\n"), ""},
-		"block depth over":          {site("\timport deepb {\n" + nest(29, "respond 1\n") + "\t}\n"), "levels deep once"},
-		"brace argument":            {site("\timport a4 \"{\"\n"), "lone `{` or `}`"},
-		"closing brace argument":    {site("\timport a4 x \"}\"\n"), "lone `{` or `}`"},
+		"arguments ×4 within":      {site("\timport a4 " + args(8000) + "\n"), ""},
+		"arguments ×4 over":        {site("\timport a4 " + args(15000) + "\n"), "once the snippets it imports are counted"},
+		"forwarded arguments over": {site("\timport fw " + args(15000) + "\n"), "once the snippets it imports are counted"},
+		"block within":             {site("\timport b1 {\n" + block(30000) + "\t}\n"), ""},
+		"block over":               {site("\timport b1 {\n" + block(40000) + "\t}\n"), "once the snippets it imports are counted"},
+		"block ×3 (withheld)":      {site("\timport b3 {\n" + block(400) + "\t}\n"), `snippet "b3" is not available`},
+		"import in a block":        {site("\timport deepb {\n\t\timport big\n\t}\n"), "inside the block of another `import`"},
+		"block depth within":       {site("\timport deepb {\n" + nest(27, "respond 1\n") + "\t}\n"), ""},
+		"block depth over":         {site("\timport deepb {\n" + nest(29, "respond 1\n") + "\t}\n"), "levels deep once"},
+		"brace argument":           {site("\timport a4 \"{\"\n"), "lone `{` or `}`"},
+		"closing brace argument":   {site("\timport a4 x \"}\"\n"), "lone `{` or `}`"},
 	} {
 		why := s.tenantOwnTextViolation(c.text)
 		if (c.want == "") != (why == "") || !strings.Contains(why, c.want) {
@@ -544,7 +548,7 @@ func TestSyncRunsTheUpgradeMigration(t *testing.T) {
 	s, conn, sid, _, bin, _, tenant := newRound11Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", map[string]string{"tag": "X-Planted " + round11Secret + "\n"})
 	requireCaddy(t, bin, "the stored route is adapted again with Caddy")
 	id := round11StoredRow(t, conn, sid, tenant.ID, "legacy", "sy.example.test {\n\theader {\n\t\timport tag\n\t}\n\trespond 1\n}", "sy.example.test", "")
-	if got := s.rawRouteMigrationServers(); len(got) != 1 || got[0] != sid {
+	if got, _ := s.rawRouteMigrationServers(); len(got) != 1 || got[0] != sid {
 		t.Errorf("servers waiting for the migration: %v, want [%d]", got, sid)
 	}
 	_ = s.syncCaddy(sid, false) // the push itself may fail against the stand-in; the migration runs first
@@ -552,7 +556,7 @@ func TestSyncRunsTheUpgradeMigration(t *testing.T) {
 	if strings.Contains(rr.JSONData, round11Secret) || !strings.Contains(rr.JSONData, "X-Tag") {
 		t.Errorf("the sync did not migrate the row: %s", rr.JSONData)
 	}
-	if got := s.rawRouteMigrationServers(); len(got) != 0 {
+	if got, _ := s.rawRouteMigrationServers(); len(got) != 0 {
 		t.Errorf("servers still waiting: %v", got)
 	}
 }

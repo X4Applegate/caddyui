@@ -678,6 +678,11 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Issue #184 round 12: text adapted by this save, or JSON other than
+	// what was stored, leaves the upgrade migration nothing to do.
+	if strings.TrimSpace(r.FormValue("caddyfile_src")) != "" || old == nil || !jsonEqual(old.JSONData, rr.JSONData) {
+		s.rawRouteMigrationSaved(rr.ID)
+	}
 	// v2.7.3: admin-only owner reassignment. Kept out of UpdateRawRoute so the
 	// user-role edit path can never touch ownership.
 	if isAdmin {
@@ -1118,6 +1123,11 @@ func (s *Server) syncCaddyOpts(serverID int64, forceTLS, allowEmpty bool) error 
 	// basic-auth hashes — to server A (91 of 120 syncs in a stress run). Syncs
 	// are therefore serialized. Nothing reachable from a sync calls syncCaddy
 	// again, so this cannot deadlock.
+	// Issue #184 round 11: rows stored before the upgrade are adapted
+	// again, with this server's Caddy, before they can be deployed. Round
+	// 12: that happens before the sync lock is taken — adapting a row may
+	// take seconds while Caddy is slow, and other syncs need not wait.
+	s.migrateTenantRawRoutesFor(serverID)
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 	err := s.syncCaddyInner(serverID, forceTLS, allowEmpty)
@@ -1161,9 +1171,6 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	s.Caddy = newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	defer func() { s.Caddy = origClient }()
 	metricsCfg := loadPrometheusMetricsConfig(s.DB)
-	// Issue #184 round 11: rows stored before the upgrade are adapted
-	// again, with this server's Caddy, before they can be deployed.
-	s.migrateTenantRawRoutes(serverID, s.Caddy)
 
 	// Use admin view for sync — all routes must be pushed to Caddy regardless of owner.
 	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true, nil)

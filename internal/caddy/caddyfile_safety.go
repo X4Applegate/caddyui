@@ -8,6 +8,7 @@ import (
 	"errors"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -557,11 +558,9 @@ func checkCaddyfileSnippet(src string) (string, bool) {
 	if toks[0].quoted || !strings.HasPrefix(head, "(") || !strings.HasSuffix(head, ")") || !snippetNameRe.MatchString(head[1:len(head)-1]) {
 		return "", false
 	}
-	// Caddy also reads a snippet whose `{` sits on a later line than its
-	// `(name)` (issue #184 round 11); the stand-in site puts it on the
-	// address's line.
-	rest := strings.TrimLeft(src[strings.Index(src, head)+len(head):], " \t\r\n")
-	site := "snippet.invalid " + rest
+	// A `{` on a later line than `(name)` reads the same way (issue #184
+	// round 11): the stand-in site keeps the text after the name as it is.
+	site := "snippet.invalid " + src[strings.Index(src, head)+len(head):]
 	sites, err := checkCaddyfileSites(site, nil)
 	if err != nil || len(sites) != 1 || len(sites[0].addrs) != 1 {
 		return "", false
@@ -755,6 +754,39 @@ func cfSnippetPlaceholder(text string) bool {
 	return false
 }
 
+// CaddyfileVariadicEmpty reports whether Caddy (importargs.go
+// parseVariadic, v2.11) replaces a snippet token with no token at all when
+// the import passes nargs arguments: the token is a variadic
+// `{args[start:end]}` whose range is valid and empty. Issue #184 round 12:
+// a snippet imported at the top level whose first token expands to
+// nothing makes Caddy's parser fail with an index out of range.
+func CaddyfileVariadicEmpty(text string, nargs int) bool {
+	if !strings.HasPrefix(text, "{args[") || !strings.HasSuffix(text, "]}") {
+		return false
+	}
+	rng := strings.TrimSuffix(strings.TrimPrefix(text, "{args["), "]}")
+	start, end, found := strings.Cut(rng, ":")
+	if rng == "" || !found || strings.Contains(start, "}") || strings.Contains(end, "{") {
+		return false
+	}
+	from, to := 0, nargs
+	var err error
+	if start != "" {
+		if from, err = strconv.Atoi(start); err != nil {
+			return false
+		}
+	}
+	if end != "" {
+		if to, err = strconv.Atoi(end); err != nil {
+			return false
+		}
+	}
+	if from < 0 || from > to || to > nargs {
+		return false
+	}
+	return from == to
+}
+
 // cfBlockPlaceholder reports whether a token is `{block}` or
 // `{blocks.NAME}`, which Caddy replaces with the importer's block.
 func cfBlockPlaceholder(text string) bool {
@@ -853,6 +885,7 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 					site.BraceArg = true
 				}
 			}
+			site.ArgCount = j - (i + 2)
 			site.ArgBytes = sumBytes[j] - sumBytes[i+2]
 			site.ArgArgUses = sumArgs[j] - sumArgs[i+2]
 			site.ArgBlockUses = sumBlocks[j] - sumBlocks[i+2]

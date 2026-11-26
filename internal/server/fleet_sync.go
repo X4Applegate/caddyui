@@ -38,6 +38,9 @@ type fleetSyncSummary struct {
 	// skipped on purpose, not lost to a bug.
 	ProxiesSkipped   int
 	RawRoutesSkipped int
+	// Issue #184 round 12: Advanced routes left behind because they still
+	// wait for the upgrade migration (counted in RawRoutesSkipped too).
+	RawRoutesPending int
 	// v2.41.0: file-path certificates whose files CaddyUI could not read were
 	// copied by path reference only — the files must exist on the target.
 	CertificatesByPath int
@@ -65,9 +68,12 @@ func (s fleetSyncSummary) String() string {
 			out += fmt.Sprintf(", %d skipped as node-local", s.Layer4Skipped)
 		}
 	}
-	if s.ProxiesSkipped > 0 || s.RawRoutesSkipped > 0 {
+	if s.ProxiesSkipped > 0 || s.RawRoutesSkipped > s.RawRoutesPending {
 		out += fmt.Sprintf("; skipped as node-local: %d proxies, %d advanced routes",
-			s.ProxiesSkipped, s.RawRoutesSkipped)
+			s.ProxiesSkipped, s.RawRoutesSkipped-s.RawRoutesPending)
+	}
+	if s.RawRoutesPending > 0 {
+		out += fmt.Sprintf("; skipped until the upgrade migration has adapted them again: %d advanced routes", s.RawRoutesPending)
 	}
 	if s.CertificatesByPath > 0 {
 		out += fmt.Sprintf("; %d certificate(s) copied by file path only — the files must exist on the target at the same paths", s.CertificatesByPath)
@@ -748,6 +754,15 @@ func (s *Server) syncFleetConfiguration(actor string, sourceServerID, targetServ
 	for _, rawRoute := range rawRoutes {
 		if rawRoute.NodeLocal { // v2.33.0 — see the proxy loop above
 			summary.RawRoutesSkipped++
+			continue
+		}
+		// Issue #184 round 12: a row still waiting for the upgrade
+		// migration is not deployed on its own server, and a copy would
+		// be a new row the migration does not know: it is skipped until
+		// the migration has adapted it again.
+		if s.rawRouteMigrationPending(rawRoute) {
+			summary.RawRoutesSkipped++
+			summary.RawRoutesPending++
 			continue
 		}
 		result, err := s.upsertFleetRawRoute(sourceServerID, targetServerID, rawRoute, fleetOwnerID(rawRoute.OwnerID))
