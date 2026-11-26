@@ -3,6 +3,7 @@
 package caddy
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -32,7 +33,12 @@ func SplitCaddyfileBlocks(src string) []string {
 
 // cfBlock is one top-level block found by caddyfileBlocks.
 type cfBlock struct {
-	text    string // source text, first head token through the closing brace
+	// text is the block's source: any comment lines just above it (issue
+	// #184 round 11: the Caddyfile paste import stores them with the
+	// block), its first head token, through the closing brace.
+	text string
+	// own is text without those comment lines.
+	own     string
 	head    string // source text before the opening brace, trimmed
 	snippet string // the snippet name when the block defines one, else ""
 	// first indexes the block's first token in toks, open and close its
@@ -66,11 +72,32 @@ func caddyfileBlocks(src string) ([]cfBlock, []cfToken) {
 		}
 		return b
 	}
+	// lead returns where the comment lines just above token i start, or
+	// first(i) when there are none: the first `#` on a line of its own
+	// after the end of the line the previous text ended on.
+	lead := func(prevEnd, i int) int {
+		start := first(i)
+		gap := src[prevEnd:start]
+		if prevEnd > 0 {
+			nl := strings.IndexByte(gap, '\n')
+			if nl < 0 {
+				return start
+			}
+			prevEnd += nl + 1
+			gap = src[prevEnd:start]
+		}
+		if h := strings.IndexByte(gap, '#'); h >= 0 {
+			return prevEnd + h
+		}
+		return start
+	}
 	var blocks []cfBlock
+	prevEnd := 0
 	for i := 0; i < len(toks); {
 		if toks[i].text == "import" && cfIsNewLine(toks, i) {
 			for i++; i < len(toks) && !cfIsNewLine(toks, i); i++ {
 			}
+			prevEnd = endByte[i-1]
 			continue
 		}
 		head := i
@@ -96,45 +123,94 @@ func caddyfileBlocks(src string) ([]cfBlock, []cfToken) {
 			break
 		}
 		closeIdx := i - 1
+		// A token's span runs over the carriage returns Caddy's lexer
+		// skips after it; the block ends at its brace.
+		end := len(strings.TrimRight(src[:endByte[closeIdx]], "\r"))
 		b := cfBlock{
-			// A token's span runs over the carriage returns Caddy's lexer
-			// skips after it; the block ends at its brace.
-			text:      strings.TrimRight(src[first(head):endByte[closeIdx]], "\r"),
+			text:      src[lead(prevEnd, head):end],
+			own:       src[first(head):end],
 			head:      strings.TrimSpace(src[first(head):startByte[openIdx]]),
 			first:     head,
 			open:      openIdx,
 			close:     closeIdx,
 			bodyBytes: startByte[closeIdx] - endByte[openIdx],
 		}
-		// Caddy's isSnippet: the block's one key is `(name)`. CaddyUI also
-		// requires the `{` on the key's line, as Caddy's addresses() does
-		// for any block.
+		prevEnd = endByte[closeIdx]
 		// The closing brace must be written as one: at the end of the
 		// text Caddy also reads `"}` or `}\` as `}`, but such a block would
 		// swallow whatever is put after it.
-		if k := toks[head].text; openIdx == head+1 && !cfIsNewLine(toks, openIdx) &&
-			len(k) >= 2 && strings.HasPrefix(k, "(") && strings.HasSuffix(k, ")") &&
+		if name, ok := cfSnippetName(toks, head, openIdx); ok &&
 			strings.TrimRight(src[startByte[closeIdx]:endByte[closeIdx]], "\r") == "}" {
-			b.snippet = k[1 : len(k)-1]
+			b.snippet = name
 		}
 		blocks = append(blocks, b)
 	}
 	return blocks, toks
 }
 
+// cfSnippetName reports the snippet a block defines whose head is
+// toks[head:open], read as Caddy's parser reads it (issue #184 round 11,
+// parse.go addresses() and isSnippet()): the head's keys — tokens with a
+// trailing comma dropped, and empty ones skipped — are exactly one
+// `(name)`. The list of keys ends at the end of a line unless the line
+// ends with a comma, so the `{` may sit on a later line than the key
+// (`(name)` then `{` on the next line defines a snippet too); a head that
+// runs on past such a line end, ends with a comma, or holds something
+// Caddy refuses in an address is no snippet (Caddy refuses the file).
+func cfSnippetName(toks []cfToken, head, open int) (string, bool) {
+	var keys []string
+	expecting := false
+	for k := head; k < open; k++ {
+		if k > head && !expecting && cfIsNewLine(toks, k) {
+			return "", false
+		}
+		v := toks[k].text
+		if strings.HasPrefix(v, "@") || (!toks[k].quoted && strings.HasSuffix(v, "{")) || (v == "import" && cfIsNewLine(toks, k)) {
+			return "", false
+		}
+		if v == "" {
+			continue
+		}
+		expecting = strings.HasSuffix(v, ",")
+		v = strings.TrimSuffix(v, ",")
+		if strings.Contains(v, ",") {
+			return "", false
+		}
+		if v != "" {
+			keys = append(keys, v)
+		}
+	}
+	if expecting || len(keys) != 1 {
+		return "", false
+	}
+	k := keys[0]
+	if len(k) < 2 || !strings.HasPrefix(k, "(") || !strings.HasSuffix(k, ")") {
+		return "", false
+	}
+	return k[1 : len(k)-1], true
+}
+
 // HeadOfBlock returns the site-address line(s) before a block's opening brace.
 // For "example.com, www.example.com {\n  ...\n}" it returns
 // "example.com, www.example.com". For a global-options block "{ ... }" it returns "".
 // The brace is the first unquoted `{` token, read as Caddy's lexer reads
-// the block (issue #184 round 10).
+// the block (issue #184 round 10); comment lines above the block (which
+// SplitCaddyfileBlocks keeps) are not part of the head.
 func HeadOfBlock(block string) string {
 	if toks, startByte, _, err := lexCaddyfileLenient(block); err == nil {
+		if len(toks) == 0 {
+			return ""
+		}
+		from := startByte[0]
+		for from > 0 && (block[from-1] == ' ' || block[from-1] == '\t' || block[from-1] == '\\') {
+			from--
+		}
 		for i, t := range toks {
 			if t.text == "{" && !t.quoted {
-				return strings.TrimSpace(block[:startByte[i]])
+				return strings.TrimSpace(block[from:startByte[i]])
 			}
 		}
-		return strings.TrimSpace(block)
+		return strings.TrimSpace(block[from:])
 	}
 	i := strings.IndexByte(block, '{')
 	if i < 0 {
@@ -167,16 +243,55 @@ type CaddyfileSnippet struct {
 	BodyBytes int
 	// Depth is how deeply the body nests blocks (0 for a flat body).
 	Depth int
-	// Imports are the `import` directives in the body, with the block
-	// depth (within the body) each one sits at.
+	// Imports are the `import` tokens in the body, wherever they sit
+	// (issue #184 round 11): Caddy executes an `import` that opens the
+	// body or follows an `import … { … }` block on its line, because the
+	// tokens a snippet brings in start a new line wherever they land.
 	Imports []CaddyfileImport
+	// ArgUses counts the `{args` placeholders in the body's tokens: each
+	// can be replaced by the importer's arguments (issue #184 round 11).
+	ArgUses int
+	// BlockUses counts the `{block}` and `{blocks.…}` tokens in the body:
+	// each is replaced by the block the importer writes after the import.
+	BlockUses int
+	// BlockDepth is the deepest block depth (within the body) of such a
+	// token, or -1 when there is none.
+	BlockDepth int
+	// Withheld is set by the server, not here: why a non-admin may not
+	// import the snippet, which is then also left out of the text CaddyUI
+	// adapts for one (issue #184 round 11).
+	Withheld string
 }
 
-// CaddyfileImport is one `import` directive: the name it imports ("" when
-// it has none) and the block depth it sits at.
+// CaddyfileImport is one `import` directive and what it brings in beyond
+// the snippet it names (issue #184 round 11). Sizes are counted in token
+// bytes: each token's text plus one separator.
 type CaddyfileImport struct {
-	Name  string
+	// Name is the snippet or file the import names, "" when it names none.
+	Name string
+	// Depth is the block depth the import sits at.
 	Depth int
+	// Opaque is set when what the import adds cannot be bounded: the
+	// `import` is itself an argument of another import, or passes a
+	// `{block}` as arguments.
+	Opaque bool
+	// ArgBytes is the size of the import's arguments; ArgArgUses and
+	// ArgBlockUses count the snippet placeholders among them.
+	ArgBytes, ArgArgUses, ArgBlockUses int
+	// BraceArg is set when an argument is `{` or `}`: put in a snippet's
+	// place for {args…}, it opens or closes a block.
+	BraceArg bool
+	// BlockBytes is the size of the block written after the import (its
+	// contents, between the braces), 0 when there is none; BlockArgUses
+	// and BlockBlockUses count the snippet placeholders in it.
+	BlockBytes, BlockArgUses, BlockBlockUses int
+	// BlockNest is how deeply the block's contents nest blocks, and
+	// BlockPlaceholderDepth the deepest depth within them of a `{block}`
+	// or `{blocks.…}` token (-1 when there is none).
+	BlockNest, BlockPlaceholderDepth int
+	// Within is 1 + the index of the import whose block holds this one,
+	// or 0 when none does.
+	Within int
 }
 
 // CaddyfileSnippets returns the snippet definitions of src, read the way
@@ -190,17 +305,16 @@ func CaddyfileSnippets(src string) []CaddyfileSnippet {
 		}
 		body := toks[b.open+1 : b.close]
 		depths := cfDepths(body)
-		s := CaddyfileSnippet{Name: b.snippet, Order: len(out), Text: b.text, BodyBytes: b.bodyBytes, Depth: cfMaxNestingDepth(body)}
+		s := CaddyfileSnippet{Name: b.snippet, Order: len(out), Text: b.own, BodyBytes: b.bodyBytes, Depth: cfMaxNestingDepth(body), BlockDepth: -1}
 		for i, t := range body {
-			if t.text != "import" || !cfIsNewLine(toks, b.open+1+i) {
-				continue
+			s.ArgUses += strings.Count(t.text, "{args")
+			if cfBlockPlaceholder(t.text) {
+				s.BlockUses++
+				s.BlockDepth = max(s.BlockDepth, depths[i])
 			}
-			name := ""
-			if i+1 < len(body) && !cfIsNewLine(toks, b.open+2+i) {
-				name = body[i+1].text
-			}
-			s.Imports = append(s.Imports, CaddyfileImport{Name: name, Depth: depths[i]})
 		}
+		// The body's first token starts a line wherever it is written.
+		s.Imports = cfImportSites(body, depths, func(i int) bool { return body[i].text == "import" }, true)
 		out = append(out, s)
 	}
 	return out
@@ -284,19 +398,47 @@ func CaddyfileLineHeads(src string) (heads []string, ok bool) {
 	return heads, true
 }
 
-// CaddyfileHasMultilineValue reports whether a value in src — a quoted or
-// backtick string, or a heredoc — spans more than one line, or whether
-// src cannot be lexed at all. Line-based rewrites of such text would edit
-// inside the value.
-func CaddyfileHasMultilineValue(src string) bool {
-	toks, _, _, err := lexCaddyfileLenient(src)
-	if err != nil {
-		return true
+// MaskCaddyfileValues prepares src for an edit that works line by line
+// (issue #184 round 11): every quoted, backtick or heredoc value is
+// replaced by a one-line stand-in token, and a line Caddy's lexer joins to
+// the previous one with a trailing backslash is put back on that line, so
+// the edit sees each directive whole, on its own line, and cannot change
+// text inside a value; unmask puts the original text back. The stand-ins
+// hold no brace, `#` or space. ok is false when src cannot be read the way
+// Caddy reads it, or already holds the stand-ins' marker characters; the
+// caller must then leave src as it is.
+func MaskCaddyfileValues(src string) (masked string, unmask func(string) string, ok bool) {
+	if strings.ContainsAny(src, "\x01\x02") {
+		return "", nil, false
 	}
-	for _, t := range toks {
-		if t.heredoc || strings.Contains(t.text, "\n") {
-			return true
+	toks, startByte, endByte, err := lexCaddyfileLenient(src)
+	if err != nil {
+		return "", nil, false
+	}
+	var b strings.Builder
+	var pairs []string
+	last := 0
+	for i, t := range toks {
+		if i > 0 && !cfIsNewLine(toks, i) && strings.Contains(src[endByte[i-1]:startByte[i]], "\n") {
+			// A continued line: the gap holds the escaped line break.
+			stand := fmt.Sprintf(" \x02%d\x02 ", len(pairs)/2)
+			b.WriteString(src[last:endByte[i-1]])
+			b.WriteString(stand)
+			pairs = append(pairs, stand, src[endByte[i-1]:startByte[i]])
+			last = startByte[i]
+		}
+		if t.quoted {
+			stand := fmt.Sprintf("\x01%d\x01", len(pairs)/2)
+			b.WriteString(src[last:startByte[i]])
+			b.WriteString(stand)
+			pairs = append(pairs, stand, src[startByte[i]:endByte[i]])
+			last = endByte[i]
 		}
 	}
-	return false
+	if len(pairs) == 0 {
+		return src, func(s string) string { return s }, true
+	}
+	b.WriteString(src[last:])
+	r := strings.NewReplacer(pairs...)
+	return b.String(), r.Replace, true
 }

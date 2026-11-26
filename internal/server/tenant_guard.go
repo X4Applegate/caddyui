@@ -453,24 +453,29 @@ func tenantTextRules(text string, snippets tenantSnippetSet, maxDepth, maxBytes 
 		return "`import` may only start a line that imports a snippet by name"
 	}
 	for _, arg := range use.Arguments {
-		if _, ok := snippets[arg]; !ok || !snippetNameRe.MatchString(arg) {
+		sn, ok := snippets[arg]
+		if ok && sn.Withheld != "" {
+			return fmt.Sprintf("the administrator's snippet %q is not available to non-admin accounts: %s", arg, sn.Withheld)
+		}
+		if !ok || !snippetNameRe.MatchString(arg) {
 			return "`import` may only name a snippet the administrator defined in the server Caddyfile; any other name is read as a file on the Caddy server"
 		}
 	}
 	if len(use.Arguments) > tenantMaxImports {
 		return fmt.Sprintf("the text has %d `import` lines; the limit is %d", len(use.Arguments), tenantMaxImports)
 	}
-	size, depth := len(text), use.MaxDepth
-	memo := map[string]tenantImportCost{}
-	for i, arg := range use.Arguments {
-		c, why := snippets.cost(arg, memo, map[string]bool{})
-		if why != "" {
-			return why
+	for _, imp := range use.Imports {
+		if imp.BraceArg {
+			return "an `import` argument may not be a lone `{` or `}`: in the snippet it opens or closes a block"
 		}
-		size += c.bytes
-		depth = max(depth, use.ImportDepths[i]+c.depth)
 	}
-	if maxBytes > 0 && size > maxBytes {
+	size, depth, why := snippets.importsCost(use.Imports)
+	if why != "" {
+		return why
+	}
+	size = satAdd(size, int64(len(text)))
+	depth = max(depth, use.MaxDepth)
+	if maxBytes > 0 && size > int64(maxBytes) {
 		return fmt.Sprintf("the text is too large once the snippets it imports are counted (%d KiB; the limit is %d KiB)", (size+1023)>>10, maxBytes>>10)
 	}
 	if depth > maxDepth {
@@ -479,17 +484,86 @@ func tenantTextRules(text string, snippets tenantSnippetSet, maxDepth, maxBytes 
 	return ""
 }
 
-// tenantImportCost is what one `import` of a snippet adds to a non-admin's
-// text: the bytes of the snippet's body and of every snippet it imports in
-// turn, and how deeply all of that nests blocks below the import.
+// Import cost (issue #184 round 10, rebuilt in round 11). An `import` of
+// a snippet costs Caddy's adapter what the snippet expands to there: its
+// body; the importer's arguments once for every `{args…}` placeholder in
+// it (a variadic `{args[:]}` puts all of them in); the importer's block
+// once for every `{block}` / `{blocks.…}` token; and, in turn, what every
+// import in the body costs with the arguments and block the body passes
+// it — which may themselves hold placeholders. The bound for a snippet is
+// therefore linear in the importer's argument bytes A and block bytes B:
+// k + a·A + b·B. Depth is bounded the same way in max-plus form: the
+// snippet nests d0 levels below the import, or d1 levels plus the
+// nesting of the importer's block, whichever is deeper. Sizes are token
+// bytes (each token's text and a separator), the unit the importer's
+// arguments and block are measured in; a snippet's own body counts its
+// source bytes, which is never less. Every sum saturates, so a pathological
+// chain cannot overflow — it is just refused.
+
+// tenantImportCost is the cost of one snippet as a function of what an
+// import passes it; see above.
 type tenantImportCost struct {
-	bytes, depth int
+	k, a, b int64 // bytes: k + a·A + b·B
+	d0, d1  int   // depth below the import: max(d0, d1 + nesting of B); d1 < 0 when B is not used
 }
 
-// cost returns the expanded cost of importing name, or why it cannot be
-// counted: an `import` inside the administrator's snippets that names no
-// snippet reads a file whose size is unknown, and snippets that import
-// each other in a cycle never finish expanding (Caddy refuses those too).
+// noDepth marks a d1 that does not apply.
+const noDepth = -1 << 30
+
+const satLimit = int64(1) << 50
+
+func satAdd(x, y int64) int64 {
+	if x+y > satLimit {
+		return satLimit
+	}
+	return x + y
+}
+
+func satMul(x, y int64) int64 {
+	if x == 0 || y == 0 {
+		return 0
+	}
+	if x > satLimit/y {
+		return satLimit
+	}
+	return min(x*y, satLimit)
+}
+
+// linear is k + a·A + b·B.
+type linear struct{ k, a, b int64 }
+
+func (l linear) add(m linear) linear {
+	return linear{satAdd(l.k, m.k), satAdd(l.a, m.a), satAdd(l.b, m.b)}
+}
+
+func (l linear) scale(x int64) linear {
+	return linear{satMul(l.k, x), satMul(l.a, x), satMul(l.b, x)}
+}
+
+// apply is c's bytes for an import that passes arguments A and block B,
+// themselves linear in the enclosing A and B.
+func (c tenantImportCost) apply(args, block linear) linear {
+	return linear{k: c.k}.add(args.scale(c.a)).add(block.scale(c.b))
+}
+
+// depthWith is c's depth below the import for a block nesting nest (a
+// max-plus pair: max(n0, n1 + enclosing block's nesting)).
+func (c tenantImportCost) depthWith(n0, n1 int) (int, int) {
+	if c.d1 == noDepth {
+		return c.d0, noDepth
+	}
+	d1 := noDepth
+	if n1 != noDepth {
+		d1 = c.d1 + n1
+	}
+	return max(c.d0, c.d1+n0), d1
+}
+
+// cost returns what importing name costs, or why it cannot be counted:
+// an `import` inside the administrator's snippets that names no snippet
+// reads a file whose size is unknown, one placed where its expansion
+// cannot be bounded is refused too, and snippets that import each other
+// in a cycle never finish expanding (Caddy refuses those too).
 func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, visiting map[string]bool) (tenantImportCost, string) {
 	if c, ok := memo[name]; ok {
 		return c, ""
@@ -498,22 +572,119 @@ func (set tenantSnippetSet) cost(name string, memo map[string]tenantImportCost, 
 	if !ok {
 		return tenantImportCost{}, fmt.Sprintf("an administrator snippet imports %q, which is not a snippet, so what it adds cannot be counted", name)
 	}
+	if sn.Withheld != "" {
+		return tenantImportCost{}, fmt.Sprintf("the administrator's snippet %q is not available to non-admin accounts: %s", name, sn.Withheld)
+	}
 	if visiting[name] {
 		return tenantImportCost{}, fmt.Sprintf("the administrator's snippet %q imports itself, directly or through another snippet", name)
 	}
 	visiting[name] = true
 	defer delete(visiting, name)
-	c := tenantImportCost{bytes: sn.BodyBytes, depth: sn.Depth}
-	for _, imp := range sn.Imports {
-		child, why := set.cost(imp.Name, memo, visiting)
+	c := tenantImportCost{k: int64(sn.BodyBytes), a: int64(sn.ArgUses), b: int64(sn.BlockUses), d0: sn.Depth, d1: noDepth}
+	if sn.BlockDepth >= 0 {
+		c.d1 = sn.BlockDepth
+	}
+	sites := make([]siteCost, len(sn.Imports))
+	for i := len(sn.Imports) - 1; i >= 0; i-- {
+		imp := sn.Imports[i]
+		if imp.Opaque || imp.Name == "" {
+			return tenantImportCost{}, fmt.Sprintf("the administrator's snippet %q places an `import` where what it adds cannot be counted", name)
+		}
+		t, why := set.cost(imp.Name, memo, visiting)
 		if why != "" {
 			return tenantImportCost{}, why
 		}
-		c.bytes += child.bytes
-		c.depth = max(c.depth, imp.Depth+child.depth)
+		sites[i] = sites[i].finish(t, imp,
+			linear{int64(imp.ArgBytes), int64(imp.ArgArgUses), int64(imp.ArgBlockUses)},
+			linear{int64(imp.BlockBytes), int64(imp.BlockArgUses), int64(imp.BlockBlockUses)})
+		if p := imp.Within - 1; p >= 0 {
+			sites[p] = sites[p].withChild(sites[i], imp.Depth-sn.Imports[p].Depth-1)
+		}
+	}
+	for i, imp := range sn.Imports {
+		if imp.Within > 0 {
+			continue
+		}
+		bytes := linear{c.k, c.a, c.b}.add(sites[i].bytes)
+		c.k, c.a, c.b = bytes.k, bytes.a, bytes.b
+		c.d0 = max(c.d0, imp.Depth+sites[i].d0)
+		if sites[i].d1 != noDepth {
+			c.d1 = max(c.d1, imp.Depth+sites[i].d1)
+		}
 	}
 	memo[name] = c
 	return c, ""
+}
+
+// siteCost is one import site's cost while a snippet's imports are added
+// up: the imports nested in its block (children) are gathered first.
+type siteCost struct {
+	childBytes linear
+	childN0    int // nesting the children add to the block: max(n0, n1 + B)
+	childN1    int
+	hasKids    bool
+	bytes      linear
+	d0, d1     int
+}
+
+func (sc siteCost) withChild(child siteCost, rel int) siteCost {
+	sc.childBytes = sc.childBytes.add(child.bytes)
+	if !sc.hasKids {
+		sc.childN0, sc.childN1, sc.hasKids = rel+child.d0, noDepth, true
+	} else {
+		sc.childN0 = max(sc.childN0, rel+child.d0)
+	}
+	if child.d1 != noDepth {
+		sc.childN1 = max(sc.childN1, rel+child.d1)
+	}
+	return sc
+}
+
+// finish computes the site's own cost once its children are known.
+func (sc siteCost) finish(t tenantImportCost, imp caddy.CaddyfileImport, args, block linear) siteCost {
+	block = block.add(sc.childBytes)
+	sc.bytes = t.apply(args, block)
+	n0, n1 := imp.BlockNest, noDepth
+	if imp.BlockPlaceholderDepth >= 0 {
+		n1 = imp.BlockPlaceholderDepth
+	}
+	if sc.hasKids {
+		n0 = max(n0, sc.childN0)
+		if sc.childN1 != noDepth {
+			n1 = max(n1, sc.childN1)
+		}
+	}
+	sc.d0, sc.d1 = t.depthWith(n0, n1)
+	return sc
+}
+
+// importsCost is what a non-admin's imports add: the expanded bytes of
+// every import outside another import's block (those inside one count
+// where that block is put), and the deepest nesting any of them reaches.
+func (set tenantSnippetSet) importsCost(imports []caddy.CaddyfileImport) (int64, int, string) {
+	memo := map[string]tenantImportCost{}
+	sites := make([]siteCost, len(imports))
+	for i := len(imports) - 1; i >= 0; i-- {
+		imp := imports[i]
+		t, why := set.cost(imp.Name, memo, map[string]bool{})
+		if why != "" {
+			return 0, 0, why
+		}
+		sites[i] = sites[i].finish(t, imp, linear{k: int64(imp.ArgBytes)}, linear{k: int64(imp.BlockBytes)})
+		if p := imp.Within - 1; p >= 0 {
+			sites[p] = sites[p].withChild(sites[i], imp.Depth-imports[p].Depth-1)
+		}
+	}
+	var size int64
+	depth := 0
+	for i, imp := range imports {
+		if imp.Within > 0 {
+			continue
+		}
+		size = satAdd(size, sites[i].bytes.k)
+		depth = max(depth, imp.Depth+sites[i].d0)
+	}
+	return size, depth, ""
 }
 
 // tenantOwnTextViolation is tenantTextViolationWith for a non-admin's own
@@ -578,6 +749,15 @@ func (s *Server) tenantAdaptTextViolation(text string) string {
 	for _, sn := range caddy.CaddyfileSnippets(text) {
 		defined[sn.Name] = true
 	}
+	return undefinedSnippetImport(args, snippets, defined)
+}
+
+// undefinedSnippetImport returns why the text Caddy would adapt does not
+// define a snippet that args import — directly, or through the snippets
+// they import, transitively (snippets says what each imports) — or "".
+// defined holds the snippet names that text defines. An import of a name
+// that text does not define reads a file of that name.
+func undefinedSnippetImport(args []string, snippets tenantSnippetSet, defined map[string]bool) string {
 	for pending, seen := args, map[string]bool{}; len(pending) > 0; {
 		name := pending[0]
 		pending = pending[1:]
@@ -596,7 +776,8 @@ func (s *Server) tenantAdaptTextViolation(text string) string {
 }
 
 // tenantSnippetPrefix is what withTenantSnippets puts ahead of a
-// non-admin's text: every administrator snippet, or "".
+// non-admin's text: every administrator snippet a non-admin may import
+// (none Withheld), or "".
 func tenantSnippetPrefix(snippets tenantSnippetSet) string {
 	return snippetPrefix(snippets.ordered())
 }
@@ -615,7 +796,9 @@ func snippetPrefix(texts []string) string {
 func (set tenantSnippetSet) ordered() []string {
 	list := make([]caddy.CaddyfileSnippet, 0, len(set))
 	for _, sn := range set {
-		list = append(list, sn)
+		if sn.Withheld == "" {
+			list = append(list, sn)
+		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Order < list[j].Order })
 	out := make([]string, 0, len(list))
@@ -657,6 +840,14 @@ func (s *Server) adminSnippets() []string {
 // names a non-admin may `import` (issue #184 round 8) — with what each
 // costs (round 10). Caddy refuses a name defined twice, so does this:
 // such a name is left out, and an import of it is refused.
+//
+// Issue #184 round 11: a snippet a non-admin may not import is marked
+// Withheld, and left out of the text CaddyUI adapts for one (the prefix
+// of withTenantSnippets), so it never makes a non-admin's text fail: one
+// that holds an {env.…}, {file.…} or {$…} placeholder, one whose
+// `import`s name anything but another snippet (a file), or one placed
+// where what it adds cannot be counted, and — transitively — one that
+// imports a withheld snippet.
 func (s *Server) adminSnippetSet() tenantSnippetSet {
 	set := tenantSnippetSet{}
 	dup := map[string]bool{}
@@ -669,16 +860,39 @@ func (s *Server) adminSnippetSet() tenantSnippetSet {
 	for n := range dup {
 		delete(set, n)
 	}
-	return set
-}
-
-// adminSnippetNames returns the names in adminSnippetSet.
-func (s *Server) adminSnippetNames() map[string]bool {
-	names := map[string]bool{}
-	for n := range s.adminSnippetSet() {
-		names[n] = true
+	withhold := func(name, why string) {
+		sn := set[name]
+		sn.Withheld = why
+		set[name] = sn
 	}
-	return names
+	for name, sn := range set {
+		if containsDangerousPlaceholder(sn.Text) {
+			withhold(name, "it reads the Caddy server's environment or files ({env.…}, {file.…} or {$…})")
+			continue
+		}
+		for _, imp := range sn.Imports {
+			if _, ok := set[imp.Name]; imp.Opaque || !ok {
+				withhold(name, "it imports something other than a snippet, such as a file")
+				break
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for name, sn := range set {
+			if sn.Withheld != "" {
+				continue
+			}
+			for _, imp := range sn.Imports {
+				if set[imp.Name].Withheld != "" {
+					withhold(name, fmt.Sprintf("it imports the snippet %q, which is not available to them", imp.Name))
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return set
 }
 
 var (
@@ -808,46 +1022,4 @@ func (s *Server) tenantRawRouteTextProblem(src string) string {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
 	return ""
-}
-
-// legacySnippetShadow reports whether CaddyUI up to v2.68.16 would have
-// left an administrator's snippet that src imports out of the text it
-// adapted for src (issue #184 round 10; see caddy.LegacySnippetHeads).
-func (s *Server) legacySnippetShadow(src string) bool {
-	if s == nil || s.CaddyfilePath == "" {
-		return false
-	}
-	args, _ := caddy.CaddyfileImportArguments(src)
-	if len(args) == 0 {
-		return false
-	}
-	b, err := os.ReadFile(s.CaddyfilePath)
-	if err != nil {
-		return false
-	}
-	own := caddy.LegacySnippetHeads(src)
-	admin := caddy.LegacySnippetHeads(string(b))
-	for _, name := range args {
-		head := "(" + name + ")"
-		if own[head] && admin[head] {
-			return true
-		}
-	}
-	return false
-}
-
-// readaptTenantRawRoute adapts a non-admin's Advanced route text again,
-// exactly as a save does today, and returns the JSON to deploy; ok is
-// false when that fails or the result differs in kind from the stored row
-// (another listen set, or anything the tenant rules refuse).
-func (s *Server) readaptTenantRawRoute(rr models.RawRoute) (string, bool) {
-	cl := s.tenantAdaptClient(s.Caddy)
-	if cl == nil {
-		return "", false
-	}
-	jsonData, listen, result, err := s.adaptRawRouteCaddyfileResult(cl, rr.CaddyfileSrc)
-	if err != nil || listen != rr.Listen || s.tenantRawRouteAdaptedProblem(jsonData, listen, result) != "" {
-		return "", false
-	}
-	return jsonData, true
 }

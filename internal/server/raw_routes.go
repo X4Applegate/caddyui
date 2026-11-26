@@ -1161,6 +1161,9 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	s.Caddy = newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	defer func() { s.Caddy = origClient }()
 	metricsCfg := loadPrometheusMetricsConfig(s.DB)
+	// Issue #184 round 11: rows stored before the upgrade are adapted
+	// again, with this server's Caddy, before they can be deployed.
+	s.migrateTenantRawRoutes(serverID, s.Caddy)
 
 	// Use admin view for sync — all routes must be pushed to Caddy regardless of owner.
 	proxies, err := models.ListProxyHosts(s.DB, serverID, 0, true, nil)

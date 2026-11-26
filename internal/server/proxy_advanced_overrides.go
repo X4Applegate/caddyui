@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
+	"github.com/X4Applegate/caddyui/internal/models"
 )
 
 // v2.40.0: the proxy host's Advanced config box wraps its directives in a
@@ -272,15 +273,23 @@ var transportSubdirectives = []string{
 // (v2.42.1), JSON-style transport names respelled, and transport options
 // under reverse_proxy moved into its transport block.
 //
-// The repairs work line by line, so text with a value that spans lines (a
-// quoted or backtick string, a heredoc) is left exactly as written: a
-// repair would otherwise move or edit lines inside the value (issue #184
-// round 10). Such text is adapted as typed.
+// The repairs work line by line, so they run on the text with every
+// quoted, backtick or heredoc value masked (caddy.MaskCaddyfileValues):
+// a value that spans lines, or holds a brace or `#`, is never edited or
+// split, and the lines around it are repaired as usual (issue #184 round
+// 11; round 10 skipped every repair for such text, which left a bare
+// sub-directive unrepaired and the config failing to adapt). Text Caddy's
+// lexer cannot read is left as typed.
 func normalizeProxyAdvancedConfig(src string) string {
-	if caddy.CaddyfileHasMultilineValue(src) {
+	masked, unmask, ok := caddy.MaskCaddyfileValues(src)
+	if !ok {
 		return src
 	}
-	return relocateTransportSubdirectives(respellTransportAliases(wrapBareReverseProxySubdirectives(src)))
+	out := relocateTransportSubdirectives(respellTransportAliases(wrapBareReverseProxySubdirectives(masked)))
+	if out == masked {
+		return src
+	}
+	return unmask(out)
 }
 
 func advancedFirstToken(line string) string {
@@ -437,4 +446,76 @@ func friendlyAdvancedRejection(err error) string {
 	}
 	hint += " Caddyfile names differ from the JSON ones (read_buffer_size → read_buffer, write_buffer_size → write_buffer, max_response_header_size → max_response_header); transport options belong inside `transport http { … }` within the reverse_proxy block; and most have a dedicated option in this form — Upstream → timeouts and buffers, Streaming → Flush immediately — which is the simplest place for them."
 	return "Advanced config rejected by Caddy: " + hint + " Caddy said: " + msg
+}
+
+// syncAdaptProxyAdvanced adapts a proxy host's Advanced config for the
+// live sync: a non-admin's text is held to the tenant rules first and
+// adapted through the same check as at save (issue #184 round 10), so a
+// row stored by an earlier version, or by a path that skipped a check, is
+// held to today's rules. why is "" on success, else why the config cannot
+// be applied ({$ENV} is substituted while adapting and an `import` of a
+// file reads it, so a refused text is never sent to Caddy).
+func (s *Server) syncAdaptProxyAdvanced(p models.ProxyHost) ([]any, map[string]any, string) {
+	cl := s.Caddy
+	if s.isTenantOwner(p.OwnerID) {
+		if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
+			return nil, nil, "not allowed for a non-admin owner: " + why
+		}
+		cl = s.tenantAdaptClient(cl)
+	}
+	h, overrides, err := s.adaptProxyAdvancedWithClient(cl, p)
+	if err != nil {
+		return nil, nil, err.Error()
+	}
+	return h, overrides, ""
+}
+
+// advancedFailedRoute is what a proxy host whose Advanced config cannot be
+// applied serves (issue #184 round 11): its own host match, answered with
+// a 503 — not left out, which would let a wildcard host or the fallback
+// route answer for it, and not a bare reverse_proxy, which would drop
+// whatever the Advanced config added (authentication, for one).
+func advancedFailedRoute(p models.ProxyHost) map[string]any {
+	route := map[string]any{
+		"handle": []any{map[string]any{
+			"handler":     "static_response",
+			"status_code": 503,
+			"headers":     map[string]any{"Content-Type": []any{"text/plain; charset=utf-8"}, "Retry-After": []any{"300"}},
+			"body":        "503 Service Unavailable: this site's configuration could not be applied. The site's administrator has been notified in CaddyUI.\n",
+		}},
+		"terminal": true,
+	}
+	if m, ok := caddy.BuildProxyRoute(p, nil)["match"]; ok {
+		route["match"] = m
+	}
+	return route
+}
+
+// noteAdvancedFailure records, in the activity log, when a proxy host's
+// Advanced config starts failing to apply at sync — and when it applies
+// again — once per change rather than on every sync. why is "" when it
+// applied.
+func (s *Server) noteAdvancedFailure(p models.ProxyHost, why string) {
+	if s == nil || s.DB == nil {
+		return
+	}
+	s.advFailMu.Lock()
+	prev, known := s.advFail[p.ID]
+	if s.advFail == nil {
+		s.advFail = map[int64]string{}
+	}
+	if why == "" {
+		delete(s.advFail, p.ID)
+	} else {
+		s.advFail[p.ID] = why
+	}
+	s.advFailMu.Unlock()
+	switch {
+	case why != "" && prev != why:
+		_ = models.LogActivity(s.DB, p.ServerID, "system", "proxy_advanced_failed", fmt.Sprintf("ph:%d", p.ID),
+			p.Domains+": the Advanced config could not be applied, so the host answers 503 until it is fixed: "+why, false)
+	case why == "" && known:
+		_ = models.LogActivity(s.DB, p.ServerID, "system", "proxy_advanced_restored", fmt.Sprintf("ph:%d", p.ID),
+			p.Domains+": the Advanced config applies again", true)
+	}
 }

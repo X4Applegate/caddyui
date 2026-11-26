@@ -557,7 +557,11 @@ func checkCaddyfileSnippet(src string) (string, bool) {
 	if toks[0].quoted || !strings.HasPrefix(head, "(") || !strings.HasSuffix(head, ")") || !snippetNameRe.MatchString(head[1:len(head)-1]) {
 		return "", false
 	}
-	site := "snippet.invalid " + src[strings.Index(src, head)+len(head):]
+	// Caddy also reads a snippet whose `{` sits on a later line than its
+	// `(name)` (issue #184 round 11); the stand-in site puts it on the
+	// address's line.
+	rest := strings.TrimLeft(src[strings.Index(src, head)+len(head):], " \t\r\n")
+	site := "snippet.invalid " + rest
 	sites, err := checkCaddyfileSites(site, nil)
 	if err != nil || len(sites) != 1 || len(sites[0].addrs) != 1 {
 		return "", false
@@ -639,10 +643,11 @@ func CaddyfileImportArguments(src string) (args []string, ok bool) {
 // still up to 100× the token count (measured on Caddy 2.11.9: 1 MB nested
 // 10 deep peaked at ~760 MB, 1 MB nested 100 deep exceeded 3 GB). Non-admin
 // text is held by the server to 64 KiB, 32 levels and 16 imports, each
-// import counted at the size and depth it expands to (issue #184 round 10);
-// the heaviest text built within those limits peaked at ~185 MB in one
-// adapt (cgroup memory.peak), ~250 MB at the looser bound for text CaddyUI
-// wraps around it. An administrator's text is trusted beyond this depth
+// import counted at an upper bound of what it expands to — arguments and
+// blocks it passes included (issue #184 round 11); the heaviest text built
+// within those limits peaked at ~235 MB in one adapt (cgroup memory.peak,
+// Caddy 2.11.9), ~315 MB at the looser bound for text CaddyUI wraps around
+// it. An administrator's text is trusted beyond this depth
 // limit. The depth is counted the way Caddy's own lexer reads the text, so
 // text CaddyUI's strict lexer refuses is limited too.
 const MaxCaddyfileNestingDepth = 100
@@ -710,10 +715,13 @@ func cfDepths(toks []cfToken) []int {
 // or `{x args.1}` is not one. For `args.` Caddy replaces the key only when
 // the rest is an integer (strconv.Atoi); `{args.x}`, as in a JavaScript
 // template literal, is left as text (issue #184 round 10). A key ends at
-// the first `}` that is not escaped; escapes are not modelled, so any later
-// `}` is also taken as a possible end, which only finds more.
+// the first `}` that is not escaped, so `{args.` is a placeholder exactly
+// when an optional sign and at least one digit follow, then `}` (a digit
+// never escapes it). Every `{` starts a key, escaped or not: escapes are
+// not modelled, which only finds more. The scan is linear (issue #184
+// round 11: it used to try every later `}` for every `{args.`).
 func cfSnippetPlaceholder(text string) bool {
-	if text == "{block}" || (strings.HasPrefix(text, "{blocks.") && strings.HasSuffix(text, "}")) {
+	if cfBlockPlaceholder(text) {
 		return true
 	}
 	if !strings.Contains(text, "{args") {
@@ -724,15 +732,16 @@ func cfSnippetPlaceholder(text string) bool {
 		rest := text[i+1:]
 		switch {
 		case strings.HasPrefix(rest, "args."):
-			for j := strings.IndexByte(rest, '}'); j >= 0; {
-				if cfArgsIndexKeyRe.MatchString(rest[:j]) {
-					return true
-				}
-				next := strings.IndexByte(rest[j+1:], '}')
-				if next < 0 {
-					break
-				}
-				j += 1 + next
+			j := len("args.")
+			if j < len(rest) && (rest[j] == '+' || rest[j] == '-') {
+				j++
+			}
+			digits := j
+			for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+				j++
+			}
+			if j > digits && j < len(rest) && rest[j] == '}' {
+				return true
 			}
 		case strings.HasPrefix(rest, "args[") && lastBracketClose > i+6:
 			return true // {args[…]}: at least one character inside
@@ -746,9 +755,124 @@ func cfSnippetPlaceholder(text string) bool {
 	return false
 }
 
-// cfArgsIndexKeyRe is a deprecated `{args.N}` key Caddy replaces: the
-// index must parse with strconv.Atoi.
-var cfArgsIndexKeyRe = regexp.MustCompile(`^args\.[+-]?[0-9]+$`)
+// cfBlockPlaceholder reports whether a token is `{block}` or
+// `{blocks.NAME}`, which Caddy replaces with the importer's block.
+func cfBlockPlaceholder(text string) bool {
+	return text == "{block}" || (strings.HasPrefix(text, "{blocks.") && strings.HasSuffix(text, "}"))
+}
+
+// cfImportSites describes the `import` directives among toks (depths is
+// cfDepths(toks)): those at the indexes isImport accepts. An import's
+// arguments are the tokens after its name on its line, up to an unquoted
+// `{`; a `{` that ends the arguments opens the import's block, which runs
+// to the `}` that brings the depth back (as cfDepths counts it, which
+// errs towards a longer block). bodyStart says toks is a snippet's body,
+// whose imports Caddy may execute wherever they sit: an `import` that is
+// an argument of another import is then marked Opaque, as is one whose
+// arguments hold a `{block}`. Every block is measured in one pass over
+// the tokens, so the cost is linear however the imports nest.
+func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, bodyStart bool) []CaddyfileImport {
+	n := len(toks)
+	// For each unquoted `{`: the index of its closing `}` (n when it does
+	// not close), the depth after the deepest `{` inside it, and the
+	// deepest depth of a {block} placeholder inside it (-1 for none).
+	closeOf := make([]int, n)
+	innerMax := make([]int, n)
+	phMax := make([]int, n)
+	var stack []int
+	pop := func(at int) {
+		o := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		closeOf[o] = at
+		if len(stack) > 0 {
+			p := stack[len(stack)-1]
+			innerMax[p] = max(innerMax[p], innerMax[o])
+			phMax[p] = max(phMax[p], phMax[o])
+		}
+	}
+	// Running sums for the size and placeholder counts of a range.
+	sumBytes := make([]int, n+1)
+	sumArgs := make([]int, n+1)
+	sumBlocks := make([]int, n+1)
+	for k, t := range toks {
+		sumBytes[k+1] = sumBytes[k] + len(t.text) + 1
+		sumArgs[k+1] = sumArgs[k] + strings.Count(t.text, "{args")
+		sumBlocks[k+1] = sumBlocks[k]
+		if cfBlockPlaceholder(t.text) {
+			sumBlocks[k+1]++
+			if len(stack) > 0 {
+				o := stack[len(stack)-1]
+				phMax[o] = max(phMax[o], depths[k])
+			}
+		}
+		if t.quoted {
+			continue
+		}
+		switch t.text {
+		case "{":
+			closeOf[k], innerMax[k], phMax[k] = n, depths[k]+1, -1
+			stack = append(stack, k)
+		case "}":
+			if len(stack) > 0 && (k+1 >= n || cfIsNewLine(toks, k+1)) {
+				pop(k)
+			}
+		}
+	}
+	for len(stack) > 0 {
+		pop(n)
+	}
+	var sites []CaddyfileImport
+	type open struct{ site, from, to int }
+	var within []open // the blocks of the imports enclosing the current token
+	argOf := make([]bool, n)
+	isOpen := func(i int) bool { return !toks[i].quoted && toks[i].text == "{" }
+	for i := range toks {
+		if !isImport(i) {
+			continue
+		}
+		for len(within) > 0 && within[len(within)-1].to <= i {
+			within = within[:len(within)-1]
+		}
+		site := CaddyfileImport{Depth: depths[i], BlockPlaceholderDepth: -1, Opaque: bodyStart && argOf[i]}
+		// Blocks that open after i belong to earlier imports on i's own
+		// line (i is one of their arguments); the one below them holds i.
+		for w := len(within) - 1; w >= 0; w-- {
+			if within[w].from <= i {
+				site.Within = within[w].site + 1
+				break
+			}
+		}
+		j := i + 1
+		if j < n && !cfIsNewLine(toks, j) && !isOpen(j) {
+			site.Name = toks[j].text
+			argOf[j] = true
+			for j++; j < n && !cfIsNewLine(toks, j) && !isOpen(j); j++ {
+				t := toks[j].text
+				argOf[j] = true
+				if t == "{" || t == "}" {
+					site.BraceArg = true
+				}
+			}
+			site.ArgBytes = sumBytes[j] - sumBytes[i+2]
+			site.ArgArgUses = sumArgs[j] - sumArgs[i+2]
+			site.ArgBlockUses = sumBlocks[j] - sumBlocks[i+2]
+			site.Opaque = site.Opaque || (bodyStart && site.ArgBlockUses > 0)
+		}
+		if j < n && !cfIsNewLine(toks, j) && isOpen(j) {
+			from, to := j+1, closeOf[j]
+			site.BlockBytes = sumBytes[to] - sumBytes[from]
+			site.BlockArgUses = sumArgs[to] - sumArgs[from]
+			site.BlockBlockUses = sumBlocks[to] - sumBlocks[from]
+			site.BlockNest = innerMax[j] - (depths[j] + 1)
+			if phMax[j] >= 0 {
+				site.BlockPlaceholderDepth = phMax[j] - depths[j] - 1
+			}
+			within = append(within, open{site: len(sites), from: from, to: to})
+		}
+		sites = append(sites, site)
+	}
+	return sites
+}
 
 // CaddyfileImports is what CaddyfileImportUse finds in a Caddyfile.
 type CaddyfileImports struct {
@@ -775,6 +899,9 @@ type CaddyfileImports struct {
 	// `import` sits at (issue #184 round 10: what a snippet nests is added
 	// to it).
 	ImportDepths []int
+	// Imports describes, for each entry of Arguments, what the import
+	// passes to its snippet: its arguments and block (issue #184 round 11).
+	Imports []CaddyfileImport
 }
 
 // CaddyfileImportUse reports how src uses `import` and snippets, reading
@@ -791,7 +918,7 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 	// site addresses (parse.go addresses()). onlyDropped is true while the
 	// current address list has held nothing but keys Caddy drops; a list
 	// starts on a new line unless the previous key ended with a comma.
-	depth, onlyDropped, continued := 0, false, false
+	depth, onlyDropped, continued, afterSite := 0, false, false, false
 	for i, t := range toks {
 		newLine := cfIsNewLine(toks, i)
 		paren := func(s string) bool { return len(s) >= 2 && strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") }
@@ -803,7 +930,10 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 		}
 		structural := !t.quoted && (t.text == "{" || t.text == "}")
 		if depth == 0 && !structural {
-			if newLine && !continued {
+			// A new list of addresses starts on a new line, and right
+			// after a top-level block closes (issue #184 round 11:
+			// `} (name) {` on one line defines a snippet too).
+			if (newLine || afterSite) && !continued {
 				onlyDropped = true
 			}
 			key := strings.TrimSuffix(t.text, ",")
@@ -817,12 +947,14 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 			}
 			continued = strings.HasSuffix(t.text, ",")
 		}
+		afterSite = false
 		if structural {
 			continued = false
 			if t.text == "{" {
 				depth++
 			} else if depth > 0 {
 				depth--
+				afterSite = depth == 0
 			}
 		}
 		if t.text != "import" {
@@ -839,6 +971,7 @@ func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 		use.Arguments = append(use.Arguments, arg)
 		use.ImportDepths = append(use.ImportDepths, depths[i])
 	}
+	use.Imports = cfImportSites(toks, depths, func(i int) bool { return toks[i].text == "import" && cfIsNewLine(toks, i) }, false)
 	return use, true
 }
 

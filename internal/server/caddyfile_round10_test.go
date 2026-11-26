@@ -213,29 +213,45 @@ func lookalikeNeverReadsAFile(t *testing.T, name string, c [2]string) {
 
 // Issue #184 round-9 review (1): a non-admin's Advanced route stored by an
 // earlier version from such a text carries the planted file in its JSON.
-// The live sync adapts its text again, the way a save does now, and
-// deploys only that; when that cannot be done the route is not deployed,
-// on srv0 or on its own listener.
+// Round 11: the upgrade migration adapts its text again, the way a save
+// does now, and only that result is deployed; until then, and when that
+// cannot be done, the route is not deployed, on srv0 or on its own
+// listener.
 func TestStoredTenantRouteThatHidTheAdminSnippetIsAdaptedAgain(t *testing.T) {
-	leaked := func(id int64, owner int64, listen string) models.RawRoute {
-		return models.RawRoute{ID: id, Label: "legacy", Enabled: true, Listen: models.NormalizeRawRouteListen([]string{listen}), OwnerID: sql.NullInt64{Int64: owner, Valid: true},
+	store := func(t *testing.T, conn *sql.DB, sid, owner int64, listen string) {
+		t.Helper()
+		if _, err := models.CreateRawRoute(conn, sid, owner, &models.RawRoute{Label: "legacy", Enabled: true,
+			Listen:       models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(listen)),
 			CaddyfileSrc: strings.Replace(round10Lookalikes["backtick"][0], "bt.example.test", "bt.example.test"+listen, 1),
-			JSONData:     `{"match":[{"host":["bt.example.test"]}],"handle":[{"handler":"headers","response":{"set":{"X-Planted":["` + round10Secret + `"]}}}]}`}
+			JSONData:     `{"match":[{"host":["bt.example.test"]}],"handle":[{"handler":"headers","response":{"set":{"X-Planted":["` + round10Secret + `"]}}}]}`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	built := func(s *Server, conn *sql.DB, sid, admin int64) (string, string) {
+		raws, _ := models.ListRawRoutes(conn, sid, admin, true, nil)
+		live, _ := json.Marshal(s.buildMergedRoutes(nil, nil, raws))
+		listeners, _ := json.Marshal(s.buildRawListenServers(raws))
+		return string(live), string(listeners)
 	}
 	// Without a working adapter: not deployed, and no listener.
-	s, _, _, rec, _, tenant := newAdaptRecorderFixture(t)
+	s, conn, sid, rec, admin, tenant := newAdaptRecorderFixture(t)
 	s.CaddyfilePath = filepath.Join(t.TempDir(), "Caddyfile")
 	if err := os.WriteFile(s.CaddyfilePath, []byte(round10AdminSnippet+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	raws := []models.RawRoute{leaked(1, tenant.ID, ""), leaked(2, tenant.ID, ":7070")}
-	live, _ := json.Marshal(s.buildMergedRoutes(nil, nil, raws))
-	listeners, _ := json.Marshal(s.buildRawListenServers(raws))
-	if strings.Contains(string(live)+string(listeners), round10Secret) {
-		t.Errorf("a stored route carrying a file Caddy read was deployed: %s %s", live, listeners)
-	}
-	if strings.Contains(string(listeners), "7070") {
-		t.Errorf("a route that is not deployed opened its listener: %s", listeners)
+	store(t, conn, sid, tenant.ID, "")
+	store(t, conn, sid, tenant.ID, ":7070")
+	for _, migrated := range []bool{false, true} {
+		if migrated {
+			s.migrateTenantRawRoutes(sid, s.Caddy)
+		}
+		live, listeners := built(s, conn, sid, admin.ID)
+		if strings.Contains(live+listeners, round10Secret) {
+			t.Errorf("migrated=%v: a stored route carrying a file Caddy read was deployed: %s %s", migrated, live, listeners)
+		}
+		if strings.Contains(listeners, "7070") {
+			t.Errorf("migrated=%v: a route that is not deployed opened its listener: %s", migrated, listeners)
+		}
 	}
 	for _, body := range rec.seen() {
 		if !strings.Contains(body, round10AdminSnippet) {
@@ -243,10 +259,12 @@ func TestStoredTenantRouteThatHidTheAdminSnippetIsAdaptedAgain(t *testing.T) {
 		}
 	}
 	// With Caddy: the route is deployed as its text adapts today.
-	s2, _, _, _, bin, _, tenant2 := newPlantedAdaptFixture(t)
+	s2, conn2, sid2, _, bin, admin2, tenant2 := newPlantedAdaptFixture(t)
 	requireCaddy(t, bin, "the stored route is adapted again with Caddy")
-	live, _ = json.Marshal(s2.buildMergedRoutes(nil, nil, []models.RawRoute{leaked(1, tenant2.ID, "")}))
-	if strings.Contains(string(live), round10Secret) || !strings.Contains(string(live), "X-Tag") {
+	store(t, conn2, sid2, tenant2.ID, "")
+	s2.migrateTenantRawRoutes(sid2, s2.Caddy)
+	live, _ := built(s2, conn2, sid2, admin2.ID)
+	if strings.Contains(live, round10Secret) || !strings.Contains(live, "X-Tag") {
 		t.Errorf("want the route adapted again with the administrator's snippet: %s", live)
 	}
 }

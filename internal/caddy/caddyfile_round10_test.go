@@ -114,10 +114,12 @@ func TestSplitterAgreesWithTheLexer(t *testing.T) {
 			if last := sub[len(sub)-1]; depth != 0 || last.text != "}" || last.quoted {
 				t.Fatalf("%q: block %q does not end on its balancing brace", src, bl.text)
 			}
+			// Round 11: a snippet's key is read as Caddy's addresses()
+			// reads it (cfSnippetName; checked against Caddy in
+			// TestSnippetDefinitionFormsAgreeWithCaddy).
 			want := ""
-			if k := sub[0].text; bl.open == bl.first+1 && sub[1].line == sub[0].line+sub[0].lineBreak && strings.HasSuffix(bl.text, "}") &&
-				len(k) >= 2 && strings.HasPrefix(k, "(") && strings.HasSuffix(k, ")") {
-				want = k[1 : len(k)-1]
+			if name, ok := cfSnippetName(all, bl.first, bl.open); ok && strings.HasSuffix(bl.text, "}") {
+				want = name
 			}
 			if bl.snippet != want {
 				t.Fatalf("%q: block %q: snippet %q, want %q", src, bl.text, bl.snippet, want)
@@ -310,7 +312,7 @@ func TestNestingDepthCountsEveryBlockKind(t *testing.T) {
 		t.Errorf("mixed: depth %d, import depths %v", use.MaxDepth, use.ImportDepths)
 	}
 	sn := CaddyfileSnippets("(s) {\n\troute {\n\t\theader {\n\t\t\timport t\n\t\t}\n\t}\n}\n(t) {\n\tX-A b\n}\n")
-	if len(sn) != 2 || sn[0].Depth != 2 || len(sn[0].Imports) != 1 || sn[0].Imports[0] != (CaddyfileImport{Name: "t", Depth: 2}) || sn[1].Depth != 0 {
+	if len(sn) != 2 || sn[0].Depth != 2 || len(sn[0].Imports) != 1 || sn[0].Imports[0].Name != "t" || sn[0].Imports[0].Depth != 2 || sn[1].Depth != 0 {
 		t.Errorf("snippet body depths: %+v", sn)
 	}
 }

@@ -61,6 +61,14 @@ type Server struct {
 	pendingTOTP sync.Map   // token → userID (int64), auto-deleted after 5 min
 	setupMu     sync.Mutex // serializes first-run setup (see postSetup)
 	syncMu      sync.Mutex // serializes syncCaddy: it swaps the shared s.Caddy client
+	// rawMigMu guards rawMig, the state of the one-time migration of
+	// non-admin Advanced routes (tenant_raw_migration.go, issue #184).
+	rawMigMu sync.Mutex
+	rawMig   tenantRawMigration
+	// advFail is the last reason, per proxy host, its Advanced config
+	// failed to apply at sync (noteAdvancedFailure).
+	advFailMu sync.Mutex
+	advFail   map[int64]string
 	// pendingTOTPAttempts counts wrong second-factor codes per pending token
 	// (token → *int32) so one password check cannot buy unlimited guesses.
 	pendingTOTPAttempts sync.Map
@@ -168,6 +176,7 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	}
 	go s.runHealthChecker()
 	go s.runAutoSyncLoop()
+	go s.runTenantRawRouteMigration() // issue #184 round 11
 	go s.runFleetDeletionReconciler() // v2.59.0 (issue #120)
 	go s.runMaintenanceWindowLoop()
 	go s.runActivityLogCleanup()
@@ -5170,31 +5179,22 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 		}
 		var advanced []any
 		var advancedOverrides map[string]any
-		if strings.TrimSpace(p.AdvancedConfig) != "" && s.isTenantOwner(p.OwnerID) && s.tenantOwnTextViolation(p.AdvancedConfig) != "" {
-			// {$ENV} is substituted by Caddy while ADAPTING, so the value would
-			// already be baked into the handlers; refuse before adapting.
-			// Issue #184 round 8: so is an `import` of a file, and deeply
-			// nested text costs the live Caddy's adapter its memory.
-			log.Printf("caddy sync: proxy id=%d advanced_config skipped, not allowed for a non-admin owner: %s", p.ID, s.tenantOwnTextViolation(p.AdvancedConfig))
-		} else if strings.TrimSpace(p.AdvancedConfig) != "" {
-			// Issue #184 round 10: a non-admin's text is adapted through the
-			// same check as at save — the administrator's snippets always
-			// ahead of it, every import resolved to one and counted at its
-			// expanded size — so a row stored by an earlier version, or by a
-			// path that skipped a check, is held to today's rules.
-			cl := s.Caddy
-			if s.isTenantOwner(p.OwnerID) {
-				cl = s.tenantAdaptClient(cl)
+		if strings.TrimSpace(p.AdvancedConfig) != "" {
+			// Issue #184 round 11: an Advanced config that cannot be
+			// applied — refused by the tenant rules, or not adapted by
+			// Caddy — no longer leaves the host deployed as a bare
+			// reverse_proxy: whatever the config added (authentication,
+			// an access rule) would be gone. The host answers 503 instead,
+			// for every owner, until the config is fixed.
+			h, overrides, why := s.syncAdaptProxyAdvanced(p)
+			if why != "" {
+				log.Printf("caddy sync: proxy id=%d (%s): its Advanced config could not be applied, so the host answers 503 until it is fixed: %s", p.ID, p.Domains, why)
+				s.noteAdvancedFailure(p, why)
+				routes = append(routes, advancedFailedRoute(p))
+				continue
 			}
-			h, overrides, err := s.adaptProxyAdvancedWithClient(cl, p)
-			if err != nil {
-				// Don't fail the whole sync — log and push the route without advanced
-				// handlers. The form-level validation should have caught bad syntax
-				// before save, so this branch is for rare drift cases.
-				log.Printf("caddy sync: proxy id=%d advanced_config adapt failed: %v", p.ID, err)
-			} else {
-				advanced, advancedOverrides = h, overrides
-			}
+			s.noteAdvancedFailure(p, "")
+			advanced, advancedOverrides = h, overrides
 		}
 		route := caddy.BuildProxyRoute(p, append(preHandlers, advanced...))
 		caddy.MergeReverseProxyOverrides(route, advancedOverrides)
@@ -5467,19 +5467,12 @@ func (s *Server) tenantSafeRawEntries(rr models.RawRoute) []any {
 		log.Printf("caddy sync: advanced route id=%d skipped, its Caddyfile is not allowed for a non-admin owner", rr.ID)
 		return nil
 	}
-	// Issue #184 round 10: up to v2.68.16 the administrator's snippet
-	// could be left out of the text adapted for such a row (see
-	// caddy.LegacySnippetHeads), and an `import` of it then read a file
-	// into the stored JSON. Such a row's stored JSON is not trusted: its
-	// text is adapted again, the way a save adapts it today, and only that
-	// result is deployed.
-	if strings.TrimSpace(rr.CaddyfileSrc) != "" && s.legacySnippetShadow(rr.CaddyfileSrc) {
-		jsonData, ok := s.readaptTenantRawRoute(rr)
-		if !ok {
-			log.Printf("caddy sync: advanced route id=%d skipped, its Caddyfile could not be adapted again for a non-admin owner", rr.ID)
-			return nil
-		}
-		rr.JSONData = jsonData
+	// Issue #184 round 11: a row the one-time upgrade migration has not
+	// adapted again yet is not deployed (tenant_raw_migration.go): its
+	// stored JSON may hold a file an `import` read up to v2.68.16.
+	if s.rawRouteMigrationPending(rr.ID) {
+		log.Printf("caddy sync: advanced route id=%d skipped until it is adapted again under the current rules (upgrade migration)", rr.ID)
+		return nil
 	}
 	entries := rawRouteEntries(rr)
 	out := make([]any, 0, len(entries))

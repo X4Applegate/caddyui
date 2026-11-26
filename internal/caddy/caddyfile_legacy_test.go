@@ -10,8 +10,9 @@ import "strings"
 // and comments but not backtick strings or heredocs, so text inside one
 // could read to it as a `(name) { … }` block Caddy never sees; the
 // administrator's snippet of that name was then left out of the text sent
-// to Caddy, and an `import` of it read a file instead. The server uses
-// this only to find rows stored that way. It is the old code, unchanged.
+// to Caddy, and an `import` of it read a file instead. CaddyUI keeps
+// it only in tests, to show a fixture fooled the old splitter. It is the
+// old code, unchanged.
 func LegacySnippetHeads(src string) map[string]bool {
 	out := map[string]bool{}
 	for _, block := range legacySplitCaddyfileBlocks(src) {
