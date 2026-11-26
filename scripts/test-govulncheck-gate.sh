@@ -412,6 +412,49 @@ fi
 OUT="$TMP/out.$n"
 want_not_in "GO-0000-0000 |" "32b and the forged id is not rendered as its own advisory"
 
+# ---------------------------------------------------------------------------
+# 33. AN UNPARSED STREAM IS NOT AN EMPTY ONE.
+#
+#     The row filter used to end in `|| { : > "$rows_file"; }`: when it
+#     failed, the rows file was truncated and the run carried on, so `total`,
+#     `called_total` and `called_live` all read 0 and the report said "no
+#     findings" with exit 0. A full clean pass, produced by a parser that had
+#     failed.
+#
+#     Case 18 already covers a stream that is not JSON at all. This is the
+#     harder one: the fixture IS valid JSON, so it passes the `jq -e .`
+#     validity check, and it breaks the filter one level further in -- a
+#     non-string `.osv.id` makes `from_entries` fail. And it carries a CALLED
+#     finding, so the old behaviour hid exactly what the gate exists to catch.
+# ---------------------------------------------------------------------------
+n=$((n+1))
+if jq -e . "$FIX/unparseable-osv-id.json" >/dev/null 2>&1; then
+  ok "33 the crafted stream is valid JSON, so it passes the validity check"
+else
+  bad "33 the crafted stream is not valid JSON, so case 33a proves nothing"
+fi
+
+n=$((n+1))
+if [ "$(jq -s -r 'map(select(.finding)|.finding)|map(select(.trace[0].function))|length' "$FIX/unparseable-osv-id.json")" = 1 ]; then
+  ok "33a and it carries a called finding, which is what must not be lost"
+else
+  bad "33a the crafted stream no longer carries a called finding"
+fi
+
+run "$FIX/unparseable-osv-id.json" --fail-on called
+want_rc 3 "33b a stream that cannot be parsed into findings is could-not-run, not clean"
+want_in "could not run" "33c and says so"
+want_in "not an empty one" "33d naming why an unparsed stream is not an empty one"
+want_not_in "no findings" "33e and never reports 'no findings'"
+
+n=$((n+1)); rm -rf "$TMP/o.$n"
+GITHUB_OUTPUT="$TMP/gh33" "$SCRIPT" --source "$TMP" --gomod "$TMP/go.mod" --acks none \
+  --out-dir "$TMP/o.$n" --offline-fixture "$FIX/unparseable-osv-id.json" \
+  --fail-on called > /dev/null 2>&1
+OUT="$TMP/gh33"
+want_in "verdict=unknown" "33f and writes verdict=unknown"
+want_in "called=unknown" "33g and refuses to report a called count of 0"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

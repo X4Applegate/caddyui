@@ -654,7 +654,11 @@ fi
 # ---------------------------------------------------------------------------
 # Could not run — one exit, one honest report.
 # ---------------------------------------------------------------------------
-if [ "$could_not_run" = 1 ]; then
+# A function rather than an inline block, because the classifier below can
+# also discover that it cannot answer -- and reaching that conclusion after
+# this point must produce the SAME exit 3 and the same honest report, not a
+# second, weaker story.
+emit_unknown() {
   {
     echo "### govulncheck — **could not run** (reachability unknown)"
     echo
@@ -676,6 +680,10 @@ if [ "$could_not_run" = 1 ]; then
   printf '::error::%s: the reachability scan of %s could not run, so its result is UNKNOWN, not clean\n' "$PROG" "$LABEL"
   for n in "${notes[@]}"; do printf '::error::%s\n' "$n"; done
   exit 3
+}
+
+if [ "$could_not_run" = 1 ]; then
+  emit_unknown
 fi
 
 # ---------------------------------------------------------------------------
@@ -717,7 +725,19 @@ jq -s -r '
   | map(split("\t") | join(" ") | split("\n") | join(" ")
         | split("\r") | join(" ") | split("\u001f") | join(" "))
   | join("\u001f")
-' "$STREAM" > "$rows_file" 2>/dev/null || { : > "$rows_file"; }
+' "$STREAM" > "$rows_file" 2>"$OUT_DIR/jq-stderr.txt" || {
+  # AN UNPARSED STREAM IS NOT AN EMPTY ONE. This used to truncate the rows
+  # file and carry on, which meant every later count read 0 and the run
+  # reported "no findings" with exit 0 -- a full clean pass produced by a
+  # parser that had failed. A stream can be valid JSON (so the `jq -e .`
+  # check above passes) and still break this filter: a non-string `.osv.id`
+  # makes `from_entries` fail, and a crafted stream carrying a CALLED finding
+  # was measured reporting exactly that clean pass. That is the defect this
+  # whole script exists to refuse, so it ends in the same place as every
+  # other unanswerable question.
+  note "the govulncheck stream could not be parsed into findings, so what it contains is unknown. The stream is valid JSON but this filter failed on it: $(head -c 400 "$OUT_DIR/jq-stderr.txt" 2>/dev/null | tr '\n' ' '). An unparsed stream is not an empty one."
+  emit_unknown
+}
 
 total=0; called_total=0; present_total=0
 called_live=0; called_acked=0

@@ -1062,7 +1062,21 @@ jobs:
           cache: true
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # PINNED, NOT `@latest` (measured 2026-11-25). `@latest` now resolves to
+        # v1.10.0, released 2026-11-17, and v1.10.0 CANNOT ANALYSE THIS TREE:
+        # its bundled type-checker does not yet accept go1.27 language
+        # features, so against this repo's `toolchain go1.27.4` it exits 1 with
+        # a `package patterns` load error and zero findings -- the exact T-0740
+        # shape, arriving from a scanner that is NEWER rather than older. The
+        # gate correctly turns that into exit 3 (unknown, never clean), which
+        # means an unpinned `@latest` would have made this check red on arrival
+        # rather than silently blind. Both measured on this tree:
+        #   v1.9.0  -> exit 1, 1 present (GO-2026-5932), 0 called
+        #   v1.10.0 -> exit 3, could not run
+        # The advisory DATABASE is still fetched live from vuln.go.dev at run
+        # time, so pinning the tool does not freeze the advisory data. Re-test
+        # with the live tree before raising this pin.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
       # The PUBLISHED `:stable` rather than a fresh build, matching watch-pins:
       # the question worth asking weekly is about the image in service on the

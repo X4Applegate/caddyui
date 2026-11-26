@@ -299,6 +299,24 @@ fi
 # SHORTLIST. Anything whose highest fix is above the pinned version. This is a
 # superset by construction: an advisory every one of whose fixes is at or
 # below the pinned version cannot have a range covering it.
+# THE SHORTLIST IS EXTRACTED THROUGH A FILE SO jq's STATUS CAN BE CHECKED.
+# Read straight from a process substitution, a failing filter is invisible:
+# the loop reads nothing, `candidates` stays empty, and the run reports "0
+# candidates, no advisory applies" with exit 0 -- a clean pass manufactured by
+# a parser that failed. The guards above (`type == "array"`, and both the
+# `stdlib` and `toolchain` entries present) do not cover it, because an index
+# can satisfy both and still break this filter: a `vulns` that is a string
+# rather than an array was measured producing exactly that clean pass.
+index_rows="$OUT_DIR/index-rows.tsv"
+if ! jq -r '
+  .[] | select(.path == "stdlib" or .path == "toolchain")
+  | .path as $p | .vulns[]
+  | [ $p, .id, (.fixed // "") ] | join("\u001f")
+' "$index_json" > "$index_rows" 2>"$OUT_DIR/index-jq-stderr.txt"; then
+  note "the Go advisory index could not be parsed into advisory rows, so which advisories exist is unknown. It is a JSON array carrying both expected entries, but this filter failed on it: $(head -c 400 "$OUT_DIR/index-jq-stderr.txt" 2>/dev/null | tr '\n' ' '). An unparsed index is not an empty one."
+  fail_unknown
+fi
+
 candidates=()
 while IFS=$'\037' read -r path id fixed; do
   [ -n "$id" ] || continue
@@ -310,11 +328,7 @@ while IFS=$'\037' read -r path id fixed; do
   fi
   c="$(go_version_cmp "$fixed" "$pinned")" || { note "advisory $id records fixed=$fixed, which is not a readable Go version, so it could not be ruled in or out"; fail_unknown; }
   if [ "$c" = "1" ]; then candidates+=("$path|$id|$fixed"); fi
-done < <(jq -r '
-  .[] | select(.path == "stdlib" or .path == "toolchain")
-  | .path as $p | .vulns[]
-  | [ $p, .id, (.fixed // "") ] | join("\u001f")
-' "$index_json")
+done < "$index_rows"
 
 # ---------------------------------------------------------------------------
 # Decide each candidate against its own OSV ranges.

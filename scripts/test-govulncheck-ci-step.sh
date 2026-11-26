@@ -86,6 +86,7 @@ want_step_rc() { # want_step_rc <expected> <label>
 }
 want_in() { if grep -qF -- "$1" "$OUT"; then ok "$2"; else bad "$2 (output lacks '$1')"; fi; }
 
+n=0
 echo "ci.yml reachability step:"
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,39 @@ want_step_rc 1 "5 an unexpected gate status (7) fails the step rather than defau
 # ---------------------------------------------------------------------------
 OUT="$tmp/step.sh"
 want_in "--fail-on called" "6 the step still passes --fail-on called to the gate"
+
+# ---------------------------------------------------------------------------
+# 7. EVERY WORKFLOW INSTALLS A PINNED govulncheck, NOT `@latest`.
+#
+#    Measured 2026-11-25: `@latest` resolves to v1.10.0 (released 11-17),
+#    whose bundled type-checker does not accept go1.27 language features, so
+#    against this repo's `toolchain go1.27.4` it exits 1 with a `package
+#    patterns` load error and zero findings. The gate turns that into exit 3,
+#    so the consequence is a check that is RED rather than one that is
+#    silently blind -- but red on every PR is still the state that gets a gate
+#    deleted, which is the whole thing T-0744 was weighing.
+#
+#    v1.9.0 on the same tree: exit 1, one present finding, zero called. The
+#    advisory database is fetched live at run time, so the pin freezes the
+#    tool and not the data.
+#
+#    This asserts the pin in all three workflows that install it, because a
+#    drift back to `@latest` would reintroduce the breakage with nothing
+#    failing until the next PR.
+# ---------------------------------------------------------------------------
+for wf in ci.yml caddy-image-refresh.yml release-docker.yml; do
+  f="$repo/.github/workflows/$wf"
+  n=$((n+1))
+  if [ ! -f "$f" ]; then
+    bad "7 $wf is missing"
+  elif grep -q 'cmd/govulncheck@latest' "$f"; then
+    bad "7 $wf installs govulncheck@latest; pin it (v1.10.0 cannot analyse this tree)"
+  elif grep -q 'cmd/govulncheck@v[0-9]' "$f"; then
+    ok "7 $wf installs a pinned govulncheck, not @latest"
+  else
+    ok "7 $wf does not install govulncheck"
+  fi
+done
 
 echo
 echo "pass=$pass fail=$fail"

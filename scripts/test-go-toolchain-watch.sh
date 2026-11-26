@@ -423,6 +423,47 @@ for c in badintro badfixed norange; do
   want_in "advisories=unknown" "23c and refuses to report an advisory count ($c)"
 done
 
+# ---------------------------------------------------------------------------
+# 24. AN UNPARSED INDEX IS NOT AN EMPTY ONE.
+#
+#     The shortlist filter used to be read straight from a process
+#     substitution, so a failing `jq` was invisible: the loop read nothing,
+#     the candidate list stayed empty, and the run reported "0 candidates, no
+#     advisory applies" with exit 0. The two guards before it do not cover
+#     this -- an index can be a JSON array carrying BOTH the `stdlib` and
+#     `toolchain` entries and still break the filter, e.g. when `vulns` is a
+#     string rather than an array. That is a clean pass manufactured by a
+#     parser that failed, which is the one thing this script must never do.
+# ---------------------------------------------------------------------------
+IDX24="$TMP/idx24.json"
+cat > "$IDX24" <<'JSON'
+[
+  { "path": "stdlib", "vulns": "not-an-array" },
+  { "path": "toolchain", "vulns": [] }
+]
+JSON
+
+# It really does pass the two earlier guards, or this case would be proving
+# something else.
+n=$((n+1))
+if jq -e 'type == "array"' "$IDX24" >/dev/null 2>&1 \
+   && jq -e '[.[] | select(.path == "stdlib" or .path == "toolchain")] | length == 2' "$IDX24" >/dev/null 2>&1; then
+  ok "24 the crafted index passes the array and both-entries guards"
+else
+  bad "24 the crafted index no longer passes the earlier guards, so case 24a proves nothing"
+fi
+
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+GITHUB_OUTPUT="$TMP/gh24" "$SCRIPT" --toolchain go1.27.4 --out-dir "$TMP/o.$n" \
+  --releases-fixture "$FIX/go-releases.json" --index-fixture "$IDX24" > "$OUT" 2>&1
+RC=$?
+want_rc 3 "24a an index that cannot be parsed into rows is could-not-run, not clean"
+want_in "could not run" "24b and says so"
+want_in "not an empty one" "24c naming why an unparsed index is not an empty one"
+OUT="$TMP/gh24"
+want_in "verdict=unknown" "24d and writes verdict=unknown"
+want_in "advisories=unknown" "24e and refuses to report an advisory count"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
