@@ -1118,8 +1118,16 @@ while IFS= read -r fl_raw; do
   # under "Intentional floors" and exempt them from the staleness check they
   # should be subject to, which is the "acknowledgement outliving its
   # reasoning" failure in a new place. Marking them `security` asserts the
-  # artefact without touching staleness. A pin may legitimately be both; the
-  # two directives then stack, one per line.
+  # artefact without touching staleness.
+  #
+  # A pin is NOT both at once, and the two directives do not stack: a floor
+  # and a security minimum are different claims about the SAME pin, so this
+  # script errors above ("two `# pin-watch:` directives in a row") if two
+  # land on consecutive lines with no `--with`/`--replace` between them --
+  # asserting the same linked version twice under two kinds would double-
+  # count it in the totals. assert-floor-versions.sh takes the SECOND
+  # directive and silently drops the first in that shape; the behaviours
+  # disagree, so write one directive per pin rather than relying on either.
   fl_body="${fl_dir#*pin-watch:}"
   fl_body="${fl_body#"${fl_body%%[![:space:]]*}"}"
   case "$fl_body" in

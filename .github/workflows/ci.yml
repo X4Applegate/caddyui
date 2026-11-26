@@ -191,7 +191,12 @@ jobs:
             case "$b" in
               test-pinned-module-*.sh) continue ;;   # run by run-pinwatch-suites.sh
             esac
-            grep -q "$b" .github/workflows/ci.yml || {
+            # Comments stripped before matching: a filename mentioned only in
+            # PROSE (e.g. this very step's own header, which names
+            # test-floor-versions.sh) must not satisfy this check -- that is
+            # the exact "provable by comment" shape this guard exists to
+            # catch, reproduced against itself when reviewed.
+            grep -v '^[[:space:]]*#' .github/workflows/ci.yml | grep -q "$b" || {
               echo "::error::$b exists but is not run by ci.yml; add it to a suite step, or exclude it here with the reason"
               missing=1
             }
