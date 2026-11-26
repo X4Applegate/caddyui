@@ -4,6 +4,7 @@ package caddy
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -73,7 +74,7 @@ func RenderServerCaddyfile(serverName string, hosts []models.ProxyHost, redirect
 		if !rh.Enabled {
 			continue
 		}
-		b.WriteString(RenderRedirectionCaddyfile(rh))
+		b.WriteString(renderRedirection(rh, o))
 		b.WriteString("\n")
 	}
 	for _, rr := range raws {
@@ -127,6 +128,10 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 		// Without safe addresses there is no site to fail closed in.
 		return fmt.Sprintf("# Proxy host #%d omitted: its domains cannot be written safely as Caddyfile syntax; see it in CaddyUI.\n", p.ID)
 	}
+	if opts.tenant(p.OwnerID) && !caddyfilePlainHosts(domains) {
+		// Not even a fail-closed site: its address would open a listener.
+		return fmt.Sprintf("# Proxy host #%d omitted: its domains are not plain host names, which a non-admin owner cannot use; see it in CaddyUI.\n", p.ID)
+	}
 	if why := proxyHostFieldsProblem(p, cert); why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
@@ -134,29 +139,71 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 	if why := opts.importProblem(p.AdvancedConfig, p.OwnerID); why != "" {
 		return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
 	}
-	out, why := renderProxyHostSite(p, cert, domains)
+	out, why := renderProxyHostSite(p, cert, domains, opts.importedMatcherNames(p.AdvancedConfig))
 	if why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
 	if sites, err := checkCaddyfileSites(out, imports); err != nil || len(sites) != 1 {
 		return caddyfileFailClosedSite(domains, "the generated block would not stay self-contained (check the Advanced config)")
 	}
-	// Issue #184 review: a tenant's Advanced config is re-checked through
-	// Caddy — the live route keeps only its handlers, and only when they
-	// pass the tenant checks. The veto judges the block exactly as it is
-	// written here, so how the exporter places the Advanced text (inside
+	// Issue #184 review: every tenant host is re-checked by the server —
+	// its fields against the rules the live sync enforces (rows written by
+	// older versions, or by a path that skipped the save checks, may hold
+	// values the live route neutralises), and an Advanced config through
+	// Caddy, since the live route keeps only its handlers, and only when
+	// they pass the tenant checks. The veto judges the block exactly as it
+	// is written here, so how the exporter places the Advanced text (inside
 	// the generated reverse_proxy, inside `route`, at site level) can never
 	// make the file mean more than what was checked.
-	if strings.TrimSpace(p.AdvancedConfig) != "" && opts.tenant(p.OwnerID) {
+	if opts.tenant(p.OwnerID) {
 		why := "it could not be re-checked"
 		if opts.ProxyHostVeto != nil {
 			why = opts.ProxyHostVeto(p, out)
 		}
 		if why != "" {
-			return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
+			return caddyfileFailClosedSite(domains, "this host cannot be exported: "+why)
 		}
 	}
 	return out
+}
+
+// renderRedirection is RenderRedirectionCaddyfile with the server's
+// context: a tenant's redirect is written only when opts.RedirectVeto has
+// no objection to the block, and otherwise fails closed (issue #184 round 7).
+func renderRedirection(r models.RedirectionHost, opts ExportOptions) string {
+	out := RenderRedirectionCaddyfile(r)
+	domains := r.DomainList()
+	if out == "" || !opts.tenant(r.OwnerID) || !caddyfileAddressSafe(domains...) {
+		return out
+	}
+	if !caddyfilePlainHosts(domains) {
+		return fmt.Sprintf("# Redirection host #%d omitted: its domains are not plain host names, which a non-admin owner cannot use; see it in CaddyUI.\n", r.ID)
+	}
+	why := "it could not be re-checked"
+	if opts.RedirectVeto != nil {
+		why = opts.RedirectVeto(r, out)
+	}
+	if why != "" {
+		return caddyfileFailClosedSite(domains, "this redirect cannot be exported: "+why)
+	}
+	return out
+}
+
+// caddyfilePlainHostRe is a plain DNS name with an optional leading "*." —
+// no scheme, port or path — the only domain form a non-admin may save.
+// A row stored before that rule may hold more: such a domain matches
+// nothing in the live route, but as a site address a port opens a
+// listener (issue #184 round 7).
+var caddyfilePlainHostRe = regexp.MustCompile(`(?i)^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// caddyfilePlainHosts reports whether every domain matches caddyfilePlainHostRe.
+func caddyfilePlainHosts(domains []string) bool {
+	for _, d := range domains {
+		if !caddyfilePlainHostRe.MatchString(d) {
+			return false
+		}
+	}
+	return true
 }
 
 // caddyfileFailClosedSite is the stand-in for a host that cannot be
@@ -169,7 +216,7 @@ func caddyfileFailClosedSite(domains []string, why string) string {
 // renderProxyHostSite writes the site block for a host whose values passed
 // proxyHostFieldsProblem. why is non-empty when the host still cannot be
 // represented.
-func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains []string) (string, string) {
+func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains []string, snippetMatchers map[string]bool) (string, string) {
 	var b strings.Builder
 
 	// Note any non-roundtrippable settings up front so users see them.
@@ -262,12 +309,16 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	// Issue #184: the Path matcher narrows the JSON route to matching paths,
 	// so the Caddyfile carries the same matcher on reverse_proxy.
 	pathDef, stripToken, _ := caddyfilePathMatcher(p) // representable: checked by proxyHostFieldsProblem
-	// The generated matchers take names the Advanced config does not use, so
-	// the two can never define one name twice (which Caddy rejects, taking
-	// the whole file down with it).
+	// The generated matchers take names the Advanced config does not use —
+	// in its own text or in a snippet it imports — so the two can never
+	// define one name twice (which Caddy rejects, taking the whole file
+	// down with it).
 	usedMatchers, ok := caddyfileMatcherNames(p.AdvancedConfig)
 	if !ok {
 		return "", "the Advanced config could not be read as Caddyfile syntax (an unclosed quote or heredoc, or a trailing backslash)"
+	}
+	for name := range snippetMatchers {
+		usedMatchers[name] = true
 	}
 	blockedName := caddyfileFreeMatcherName("blocked", usedMatchers)
 	pathName := caddyfileFreeMatcherName(caddyfilePathMatcherName, usedMatchers)
@@ -608,6 +659,34 @@ func caddyfileMatcherNames(src string) (map[string]bool, bool) {
 	return names, true
 }
 
+// importedMatcherNames returns every `@name` in the snippets src imports,
+// directly or through another snippet: the names the generated matchers
+// must also avoid.
+func (o ExportOptions) importedMatcherNames(src string) map[string]bool {
+	names := map[string]bool{}
+	if len(o.Snippets) == 0 {
+		return names
+	}
+	byName, _ := o.validSnippets()
+	seen := map[string]bool{}
+	for pending := []string{src}; len(pending) > 0; {
+		text := pending[0]
+		pending = pending[1:]
+		for _, name := range caddyfileImportedNames(text) {
+			if body := byName[name]; body != "" && !seen[name] {
+				seen[name] = true
+				pending = append(pending, body)
+				if used, ok := caddyfileMatcherNames(body); ok {
+					for n := range used {
+						names[n] = true
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
 // caddyfileFreeMatcherName is base, or base_2, base_3, … — the first that
 // is not in used.
 func caddyfileFreeMatcherName(base string, used map[string]bool) string {
@@ -890,15 +969,20 @@ func caddyfileIndent(src, prefix string, dedent bool) string {
 		lines = strings.SplitAfter(src, "\n")
 	}
 	// inString[i] reports whether line i begins inside a quoted string.
+	// Tokens are in source order and do not overlap, so the only token that
+	// can hold a line's first rune is the first one ending after it; one
+	// pass over lines and tokens together keeps this linear (issue #184
+	// round 7: a nested loop made a large Advanced config cost seconds).
 	inString := make([]bool, len(lines))
 	if err == nil {
-		off := 0
+		off, j := 0, 0
 		for i, line := range lines {
-			for _, t := range toks {
-				if t.quoted && !t.heredoc && t.start < off && off < t.end {
-					inString[i] = true
-					break
-				}
+			for j < len(toks) && toks[j].end <= off {
+				j++
+			}
+			if j < len(toks) {
+				t := toks[j]
+				inString[i] = t.quoted && !t.heredoc && t.start < off
 			}
 			off += utf8.RuneCountInString(line)
 		}

@@ -985,6 +985,9 @@ func (s *Server) apiPreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 
 	p, err := parseProxyHostForm(r)
 	if err != nil {
+		if errors.Is(err, errAdvancedConfigTooLarge) {
+			w.WriteHeader(http.StatusBadRequest)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}

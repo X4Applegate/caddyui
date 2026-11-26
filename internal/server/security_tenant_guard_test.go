@@ -138,6 +138,9 @@ func TestTenantTextViolation(t *testing.T) {
 		"import of a glob":           "example.com {\n\timport /etc/*.conf\n}",
 		"import with an extension":   "import secrets.env",
 		"import inside a block":      "example.com { import /etc/shadow }",
+		// Issue #184 round 7: a snippet defined in tenant text can turn its
+		// arguments into a nested file import, so tenants may not define one.
+		"snippet definition": "(common) {\n\theader X-A 1\n}\nexample.com {\n\timport common\n}",
 	}
 	for name, txt := range bad {
 		if tenantTextViolation(txt) == "" {
@@ -148,7 +151,6 @@ func TestTenantTextViolation(t *testing.T) {
 		"plain":                    "example.com {\n\treverse_proxy 10.0.0.5:8080\n}",
 		"import a snippet by name": "example.com {\n\timport my_snippet\n}",
 		"snippet with dashes":      "example.com {\n\timport secure-headers\n}",
-		"snippet definition":       "(common) {\n\theader X-A 1\n}\nexample.com {\n\timport common\n}",
 		"request placeholders":     "example.com {\n\theader X-Host {http.request.host}\n}",
 	}
 	for name, txt := range good {

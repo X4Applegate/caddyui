@@ -118,10 +118,18 @@ func checkCaddyfileSites(src string, imports map[string]bool) ([]cfSite, error) 
 		// block contents, up to the matching close brace
 		depth := 1
 		// Named matchers: Caddy refuses a name defined twice in one block
-		// or again in a block nested inside it (`handle`, `route`, …); a
-		// `reverse_proxy` block's response matchers are a namespace of
-		// their own. One such site would make the whole file fail to load.
-		scopes := []cfMatcherScope{{names: map[string]bool{}}}
+		// or again in a block nested inside it (`handle`, `route`, …),
+		// wherever in the enclosing block the outer definition sits — it
+		// reads a block's definitions before the blocks nested in it. The
+		// response matchers of a block that runs a reverse proxy
+		// (cfFreshMatcherBlocks) are a namespace of their own. One such
+		// site would make the whole file fail to load.
+		defs, ok := cfBlockMatcherDefs(toks, i)
+		if !ok {
+			return nil, errCaddyfileUnsafe
+		}
+		block := 0
+		scopes := []cfMatcherScope{{names: defs[block]}}
 		lineHead := ""
 		for i++; depth > 0; i++ {
 			if i >= len(toks) {
@@ -130,12 +138,6 @@ func checkCaddyfileSites(src string, imports map[string]bool) ([]cfSite, error) 
 			newLine := cfIsNewLine(toks, i)
 			if newLine {
 				lineHead = toks[i].text
-				if name, ok := strings.CutPrefix(lineHead, "@"); ok && name != "" {
-					if cfMatcherDefined(scopes, name) {
-						return nil, errCaddyfileUnsafe
-					}
-					scopes[len(scopes)-1].names[name] = true
-				}
 			}
 			switch {
 			case open(i):
@@ -143,7 +145,14 @@ func checkCaddyfileSites(src string, imports map[string]bool) ([]cfSite, error) 
 					return nil, errCaddyfileUnsafe
 				}
 				depth++
-				scopes = append(scopes, cfMatcherScope{names: map[string]bool{}, fresh: lineHead == "reverse_proxy" || strings.HasPrefix(lineHead, "@")})
+				block++
+				scope := cfMatcherScope{names: defs[block], fresh: cfFreshMatcherBlocks[lineHead] || strings.HasPrefix(lineHead, "@")}
+				for name := range scope.names {
+					if !scope.fresh && cfMatcherDefined(scopes, name) {
+						return nil, errCaddyfileUnsafe
+					}
+				}
+				scopes = append(scopes, scope)
 			case closing(i):
 				if !newLine {
 					return nil, errCaddyfileUnsafe
@@ -159,6 +168,44 @@ func checkCaddyfileSites(src string, imports map[string]bool) ([]cfSite, error) 
 		sites = append(sites, site)
 	}
 	return sites, nil
+}
+
+// cfFreshMatcherBlocks are the directives whose block takes response
+// matchers (`@name status …`) that do not see the site's request matchers:
+// reverse_proxy and the two directives built on it.
+var cfFreshMatcherBlocks = map[string]bool{"reverse_proxy": true, "forward_auth": true, "php_fastcgi": true}
+
+// cfBlockMatcherDefs reads the block that opens at toks[open] and returns,
+// for it (index 0) and each block nested in it (numbered in the order
+// their `{` appears), the named matchers defined directly in that block:
+// `@name` as the first token of a line. ok is false when a name is
+// defined twice in one block or the block does not close.
+func cfBlockMatcherDefs(toks []cfToken, open int) (defs []map[string]bool, ok bool) {
+	defs = []map[string]bool{{}}
+	stack := []int{0}
+	for i := open + 1; i < len(toks); i++ {
+		t := toks[i]
+		if cfIsNewLine(toks, i) {
+			if name, isDef := strings.CutPrefix(t.text, "@"); isDef && name != "" {
+				cur := defs[stack[len(stack)-1]]
+				if cur[name] {
+					return nil, false
+				}
+				cur[name] = true
+			}
+		}
+		switch {
+		case t.text == "{" && !t.quoted:
+			defs = append(defs, map[string]bool{})
+			stack = append(stack, len(defs)-1)
+		case t.text == "}" && !t.quoted:
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return defs, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // cfMatcherScope is one block's named-matcher definitions; fresh marks a
@@ -446,11 +493,14 @@ type ExportOptions struct {
 	// the export would write for the route. It is consulted only for
 	// content TenantOwned reports as a tenant's.
 	RawRouteVeto func(r models.RawRoute, text string) string
-	// ProxyHostVeto is RawRouteVeto for a tenant-owned proxy host with an
-	// Advanced config: site is the complete site block the export would
-	// write for the host, generated directives and Advanced text together.
-	// It is consulted only when the Advanced config is not empty.
+	// ProxyHostVeto is RawRouteVeto for a tenant-owned proxy host: site is
+	// the complete site block the export would write for the host,
+	// generated directives and Advanced text together. It is consulted for
+	// every tenant-owned host, with or without an Advanced config.
 	ProxyHostVeto func(p models.ProxyHost, site string) string
+	// RedirectVeto is ProxyHostVeto for a tenant-owned redirection host;
+	// text is the site block the export would write for it.
+	RedirectVeto func(r models.RedirectionHost, text string) string
 }
 
 // tenant reports whether content owned by owner is a tenant's.
@@ -570,21 +620,52 @@ func caddyfileImportedNames(src string) []string {
 // backslash, a byte-order mark or invalid UTF-8); callers that guard what
 // Caddy may read must then refuse src.
 func CaddyfileImportArguments(src string) (args []string, ok bool) {
+	use, ok := CaddyfileImportUse(src)
+	return use.Arguments, ok
+}
+
+// CaddyfileImports is what CaddyfileImportUse finds in a Caddyfile.
+type CaddyfileImports struct {
+	// Arguments holds the argument of every `import` Caddy's parser would
+	// expand (see CaddyfileImportArguments).
+	Arguments []string
+	// ImportAsArgument is set when a token whose text is `import` — quoted,
+	// backtick or heredoc alike — is not the first token of its line.
+	// Through a snippet's {args…} such a token can become the head of a
+	// nested import of a file.
+	ImportAsArgument bool
+	// SnippetDefined is set when a line starts with a `(name)` token, the
+	// form Caddy reads as a snippet definition wherever a block begins.
+	SnippetDefined bool
+}
+
+// CaddyfileImportUse reports how src uses `import` and snippets, reading
+// src the way Caddy's lexer does. ok is false when src cannot be read that
+// way; see CaddyfileImportArguments.
+func CaddyfileImportUse(src string) (use CaddyfileImports, ok bool) {
 	toks, err := lexCaddyfile(src)
 	if err != nil {
-		return nil, false
+		return use, false
 	}
 	for i, t := range toks {
-		if t.text != "import" || !cfIsNewLine(toks, i) {
+		newLine := cfIsNewLine(toks, i)
+		if newLine && len(t.text) >= 2 && strings.HasPrefix(t.text, "(") && strings.HasSuffix(t.text, ")") {
+			use.SnippetDefined = true
+		}
+		if t.text != "import" {
+			continue
+		}
+		if !newLine {
+			use.ImportAsArgument = true
 			continue
 		}
 		arg := ""
 		if i+1 < len(toks) && !cfIsNewLine(toks, i+1) {
 			arg = toks[i+1].text
 		}
-		args = append(args, arg)
+		use.Arguments = append(use.Arguments, arg)
 	}
-	return args, true
+	return use, true
 }
 
 // importProblem explains why the `import` directives in src, owned by

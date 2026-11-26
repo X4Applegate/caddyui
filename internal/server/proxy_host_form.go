@@ -14,6 +14,17 @@ import (
 	"github.com/X4Applegate/caddyui/internal/models"
 )
 
+// maxProxyAdvancedConfigBytes caps a proxy host's Advanced config (issue
+// #184 round 7). An Advanced config is a handful of directives spliced into
+// one site block; 64 KiB is room for well over a thousand lines of them, and
+// keeps the save-time adapt and the Caddyfile preview cheap however the text
+// is shaped.
+const maxProxyAdvancedConfigBytes = 64 << 10
+
+// errAdvancedConfigTooLarge is parseProxyHostForm's error for an Advanced
+// config over maxProxyAdvancedConfigBytes.
+var errAdvancedConfigTooLarge = fmt.Errorf("the Advanced config is too large (the limit is %d KiB)", maxProxyAdvancedConfigBytes>>10)
+
 // Proxy-host form parsing.
 //
 // v2.30.0: moved verbatim out of server.go. parseProxyHostForm is ~660 lines
@@ -44,6 +55,11 @@ func clampAtoi(raw string, zeroValue, min, max int) int {
 
 func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	_ = r.ParseForm()
+	// Issue #184 round 7: refuse an oversized Advanced config before any
+	// work is done on it (repairs, adapting, the Caddyfile preview).
+	if len(r.FormValue("advanced_config")) > maxProxyAdvancedConfigBytes {
+		return nil, errAdvancedConfigTooLarge
+	}
 	port, err := strconv.Atoi(r.FormValue("forward_port"))
 	if err != nil {
 		return nil, err

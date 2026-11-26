@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
@@ -1604,14 +1606,33 @@ func (s *Server) caddyfileExportOptions(serverID int64, forAdmin bool) caddy.Exp
 			opts.Snippets = caddy.ExtractSnippets(string(b))
 		}
 	}
-	// The exporter consults the vetoes only for tenant-owned content.
+	// The exporter consults the vetoes only for tenant-owned content. They
+	// share one client, which stops calling Caddy once a call to it has
+	// failed: every later check then fails closed at once, instead of each
+	// waiting out the client timeout against an adapter that is down.
+	adaptClient := s.exportAdaptClient(serverID)
 	opts.RawRouteVeto = func(rr models.RawRoute, text string) string {
-		return s.rawRouteTextVeto(s.exportCaddyClient(serverID), rr, text)
+		return s.rawRouteTextVeto(adaptClient(), rr, text)
 	}
 	opts.ProxyHostVeto = func(p models.ProxyHost, site string) string {
-		return s.proxyAdvancedExportVeto(s.exportCaddyClient(serverID), p, site)
+		return s.proxyAdvancedExportVeto(adaptClient(), p, site)
 	}
+	opts.RedirectVeto = s.redirectExportVeto
 	return opts
+}
+
+// redirectExportVeto returns why a tenant's redirection host, written as
+// text, must not be exported, or "": the block must pass the tenant text
+// rules and the route the live sync builds from the row must pass the
+// tenant route rules (issue #184 round 7 — a row stored before those rules,
+// or by a path that skipped them, could otherwise export a destination the
+// live sync neutralises). The reason is generic: it is written into the
+// export, and the row's values are not.
+func (s *Server) redirectExportVeto(rh models.RedirectionHost, text string) string {
+	if tenantTextViolation(text) != "" || s.tenantRouteViolation(caddy.BuildRedirectRoute(rh)) != "" {
+		return "its settings are not allowed for a non-admin owner"
+	}
+	return ""
 }
 
 // exportCaddyClient is the client the export re-checks text with: the
@@ -1621,6 +1642,61 @@ func (s *Server) exportCaddyClient(serverID int64) *caddy.Client {
 		return s.Caddy
 	}
 	return s.caddyForServer(serverID)
+}
+
+// exportAdaptClient returns a function that yields one Caddy client for a
+// whole export (created on first use), whose transport refuses every
+// request after one has failed to get a response (errExportAdapterDown).
+// A refused request is an adapt error, which every veto treats as "could
+// not be re-checked", so the export still fails closed.
+func (s *Server) exportAdaptClient(serverID int64) func() *caddy.Client {
+	var once sync.Once
+	var cl *caddy.Client
+	return func() *caddy.Client {
+		once.Do(func() {
+			base := s.exportCaddyClient(serverID)
+			if base == nil {
+				return
+			}
+			cp := *base
+			hc := http.Client{}
+			if base.HTTP != nil {
+				hc = *base.HTTP
+			}
+			inner := hc.Transport
+			if inner == nil {
+				inner = http.DefaultTransport
+			}
+			hc.Transport = &stickyFailTransport{inner: inner}
+			cp.HTTP = &hc
+			cl = &cp
+		})
+		return cl
+	}
+}
+
+// errExportAdapterDown is stickyFailTransport's error once it has tripped.
+var errExportAdapterDown = errors.New("the Caddy adapter did not answer earlier in this export")
+
+// stickyFailTransport passes requests to inner until one fails to get a
+// response (a dial error, a timeout), and refuses every request after that.
+type stickyFailTransport struct {
+	inner http.RoundTripper
+	down  atomic.Bool
+}
+
+func (t *stickyFailTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if t.down.Load() {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, errExportAdapterDown
+	}
+	resp, err := t.inner.RoundTrip(r)
+	if err != nil {
+		t.down.Store(true)
+	}
+	return resp, err
 }
 
 // adaptExportText adapts text exactly as the export writes it — no
@@ -1667,8 +1743,11 @@ func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute, tex
 	return ""
 }
 
-// proxyAdvancedExportVeto is rawRouteTextVeto for a tenant's proxy host
-// with an Advanced config. site is the whole block the export would write
+// proxyAdvancedExportVeto is rawRouteTextVeto for a tenant's proxy host,
+// with or without an Advanced config: the block (site) must pass the
+// tenant text rules and the host's generated route the tenant route rules,
+// and an Advanced config is then re-checked through Caddy. site is the
+// whole block the export would write
 // for the host — the generated directives with the Advanced text placed
 // among them — and that block is what Caddy adapts here, so the verdict is
 // about the exact bytes in the file, whatever the exporter did to place
@@ -1677,11 +1756,20 @@ func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute, tex
 // and serve only the host's own domains. Any objection, adapt error or
 // unreachable Caddy means the host fails closed.
 func (s *Server) proxyAdvancedExportVeto(caddyCl *caddy.Client, p models.ProxyHost, site string) string {
-	if strings.TrimSpace(p.AdvancedConfig) == "" {
-		return ""
-	}
 	if tenantTextViolation(p.AdvancedConfig) != "" || tenantTextViolation(site) != "" {
 		return "it is not allowed for a non-admin owner"
+	}
+	// Issue #184 round 7: the host's own fields, judged the way the live
+	// sync judges them (sanitizeTenantRoute) — a stored row may hold a
+	// header with an {env.…} placeholder or an upstream on the admin API,
+	// which the live route neutralises or skips. The export must be no
+	// weaker, so such a host fails closed. The reason stays generic: it is
+	// written into the export, and the route carries header values.
+	if s.tenantRouteViolation(caddy.BuildProxyRoute(p, nil)) != "" {
+		return "its settings are not allowed for a non-admin owner"
+	}
+	if strings.TrimSpace(p.AdvancedConfig) == "" {
+		return ""
 	}
 	result, err := adaptExportText(caddyCl, site)
 	if err != nil {

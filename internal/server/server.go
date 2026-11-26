@@ -4734,7 +4734,7 @@ func (s *Server) caddyForRequest(r *http.Request) *caddy.Client {
 	if cl != nil && !isAdminUser(s.currentUser(r)) {
 		cp := *cl
 		cp.AdaptTextCheck = func(text string) string {
-			if why := tenantTextViolation(text); why != "" {
+			if why := s.tenantAdaptTextViolation(text); why != "" {
 				return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 			}
 			return ""

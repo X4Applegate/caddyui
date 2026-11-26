@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/X4Applegate/caddyui/internal/models"
 )
@@ -208,5 +209,32 @@ func TestCaddyfileImportArgumentsFindsQuotedImports(t *testing.T) {
 	}
 	if _, ok := CaddyfileImportArguments("x.test {\n\t\"import /etc/passwd\n}"); ok {
 		t.Errorf("text that does not lex must be reported")
+	}
+}
+
+// Issue #184 round-7 review (2): caddyfileIndent compared every line with
+// every token, so a large Advanced config took seconds to render. 80k
+// lines with quoted strings now render well under a second, and the
+// lines of a multi-line string are still left as they are.
+func TestCaddyfileIndentIsLinear(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 40000; i++ {
+		b.WriteString("header X-A \"a\nb\"\n")
+	}
+	src := b.String()
+	start := time.Now()
+	out := caddyfileIndent(src, "\t", false)
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("indenting 80k lines took %v", d)
+	}
+	if want := strings.Repeat("\theader X-A \"a\nb\"\n", 40000); out != want {
+		t.Errorf("the indented text changed a quoted string")
+	}
+	p := models.ProxyHost{ID: 1, Domains: "big.example.test", ForwardScheme: "http", ForwardHost: "203.0.113.10", ForwardPort: 8080,
+		Enabled: true, SSLEnabled: true, AdvancedConfig: "reverse_proxy {\n" + src + "}\n" + src}
+	start = time.Now()
+	_ = RenderProxyHostCaddyfile(p)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("rendering a host with a 160k-line Advanced config took %v", d)
 	}
 }

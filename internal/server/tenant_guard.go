@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
@@ -351,20 +352,36 @@ func (s *Server) sanitizeTenantRoute(owner sql.NullInt64, what string, route any
 // found the way Caddy's parser finds them — `import` as the first token of a
 // line, quoted or not — so text CaddyUI cannot read that way is refused
 // rather than sent to Caddy.
+//
+// Issue #184 round 7: Caddy rewrites the tokens of a snippet when it is
+// imported — {args…} become the import's arguments and {block…} the block
+// after it — so a snippet defined in the same text can turn an argument
+// into a second, nested `import` of a file. Tenant text therefore may not
+// define a snippet, may not use those placeholders, and may not hold the
+// word `import` anywhere but at the head of an `import <snippet>` line.
 func tenantTextViolation(text string) string {
 	if containsDangerousPlaceholder(text) {
 		return "{env.…}, {file.…} and {$…} placeholders read the Caddy server's environment and files and are admin-only"
+	}
+	if importArgsPlaceholderRe.MatchString(text) {
+		return "{args…} and {block…} placeholders are for snippets, which non-admin accounts cannot define"
 	}
 	for _, m := range caddyfileImportRe.FindAllStringSubmatch(text, -1) {
 		if !snippetNameRe.MatchString(m[1]) {
 			return fmt.Sprintf("`import %s` reads a file on the Caddy server — only snippet names may be imported", m[1])
 		}
 	}
-	args, ok := caddy.CaddyfileImportArguments(text)
+	use, ok := caddy.CaddyfileImportUse(text)
 	if !ok {
 		return "the text could not be read as a Caddyfile (check for an unclosed quote or heredoc, or a trailing backslash)"
 	}
-	for _, arg := range args {
+	if use.SnippetDefined {
+		return "snippet definitions — `(name) { … }` — are admin-only"
+	}
+	if use.ImportAsArgument {
+		return "`import` may only start a line that imports a snippet by name"
+	}
+	for _, arg := range use.Arguments {
 		if !snippetNameRe.MatchString(arg) {
 			return "an `import` that is not a plain snippet name reads a file on the Caddy server — only snippet names may be imported"
 		}
@@ -372,9 +389,56 @@ func tenantTextViolation(text string) string {
 	return ""
 }
 
+// tenantAdaptTextViolation is tenantTextViolation for text on its way to
+// Caddy's adapter on a non-admin's behalf, which may start with the
+// administrator's snippet definitions from CADDYFILE_PATH
+// (withAutoLoadedSnippets). The placeholder and file-import rules apply to
+// the whole text, as they always have; the snippet rules apply to the part
+// after exactly that prefix, which is the non-admin's own. When the prefix
+// is not found the whole text is the non-admin's, so the stricter reading
+// wins.
+func (s *Server) tenantAdaptTextViolation(text string) string {
+	own := text
+	if prefix := s.autoLoadedSnippetPrefix(); prefix != "" && strings.HasPrefix(text, prefix) {
+		own = text[len(prefix):]
+		if containsDangerousPlaceholder(prefix) {
+			return tenantTextViolation(text)
+		}
+		for _, m := range caddyfileImportRe.FindAllStringSubmatch(prefix, -1) {
+			if !snippetNameRe.MatchString(m[1]) {
+				return tenantTextViolation(text)
+			}
+		}
+	}
+	return tenantTextViolation(own)
+}
+
+// autoLoadedSnippetPrefix is what withAutoLoadedSnippets prepends to text
+// that defines none of the snippets itself, or "".
+func (s *Server) autoLoadedSnippetPrefix() string {
+	if s == nil || s.CaddyfilePath == "" {
+		return ""
+	}
+	b, err := os.ReadFile(s.CaddyfilePath)
+	if err != nil {
+		return ""
+	}
+	snips := caddy.ExtractSnippets(string(b))
+	if len(snips) == 0 {
+		return ""
+	}
+	return strings.Join(snips, "\n\n") + "\n\n"
+}
+
 var (
 	caddyfileImportRe = regexp.MustCompile(`(?m)(?:^|[\s{;])import\s+(\S+)`)
 	snippetNameRe     = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	// importArgsPlaceholderRe matches the placeholders Caddy replaces in a
+	// snippet's tokens on import (caddyfile/importargs.go, parse.go): its
+	// args regexps are unanchored, so any `{…args[` or `{…args.` counts,
+	// and {block} / {blocks.NAME}. Matched case-insensitively, which only
+	// refuses more.
+	importArgsPlaceholderRe = regexp.MustCompile(`(?i)\{[^{}]*args[\[.]|\{\s*blocks?\s*[}.]`)
 )
 
 // isAdminUser reports whether cu is an administrator. A nil user is treated as
