@@ -163,6 +163,57 @@ jobs:
           done
           exit "$missing"
 
+      # The advisory-watch suites that need neither Go, Docker nor the network
+      # (T-0740/T-0744/T-0745/T-0746). They guard two scripts whose entire
+      # subject is the difference between "checked and clean" and "could not
+      # check", so they belong on the same every-PR footing as the image-gate
+      # suites above, and for the same reason: a refusal that only fires on a
+      # degraded input leaves the happy path green when it is deleted.
+      #
+      # Both are fixture-driven. test-govulncheck-gate.sh feeds saved
+      # govulncheck JSON streams and fakes `go version -m` with a stub on
+      # PATH, so it exercises the staleness guard with no Go toolchain
+      # installed; test-go-toolchain-watch.sh replaces all three of its
+      # network calls with committed real responses. Neither makes an outbound
+      # call, which is what keeps them here rather than on the weekly job.
+      - name: Advisory-watch regression suites (offline)
+        run: |
+          suites=(
+            test-govulncheck-gate.sh      # reachability gate: staleness guard, exit classification, acks
+            test-go-toolchain-watch.sh    # toolchain advisory watch: OSV range walk, explicit-unknown
+          )
+
+          for s in "${suites[@]}"; do
+            [ -x "scripts/$s" ] || {
+              echo "::error::scripts/$s is missing or not executable; the advisory watch is unguarded on this ref"
+              exit 1
+            }
+          done
+
+          rc=0
+          for s in "${suites[@]}"; do
+            echo "::group::$s"
+            ./"scripts/$s" || { rc=1; echo "::error::$s failed"; }
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+      # Same guard-on-the-guard as the image-gate one above: a suite added to
+      # the tree and not to the list would leave that step green having never
+      # run it.
+      - name: Every advisory-watch suite on disk is actually run
+        run: |
+          missing=0
+          for f in scripts/test-govulncheck-*.sh scripts/test-go-toolchain-*.sh; do
+            [ -e "$f" ] || continue
+            b="$(basename "$f")"
+            grep -q "$b" .github/workflows/ci.yml || {
+              echo "::error::$b exists but is not run by ci.yml; add it to the Advisory-watch regression suites step"
+              missing=1
+            }
+          done
+          exit "$missing"
+
   # govulncheck is here for ONE property nothing else in this repo reports:
   # REACHABILITY. It distinguishes an advisory against a linked module from one
   # against a function this code actually calls, and on its first run it found
@@ -180,13 +231,20 @@ jobs:
   # substitutes for the other, and a green run here is not evidence about
   # CVE-less advisories.
   #
-  # REPORT-ONLY, DELIBERATELY. A called finding in the stdlib is fixed by a
-  # toolchain bump, which is not always available the moment the advisory
-  # lands -- GO-2026-6859 would have failed this job until Go 1.27.4 shipped.
-  # A gate that fails on something the repo cannot act on gets disabled, and a
-  # disabled gate reports nothing at all. So the findings are surfaced in the
-  # step summary and the log, and the step does not fail the build. Promote to
-  # failing once the toolchain-bump path is routine.
+  # IT GATES ON *CALLED* FINDINGS (T-0744, decided 2026-11-25). It was
+  # report-only until then, because a called stdlib finding is fixed by a
+  # toolchain bump that is not always available the moment the advisory lands
+  # -- GO-2026-6859 would have failed this job until Go 1.27.4 shipped -- and
+  # a gate that fails on something the repo cannot act on gets switched off.
+  # What changed is that there is now somewhere for that case to go other than
+  # "switch the gate off": an acknowledgement with an expiry and a
+  # `fixed_in=`, which re-arms by itself when the fix becomes available. The
+  # toolchain is also watched weekly now (check-go-toolchain.sh, T-0745), so a
+  # called stdlib finding no longer waits for someone to read a summary.
+  #
+  # A merely PRESENT finding still only reports: the uncalled
+  # `x/crypto/openpgp` residual is the standing demonstration of why failing
+  # on any finding would be noise.
   #
   # `govulncheck` IS BUILT WITH THE REPO'S OWN TOOLCHAIN, not a pinned older
   # one. A govulncheck binary built with an older Go cannot analyse a newer
@@ -194,7 +252,7 @@ jobs:
   # load error, which is a check that silently stops checking. `setup-go` with
   # `go-version-file: go.mod` then `go install` guarantees they match.
   govulncheck:
-    name: Reachability (govulncheck, report-only)
+    name: Reachability (govulncheck)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -209,39 +267,66 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: Run govulncheck
+      # scripts/govulncheck-gate.sh rather than a `run:` block, for three
+      # reasons the inline version could not cover (T-0740, T-0744, T-0746):
+      #
+      # 1. IT CLASSIFIES "COULD NOT SCAN" SEPARATELY FROM "FOUND NOTHING".
+      #    The inline version captured the exit status and reported any
+      #    non-zero as findings. A govulncheck too old for the tree exits 1
+      #    with a `package patterns` load error and NO findings, so that
+      #    branch printed "govulncheck exited 1. Findings below" with an
+      #    error message underneath it -- the T-0740 defect reproduced inside
+      #    the check meant to surface it. Measured on 2026-11-25: a
+      #    go1.26.11-built govulncheck against this tree does exactly that.
+      #    The gate compares the scanner's build toolchain with go.mod's
+      #    BEFORE running it and refuses with exit 3.
+      # 2. IT SEPARATES CALLED FROM PRESENT from the JSON stream rather than
+      #    from a grep, which is what makes the gate below possible.
+      # 3. THE SAME SCRIPT SCANS THE CADDY IMAGE on the two workflows that
+      #    move `:stable`. One copy of a gate cannot drift from itself.
+      #
+      # NOW GATING, NOT REPORT-ONLY (T-0744, decided 2026-11-25). A *called*
+      # finding fails this job; a merely present one does not. The two things
+      # the card required before promoting are both true now:
+      #
+      #   - THE TOOLCHAIN BUMP IS WATCHED. `scripts/check-go-toolchain.sh`
+      #     runs weekly (T-0745), so a called stdlib finding no longer
+      #     depends on someone reading a job summary to be noticed. That was
+      #     the blocking objection: without a watcher, promoting this job
+      #     meant a stdlib advisory blocked CI until a human happened to look.
+      #   - CALLED-ONLY IS THE GRANULARITY. Failing on any finding would
+      #     re-introduce the noise the uncalled `x/crypto/openpgp` residual
+      #     already demonstrates -- measured on this tree, `govulncheck ./...`
+      #     reports 0 called and 1 present, so this gate passes today and
+      #     fails only on something new and reachable.
+      #
+      # AND IT HAS A SAFETY VALVE THAT IS NOT AN OFF SWITCH. The case the
+      # card was worried about -- GO-2026-6859, called from this code and
+      # unfixed until Go 1.27.4 shipped -- would now be one line in
+      # scripts/govulncheck-acks.txt reading `fixed_in=go1.27.4`: it holds the
+      # failure while there is genuinely nothing to take, and RE-ARMS BY
+      # ITSELF the moment go.mod's toolchain reaches that release. Every
+      # acknowledgement needs an expiry and a reason, the finding is still
+      # reported and counted, an acknowledgement matching nothing is flagged
+      # for removal, and a malformed file is exit 3 rather than a silent
+      # exclusion. So the gate cannot be left switched off by accident, which
+      # is the failure mode report-only was protecting against. That file is
+      # EMPTY today, because this tree has 0 called findings and nothing needs
+      # excusing -- the mechanism exists so that the first one does not have
+      # to be answered by deleting the gate.
+      #
+      # STILL NOT THE FIX FOR THE CVE-LESS GAP, and the script says so on
+      # every run.
+      - name: Reachability gate — a called finding fails, a present one reports
         id: govulncheck
-        run: |
-          set -o pipefail
-          # Exit status is deliberately captured rather than propagated: 3
-          # means findings, and findings are reported here, not fatal.
-          govulncheck ./... > govulncheck.txt 2>&1 && rc=0 || rc=$?
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          cat govulncheck.txt
-
-          {
-            echo "### govulncheck (reachability, report-only)"
-            echo
-            if [ "$rc" = "0" ]; then
-              echo "No vulnerability is reachable from this module's code."
-              echo
-              echo "This says nothing about advisories with no CVE id: \`vuln.go.dev\` is CVE-keyed, and the five CVE-less go-jose advisories that were live in this module set are absent from it. Those are covered by \`scripts/check-pinned-modules.sh --gomod\`."
-            else
-              echo "govulncheck exited \`$rc\`. Findings below; a **called** finding is reachable from this code and worth acting on, an uncalled one is present but not reached."
-              echo
-              echo '```'
-              # Bounded: a long report must not blow the 1 MB summary limit.
-              head -c 60000 govulncheck.txt
-              echo '```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: ./scripts/govulncheck-gate.sh --source --fail-on called --out-dir govulncheck-out
 
       - name: Upload govulncheck report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: govulncheck-report
-          path: govulncheck.txt
+          path: govulncheck-out/
           if-no-files-found: warn
 
   mariadb:
