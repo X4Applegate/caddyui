@@ -50,17 +50,74 @@ cd "$(cd "$(dirname "$0")/.." && pwd)" || { echo "::error::cannot reach the repo
 # suite is added — an unlisted suite is simply not run, so the count printed
 # at the end is the check: it must match `ls scripts/test-pinned-module-*.sh`.
 #
-# offline: no outbound call on any case. Safe on every PR.
-# network: at least one case calls out, and self-skips when it cannot.
+# WHAT THE SPLIT ACTUALLY GUARANTEES, which is narrower than it used to say
+# here. The old wording was "offline: no outbound call on any case", and that
+# is FALSE — measured by running each suite behind a `curl`/`git` wrapper that
+# logs every invocation:
+#
+#   crosscheck       0 calls
+#   replace         45 calls   (proxy.golang.org)
+#   input-revision   0 calls
+#   linked          49 calls   (38 proxy.golang.org, 11 api.osv.dev)
+#
+# `replace` was already in this list and already making calls, so the claim was
+# wrong before `linked` joined it. The property that is TRUE, and the one the
+# split exists for, is about dependence rather than silence:
+#
+# offline: the RESULT does not depend on any external service. Every case
+#          passes identically with the network removed, so a PR cannot go red
+#          because OSV or the module proxy is down. Some cases do call out;
+#          they ignore the answer.
+# network: at least one case needs a real answer, and self-skips without one.
+#
+# CLASSIFY BY MEASUREMENT, AND BY THE RIGHT MEASUREMENT. `PINWATCH_SKIP_GITHUB=1`
+# at the top of a suite suppresses the advisory sweep, not every call the
+# script can make, so reading the source is evidence and not proof. Two runs
+# are needed because they answer different questions and neither answers both:
+#
+#   1. A LOGGING SHIM says whether calls are made at all. `unshare -rn` cannot:
+#      it measures tolerance of a dead network, so a suite that calls out and
+#      discards the result passes it while looking silent. Record the count
+#      here rather than asserting zero.
+#        mkdir -p /tmp/shim && printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> /tmp/shim/log\nexec /usr/bin/curl "$@"\n' > /tmp/shim/curl
+#        chmod +x /tmp/shim/curl && PATH=/tmp/shim:$PATH ./scripts/<suite>
+#
+#   2. `unshare -rn ./scripts/<suite>` says whether the result DEPENDS on
+#      those calls, which is the criterion above. Require BOTH a zero exit and
+#      zero `^SKIP` lines: a pass carrying a skip is a network suite whose
+#      network case quietly stood down, exactly the confusion this file exists
+#      to prevent.
+#
+# THE CALLS ARE NOT FREE EVEN WHEN THEIR ANSWERS ARE IGNORED. Each carries
+# `--max-time 25 --retry 2 --retry-delay 2`, so an unreachable endpoint costs
+# wall-clock rather than correctness. Measured on `linked`:
+#
+#   calls fail instantly (shim)     0.9 s
+#   network up, calls succeed       7.7 s
+#   no network at all (unshare)   213.1 s
+#
+# Still green in all three, which is the point of the classification — but a
+# blackholed proxy turns the `offline` job from seconds into minutes, so do not
+# read "offline" as "fast".
 OFFLINE_SUITES=(
-  test-pinned-module-crosscheck.sh   # jq predicate vs local JSON fixtures
-  test-pinned-module-replace.sh      # PINWATCH_SKIP_GITHUB=1 throughout
+  test-pinned-module-crosscheck.sh      # jq predicate vs local JSON fixtures; 0 calls
+  test-pinned-module-replace.sh         # local fixtures; 45 calls, answers unused
+  test-pinned-module-input-revision.sh  # --offline-fixture; 0 calls; 31/31 under unshare -rn
+  test-pinned-module-linked.sh          # local `go version -m` fixtures; 49 calls, answers unused; 31/31 under unshare -rn
 )
 NETWORK_SUITES=(
-  test-pinned-module-floors.sh       # case 21 -> api.osv.dev
-  test-pinned-module-gomod-sweep.sh  # proxy/OSV
-  test-pinned-module-image-sweep.sh  # case 16 -> GitHub advisories, needs a token
+  test-pinned-module-floors.sh          # case 21 -> api.osv.dev
+  test-pinned-module-gomod-sweep.sh     # proxy/OSV
+  test-pinned-module-image-sweep.sh     # case 16 -> GitHub advisories, needs a token
 )
+
+# NOT EVERY SKIP IS A NETWORK SKIP. `linked` stands its JSON assertions down
+# when `jq` is absent (`SKIP  json assertions (jq not available)`), which is a
+# missing tool on the runner and not an outbound call — so seeing that skip is
+# not a reason to move the suite into NETWORK_SUITES. It is still reported,
+# because an assertion that did not run proves nothing regardless of why;
+# install `jq` on the runner to clear it. (`crosscheck` is the other way round:
+# jq IS its subject, so it exits 1 outright rather than skipping.)
 
 mode="${1:-all}"
 case "$mode" in
