@@ -658,6 +658,30 @@ jobs:
       # refresh gate tells plugin bumps to take — so those runs get `report`:
       # drift is diffed and recorded, and the verdict is gate 1's alone.
       #
+      # WHAT ELSE THIS ONE VARIABLE RELAXES (T-0823). It is not only gates 2
+      # and 3. The scan-coverage precondition's hard-stop limbs -- checks 5b
+      # and 5c, which are what tie a VANISHED FINDING to the version of the
+      # package it was reported against -- read the same variable. So on a
+      # release that edits Dockerfile.caddy, the module-list gate and the
+      # scan's version checks degrade to advisory together, selected by the
+      # submitter's own change to the file being reviewed.
+      #
+      # That is deliberate, not an oversight, and must not be "fixed" by
+      # giving the coverage checks their own always-blocking policy: measured
+      # against the gate's own suite, an always-blocking 5c makes "a module
+      # upgraded and its advisory cleared" exit 2, which is the normal shape
+      # of every security release cut from this repo. It would forbid the
+      # release path rather than harden it.
+      #
+      # What carries the weight on this path instead: gate 1 still blocks any
+      # NEW vulnerability under either policy; gate 2 is the stronger of the
+      # relaxed pair because it executes the built binary; and the
+      # compensating control for both is review of the Dockerfile.caddy diff
+      # and the pin set, plus this path's human approval. Nothing automated
+      # here confirms that a version move was the move the pin edit asked
+      # for -- only the diff says that. Read neither relaxed check as cover
+      # for the other.
+      #
       # A release that did NOT touch Dockerfile.caddy gets `block`, the same
       # standard as the refresh. That covers the hand-dispatched `caddy=true`
       # rebuild of an unchanged file: nothing in the source asked the module

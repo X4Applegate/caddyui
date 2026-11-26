@@ -32,12 +32,17 @@
 #   FS_ALLOW_RE         Extended regex of paths a NEW file may appear at under
 #                       gate 4 without objection. Defaulted in the body; see
 #                       the note there before widening it.
-#   MODULE_DRIFT_POLICY block (default) | report. Governs gates 2 AND 3 below.
+#   MODULE_DRIFT_POLICY block (default) | report. Governs gates 2 AND 3 AND the
+#                       hard-stop limbs of coverage checks 5b/5c -- ONE variable
+#                       for all four, which matters because release-docker.yml
+#                       sets it from whether the submitter edited
+#                       Dockerfile.caddy. See "THE ONE SWITCH" below (T-0823)
+#                       before reading any of them as cover for another.
 #                       The default is the strict one so a caller that forgets
 #                       the variable gets the SAFER behaviour, never the weaker
 #                       one. The name predates gate 3 and is kept because all
 #                       three call sites set it; it reads as "how strict is
-#                       drift", which is what it now means for both gates.
+#                       drift", which is what it now means for all four.
 #   COVERAGE_FLOOR_FILE Path to the committed absolute coverage floor for
 #                       coverage check 5e. Default
 #                       scripts/fixtures/caddy-image-coverage-floor.json,
@@ -210,6 +215,47 @@
 #     vulnerability still blocks, under either policy. Drift stops being an
 #     automatic verdict; it does not stop being reviewed. The release diff is
 #     the reviewable record of what the module set change actually was.
+#
+#     THE ONE SWITCH, AND WHAT IS AND IS NOT COVER FOR WHAT (T-0823).
+#     ---------------------------------------------------------------
+#     This gate is NOT a separate safety net from coverage checks 5b/5c, and
+#     neither should be read as independent cover for the other. All of them
+#     take their block-vs-report posture from the SAME MODULE_DRIFT_POLICY
+#     variable, and release-docker.yml sets that variable from whether the
+#     submitter edited Dockerfile.caddy. So on the one release where module
+#     versions can move -- the release that edits the pins -- this gate AND
+#     the scan's version checks degrade to advisory SIMULTANEOUSLY, selected
+#     by the submitter's own change. Two controls, one switch, held by the
+#     party being checked.
+#
+#     That coupling is deliberate and is not a defect to be fixed by giving
+#     the scan checks their own policy. MEASURED: make 5c's hard stop ignore
+#     the policy and the gate's own suite fails on the case that matters --
+#     "a module upgraded and its finding really gone" becomes exit 2, which
+#     is the normal shape of every security release this repo cuts (v2.68.11,
+#     v2.68.12 and v2.68.14 each cleared advisories exactly that way). An
+#     always-blocking version check does not harden the release path; it
+#     forbids it.
+#
+#     So be precise about what carries the weight on the release path:
+#
+#       - gate 1 still blocks on any NEW vulnerability, under either policy;
+#       - this gate is the STRONGER evidence where it runs, because it
+#         executes the built binary and asks what modules it contains,
+#         rather than trusting a scanner's reading of the image;
+#       - the compensating control for the relaxed limbs is review of the
+#         Dockerfile.caddy diff and the pin set, which is where a module
+#         substitution would have to be introduced, plus the human approval
+#         the release path already requires;
+#       - nothing in the scan independently confirms that a version move was
+#         the one the pin edit asked for. Only the diff says that, and only a
+#         reviewer reads the diff.
+#
+#     The open improvement is therefore NOT a second policy variable: it is
+#     to cross-check each moved version against the pin set the submitter
+#     edited, so an unexplained move still blocks on the release path while
+#     an explained one passes. That is a real feature with its own design and
+#     is tracked, not stubbed in here.
 #
 #  3. Image configuration, from `docker image inspect`. Gates 1 and 2 read the
 #     image's CONTENTS -- its packages and its linked Go modules -- and neither
