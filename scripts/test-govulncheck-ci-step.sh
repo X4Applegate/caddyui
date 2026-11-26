@@ -53,6 +53,17 @@ if len(steps) != 1:
 run = steps[0]["run"]
 if "govulncheck-gate.sh" not in run:
     sys.exit("the govulncheck step no longer invokes govulncheck-gate.sh")
+
+# A CORRECT `case` IS NOT ENOUGH IF THE STEP CANNOT FAIL. Two keys would
+# restore report-only while every assertion below still passed, because they
+# neutralise the step's exit status rather than its script: `continue-on-error`
+# on the step, and the same on the job. The whole point of T-0744 is that a
+# called finding FAILS, so the absence of both is part of what is asserted.
+if steps[0].get("continue-on-error"):
+    sys.exit("the govulncheck step has continue-on-error, which silently restores report-only")
+if d["jobs"]["govulncheck"].get("continue-on-error"):
+    sys.exit("the govulncheck JOB has continue-on-error, which silently restores report-only")
+
 open(out, "w").write("#!/usr/bin/env bash\n" + run)
 PY
 rc=$?
@@ -152,19 +163,43 @@ want_in "--fail-on called" "6 the step still passes --fail-on called to the gate
 #    drift back to `@latest` would reintroduce the breakage with nothing
 #    failing until the next PR.
 # ---------------------------------------------------------------------------
-for wf in ci.yml caddy-image-refresh.yml release-docker.yml; do
-  f="$repo/.github/workflows/$wf"
+# `wfname`, not `wf`: `$wf` is the ci.yml path this file uses throughout, and
+# shadowing it here left later cases pointed at a bare filename.
+for wfname in ci.yml caddy-image-refresh.yml release-docker.yml; do
+  f="$repo/.github/workflows/$wfname"
   n=$((n+1))
   if [ ! -f "$f" ]; then
-    bad "7 $wf is missing"
+    bad "7 $wfname is missing"
   elif grep -q 'cmd/govulncheck@latest' "$f"; then
-    bad "7 $wf installs govulncheck@latest; pin it (v1.10.0 cannot analyse this tree)"
+    bad "7 $wfname installs govulncheck@latest; pin it (v1.10.0 cannot analyse this tree)"
   elif grep -q 'cmd/govulncheck@v[0-9]' "$f"; then
-    ok "7 $wf installs a pinned govulncheck, not @latest"
+    ok "7 $wfname installs a pinned govulncheck, not @latest"
   else
-    ok "7 $wf does not install govulncheck"
+    ok "7 $wfname does not install govulncheck"
   fi
 done
+
+# ---------------------------------------------------------------------------
+# 8. THE STEP MUST STILL BE ABLE TO FAIL. `continue-on-error` on the step or
+#    the job would neutralise every arm above without touching the script, so
+#    all seven cases would stay green while a called finding stopped failing
+#    the build -- report-only restored silently, which is the state T-0744
+#    decided against. The extraction aborts on either, and this states it as
+#    its own assertion so the reason is visible in the output.
+# ---------------------------------------------------------------------------
+n=$((n+1))
+if python3 - "$wf" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+job = d["jobs"]["govulncheck"]
+step = [s for s in job["steps"] if s.get("id") == "govulncheck"][0]
+sys.exit(1 if (step.get("continue-on-error") or job.get("continue-on-error")) else 0)
+PY
+then
+  ok "8 neither the step nor the job carries continue-on-error, so a called finding can still fail the build"
+else
+  bad "8 continue-on-error is set on the govulncheck step or job, which silently restores report-only"
+fi
 
 echo
 echo "pass=$pass fail=$fail"

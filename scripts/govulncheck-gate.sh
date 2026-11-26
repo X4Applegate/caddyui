@@ -442,13 +442,27 @@ load_acks() {
     # Live or expired. Two independent re-arms, and the EARLIER one wins.
     local live=1 why=""
     if [ "$expires" \< "$today" ]; then live=0; why="expired on $expires"; fi
-    if [ -n "$fixed_in" ] && [ -n "$tree_toolchain" ]; then
+    # AN UNEVALUABLE RE-ARM IS NOT A LIVE ACK. `fixed_in=` is the field that
+    # makes an acknowledgement self-healing, so the one thing it must not do
+    # is quietly stay honoured when the comparison could not be made -- a
+    # question that could not be answered rendering as suppression. Two ways
+    # that happened: no readable `toolchain` in the tree, and a comparison
+    # that returned neither 0 nor 1. Both now report the ack as not in force,
+    # which is the safe direction: the finding goes back to failing the gate
+    # and the note says the re-arm could not be evaluated.
+    if [ -n "$fixed_in" ]; then
       local c
-      if c="$(go_version_cmp "$tree_toolchain" "$fixed_in")"; then
+      if [ -z "$tree_toolchain" ]; then
+        live=0
+        why="${why:+$why; }re-arm could not be evaluated: fixed_in=$fixed_in, but this tree has no readable Go toolchain to compare it against, so whether the fix is available is unknown"
+      elif c="$(go_version_cmp "$tree_toolchain" "$fixed_in")"; then
         if [ "$c" != "-1" ]; then
           live=0
           why="${why:+$why; }re-armed: the tree is on $tree_toolchain, which is at or past fixed_in=$fixed_in, so the fix is available"
         fi
+      else
+        live=0
+        why="${why:+$why; }re-arm could not be evaluated: fixed_in=$fixed_in could not be compared with the tree's $tree_toolchain, so whether the fix is available is unknown"
       fi
     fi
     ACK_LIVE[$id]="$live"
@@ -498,7 +512,15 @@ db_modified=""
 scanner_version=""
 could_not_run=0
 extract_dir=""
-cleanup() { [ -n "$extract_dir" ] && rm -rf "$extract_dir"; return 0; }
+# The container id is cleaned up here as well as inline, because the inline
+# removal only runs on the paths that reach it: an abnormal exit between
+# `docker create` and that point would otherwise leave a stopped container
+# behind on every run.
+cleanup() {
+  [ -n "$extract_dir" ] && rm -rf "$extract_dir"
+  [ -n "${cid:-}" ] && docker rm -f "$cid" >/dev/null 2>&1
+  return 0
+}
 trap cleanup EXIT
 
 scan_target="$TARGET"
