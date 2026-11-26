@@ -2295,9 +2295,24 @@ if [ -n "$BINARY" ] && [ -z "$FIXTURE" ]; then
         # Two classes of row are EXCLUDED, both because they would print a
         # string that is not a linked version:
         #
-        #   `=>` REPLACEMENT rows. On a replaced module the version names
-        #   upstream, not the code in the binary -- the same reason the sweep
-        #   above counts replacements as unswept rather than comparing them.
+        #   The REQUIREMENT row of a REPLACED module. `go version -m` does
+        #   NOT put `=>` on the same row as the module it replaces: it prints
+        #   the requirement as its own `dep` row (no hash) and the
+        #   replacement on the NEXT row, measured on the published image:
+        #
+        #     dep  github.com/smallstep/certificates  v0.30.2
+        #     =>   github.com/smallstep/certificates  v0.30.3-0.2026...  h1:...
+        #
+        #   The first row's version is what go.mod ASKED for; the code in the
+        #   binary is the second row's. An earlier version of this filter
+        #   tested for `=>` in a fourth field of the SAME row, which never
+        #   occurs, so it indexed the requirement version: both `--replace`
+        #   pins rendered "(**lowered**)" on every run (certificates against
+        #   its own v0.30.2 requirement, crypto against the v0.92.0 that
+        #   go.mod still asks for after the pin moved to v0.92.1). So the row
+        #   is held until the next one is read, and a `=>` row that follows it
+        #   SUPPLIES the version. A replacement without a version (a local
+        #   path) indexes nothing, because no linked version can be named.
         #
         #   NON-VERSION values. The main module of a locally built binary is
         #   `mod <name> (devel)`, observed on this very image as
@@ -2309,14 +2324,28 @@ if [ -n "$BINARY" ] && [ -z "$FIXTURE" ]; then
         # leading tab and tab separators, and the default FS would make the
         # row's own indentation significant.
         graph_index="$OUT_DIR/module-index.tsv"
-        awk -F'\t' '{
+        awk -F'\t' '
+            function flush() {
+              if (held_mod != "" && held_ver ~ /^v[0-9]/)
+                printf "%s\t%s\n", held_mod, held_ver
+              held_mod = ""; held_ver = ""
+            }
+            {
               # Re-index past the leading empty field the leading tab creates.
               k=1; if ($1=="") k=2
-              typ=$k; mod=$(k+1); ver=$(k+2); nxt=$(k+3)
-              if ((typ=="dep" || typ=="mod") && nxt != "=>" \
-                  && mod != "" && ver ~ /^v[0-9]/)
-                printf "%s\t%s\n", mod, ver
-            }' "$graph_raw" \
+              typ=$k; mod=$(k+1); ver=$(k+2)
+              if (typ == "=>") {
+                # The replacement of the row held above: its version is the
+                # linked one. Versionless (local path) -> index nothing.
+                if (held_mod != "") held_ver = ver
+                flush(); next
+              }
+              flush()
+              if ((typ=="dep" || typ=="mod") && mod != "") {
+                held_mod = mod; held_ver = ver
+              }
+            }
+            END { flush() }' "$graph_raw" \
           | sort -u > "$graph_index"
       fi
     fi
