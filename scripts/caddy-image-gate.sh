@@ -32,17 +32,24 @@
 #   FS_ALLOW_RE         Extended regex of paths a NEW file may appear at under
 #                       gate 4 without objection. Defaulted in the body; see
 #                       the note there before widening it.
-#   MODULE_DRIFT_POLICY block (default) | report. Governs gates 2 AND 3 AND the
-#                       hard-stop limbs of coverage checks 5b/5c -- ONE variable
-#                       for all four, which matters because release-docker.yml
-#                       sets it from whether the submitter edited
-#                       Dockerfile.caddy. See "THE ONE SWITCH" below (T-0823)
-#                       before reading any of them as cover for another.
+#   MODULE_DRIFT_POLICY block (default) | report. Governs gate 2, gate 3, the
+#                       hard-stop limbs of coverage checks 5b/5c, AND gate 4's
+#                       filesystem delta (`fs_blocks`, which reads the same
+#                       variable and is only reachable with FS_DELTA=on) --
+#                       FIVE controls on ONE variable, which matters because
+#                       release-docker.yml sets it from whether the submitter
+#                       edited Dockerfile.caddy. See "THE ONE SWITCH" below
+#                       (T-0823) before reading any of them as cover for
+#                       another.
 #                       The default is the strict one so a caller that forgets
 #                       the variable gets the SAFER behaviour, never the weaker
-#                       one. The name predates gate 3 and is kept because all
-#                       three call sites set it; it reads as "how strict is
-#                       drift", which is what it now means for all four.
+#                       one. The name predates gates 3 and 4 and is kept because
+#                       it reads as "how strict is drift", which is what it now
+#                       means for all five.
+#                       Set explicitly by BOTH call sites. The refresh path
+#                       spells out `block` rather than relying on the default
+#                       above, so the standard that path holds to is stated
+#                       where it is read rather than inherited silently.
 #   COVERAGE_FLOOR_FILE Path to the committed absolute coverage floor for
 #                       coverage check 5e. Default
 #                       scripts/fixtures/caddy-image-coverage-floor.json,
@@ -247,6 +254,19 @@
 #     the scan's version checks degrade to advisory SIMULTANEOUSLY, selected
 #     by the submitter's own change. Two controls, one switch, held by the
 #     party being checked.
+#
+#     COUNT IT PROPERLY: the variable relaxes FIVE things, not two and not
+#     four -- gate 2 (this one), gate 3 (image configuration), gate 4's
+#     filesystem delta (`fs_blocks`, reachable only with FS_DELTA=on, i.e. on
+#     the refresh path) and the hard-stop limbs of coverage checks 5b and 5c.
+#     An earlier version of this note said four and omitted gate 4; on a note
+#     whose entire thesis is "say exactly how many controls one switch
+#     relaxes", getting the number wrong is the defect it describes. The
+#     release path is the only path that ever sets `report`, and it is also
+#     the path where FS_DELTA is off, so gate 4 is not among the controls
+#     actually relaxed THERE -- but it shares the switch, and a future caller
+#     turning FS_DELTA on for a release would relax it too, without editing
+#     anything that mentions gate 4.
 #
 #     That coupling is deliberate and is not a defect to be fixed by giving
 #     the scan checks their own policy. MEASURED: make 5c's hard stop ignore
@@ -506,6 +526,49 @@ readonly SUMMARY_DELIM
 
 SEVERITY="${TRIVY_SEVERITY:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
 
+# PIN THE IGNORE/CONFIG FILES, OR THE GATED TREE CHOOSES THEM (independent
+# review finding B1).
+#
+# Trivy resolves `.trivyignore`, `trivy.yaml` and `trivy-secret.yaml` against
+# the process's CURRENT DIRECTORY by default (`trivy image --help`), and every
+# call site runs this gate from inside the checked-out release tree -- the tree
+# the party being gated controls. `release-docker.yml` runs the gate step with
+# no `working-directory`, so cwd is `$GITHUB_WORKSPACE` at the release tag;
+# `caddy-image-refresh.yml` checks the release tag out over the whole tree
+# before the gate step. So a `.trivyignore` committed at the repository root
+# suppresses findings from BOTH scans, before gate 1 ever sees them, with no
+# error anywhere.
+#
+# MEASURED with the real binary in the exact shape the workflows produce (cwd
+# = the checkout): a one-line `.trivyignore` naming a real finding took it
+# from reported to absent on both sides -- `verdict=unchanged`, rc 0 -- and it
+# works the same for a CVE id, a secret RuleID and a misconfig id, i.e. all
+# three classes this gate compares. A `trivy.yaml` does it indirectly via its
+# own `ignorefile:` key, and would also redirect `--checks-bundle-repository`
+# for the prefetch below, which both scans are then PINNED to.
+#
+# The worst part is not the suppression, it is what gets printed over it: in
+# the suppressed run the `secret` CLASS result still appears, carrying an
+# empty list, so the summary's secret clause reads as a comparison that
+# happened. The most reassuring sentence this gate can emit would be printed
+# over exactly the baked-in credential the secret scanner was added to catch.
+#
+# Pinned to files created HERE, fresh, under $OUT -- a directory this run
+# creates (`mkdir -p "$OUT"` above) and that is not part of the checked-out
+# tree or of either image, so neither side can seed their content. Created
+# after the stale-output sweep above so a previous run's copies cannot
+# survive into this one.
+#
+# `--secret-config ""` disables that lookup outright, which is Trivy's own
+# documented meaning for the empty string. `--ignorefile` and `--config` need
+# an EXISTING file on 0.76.1 -- an absent path is a hard `FATAL`, measured --
+# so each gets an empty one rather than a path that would abort the gate.
+TRIVY_NO_IGNOREFILE="$OUT/.trivy-no-ignorefile"
+TRIVY_NO_CONFIG="$OUT/.trivy-no-config.yaml"
+: > "$TRIVY_NO_IGNOREFILE"
+printf '{}\n' > "$TRIVY_NO_CONFIG"
+readonly TRIVY_NO_IGNOREFILE TRIVY_NO_CONFIG
+
 # The misconfig scanner needs a REGO CHECKS BUNDLE, which is a second cache,
 # fetched from a different place, on a different flag from the vulnerability
 # DB -- and the callers pre-download only the DB.
@@ -549,8 +612,13 @@ if [ "${TRIVY_SKIP_CHECK_PREFETCH:-0}" != 1 ]; then
   # a warm cache makes it unnecessary, and the coverage precondition will
   # catch a genuinely absent misconfig result regardless. But say so, because
   # a silent skip here is how an unpinned mid-loop fetch sneaks back in.
+  # `--config` pinned for the same reason as the scans below: an unpinned
+  # prefetch reads `trivy.yaml` from cwd, which is the gated checkout, and
+  # that file can set `checks-bundle-repository`. Both scans are then pinned
+  # to whatever this fetched with `--skip-check-update`, so a redirect here
+  # would choose the Rego checks the misconfig half of the gate runs.
   _checks_tmp="$(mktemp -d)"
-  if trivy config --quiet "${checks_repo_args[@]}" "$_checks_tmp" >/dev/null 2>&1; then
+  if trivy config --quiet --config "$TRIVY_NO_CONFIG" "${checks_repo_args[@]}" "$_checks_tmp" >/dev/null 2>&1; then
     CHECKS_PREFETCH_ARGS=(--skip-check-update)
     echo "misconfig checks bundle pre-fetched; both scans pinned to it (--skip-check-update)"
   else
@@ -1257,7 +1325,7 @@ assert_scan_coverage() {
     if [ "$side_name" = rebuild ]; then side_classes="$new_classes"
     else                                side_classes="$old_classes"; fi
     printf '%s\n' "$side_classes" | grep -qx config \
-      || die "the $side_name scan of linux/$arch reports no 'config' result, so the image-configuration (misconfig) scanner did not run on it -- a whole class of finding is UNSEARCHED rather than clean, and anything it would have reported cancels out of the subset comparison on both sides at once. Trivy emits this result whenever the image config is a scan target, so its absence means the scanner was disabled: \`--scanners\`, a missing \`--image-config-scanners\`, a trivy.yaml in the working directory, or a Trivy default change. Required outright rather than compared against the other scan, because one flag set drives both scans and a symmetric loss is invisible to any comparison. (classes seen: $(safe_text "$(printf '%s' "$side_classes" | tr '\n' ' ')"))"
+      || die "the $side_name scan of linux/$arch reports no 'config' result, so the image-configuration (misconfig) scanner did not run on it -- a whole class of finding is UNSEARCHED rather than clean, and anything it would have reported cancels out of the subset comparison on both sides at once. Trivy emits a \`config\` result whenever the image config is a scan target, so its ABSENCE means the scanner was disabled: \`--scanners\`, a missing \`--image-config-scanners\`, a trivy.yaml in the working directory, or a Trivy default change. (Only that direction is asserted. Presence is necessary, not sufficient: Trivy also emits \`Class=config\` for a config file found inside the image FILESYSTEM, so an image that shipped a Dockerfile would satisfy this check without the image config having been scanned. Reaching that needs a script edit to drop the flag as well, and the pinned flag set is what stands behind the other direction.) Required outright rather than compared against the other scan, because one flag set drives both scans and a symmetric loss is invisible to any comparison. (classes seen: $(safe_text "$(printf '%s' "$side_classes" | tr '\n' ' ')"))"
   done
 
   # The relative half, now narrowed to what it can actually mean: a class on
@@ -2345,6 +2413,25 @@ assert_baseline_not_newer() {
       die "the gate could not convert the creation timestamps for linux/$arch to a comparable non-negative instant (rebuild: '$(safe_text "$new_created")', published: '$(safe_text "$base_created")'), so it cannot tell which image is newer. A form-valid date that is not a real one (a 13th month) or predates 1970 lands here. Refused rather than skipped." ;;
   esac
 
+  # THE ZERO INSTANT HAS MORE THAN ONE LEGAL SPELLING, and the by-name case
+  # above only knows two of them. `1970-01-01T00:00:00+00:00` is the SAME
+  # instant, is legal RFC3339, satisfies the form check, and converts cleanly
+  # to 0 -- so it fell past the by-name guard and died on the comparison below
+  # blaming the PUBLISHED image for being newer, which is the exact mis-blame
+  # the by-name case was added to prevent, for the exact class of input it was
+  # about. Found in review. Tested NUMERICALLY here, after conversion, so
+  # every spelling of the zero instant is covered at once rather than by an
+  # ever-growing pattern: no real image can be built at or before the epoch,
+  # so a non-positive value is a rewritten timestamp whichever way it is
+  # written. (A date that genuinely predates 1970 converts to a negative
+  # number and is caught one guard above, because `-` is not in [0-9:].)
+  local zside='' zts=''
+  if [ "$new_epoch" -le 0 ]; then zside=rebuild; zts="$new_created"
+  elif [ "$base_epoch" -le 0 ]; then zside=published; zts="$base_created"
+  fi
+  [ -z "$zside" ] \
+    || die "the $zside image for linux/$arch declares a ZERO creation timestamp ($(safe_text "$zts")), which is what a build that rewrites timestamps for reproducibility emits -- buildkit with SOURCE_DATE_EPOCH=0 produces the epoch, and this is the same instant however it is spelled (\`...00:00:00Z\`, \`...00:00:00.000Z\`, \`...00:00:00+00:00\`). The gate cannot order the two images by age on that, and comparing it would block this release while blaming the other image. Either keep real build timestamps on the gated image (the workflows build with provenance disabled and no SOURCE_DATE_EPOCH, which does), or this check needs a deliberate exemption -- do not make it skip silently."
+
   [ "$base_epoch" -le "$new_epoch" ] \
     || die "the PUBLISHED image is NEWER than the image being gated for linux/$arch (published: $(safe_text "$base_created"), rebuild: $(safe_text "$new_created")) -- the comparison is the wrong way round. This is caller error, not a defect in either image: gate 1 is set arithmetic over two scans, so run backwards it reports every finding the published image has FIXED since as newly ADDED by this build, and the run blocks for a reason that has nothing to do with the image under test. Gate the newer image against the older one, or refresh the baseline you are comparing to. One other cause reaches this message and is worth ruling out first: if the gated build rewrites its creation timestamp for reproducibility (SOURCE_DATE_EPOCH set to a commit date, say), that timestamp is not its build time, the two images cannot be ordered by age at all, and this check would need a deliberate exemption rather than a workaround."
 
@@ -2776,45 +2863,38 @@ for arch in $ARCHES; do
   TRIVY_SCANNERS='vuln,secret,misconfig'
   TRIVY_IMAGE_CONFIG_SCANNERS='misconfig,secret'
 
-  # PIN THE IGNORE/CONFIG FILES, OR THE GATED TREE CHOOSES THEM (independent
-  # review finding B1, T-0849). Trivy resolves `.trivyignore`, `trivy.yaml`
-  # and `trivy-secret.yaml` against the process's CURRENT DIRECTORY by
-  # default, and both call sites (release-docker.yml, caddy-image-refresh.yml)
-  # run this gate from inside the checked-out release tree -- the tree the
-  # party being gated controls. A `.trivyignore` or `trivy.yaml` committed at
-  # the repo root therefore drops findings from BOTH scans before gate 1 ever
-  # sees them, with no error. Measured with the real binary, in the exact
-  # container shape these workflows use (`docker run -w <checkout>`): a
-  # one-line `.trivyignore` naming a real finding took it from reported to
-  # absent on both sides, exit 0, verdict unchanged -- and the `secret`
-  # Class result still appeared with an empty list, so the summary's "no
-  # embedded secret" sentence would have been printed over the exact
-  # suppressed credential this scanner exists to catch.
-  #
-  # Pinned to files created fresh, right here, inside $OUT -- a directory
-  # this run creates (`mkdir -p "$OUT"` above) and that is never part of the
-  # checked-out tree or the gated image, so nothing either side controls can
-  # seed its content. `--secret-config ""` explicitly disables that lookup
-  # (Trivy treats the empty string as "no file", per its own --help); the
-  # other two need an EXISTING file -- an absent path is a hard trivy error
-  # on this version -- so an empty one is created for each.
-  trivy_ignorefile="$OUT/.no-ignore-$arch"
-  trivy_config="$OUT/.no-config-$arch.yaml"
-  : > "$trivy_ignorefile"
-  printf '{}\n' > "$trivy_config"
-
+  # The ignore/config files are pinned to $TRIVY_NO_IGNOREFILE and
+  # $TRIVY_NO_CONFIG, created once near the top of this script. See the long
+  # note there before touching them: unpinned, Trivy reads `.trivyignore` and
+  # `trivy.yaml` from cwd, which on both call sites is the gated checkout, and
+  # a file committed at its root suppresses findings from BOTH scans at once
+  # (review finding B1 -- measured, all three classes, verdict `unchanged`).
+  # A NON-ZERO TRIVY EXIT IS A TOOLING FAILURE, NOT A VERDICT, so both calls
+  # `die` (exit 2, "the gate could not run") rather than letting `set -e`
+  # propagate Trivy's own status. Measured on 0.76.1: `--exit-code` is NOT
+  # passed by this script and defaults to 0, so a scan that FINDS things
+  # still exits 0 -- the only way these calls exit non-zero is a failure to
+  # scan, and that comes back as **1**, which is this gate's "blocked"
+  # status. Unguarded, a missing image or a bad flag therefore reached the
+  # release path as "the gate reported findings, go read them" over a run
+  # that compared nothing, defeating the exit-1-vs-exit-2 separation
+  # release-docker.yml is written around. Found in review; the checks-bundle
+  # prefetch above makes it easier to reach, since a registry hiccup now has
+  # a second place to happen.
   trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
-    --ignorefile "$trivy_ignorefile" --config "$trivy_config" --secret-config "" \
+    --ignorefile "$TRIVY_NO_IGNOREFILE" --config "$TRIVY_NO_CONFIG" --secret-config "" \
     --scanners "$TRIVY_SCANNERS" \
     --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
     --severity "$SEVERITY" \
-    --format json --output "$OUT/new-$arch.json" "$new_ref"
+    --format json --output "$OUT/new-$arch.json" "$new_ref" \
+    || die "trivy failed to scan the REBUILD image for linux/$arch ($(safe_text "$new_ref")): the scan did not complete, so there is nothing to compare. This is a failure of the gate or its environment, not a finding about the image -- \`--exit-code\` is not set, so a scan that finds vulnerabilities still exits 0 and only a failure to scan lands here. Exits 2 so it cannot be read as a 'blocked' verdict."
   trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
-    --ignorefile "$trivy_ignorefile" --config "$trivy_config" --secret-config "" \
+    --ignorefile "$TRIVY_NO_IGNOREFILE" --config "$TRIVY_NO_CONFIG" --secret-config "" \
     --scanners "$TRIVY_SCANNERS" \
     --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
     --severity "$SEVERITY" \
-    --format json --output "$OUT/old-$arch.json" "$base_ref"
+    --format json --output "$OUT/old-$arch.json" "$base_ref" \
+    || die "trivy failed to scan the PUBLISHED baseline image for linux/$arch ($(safe_text "$base_ref")): the scan did not complete, so there is nothing to compare against. This is a failure of the gate or its environment, not a finding about either image; see the rebuild-side message for why a non-zero exit here cannot mean 'found something'. Exits 2 so it cannot be read as a 'blocked' verdict."
 
   # Trivy writes NO output file at all when a scan produces zero results
   # (verified on 0.76.1: exit 0, no file). Every check below reads these

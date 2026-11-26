@@ -15,8 +15,18 @@
 # WHY THIS WRITES THROUGH A TEMP FILE AND SHOWS THE DELTA.
 # The fixture's whole value is that a change to it is seen by a human. A script
 # that silently overwrote it would restore exactly the invisibility this check
-# exists to remove, so it prints what moved and refuses to write a floor that
-# looks like a collapse unless told to.
+# exists to remove, so it prints what moved -- loudly, naming every name a
+# refresh would REMOVE, since those are the ones that lower the floor.
+#
+# It does NOT refuse: it prints the notice and writes. That is deliberate and
+# is stated here because an earlier version of this header claimed a refusal
+# the code does not implement, which is worse than either behaviour -- a
+# reader would have trusted a guard that was not there. Removing a plugin
+# legitimately drops its whole dependency subtree, so a drop is normal and
+# refusing it would make the honest case the hard one. What makes the drop
+# safe is that it lands in a reviewable diff on the fixture, in the same PR,
+# with the removed names printed; see the inline comment at the removal
+# branch.
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 2; }

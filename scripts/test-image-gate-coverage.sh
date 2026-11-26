@@ -1176,6 +1176,26 @@ fi
 run_cov "$WORK/t79-nocfg.json" "$B"
 check "the rebuild missing the config class blocks" block
 
+# 81b. ...and so does the BASELINE alone missing it. 3b loops over both sides
+#      (`for side_name in rebuild published`), and until this case the
+#      `published` leg never fired in the suite: 79 covers both-missing and 81
+#      covers rebuild-missing, so the loop could have been written to check
+#      only the rebuild and the suite would still have been green. It matters
+#      on its own terms, too -- a baseline scanned without the misconfig
+#      scanner has no `config` findings to compare against, so every
+#      misconfiguration in the REBUILD would read as newly added, or (with the
+#      class absent from both id sets) cancel out silently. Found as a gap by
+#      independent review.
+run_cov "$B" "$WORK/t79-nocfg.json"
+check "the baseline missing the config class blocks" block
+if printf '%s' "$COV_OUT" | grep -q 'the published scan of'; then
+  printf 'ok   ...and names the published side as the one that lost it\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL ...and names the published side as the one that lost it\n     %s\n' "$COV_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
 # 82. LOSING THE SECRET CLASS PASSES, AND MUST. `secret` appears only when a
 #     secret is actually FOUND, so a baseline carrying one and a rebuild
 #     reporting none is the shape of a FIX -- someone removed a baked-in
@@ -1208,6 +1228,19 @@ else
   printf 'FAIL ...and reports it as an asymmetry, not as a disabled scanner\n     %s\n' "$COV_OUT"
   FAIL=$((FAIL + 1))
 fi
+
+# 83b. A class on the REBUILD ONLY must PASS -- the mirror of 83, and the
+#      direction that decides whether the relative half is a coverage check or
+#      an accidental freeze on the class list. A rebuild reporting a class the
+#      baseline did not is coverage being ADDED (a scanner newly finding
+#      something, a new result type in a Trivy upgrade); blocking it would
+#      make every scanner improvement a release blocker. Correct today by the
+#      `comm -13` direction, which is exactly why it needs a case: the
+#      direction is one character.
+jq '.Results += [ { "Target": "x", "Class": "license", "Packages": null } ]' \
+   "$B" > "$WORK/t83b-new.json"
+run_cov "$WORK/t83b-new.json" "$B"
+check "a class present on the rebuild only passes (coverage added, not lost)" pass
 
 # 84. An EMPTY or absent .Class must not be counted as a class. Trivy omits
 #     the key on some result shapes, and `comm` over a list containing a blank
@@ -1325,10 +1358,10 @@ fi
 #     invocations must pin all three to paths this run creates itself under
 #     `$OUT`, never to a bare default, so a revert of the pin is caught
 #     without needing a live Trivy binary to prove it.
-invocations="$(grep -c -- '--ignorefile "\$trivy_ignorefile" --config "\$trivy_config" --secret-config ""' "$GATE" || true)"
+invocations="$(grep -c -- '--ignorefile "\$TRIVY_NO_IGNOREFILE" --config "\$TRIVY_NO_CONFIG" --secret-config ""' "$GATE" || true)"
 if [ "$invocations" -eq 2 ] \
-   && grep -q 'trivy_ignorefile="\$OUT/' "$GATE" \
-   && grep -q 'trivy_config="\$OUT/' "$GATE"; then
+   && grep -q 'TRIVY_NO_IGNOREFILE="\$OUT/' "$GATE" \
+   && grep -q 'TRIVY_NO_CONFIG="\$OUT/' "$GATE"; then
   printf 'ok   both trivy image calls pin ignorefile/config/secret-config under $OUT\n'
   PASS=$((PASS + 1))
 else
@@ -1336,16 +1369,46 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# 91. ...and the pinned ignorefile/config must be CREATED before use, each
-#     time, rather than assumed to pre-exist -- an absent path is a hard
-#     trivy error on 0.76.1 for --ignorefile/--config (unlike --secret-config,
-#     which tolerates one, hence the empty string rather than a third file).
-if grep -q '^\s*: > "\$trivy_ignorefile"' "$GATE" \
-   && grep -q "printf '{}\\\\n' > \"\\\$trivy_config\"" "$GATE"; then
-  printf 'ok   the pinned ignorefile and config are created fresh before each scan\n'
+# 91. ...and so must the CHECKS-BUNDLE PREFETCH, which is the same hole with a
+#     worse payload: `trivy config` reads `trivy.yaml` from cwd too, that file
+#     can set `checks-bundle-repository`, and both scans are then PINNED to
+#     whatever the prefetch fetched (`--skip-check-update`). Unpinned, the
+#     gated checkout could therefore choose the Rego checks the misconfig half
+#     of this gate runs.
+if grep -q 'trivy config --quiet --config "\$TRIVY_NO_CONFIG"' "$GATE"; then
+  printf 'ok   the checks-bundle prefetch pins its config too\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL the checks-bundle prefetch pins its config too\n'
+  FAIL=$((FAIL + 1))
+fi
+
+# 92. ...and the pinned ignorefile/config must be CREATED, rather than assumed
+#     to pre-exist -- an absent path is a hard trivy FATAL on 0.76.1 for
+#     --ignorefile/--config (unlike --secret-config, which tolerates one,
+#     hence the empty string rather than a third file). Created after the
+#     stale-output sweep, so a previous run's copy in a reused $OUT cannot
+#     survive into this one.
+if grep -q '^: > "\$TRIVY_NO_IGNOREFILE"' "$GATE" \
+   && grep -q "^printf '{}\\\\n' > \"\\\$TRIVY_NO_CONFIG\"" "$GATE"; then
+  printf 'ok   the pinned ignorefile and config are created, not assumed\n'
   PASS=$((PASS + 1))
 else
-  printf 'FAIL the pinned ignorefile and config are created fresh before each scan\n'
+  printf 'FAIL the pinned ignorefile and config are created, not assumed\n'
+  FAIL=$((FAIL + 1))
+fi
+
+# 93. A NON-ZERO TRIVY EXIT MUST BE exit 2, NOT exit 1. `--exit-code` is not
+#     passed, so (measured on 0.76.1) a scan that FINDS things still exits 0
+#     and the only way these calls exit non-zero is a failure to scan -- which
+#     returns 1, this gate's "blocked" status. Unguarded under `set -e` that
+#     reached the release path as "the gate reported findings" over a run that
+#     compared nothing. Found in review.
+guards="$(grep -c 'die "trivy failed to scan the' "$GATE" || true)"
+if [ "$guards" -eq 2 ]; then
+  printf 'ok   both trivy image calls turn a tooling failure into exit 2\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL both trivy image calls turn a tooling failure into exit 2\n     guards=%s\n' "$guards"
   FAIL=$((FAIL + 1))
 fi
 

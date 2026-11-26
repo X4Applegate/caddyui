@@ -305,6 +305,38 @@ fi
 run_age '1970-01-01T00:00:00.000000000Z' "$PULLED"
 check "the 1970 zero time with fractional seconds is refused" die
 
+# 26b. THE ZERO INSTANT IN ITS OFFSET SPELLING. `1970-01-01T00:00:00+00:00` is
+#      the same instant as case 25, is legal RFC3339, and satisfies the form
+#      check -- so while the zero guard matched by NAME it fell straight past
+#      it and died with "the PUBLISHED image is NEWER", i.e. the exact
+#      mis-blame cases 25/26 exist to remove, for the exact class of input
+#      they are about. Found in review. The guard is now numeric (epoch <= 0)
+#      so every spelling is covered at once; this case is what keeps it that
+#      way, because a return to pattern matching passes 25/26 and fails here.
+run_age '1970-01-01T00:00:00+00:00' "$PULLED"
+check "the zero instant in its +00:00 spelling is refused" die
+if printf '%s' "$OUT" | grep -qi 'ZERO creation timestamp'; then
+  printf 'ok   ...under the zero-time message, not "baseline is newer"\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ...under the zero-time message, not "baseline is newer"\n     %s\n' "$OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# 26c. A PRE-1970 TIMESTAMP converts to a NEGATIVE epoch. The comment on the
+#      conversion guard says that case lands there; nothing asserted it, so
+#      the claim was untested documentation. It must not reach the age
+#      comparison (where a negative number would compare as ordinary) and it
+#      must not be reported as the zero instant either, since it is a
+#      different fault.
+run_age '1969-07-20T20:17:00Z' "$PULLED"
+check "a pre-1970 timestamp is refused at the conversion guard" die
+if printf '%s' "$OUT" | grep -qi 'comparable non-negative instant'; then
+  printf 'ok   ...as an unconvertible instant, not as the zero time\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ...as an unconvertible instant, not as the zero time\n     %s\n' "$OUT"
+  FAIL=$((FAIL + 1))
+fi
+
 # 27. An ordinary 1970-adjacent timestamp that is NOT the zero instant must
 #     still reach the age comparison rather than the zero-time message, so the
 #     guard stays a guard on one value and does not swallow a whole year.
