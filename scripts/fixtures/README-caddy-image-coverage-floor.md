@@ -71,6 +71,27 @@ cumulative rename drift takes a sustained change of character in the dependency 
 churn. The gate prints the `captured` date and the current **margin** on every pass line, so drift
 is visible in green runs rather than only in the one that finally fails.
 
+## Where the gate looks for this file
+
+`COVERAGE_FLOOR_FILE` defaults to this file's repo-relative path and is resolved against the
+**current directory**, not against the gate script. That is deliberate and load-bearing: both CI
+callers `cp` the gate into `$RUNNER_TEMP` and run it with the checkout as cwd, so resolving against
+`dirname $0` would look in a temp directory holding one file and turn 5e permanently off on the
+exact path it exists to guard. Both workflows therefore pass an **absolute** `${{ runner.temp }}`
+path and assert the fixture is present.
+
+The cost of a cwd-relative default is that cwd becomes part of the configuration, and a local run
+from the wrong directory used to degrade to the "absent, skip" path — which prints a NOTE and
+exits 0, reading exactly like a pass. So the two cases are now distinguished:
+
+- **default path + cwd is not a checkout** → hard stop. The fixture is *unreachable*, not absent,
+  and that is a caller error.
+- **explicit path** (CI's shape) → used as given; cwd is irrelevant.
+- **explicitly empty** → the deliberate opt-out, honoured from anywhere.
+- **explicit path that does not exist** → the genuine absence: NOTE and skip, as before.
+
+Run the gate from the repo root, or pass an absolute path.
+
 ## How to refresh
 
 ```sh

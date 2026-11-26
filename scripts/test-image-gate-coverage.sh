@@ -986,5 +986,46 @@ check "a duplicate .Target in the baseline is blocked as well (7a)" block
 COVERAGE_FLOOR_FILE="" run_cov "$WORK/t1.json" "$B"
 check "one gobinary result per path still passes (7a not over-eager)" pass
 
+# 72-75. The DEFAULT fixture path is cwd-relative (see the note at its
+#     assignment: resolving against `dirname $0` would break CI, which copies
+#     this script into $RUNNER_TEMP). That makes cwd load-bearing, so a run
+#     from the wrong directory used to degrade 5e to a silent "absent, skip"
+#     that reads exactly like a pass -- review finding F4. The default is now
+#     distinguished from a genuine absence: unreachable blocks, while an
+#     EXPLICIT path (CI's shape) and an explicit empty (the opt-out) are never
+#     second-guessed. Run from a directory that is not a checkout.
+run_cov_in() {
+  local dir="$1" new="$2" old="$3"
+  COV_RC=0
+  COV_OUT="$( (
+      cd "$dir" || exit 2
+      OUT="$WORK"
+      export OUT
+      assert_scan_coverage "$new" "$old" amd64
+    ) 2>&1 )" || COV_RC=$?
+  return 0
+}
+
+COVERAGE_FLOOR_FILE=scripts/fixtures/caddy-image-coverage-floor.json \
+  run_cov_in /tmp "$WORK/t1.json" "$B"
+check "the default fixture path from a non-repo cwd blocks, not skips" block
+if printf '%s' "$COV_OUT" | grep -q 'unreachable rather than absent'; then
+  printf 'ok   ...and says the fixture is unreachable, not absent\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ...and says the fixture is unreachable, not absent\n     %s\n' "$COV_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# An EXPLICIT absolute path is CI's shape and must be unaffected by cwd. Uses
+# a crafted fixture matching this harness's synthetic names, so the floor
+# itself is satisfied and only the path handling is under test.
+mkfixture "$WORK/t73-fx.json" 237 50
+COVERAGE_FLOOR_FILE="$WORK/t73-fx.json" run_cov_in /tmp "$WORK/t1.json" "$B"
+check "an explicit absolute fixture path ignores cwd (CI shape)" pass
+
+# And the deliberate opt-out still works from anywhere.
+COVERAGE_FLOOR_FILE="" run_cov_in /tmp "$WORK/t1.json" "$B"
+check "an explicitly empty floor still opts out from any cwd" pass
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

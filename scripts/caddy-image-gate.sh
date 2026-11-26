@@ -1658,6 +1658,24 @@ assert_scan_coverage() {
         || die "the coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") exists but is not readable. Refusing to continue without the absolute floor it names."
     fi
     if [ ! -e "$COVERAGE_FLOOR_FILE" ] && [ ! -L "$COVERAGE_FLOOR_FILE" ]; then
+      # WRONG CWD WITH THE DEFAULT PATH IS A FAULT, NOT AN ABSENCE (T-0811,
+      # review finding F4).
+      #
+      # The default is deliberately cwd-relative -- see the note at its
+      # assignment: both CI callers `cp` this script into $RUNNER_TEMP, so
+      # resolving against `dirname $0` would look in a temp directory holding
+      # one file and turn 5e permanently off on the exact path it guards.
+      # That makes cwd load-bearing, and a run from anywhere else silently
+      # degrades to "no fixture" -- the skip below reads identically to a
+      # legitimate one. Distinguish the two: if the default is in use and cwd
+      # is not a checkout of this repo, the fixture is not absent, it is
+      # UNREACHABLE, and that is a caller error worth failing on rather than
+      # noting. An explicit COVERAGE_FLOOR_FILE is never second-guessed here,
+      # and an empty one already returned above.
+      if [ "$COVERAGE_FLOOR_FILE" = scripts/fixtures/caddy-image-coverage-floor.json ] \
+         && [ ! -f scripts/caddy-image-gate.sh ]; then
+        die "the absolute coverage floor (check 5e) is using its default relative path $(safe_text "$COVERAGE_FLOOR_FILE"), but the current directory ($(safe_text "$PWD")) is not a checkout of this repo, so the fixture is unreachable rather than absent -- and an unreachable default would turn 5e off while every other check still printed OK. Run the gate from the repo root, or pass an absolute COVERAGE_FLOOR_FILE (both CI callers do), or set it empty to run deliberately without an absolute floor."
+      fi
       # ABSENT is not a fault. The script is run by hand and from worktrees
       # that predate the fixture, and every check above still ran. Noted
       # rather than silent, so "5e did not run" is visible in the log and in
