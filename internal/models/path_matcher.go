@@ -3,6 +3,7 @@
 package models
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
@@ -54,4 +55,16 @@ func validatePathMatcher(p *ProxyHost) error {
 		return fmt.Errorf("%w (%s)", ErrInvalidPathMatcher, why)
 	}
 	return nil
+}
+
+// pathMatcherUnchanged reports whether p's stored Path matcher and type are
+// what p still holds. UpdateProxyHost lets such a row through even when it
+// fails PathMatcherProblem: rows saved before that check existed must still
+// be enabled, disabled, put in maintenance or given a certificate (those
+// paths rewrite the whole row). The edit form refuses them with its own
+// translated message, and the Caddyfile export fails closed on them.
+func pathMatcherUnchanged(db *sql.DB, p *ProxyHost) bool {
+	var matcher, typ string
+	err := db.QueryRow(`SELECT COALESCE(path_matcher,''), COALESCE(path_matcher_type,'') FROM proxy_hosts WHERE id=?`, p.ID).Scan(&matcher, &typ)
+	return err == nil && matcher == p.PathMatcher && typ == p.PathMatcherType
 }

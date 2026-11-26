@@ -75,3 +75,37 @@ func TestCreateAndUpdateProxyHostRejectInvalidPathMatcher(t *testing.T) {
 		t.Fatalf("rejected update was stored: %q", got.PathMatcher)
 	}
 }
+
+// A row stored before the check existed keeps working through UpdateProxyHost
+// (toggles, maintenance, certificates rewrite the whole row) as long as its
+// matcher is unchanged; changing it to another invalid value is refused.
+func TestUpdateProxyHostKeepsAnUnchangedLegacyPathMatcher(t *testing.T) {
+	conn, err := appdb.Open(filepath.Join(t.TempDir(), "caddyui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	sid, err := models.CreateCaddyServer(conn, &models.CaddyServer{Name: "primary", AdminURL: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := models.CreateProxyHost(conn, sid, 0, &models.ProxyHost{Domains: "legacy.example.test", ForwardHost: "203.0.113.10", ForwardPort: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE proxy_hosts SET path_matcher='^/(unclosed', path_matcher_type='regexp' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	ph, err := models.GetProxyHost(conn, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph.Enabled = !ph.Enabled
+	if err := models.UpdateProxyHost(conn, ph); err != nil {
+		t.Fatalf("toggle on a legacy row: %v", err)
+	}
+	ph.PathMatcher = "^/[also-unclosed"
+	if err := models.UpdateProxyHost(conn, ph); !errors.Is(err, models.ErrInvalidPathMatcher) {
+		t.Fatalf("changing to another invalid matcher: err = %v", err)
+	}
+}

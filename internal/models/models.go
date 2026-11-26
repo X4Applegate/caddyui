@@ -2935,7 +2935,7 @@ func CreateProxyHost(db *sql.DB, serverID int64, ownerID int64, p *ProxyHost) (i
 }
 
 func UpdateProxyHost(db *sql.DB, p *ProxyHost) error {
-	if err := validatePathMatcher(p); err != nil {
+	if err := validatePathMatcher(p); err != nil && !pathMatcherUnchanged(db, p) {
 		return err
 	}
 	if p.ForwardScheme == "" {

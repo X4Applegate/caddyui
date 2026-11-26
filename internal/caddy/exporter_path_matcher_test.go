@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -38,6 +39,11 @@ var pathMatcherCases = []struct {
 	{name: "regexp space quote brace hash", matcher: `^/a b{2}#"x`, typ: "regexp", wantMatcher: "path_regexp `^/a b{2}#\"x`"},
 	{name: "regexp leading hash", matcher: `#frag`, typ: "regexp", wantMatcher: "path_regexp `#frag`"},
 	{name: "regexp quantifier braces", matcher: `^/v{2,3}/`, typ: "regexp", wantMatcher: "path_regexp `^/v{2,3}/`"},
+	{name: "regexp unicode class", matcher: `^/\p{L}+`, typ: "regexp", wantMatcher: "path_regexp `" + `^/\p{L}+` + "`"},
+	{name: "regexp unicode script", matcher: `^/\p{Greek}`, typ: "regexp", wantMatcher: "path_regexp `" + `^/\p{Greek}` + "`"},
+	{name: "regexp negated script", matcher: `^/\P{Han}`, typ: "regexp", wantMatcher: "path_regexp `" + `^/\P{Han}` + "`"},
+	{name: "regexp escaped braces", matcher: `^/\{host\}`, typ: "regexp", wantMatcher: "path_regexp `" + `^/\{host\}` + "`"},
+	{name: "regexp unknown placeholder", matcher: `^/{_x}`, typ: "regexp", wantMatcher: "path_regexp `^/{_x}`"},
 	{name: "prefix with space", matcher: "/my docs", typ: "", strip: true, wantMatcher: "path `/my docs` `/my docs/*`", wantStrip: "`/my docs`"},
 }
 
@@ -89,7 +95,7 @@ func TestRenderProxyHostCaddyfilePathMatcher(t *testing.T) {
 func TestCaddyfilePathMatcherAdaptsLikeJSONRoute(t *testing.T) {
 	caddyBin, err := exec.LookPath("caddy")
 	if err != nil {
-		t.Skip("caddy binary not on PATH")
+		t.Skip("SKIPPED: no `caddy` binary on PATH, so the `caddy adapt` equivalence check did not run — put caddy on PATH to run it")
 	}
 	dir := t.TempDir()
 	for i, tc := range pathMatcherCases {
@@ -240,14 +246,15 @@ var unrepresentableMatchers = []struct{ name, matcher, typ string }{
 	{"invalid UTF-8", "/a\xffb", ""},
 	{"env var", "/{$HOME}", ""},
 	{"placeholder shorthand", "^/x{host}", "regexp"},
-	{"underscore placeholder", "/{_x}", "exact"},
+	{"path shorthand", "/a{path}", "exact"},
+	{"header shorthand", "^/{header.X}", "regexp"},
 }
 
 // Issue #184 review (blocking): values that cannot be one safe token make
 // the site refuse every request — never a quoted token that can be broken
 // out of, and never a dropped matcher that would proxy every path.
 func TestCaddyfilePathMatcherFailsClosed(t *testing.T) {
-	caddyBin, _ := exec.LookPath("caddy")
+	caddyBin := lookCaddy(t)
 	dir := t.TempDir()
 	for i, tc := range unrepresentableMatchers {
 		for _, strip := range []bool{false, true} {
@@ -332,8 +339,8 @@ func TestCaddyfileStripPrefixKeepsExploitBlockerOnOriginalPath(t *testing.T) {
 			t.Fatalf("type %q: blocker and strip must sit in one route block, blocker first:\n%s", typ, out)
 		}
 
-		caddyBin, err := exec.LookPath("caddy")
-		if err != nil {
+		caddyBin := lookCaddy(t)
+		if caddyBin == "" {
 			continue
 		}
 		file := filepath.Join(t.TempDir(), "Caddyfile")
@@ -359,6 +366,10 @@ func handlerOrder(node any) []string {
 			switch {
 			case v["handler"] == "static_response" && fmt.Sprint(v["status_code"]) == "403":
 				out = append(out, "blocked")
+			case v["handler"] == "static_response" && v["abort"] == true:
+				out = append(out, "abort")
+			case v["handler"] == "static_response" && fmt.Sprint(v["status_code"]) == "503":
+				out = append(out, "respond503")
 			case v["handler"] == "rewrite" && v["strip_path_prefix"] != nil:
 				out = append(out, "strip")
 			case v["handler"] == "reverse_proxy":
@@ -389,88 +400,349 @@ func indexOf(list []string, s string) int {
 	return -1
 }
 
-// Issue #184 review (audit): other user-supplied values the exporter writes
-// as bare tokens or into comments must not be able to add lines or blocks.
-// A bare value that cannot be one safe token leaves its site out entirely;
-// comment text has line breaks flattened.
+// Issue #184 review: every other user-supplied value the exporter writes
+// outside a comment must not be able to add tokens, lines or blocks, nor be
+// rewritten by the adapter. A host with such a value renders as a site that
+// answers 503; comment text is flattened and loses its braces.
 func TestCaddyfileExportContainsUnsafeFieldValues(t *testing.T) {
 	const evil = "\n}\nevil.example.test {\n\treverse_proxy 127.0.0.1:2019\n}\n"
 	base := func() models.ProxyHost {
 		return models.ProxyHost{ID: 9, Domains: "a.example.test", ForwardScheme: "http", ForwardHost: "192.0.2.10", ForwardPort: 8989, Enabled: true, SSLEnabled: true}
 	}
-	omitted := []struct {
+	failClosed := []struct {
 		name string
 		edit func(*models.ProxyHost)
 	}{
 		{"request header name", func(p *models.ProxyHost) { p.CustomReqHeaders = `{"X-A` + jsonEscape(evil) + `#":"v"}` }},
 		{"response header name", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"X-A` + jsonEscape(evil) + `#":"v"}` }},
+		{"response header value", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"X-A":"v` + jsonEscape(evil) + `"}` }},
+		{"request header value with backtick", func(p *models.ProxyHost) { p.CustomReqHeaders = "{\"X-A\":\"a`b\"}" }},
+		{"header value with env var", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"X-A":"{$HOME}"}` }},
+		{"header value with shorthand", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"X-A":"{remote_host}"}` }},
+		{"header name with env var", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"X-{$HOME}":"v"}` }},
+		{"header name starting a matcher", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"@x":"v"}` }},
+		{"header name with operation prefix", func(p *models.ProxyHost) { p.CustomReqHeaders = `{"+X":"v"}` }},
+		{"header name with trailing backslash", func(p *models.ProxyHost) { p.CustomReqHeaders = `{"X-A\\":"v"}` }},
 		{"strip request header", func(p *models.ProxyHost) { p.StripReqHeaders = "X-A" + evil + "#" }},
 		{"strip response header", func(p *models.ProxyHost) { p.StripRespHeaders = "X-A" + evil + "#" }},
 		{"upstream SNI", func(p *models.ProxyHost) { p.UpstreamSNI = "sni" + evil + "#" }},
+		{"upstream Host override", func(p *models.ProxyHost) { p.UpstreamHostOverride = "h" + evil }},
+		{"CSP", func(p *models.ProxyHost) { p.SecurityHeadersEnabled = true; p.CSPHeader = "default-src 'self'" + evil }},
 		{"forward host", func(p *models.ProxyHost) { p.ForwardHost = "192.0.2.10" + evil + "#" }},
+		{"forward host as matcher", func(p *models.ProxyHost) { p.ForwardHost = "/admin" }},
+		{"extra upstream", func(p *models.ProxyHost) { p.ExtraUpstreams = `["192.0.2.11:80` + jsonEscape(evil) + `"]` }},
 		{"lb policy", func(p *models.ProxyHost) { p.LBPolicy = "first" + evil + "#"; p.ExtraUpstreams = `["192.0.2.11:80"]` }},
-		{"header name with env var", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"X-{$HOME}":"v"}` }},
-		{"header name starting a matcher", func(p *models.ProxyHost) { p.CustomRespHeaders = `{"@x":"v"}` }},
-		{"header name with trailing backslash", func(p *models.ProxyHost) { p.CustomReqHeaders = `{"X-A\\":"v"}` }},
+		{"advanced config breakout", func(p *models.ProxyHost) { p.AdvancedConfig = "encode gzip" + evil + "x.example.test {" }},
+		{"advanced config env var", func(p *models.ProxyHost) { p.AdvancedConfig = "respond {$HOME} 200" }},
+		{"advanced config import", func(p *models.ProxyHost) { p.AdvancedConfig = "import /etc/caddy/Caddyfile" }},
+		{"advanced config heredoc", func(p *models.ProxyHost) { p.AdvancedConfig = "respond <<EOF\n\t}\n\tEOF 200" }},
+		{"advanced config open quote", func(p *models.ProxyHost) { p.AdvancedConfig = "respond \"x 200" }},
 	}
-	for _, tc := range omitted {
+	for _, tc := range failClosed {
 		t.Run(tc.name, func(t *testing.T) {
 			p := base()
 			tc.edit(&p)
 			out := RenderServerCaddyfile("", []models.ProxyHost{p}, nil, nil, nil)
-			if strings.Contains(out, "evil.example.test") || strings.Contains(out, "a.example.test {") || !strings.Contains(out, "# Proxy host #9 omitted") {
-				t.Fatalf("site with an unsafe bare value must be omitted:\n%s", out)
+			if strings.Contains(out, "evil.example.test") || strings.Contains(out, "reverse_proxy") || !strings.Contains(out, "a.example.test {\n\t# Not exported: ") || !strings.Contains(out, "\trespond 503\n") {
+				t.Fatalf("host with an unsafe value must fail closed:\n%s", out)
 			}
 		})
 	}
+	snippet := base()
+	snippet.Domains = "(evil)"
+	if out := RenderProxyHostCaddyfile(snippet); !strings.HasPrefix(out, "# Proxy host #9 omitted") {
+		t.Fatalf("a domain that would define a snippet must be omitted:\n%s", out)
+	}
+	unsafeDomain := base()
+	unsafeDomain.Domains = "a.example.test" + evil
+	if out := RenderProxyHostCaddyfile(unsafeDomain); strings.Contains(out, "evil.example.test") || !strings.HasPrefix(out, "# Proxy host #9 omitted") {
+		t.Fatalf("host with unsafe domains must be omitted:\n%s", out)
+	}
 	redirect := models.RedirectionHost{ID: 4, Domains: "r.example.test", ForwardDomain: "new.example.test" + evil + "#", Enabled: true}
-	if out := RenderRedirectionCaddyfile(redirect); strings.Contains(out, "evil.example.test") || !strings.Contains(out, "# Redirection host #4 omitted") {
-		t.Fatalf("redirect with an unsafe destination must be omitted:\n%s", out)
+	if out := RenderRedirectionCaddyfile(redirect); strings.Contains(out, "evil.example.test") || !strings.Contains(out, "\trespond 503\n") {
+		t.Fatalf("redirect with an unsafe destination must fail closed:\n%s", out)
+	}
+	if out := RenderRedirectionCaddyfile(models.RedirectionHost{ID: 5, Domains: "s.example.test", ForwardScheme: "https a", ForwardDomain: "new.example.test"}); !strings.Contains(out, "\trespond 503\n") {
+		t.Fatalf("redirect with an unsafe scheme must fail closed:\n%s", out)
+	}
+	if out := RenderRedirectionCaddyfile(models.RedirectionHost{ID: 6, Domains: "u.example.test", ForwardScheme: "https", ForwardDomain: "new.example.test", PreservePath: true}); !strings.Contains(out, "\tredir https://new.example.test{uri} 301\n") {
+		t.Fatalf("ordinary redirect must render normally:\n%s", out)
 	}
 
-	// Comment fields keep the site but cannot start a new line.
+	// Comment fields keep the site but cannot start a line or hold {$.
 	p := base()
-	p.Tags = "team" + evil
-	p.HealthCheckURI = "/health" + evil
-	p.OwnerEmail = "o@example.test" + evil
-	out := RenderServerCaddyfile("", []models.ProxyHost{p}, nil, nil, nil)
-	if strings.Contains(out, "\nevil.example.test {") || !strings.Contains(out, "a.example.test {") {
-		t.Fatalf("comment fields must stay on their comment line:\n%s", out)
+	p.Tags = "team{$HOME" + evil
+	p.HealthCheckURI = "/health{$X}" + evil
+	p.OwnerEmail = "o@example.test{$" + evil
+	out := RenderServerCaddyfile("srv{$A", []models.ProxyHost{p}, nil, nil, nil)
+	if strings.Contains(out, "\nevil.example.test {") || strings.Contains(out, "{$") || !strings.Contains(out, "a.example.test {") {
+		t.Fatalf("comment fields must stay on their line without {$:\n%s", out)
 	}
 	// Legitimate values are untouched.
 	ok := base()
-	ok.CustomReqHeaders = `{"X-Request-Source":"caddyui"}`
+	ok.CustomReqHeaders = `{"X-Request-Source":"caddyui {http.request.host}"}`
 	ok.StripRespHeaders = "Server, X-Powered-By"
+	ok.UpstreamSNI = "backend.internal"
 	ok.Domains = "*.sub.example.test, b.example.test:8443"
-	if out := RenderProxyHostCaddyfile(ok); !strings.Contains(out, "*.sub.example.test, b.example.test:8443 {") || !strings.Contains(out, "header_up X-Request-Source") {
-		t.Fatalf("safe values must render normally:\n%s", out)
+	ok.AdvancedConfig = "encode gzip\nheader X-Frame-Options DENY"
+	okOut := RenderProxyHostCaddyfile(ok)
+	if !strings.Contains(okOut, "*.sub.example.test, b.example.test:8443 {") || !strings.Contains(okOut, "header_up X-Request-Source `caddyui {http.request.host}`") || strings.Contains(okOut, "respond 503") {
+		t.Fatalf("safe values must render normally:\n%s", okOut)
 	}
 
-	caddyBin, err := exec.LookPath("caddy")
-	if err != nil {
+	caddyBin := lookCaddy(t)
+	if caddyBin == "" {
 		return
 	}
 	file := filepath.Join(t.TempDir(), "Caddyfile")
-	all := []models.ProxyHost{p}
-	for _, tc := range omitted {
+	all := []models.ProxyHost{p, ok}
+	for i, tc := range failClosed {
 		q := base()
-		q.Domains = "omitted-" + strings.ReplaceAll(tc.name, " ", "-") + ".example.test"
+		q.ID = int64(100 + i)
+		q.Domains = fmt.Sprintf("fc%d.example.test", i)
 		tc.edit(&q)
 		all = append(all, q)
 	}
-	if err := os.WriteFile(file, []byte(RenderServerCaddyfile("", all, []models.RedirectionHost{redirect}, nil, nil)), 0o644); err != nil {
+	if err := os.WriteFile(file, []byte(RenderServerCaddyfile("srv{$A", all, []models.RedirectionHost{redirect}, nil, nil)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, raw := caddyAdapt(t, caddyBin, file)
-	if strings.Contains(string(raw), "evil.example.test") || strings.Contains(string(raw), "127.0.0.1:2019") || strings.Contains(string(raw), "omitted-") {
-		t.Fatalf("adapted export serves injected or omitted sites:\n%s", raw)
+	adapted, raw := caddyAdapt(t, caddyBin, file)
+	want := []string{"*.sub.example.test", "a.example.test", "b.example.test", "r.example.test"}
+	for i := range failClosed {
+		want = append(want, fmt.Sprintf("fc%d.example.test", i))
 	}
-	if !strings.Contains(string(raw), `"a.example.test"`) {
-		t.Fatalf("adapted export lost the safe site:\n%s", raw)
+	sort.Strings(want)
+	if got := adaptedHosts(adapted); strings.Contains(string(raw), "evil.example.test") || strings.Contains(string(raw), "127.0.0.1:2019") || !reflect.DeepEqual(got, want) {
+		t.Fatalf("adapted export serves %v, want exactly %v:\n%s", got, want, raw)
 	}
+	if !strings.Contains(string(raw), `"a.example.test"`) || !strings.Contains(string(raw), `"fc0.example.test"`) {
+		t.Fatalf("adapted export lost a site:\n%s", raw)
+	}
+}
+
+// Issue #184 review: raw-route Caddyfiles are written verbatim, so each one
+// must be complete site blocks that cannot reach a neighbour. The review's
+// attack: a `{$` in the label comment swallows text up to the next `}` —
+// here inside the route's own quoted string — so the rest turns into a site
+// proxying the Caddy admin API.
+func TestCaddyfileExportKeepsRawRoutesSelfContained(t *testing.T) {
+	attack := models.RawRoute{ID: 3, Label: "{$", Enabled: true,
+		CaddyfileSrc: "t2.example.com {\n\trespond \"}\nevil.example.test {\n\treverse_proxy 127.0.0.1:2019\n}\nz.example.com {\n\trespond x\" 200\n}"}
+	out := RenderRawRouteCaddyfile(attack)
+	if strings.Contains(out, "{$") || !strings.Contains(out, "t2.example.com {") {
+		t.Fatalf("label must lose {$ and the (self-contained) source stays:\n%s", out)
+	}
+	omitted := map[string]string{
+		"unbalanced":     "a.example.test {\n\trespond 200\n}\n}\nevil.example.test {\n\treverse_proxy 127.0.0.1:2019\n",
+		"env var":        "a.example.test {\n\trespond \"{$HOME\" 200\n}",
+		"import":         "a.example.test {\n\timport /etc/caddy/Caddyfile\n}",
+		"global options": "{\n\tadmin 0.0.0.0:2019\n}\na.example.test {\n\trespond 200\n}",
+		"snippet":        "(evil) {\n\treverse_proxy 127.0.0.1:2019\n}",
+		"heredoc":        "a.example.test {\n\trespond <<EOF\n\t}\n\tEOF 200\n}",
+		"no braces":      "a.example.test\nrespond 200",
+		"open quote":     "a.example.test {\n\trespond \"x 200\n}",
+	}
+	for name, src := range omitted {
+		out := RenderRawRouteCaddyfile(models.RawRoute{ID: 5, Label: name, CaddyfileSrc: src})
+		if strings.Contains(out, "respond") || strings.Contains(out, "evil") || !strings.Contains(out, "# (omitted: ") {
+			t.Errorf("%s: raw route must be omitted:\n%s", name, out)
+		}
+	}
+	two := models.RawRoute{ID: 6, Label: "two", Enabled: true, CaddyfileSrc: "a.example.test {\n\trespond \"}{\" 200\n}\nb.example.test {\n\trespond `x` 200\n}"}
+	if out := RenderRawRouteCaddyfile(two); !strings.Contains(out, "b.example.test {") {
+		t.Fatalf("well-formed multi-site source must stay:\n%s", out)
+	}
+
+	caddyBin := lookCaddy(t)
+	if caddyBin == "" {
+		return
+	}
+	file := filepath.Join(t.TempDir(), "Caddyfile")
+	if err := os.WriteFile(file, []byte(RenderServerCaddyfile("", nil, nil, []models.RawRoute{attack, two}, nil)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adapted, raw := caddyAdapt(t, caddyBin, file)
+	// In isolation the attack route is t2.example.com answering with a body
+	// that merely contains the other text.
+	if got := adaptedHosts(adapted); !reflect.DeepEqual(got, []string{"a.example.test", "b.example.test", "t2.example.com"}) || strings.Contains(string(raw), `"dial":"127.0.0.1:2019"`) {
+		t.Fatalf("adapted export serves %v; want only the raw routes as written:\n%s", got, raw)
+	}
+}
+
+// Issue #184 review (A): with Strip prefix the excerpt uses a `route` block,
+// and Caddyfile sorts `route` before `abort`/`error`/`respond`. Advanced
+// handlers must therefore move inside the route, in the JSON route's order —
+// [blocker, Advanced, strip, reverse_proxy] — or the host fails closed.
+func TestCaddyfileStripPrefixKeepsAdvancedHandlerOrder(t *testing.T) {
+	cases := []struct {
+		name, advanced string
+		failClosed     bool
+	}{
+		{name: "allowlist", advanced: "@denied not remote_ip 10.0.0.0/8\nabort @denied"},
+		{name: "maintenance", advanced: "respond \"down for maintenance\" 503"},
+		{name: "site options stay outside", advanced: "tls internal\nheader X-A 1\nrespond /down 503"},
+		{name: "out of order", advanced: "respond /x 503\nheader X-A 1", failClosed: true},
+		{name: "repeated directive", advanced: "respond /x 503\nrespond /y 503", failClosed: true},
+		{name: "unknown directive", advanced: "rate_limit 10r/s", failClosed: true},
+	}
+	caddyBin := lookCaddy(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := pathMatcherHost("/api", "", true)
+			p.BlockCommonExploits = true
+			p.AdvancedConfig = tc.advanced
+			out := RenderProxyHostCaddyfile(p)
+			if tc.failClosed {
+				if strings.Contains(out, "reverse_proxy") || !strings.Contains(out, "\trespond 503\n") {
+					t.Fatalf("expected fail closed:\n%s", out)
+				}
+				return
+			}
+			route := strings.Index(out, "\troute {\n")
+			adv := strings.Index(out, "# from Advanced config")
+			strip := strings.Index(out, "uri @caddyui_path strip_prefix")
+			if route < 0 || adv < route || strip < adv || strings.Contains(out, "Advanced raw config") && !strings.Contains(tc.advanced, "tls") {
+				t.Fatalf("Advanced handlers must sit in the route before the strip:\n%s", out)
+			}
+			if caddyBin == "" {
+				return
+			}
+			dir := t.TempDir()
+			advFile := filepath.Join(dir, "adv")
+			if err := os.WriteFile(advFile, []byte("localhost {\n"+tc.advanced+"\n}\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			advAdapted, _ := caddyAdapt(t, caddyBin, advFile)
+			handlers := advAdapted.(map[string]any)["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["srv0"].(map[string]any)["routes"].([]any)[0].(map[string]any)["handle"].([]any)
+			want := handlerOrder(BuildProxyRoute(p, handlers))
+
+			file := filepath.Join(dir, "Caddyfile")
+			if err := os.WriteFile(file, []byte(out), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			adapted, raw := caddyAdapt(t, caddyBin, file)
+			if got := handlerOrder(adapted); !reflect.DeepEqual(got, want) {
+				t.Errorf("adapted order %v, JSON route order %v\n%s", got, want, raw)
+			}
+		})
+	}
+}
+
+// adaptedHosts lists, sorted, every host matched by a top-level route of an
+// adapted config.
+func adaptedHosts(adapted any) []string {
+	var hosts []string
+	servers, _ := adapted.(map[string]any)["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
+	for _, srv := range servers {
+		routes, _ := srv.(map[string]any)["routes"].([]any)
+		for _, r := range routes {
+			ms, _ := r.(map[string]any)["match"].([]any)
+			for _, m := range ms {
+				hs, _ := m.(map[string]any)["host"].([]any)
+				for _, h := range hs {
+					hosts = append(hosts, h.(string))
+				}
+			}
+		}
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+// lookCaddy returns the caddy binary for the `caddy adapt` checks. Without
+// one it records an explicitly skipped "caddy adapt" subtest — visible with
+// -v or -json — and returns "", and the caller runs only its text checks.
+func lookCaddy(t *testing.T) string {
+	t.Helper()
+	bin, err := exec.LookPath("caddy")
+	if err != nil {
+		t.Run("caddy adapt", func(t *testing.T) {
+			t.Skip("SKIPPED: no `caddy` binary on PATH, so this test's `caddy adapt` equivalence check did NOT run — only its text checks did. Put caddy on PATH to run it.")
+		})
+		return ""
+	}
+	return bin
 }
 
 func jsonEscape(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b[1 : len(b)-1])
+}
+
+// checkCaddyfileSites must never accept text that Caddy would read
+// differently once concatenated: for every accepted snippet, Caddy must
+// parse `before + snippet + after` as exactly the snippet's own sites plus
+// both neighbours. The corpus targets the lexer corners — quotes and
+// backticks holding braces, escapes, comments, line continuations.
+func TestCheckCaddyfileSitesAgreesWithCaddy(t *testing.T) {
+	corpus := []string{
+		"a.test {\n\trespond \"}\" 200\n}",
+		"a.test {\n\trespond `}\n}\nevil.test {` 200\n}",
+		"a.test {\n\trespond \"\\\"}\" 200\n}",
+		"a.test {\n\trespond \"\\\\\" 200\n}",
+		"a.test {\n\t# }\n\trespond 200\n}",
+		"a.test {\n\trespond x#} 200\n}",
+		"a.test {\n\trespond \\\n\t\t200\n}",
+		"a.test {\n\theader X \\}\n}",
+		"a.test {\n\theader X \\{\n}",
+		"a.test {\n\theader X a\\ b\n}",
+		"a.test {\n\trespond {http.request.host} 200\n}",
+		"a.test b.test {\n\trespond 200\n}\nc.test {\n\troute {\n\t\trespond 200\n\t}\n}",
+		"a.test {\n\trespond \"x\n}\nevil.test {\n\" 200\n}",
+		"a.test {\n\trespond 200\n} # trailing",
+		"a.test {\n\trespond \"}{\" 200 \\\n}",
+		"a.test {\n\trespond \"a\" 200}\n}",
+		"a.test {\n\trespond 200 }",
+		"a.test {respond 200}",
+		"a.test {\r\n\trespond 200\r\n}",
+		"\uFEFFa.test {\n\trespond 200\n}",
+		"a.test {\n\trespond \"\\\n}\nevil.test {\n\" 200\n}",
+		"a.test {\n\trespond `\\` 200\n}",
+	}
+	accepted := 0
+	for i, src := range corpus {
+		if _, err := checkCaddyfileSites(src); err == nil {
+			accepted++
+		} else {
+			corpus[i] = ""
+		}
+	}
+	if accepted < 12 {
+		t.Fatalf("only %d corpus entries accepted — the checker is refusing ordinary input", accepted)
+	}
+	caddyBin := lookCaddy(t)
+	if caddyBin == "" {
+		return
+	}
+	dir := t.TempDir()
+	for i, src := range corpus {
+		if src == "" {
+			continue
+		}
+		alone := filepath.Join(dir, fmt.Sprintf("alone%d", i))
+		both := filepath.Join(dir, fmt.Sprintf("both%d", i))
+		_ = os.WriteFile(alone, []byte(src+"\n"), 0o644)
+		_ = os.WriteFile(both, []byte("before.test {\n\trespond 201\n}\n"+src+"\nafter.test {\n\trespond 202\n}\n"), 0o644)
+		raw, err := exec.Command(caddyBin, "adapt", "--config", alone, "--adapter", "caddyfile").Output()
+		if err != nil {
+			continue // Caddy rejects it alone; the exporter cannot make that worse
+		}
+		var a any
+		_ = json.Unmarshal(raw, &a)
+		want := append(adaptedHosts(a), "after.test", "before.test")
+		sort.Strings(want)
+		raw2, err := exec.Command(caddyBin, "adapt", "--config", both, "--adapter", "caddyfile").Output()
+		if err != nil {
+			t.Errorf("accepted snippet %q adapts alone but not between neighbours: %v", src, err)
+			continue
+		}
+		var b any
+		_ = json.Unmarshal(raw2, &b)
+		if got := adaptedHosts(b); !reflect.DeepEqual(got, want) {
+			t.Errorf("accepted snippet %q changes its neighbours: hosts %v, want %v", src, got, want)
+		}
+		if !strings.Contains(string(raw2), `"status_code":201`) || !strings.Contains(string(raw2), `"status_code":202`) {
+			t.Errorf("accepted snippet %q swallowed a neighbour's handler:\n%s", src, raw2)
+		}
+	}
 }
