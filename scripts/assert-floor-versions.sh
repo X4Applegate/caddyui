@@ -241,7 +241,15 @@ go version -m "$BINPATH" > "$graph" 2>"$WORK/go.err" || true
 # `dep` rows are dependencies, `mod` is the main module. Both are legitimate
 # targets for a floor, so both are indexed. Fields: <kind> <path> <version>.
 mods="$WORK/mods.tsv"
-awk '$1=="dep" || $1=="mod" { print $2 "\t" $3 }' "$graph" > "$mods"
+# A `=>` line follows a replaced dep and carries the version actually LINKED
+# (T-0902): `dep X v_orig` / `=> Y v_new`. The replacement wins for X, and Y
+# is indexed too, so a floor declared on a `--replace X=Y@v` line resolves to
+# the version that shipped, not the one MVS selected before the replace.
+awk '
+  $1=="dep" || $1=="mod" { n++; p[n]=$2; v[n]=$3; next }
+  $1=="=>" && n>0 { v[n]=$3; n++; p[n]=$2; v[n]=$3 }
+  END { for (i=1;i<=n;i++) print p[i] "\t" v[i] }
+' "$graph" > "$mods"
 mod_count="$(wc -l < "$mods" | tr -d ' ')"
 if [ "$mod_count" -eq 0 ]; then
   die "\`go version -m $BINPATH\` listed no modules ($(head -1 "$WORK/go.err" 2>/dev/null || echo 'no error output')); an unreadable binary is not a clean one"
@@ -251,7 +259,8 @@ fi
 # Parse the floors out of the Dockerfile.
 #
 # Same pairing rule as check-pinned-modules.sh: a `# pin-watch: floor`
-# directive attaches to the NEXT `--with` line, non-directive comments do not
+# directive attaches to the NEXT `--with` OR `--replace` line (T-0710 for the
+# watcher, T-0902 here), non-directive comments do not
 # break the pairing, and the directive's `pin=` must match the version on that
 # line. The match is re-asserted here rather than assumed, because this script
 # can be run standalone and a mismatched directive must not silently select
@@ -324,7 +333,13 @@ while IFS= read -r raw; do
       esac
       continue ;;
   esac
-  case "$raw" in *--with*) ;; *) continue ;; esac
+  # `--replace` is a pin too (T-0710), so a directive above one pairs with IT
+  # rather than skipping ahead to the next `--with` (T-0902). Same flag
+  # rewrite as the watcher: `--replace` becomes `--with` so one extraction
+  # handles both, and `flag` records which it was, because the `=` means
+  # opposite things -- `--with mod@v=./local` asserts the LEFT side,
+  # `--replace old=new@v` asserts the RIGHT side (what is linked).
+  case "$raw" in *--with*|*--replace*) ;; *) continue ;; esac
   [ -n "$pending" ] || continue
 
   # Same normalisation as the watcher's parser, so a floor declared against a
@@ -333,6 +348,13 @@ while IFS= read -r raw; do
   line="${raw//$'\t'/ }"
   line="${line//\"/ }"
   line="${line//\'/ }"
+  flag=with
+  case "$line" in *--replace*) flag=replace ;; esac
+  line="${line/--replace=/--replace }"
+  while case "$line" in *'--replace  '*) true ;; *) false ;; esac; do
+    line="${line/--replace  /--replace }"
+  done
+  line="${line/--replace /--with }"
   line="${line/--with=/--with }"
   while case "$line" in *'--with  '*) true ;; *) false ;; esac; do
     line="${line/--with  /--with }"
@@ -340,7 +362,10 @@ while IFS= read -r raw; do
   arg="${line#*--with }"
   arg="${arg%% *}"
   arg="${arg%\\}"
-  case "$arg" in *=*) arg="${arg%%=*}" ;; esac
+  case "$flag:$arg" in
+    replace:*=*) arg="${arg#*=}" ;;
+    with:*=*) arg="${arg%%=*}" ;;
+  esac
 
   dir="$pending"; dir_line="$pending_line"
   pending=""; pending_line=0
@@ -348,7 +373,7 @@ while IFS= read -r raw; do
   case "$arg" in
     *@*) ;;
     *)
-      echo "ERROR: the floor directive at line $dir_line sits above an unpinned --with argument" >&2
+      echo "ERROR: the floor directive at line $dir_line sits above an unpinned --$flag argument" >&2
       parse_errors=$(( parse_errors + 1 )); continue ;;
   esac
   pkg="${arg%@*}"
@@ -375,7 +400,7 @@ while IFS= read -r raw; do
 done < "$DOCKERFILE"
 
 if [ -n "$pending" ]; then
-  echo "ERROR: the floor directive at line $pending_line is followed by no --with argument" >&2
+  echo "ERROR: the floor directive at line $pending_line is followed by no --with or --replace argument" >&2
   parse_errors=$(( parse_errors + 1 ))
 fi
 

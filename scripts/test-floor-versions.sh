@@ -796,5 +796,36 @@ check "26g Dockerfile passes --min-floors" "1" "$(grep -c -- '--min-floors "\$FL
 # directives is still "nothing to assert", exit 0.
 
 echo
+echo "=== 22. a directive above --replace pairs with THAT line, not the next --with (T-0902) ==="
+# Before T-0902 the directive skipped the --replace line and was attributed to
+# route53@v1.6.2 below it: a pin=/version mismatch error naming the wrong pin.
+{ echo "$FROM_LINE"
+  echo 'RUN xcaddy build \'
+  echo '    # pin-watch: security pin=v0.92.1 ref=T-0902 reason=test'
+  echo '    --replace go.step.sm/crypto=go.step.sm/crypto@v0.92.1 \'
+  echo '    --with github.com/caddy-dns/route53@v1.6.2'
+} > "$WORK/D22"
+# go version -m shows a replaced dep as the MVS version plus a `=>` line.
+mk_graph "$WORK/G22" <<< $'github.com/caddy-dns/route53\tv1.6.2'
+printf '\tdep\tgo.step.sm/crypto\tv0.70.0\th1:fake=\n\t=>\tgo.step.sm/crypto\tv0.92.1\th1:fake=\n' >> "$WORK/G22"
+run "$WORK/D22" "$WORK/G22"
+check "22 rc=0"                            "0" "$(rc)"
+check "22 asserted crypto, not route53"    "1" "$(out | grep -c 'go.step.sm/crypto')"
+check "22 no mismatch error"               "0" "$(err | grep -c 'was written for')"
+# The replacement version is what is linked: a breach below it must fail.
+sed -i 's/=>\tgo.step.sm\/crypto\tv0.92.1/=>\tgo.step.sm\/crypto\tv0.90.0/' "$WORK/G22"
+run "$WORK/D22" "$WORK/G22"
+check "22 replaced below floor -> rc!=0"   "yes" "$( [ "$(rc)" != 0 ] && echo yes || echo no )"
+# --replace=, tab and quotes spellings pair the same way.
+sed -e 's/--replace go/--replace="go/' -e 's/v0.92.1 \\$/v0.92.1" \\/' "$WORK/D22" > "$WORK/D22b"
+sed -i 's/v0.90.0/v0.92.1/' "$WORK/G22"
+run "$WORK/D22b" "$WORK/G22"
+check "22b --replace=\"...\" spelling rc=0" "0" "$(rc)"
+# A directive above an unpinned --replace target is an error naming --replace.
+sed -e 's/crypto@v0.92.1/crypto/' "$WORK/D22" > "$WORK/D22c"
+run "$WORK/D22c" "$WORK/G22"
+check "22c unpinned --replace -> error"    "1" "$(err | grep -c 'unpinned --replace')"
+
+echo
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
