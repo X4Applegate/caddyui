@@ -4,16 +4,23 @@ package server
 
 import (
 	"html"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"testing/fstest"
 
+	"github.com/X4Applegate/caddyui/internal/i18n"
 	"github.com/X4Applegate/caddyui/internal/models"
+	"github.com/X4Applegate/caddyui/web"
 )
 
 // A partial catalog must retain usable security controls through English
 // fallback. Changing display language must never translate submitted values.
+// The real locales only prove the page and its controls render; fallback is
+// asserted against a catalog that is partial by construction, because any real
+// catalog may be completed by a translator at any time (#189).
 func TestI18nSecuritySettingsFallbackAndControls(t *testing.T) {
 	e := newSecEnv(t)
 	for _, lang := range []string{"en", "fr", "ru", "zh-CN"} {
@@ -38,13 +45,40 @@ func TestI18nSecuritySettingsFallbackAndControls(t *testing.T) {
 			if strings.Contains(body, ">settings.security.") || strings.Contains(body, `title="settings.security.`) {
 				t.Error("raw translation key rendered")
 			}
-			if lang == "ru" || lang == "zh-CN" {
-				if !strings.Contains(body, "CAPTCHA protection") || !strings.Contains(body, "Security policy") {
-					t.Error("partial catalog did not fall back to English")
-				}
-			}
 		})
 	}
+
+	t.Run("partial catalog falls back to English", func(t *testing.T) {
+		en, _ := fs.ReadFile(web.FS, "i18n/en.json")
+		b, err := i18n.Load(fstest.MapFS{
+			"i18n/en.json": {Data: en},
+			"i18n/ru.json": {Data: []byte(`{"_meta.name":"Русский","settings.security.allowlist.label":"Список разрешённых IP"}`)},
+		}, "i18n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		translations() // make sure the real bundle is loaded first
+		orig := i18nBundle
+		i18nBundle = b
+		t.Cleanup(func() { i18nBundle = orig })
+
+		e.do(t, "admin", http.MethodPost, "/profile", url.Values{"action": {"update_locale"}, "locale": {"ru"}})
+		rec := e.do(t, "admin", http.MethodGet, "/settings/security", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("security settings: HTTP %d", rec.Code)
+		}
+		body := rec.Body.String()
+		// The partial catalog is really in use: its one key is translated.
+		if !strings.Contains(body, `<html lang="ru"`) || !strings.Contains(body, "Список разрешённых IP") {
+			t.Fatal("the partial ru catalog was not applied")
+		}
+		if !strings.Contains(body, "CAPTCHA protection") || !strings.Contains(body, "Security policy") {
+			t.Error("partial catalog did not fall back to English")
+		}
+		if strings.Contains(body, ">settings.security.") || strings.Contains(body, `title="settings.security.`) {
+			t.Error("raw translation key rendered")
+		}
+	})
 }
 
 func TestI18nSecuritySettingsEscapesStoredValues(t *testing.T) {
