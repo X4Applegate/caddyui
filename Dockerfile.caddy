@@ -527,7 +527,7 @@ ARG FLOOR_STRICT=0
 RUN set -e; \
     case "$FLOOR_STRICT" in \
       1|true|yes|on)   strict=--strict ;; \
-      0|''|false|no|off) strict= ;; \
+      0|false|no|off) strict= ;; \
       *) echo "FLOOR_STRICT must be 0 or 1, got '$FLOOR_STRICT'; refusing to guess which reading was wanted" >&2; exit 2 ;; \
     esac; \
     sh /tmp/assert-floor-versions.sh \
