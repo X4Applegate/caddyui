@@ -2776,12 +2776,41 @@ for arch in $ARCHES; do
   TRIVY_SCANNERS='vuln,secret,misconfig'
   TRIVY_IMAGE_CONFIG_SCANNERS='misconfig,secret'
 
+  # PIN THE IGNORE/CONFIG FILES, OR THE GATED TREE CHOOSES THEM (independent
+  # review finding B1, T-0849). Trivy resolves `.trivyignore`, `trivy.yaml`
+  # and `trivy-secret.yaml` against the process's CURRENT DIRECTORY by
+  # default, and both call sites (release-docker.yml, caddy-image-refresh.yml)
+  # run this gate from inside the checked-out release tree -- the tree the
+  # party being gated controls. A `.trivyignore` or `trivy.yaml` committed at
+  # the repo root therefore drops findings from BOTH scans before gate 1 ever
+  # sees them, with no error. Measured with the real binary, in the exact
+  # container shape these workflows use (`docker run -w <checkout>`): a
+  # one-line `.trivyignore` naming a real finding took it from reported to
+  # absent on both sides, exit 0, verdict unchanged -- and the `secret`
+  # Class result still appeared with an empty list, so the summary's "no
+  # embedded secret" sentence would have been printed over the exact
+  # suppressed credential this scanner exists to catch.
+  #
+  # Pinned to files created fresh, right here, inside $OUT -- a directory
+  # this run creates (`mkdir -p "$OUT"` above) and that is never part of the
+  # checked-out tree or the gated image, so nothing either side controls can
+  # seed its content. `--secret-config ""` explicitly disables that lookup
+  # (Trivy treats the empty string as "no file", per its own --help); the
+  # other two need an EXISTING file -- an absent path is a hard trivy error
+  # on this version -- so an empty one is created for each.
+  trivy_ignorefile="$OUT/.no-ignore-$arch"
+  trivy_config="$OUT/.no-config-$arch.yaml"
+  : > "$trivy_ignorefile"
+  printf '{}\n' > "$trivy_config"
+
   trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
+    --ignorefile "$trivy_ignorefile" --config "$trivy_config" --secret-config "" \
     --scanners "$TRIVY_SCANNERS" \
     --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
     --severity "$SEVERITY" \
     --format json --output "$OUT/new-$arch.json" "$new_ref"
   trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
+    --ignorefile "$trivy_ignorefile" --config "$trivy_config" --secret-config "" \
     --scanners "$TRIVY_SCANNERS" \
     --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
     --severity "$SEVERITY" \

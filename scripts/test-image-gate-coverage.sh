@@ -1314,5 +1314,40 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# 90. THE GATED TREE MUST NOT CHOOSE ITS OWN IGNORE/CONFIG FILES (review
+#     finding B1, T-0849). Trivy resolves `.trivyignore`/`trivy.yaml`/
+#     `trivy-secret.yaml` against the process's cwd by default, and both
+#     call sites run this gate from inside the checked-out release tree --
+#     the tree the party being gated controls. Measured end to end with the
+#     real binary (see the commit for the exact reproduction): an unpinned
+#     call lets a repo-root `.trivyignore` drop a real finding from BOTH
+#     scans, silently, verdict unchanged. Static guard: both `trivy image`
+#     invocations must pin all three to paths this run creates itself under
+#     `$OUT`, never to a bare default, so a revert of the pin is caught
+#     without needing a live Trivy binary to prove it.
+invocations="$(grep -c -- '--ignorefile "\$trivy_ignorefile" --config "\$trivy_config" --secret-config ""' "$GATE" || true)"
+if [ "$invocations" -eq 2 ] \
+   && grep -q 'trivy_ignorefile="\$OUT/' "$GATE" \
+   && grep -q 'trivy_config="\$OUT/' "$GATE"; then
+  printf 'ok   both trivy image calls pin ignorefile/config/secret-config under $OUT\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL both trivy image calls pin ignorefile/config/secret-config under $OUT\n     invocations=%s\n' "$invocations"
+  FAIL=$((FAIL + 1))
+fi
+
+# 91. ...and the pinned ignorefile/config must be CREATED before use, each
+#     time, rather than assumed to pre-exist -- an absent path is a hard
+#     trivy error on 0.76.1 for --ignorefile/--config (unlike --secret-config,
+#     which tolerates one, hence the empty string rather than a third file).
+if grep -q '^\s*: > "\$trivy_ignorefile"' "$GATE" \
+   && grep -q "printf '{}\\\\n' > \"\\\$trivy_config\"" "$GATE"; then
+  printf 'ok   the pinned ignorefile and config are created fresh before each scan\n'
+  PASS=$((PASS + 1))
+else
+  printf 'FAIL the pinned ignorefile and config are created fresh before each scan\n'
+  FAIL=$((FAIL + 1))
+fi
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
