@@ -27,6 +27,24 @@ IMAGE="${1:-applegater/caddyui-caddy:stable}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 FLOOR_PCT="${FLOOR_PCT:-50}"
 
+# Validated here, not only by the gate. The gate accepts 1-100, so
+# `FLOOR_PCT=1` writes a schema-valid 237-name fixture asserting a floor of 3 --
+# which looks exactly like a healthy fixture in the diff while a 3-of-237
+# rebuild clears it. Found by the security review of check 5e.
+#
+# The floor is deliberately loose at 50% for the reasons documented in the gate,
+# so a refresh is not the place to quietly retune it: a value outside 25-100 is
+# refused here and has to be argued for in the gate's own default instead. 25 is
+# the lower bound rather than 1 because below it the check stops distinguishing
+# a legitimate release from the ratchet it exists to stop -- the ratchet's
+# step 2 is 25%.
+case "$FLOOR_PCT" in
+  ''|*[!0-9]*) die "FLOOR_PCT must be an integer percentage (got: $FLOOR_PCT)" ;;
+esac
+if [ "$FLOOR_PCT" -lt 25 ] || [ "$FLOOR_PCT" -gt 100 ]; then
+  die "FLOOR_PCT=$FLOOR_PCT is outside 25-100. A floor below 25% no longer separates a legitimate release from the coverage ratchet this check exists to stop (its step 2 sits at 25%), and a refresh is the wrong place to retune the floor silently -- change the gate's documented default instead."
+fi
+
 # Deliberately NOT --severity-filtered and NOT --ignore-unfixed: this reads the
 # PACKAGE list, not the findings, so any filter that drops rows would shrink the
 # floor. Scanners limited to vuln for speed; the package list is the same.

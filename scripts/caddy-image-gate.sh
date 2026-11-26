@@ -1585,14 +1585,43 @@ assert_scan_coverage() {
   #   (3) REFRESHED AT RELEASE, in the release PR. See the fixture's own
   #       _comment field and the release runbook.
   #
-  # WHY STALENESS CANNOT BLOCK A LEGITIMATE RELEASE.
-  # -----------------------------------------------
-  # This is an INTERSECTION against an old set, so a fixture that is behind
-  # simply asserts LESS: names the fixture does not know about cannot be missed
-  # from it. It degrades permissively, never restrictively. That removes the
-  # "a release blocked by a stale fixture" failure mode, which was the main
-  # argument against doing this at all -- the cost the card weighed does not
-  # exist in this shape.
+  # HOW STALENESS BEHAVES, PRECISELY.
+  # ---------------------------------
+  # This is an INTERSECTION against an old set, so for a release that ADDS
+  # modules or only moves their VERSIONS, a fixture that is behind asserts
+  # LESS: names it does not know about cannot be missed from it. Those are the
+  # releases this image actually has, which is why the check is quiet.
+  #
+  # It is NOT unconditionally permissive, and an earlier version of this
+  # comment claimed it was. RENAMES AND REMOVALS ACCUMULATE against a fixture
+  # that is never refreshed, because each one permanently leaves the pinned
+  # set. Measured by the security review of this check, chaining honest
+  # rebuilds that each rename 30 more modules and publishing every step the
+  # RELATIVE checks accept:
+  #
+  #   cumulative renamed  relative checks   5e    fixture intersection
+  #    90                 pass              pass  147/237
+  #   120                 pass              BLOCK 117/237   <- 5e sole blocker
+  #   150                 pass              BLOCK  87/237
+  #
+  # At 120 the rebuild reports all 237 of its own modules and still carries
+  # both baseline findings -- genuinely observed, nothing hidden -- and 5e is
+  # the only thing stopping it. So the honest statement is: a stale fixture
+  # cannot be exploited to HIDE anything, and cannot block a release that adds
+  # or re-versions modules, but cumulative renames WILL eventually require a
+  # refresh. That is a release blocked by a stale fixture, which is the failure
+  # mode this check was argued into existence partly by denying.
+  #
+  # Two reasons it is still worth having in this shape. First, it fails in the
+  # SAFE direction: the block is loud, names the fixture, and says what to do,
+  # where the alternative is silent erosion nobody sees. Second, it is far
+  # away: real Go-module NAME retention on this image is 99-100% across 21
+  # captured pairs, so reaching 50% cumulative rename drift takes a sustained
+  # change of character in the dependency graph, not ordinary churn.
+  #
+  # The `captured` date is therefore printed on the PASS line as well, so a
+  # fixture drifting toward its floor is visible in the log of every green run
+  # rather than only in the run that finally fails.
   #
   # MEASURED COST, from every captured real pair on this host (21 pairs,
   # v2.55-era through v2.68.12): Go-module NAME retention is 99-100%, with 20
@@ -1649,7 +1678,7 @@ assert_scan_coverage() {
       # printing coverage OK. Validated as a whole document before any field
       # is trusted.
       local fx_type fx_target fx_pct fx_names_f fx_count fx_retained fx_floor
-      local fx_new_f fx_valid fx_dupes
+      local fx_new_f fx_valid fx_dupes fx_captured
       fx_valid="$(jq -r '
         if (type == "object")
            and ((.schema // 0) == 1)
@@ -1664,6 +1693,10 @@ assert_scan_coverage() {
       fx_type="$(jq -r '.type' "$COVERAGE_FLOOR_FILE")"
       fx_target="$(jq -r '.target' "$COVERAGE_FLOOR_FILE")"
       fx_pct="$(jq -r '.floor_percent | floor' "$COVERAGE_FLOOR_FILE")"
+      # Reported on the pass line, not just on failure: cumulative renames walk
+      # the intersection toward the floor over several releases, so the run that
+      # finally blocks is the LAST place this should become visible.
+      fx_captured="$(jq -r '.captured // "unknown"' "$COVERAGE_FLOOR_FILE")"
 
       # Scoping (1), enforced rather than documented. An OS-layer fixture
       # would block the base-image bump it exists to protect (alpine names
@@ -1751,8 +1784,9 @@ assert_scan_coverage() {
       if [ "$fx_retained" -lt "$fx_floor" ]; then
         die "the rebuild's '$(safe_text "$fx_target")' scan of linux/$arch retains only $fx_retained of the $fx_count Go module name(s) recorded at the last tagged release (floor $fx_floor = $fx_pct%), as pinned in $(safe_text "$COVERAGE_FLOOR_FILE"). Unlike the floors above, this one is NOT relative to the published baseline, so a baseline that has itself lost coverage cannot lower it. Either this rebuild sees far less of the shipped binary than the last release did, or the baseline it is being compared against has already degraded. If the drop is deliberate -- a plugin removed with its dependency subtree -- refresh the fixture in this release's PR so the change is reviewed as a diff."
       fi
-      printf 'absolute floor (linux/%s): %s retains %s/%s pinned Go module name(s) (floor %s = %s%%)\n' \
-        "$arch" "$(safe_text "$fx_target")" "$fx_retained" "$fx_count" "$fx_floor" "$fx_pct"
+      printf 'absolute floor (linux/%s): %s retains %s/%s pinned Go module name(s) (floor %s = %s%%, margin %s, fixture captured %s)\n' \
+        "$arch" "$(safe_text "$fx_target")" "$fx_retained" "$fx_count" "$fx_floor" "$fx_pct" \
+        "$(( fx_retained - fx_floor ))" "$(safe_text "$fx_captured")"
     fi
   fi
 
@@ -1834,6 +1868,56 @@ assert_scan_coverage() {
     # release check 5 would have allowed on a single-binary image. On today's
     # image the two are identical, because there is exactly one gobinary
     # result.
+    # 7a. ONE RESULT PER gobinary TARGET, ON BOTH SIDES (T-0811).
+    #
+    # Checks 5, 7 and 5e all compare package names selected by `.Target`, and
+    # pkg_names_for_target aggregates EVERY result matching the string. But
+    # .Target is not an identity: for a gobinary result Trivy copies it from
+    # the path of a Go binary found in a submitter-controlled image, so two
+    # results can claim the SAME path. The decoy then does not need another
+    # path at all -- it is filed under the real binary's own -- and check 7,
+    # which exists precisely so one binary's coverage cannot be paid with
+    # another's, sums it into the same number.
+    #
+    # Reproduced end to end against the real :stable scan: gut usr/bin/caddy
+    # to its findings-bearing modules at their baseline versions, append a
+    # second gobinary result also at usr/bin/caddy carrying all 237 names, and
+    # checks 4, 5, 5b, 5c, 5d, 6 and 7 all pass -- type count 241, type
+    # intersection 237/237, per-target intersection also 237/237 because the
+    # two are pooled -- while both findings vanish and gate 1 reports
+    # `improved`.
+    #
+    # Asserted ONCE here rather than patched into each consumer, so a future
+    # check keyed on .Target inherits the guarantee instead of the gap. 5e
+    # carries its own narrower version of this for the fixture's target, which
+    # is deliberate redundancy: 5e must hold even if this loop is skipped.
+    #
+    # On BOTH sides. A duplicate in the BASELINE inflates the denominator the
+    # rebuild must match, which is a different failure (a release blocked by a
+    # bad baseline) but has the same cause and should be just as loud.
+    #
+    # Costs nothing legitimate: measured on the live image, both linux/amd64
+    # and linux/arm64 report exactly one `usr/bin/caddy` result, and Trivy
+    # 0.76.1 deduplicates hardlinks to one result per distinct path -- the
+    # security review of 5e could not produce a duplicate from a hostile
+    # Dockerfile at all, only by crafting the JSON. So this closes a channel
+    # that needs a compromised or buggy scanner, and refuses a scan shape the
+    # real one does not produce.
+    local dup_side dup_file dup_list
+    for dup_side in new old; do
+      if [ "$dup_side" = new ]; then dup_file="$new"; else dup_file="$old"; fi
+      dup_list="$(jq -r '
+        [ .Results[]? | select(.Type == "gobinary") | (.Target // "") ]
+        | group_by(.) | map(select(length > 1) | .[0])
+        | map(tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160])
+        | unique | join(" ")' "$dup_file" 2>/dev/null || echo PARSE_FAILED)"
+      [ "$dup_list" = PARSE_FAILED ] \
+        && die "could not enumerate the ${dup_side} scan's gobinary targets on linux/$arch to check for duplicates; refusing to apply per-binary floors to a result set that cannot be read."
+      if [ -n "$dup_list" ]; then
+        die "the ${dup_side} scan of linux/$arch reports more than one 'gobinary' result for the same target path: $(safe_text "$dup_list"). Every per-binary floor selects packages by .Target, so duplicate results under one path are POOLED -- which lets a gutted binary's coverage be paid for by a second package list filed under its own name, defeating this check and check 5. A real scan of this image reports exactly one result per path. Refusing to sum them."
+      fi
+    done
+
     local gt gt_old_f gt_new_f gt_old_n gt_ret gt_floor
     while IFS= read -r gt; do
       [ -n "$gt" ] || continue

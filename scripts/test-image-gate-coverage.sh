@@ -955,5 +955,36 @@ COV_OUT="$( (
   ) 2>&1 )" || COV_RC=$?
 check "an unwritable \$OUT blocks rather than reporting the floor satisfied" block
 
+
+# 69. A duplicate .Target on a target the FIXTURE DOES NOT NAME is still
+#     blocked. 5e's own duplicate guard is scoped to the fixture's target, so
+#     this is check 7a's job -- the general assertion. Found by the security
+#     review, which correctly noted that fixing it inside 5e left checks 5 and
+#     7 payable on any other binary.
+jq '([.Results[]|select(.Type=="gobinary")|.Packages[]]) as $all
+  | .Results = [ .Results[] | select(.Type != "gobinary") ]
+      + [{Target:"usr/bin/other", Class:"lang-pkgs", Type:"gobinary",
+          Packages:$all, Vulnerabilities:[]}]' "$B" > "$WORK/t69-base.json"
+jq '([.Results[]|select(.Type=="gobinary")|.Packages[]]) as $all
+  | .Results = [ .Results[] | select(.Type != "gobinary") ]
+      + [{Target:"usr/bin/other", Class:"lang-pkgs", Type:"gobinary",
+          Packages:[$all[0]], Vulnerabilities:[]},
+         {Target:"usr/bin/other", Class:"lang-pkgs", Type:"gobinary",
+          Packages:$all, Vulnerabilities:[]}]' "$B" > "$WORK/t69.json"
+COVERAGE_FLOOR_FILE="" run_cov "$WORK/t69.json" "$WORK/t69-base.json"
+check "a duplicate .Target is blocked even with no fixture at all (7a)" block
+
+# 70. A duplicate .Target in the BASELINE is blocked too. It inflates the
+#     denominator a rebuild must match -- a different failure (a release held
+#     back by a bad baseline) with the same cause, and it should be as loud.
+COVERAGE_FLOOR_FILE="" run_cov "$WORK/t69-base.json" "$WORK/t69.json"
+check "a duplicate .Target in the baseline is blocked as well (7a)" block
+
+# 71. The single-result case is untouched: 7a must not object to the ordinary
+#     shape. Guards against the assertion being written so that one result
+#     counts as a duplicate of itself.
+COVERAGE_FLOOR_FILE="" run_cov "$WORK/t1.json" "$B"
+check "one gobinary result per path still passes (7a not over-eager)" pass
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

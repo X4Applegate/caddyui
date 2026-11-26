@@ -43,9 +43,33 @@ refresh for an ordinary base-layer refresh (`-pN`) or a release that only moves 
 measured across 21 real captured pairs on this repo's images, Go-module **name** retention is
 99–100%, with 20 of 21 at exactly 100%. Versions are checks 5c/5d's business, not this one's.
 
-A **stale fixture cannot block a release.** This is an intersection against an old set, so a
-fixture that is behind simply asserts *less* — names it does not know about cannot be missed from
-it. It degrades permissively, never restrictively.
+**How staleness actually behaves.** This is an intersection against an old set, so for a release
+that **adds** modules or only moves their **versions**, a fixture that is behind asserts *less* —
+names it does not know about cannot be missed from it. Those are the releases this image actually
+has, which is why the check is quiet in practice.
+
+It is **not** unconditionally permissive. **Renames and removals accumulate**: each one permanently
+leaves the pinned set, so a fixture that is never refreshed drifts toward its own floor. Measured by
+the security review, chaining honest rebuilds that each rename 30 more modules and publishing every
+step the *relative* checks accept:
+
+| cumulative renamed | relative checks | 5e | fixture intersection |
+| --- | --- | --- | --- |
+| 90 | pass | pass | 147/237 |
+| **120** | **pass** | **BLOCK** | **117/237** |
+| 150 | pass | BLOCK | 87/237 |
+
+At 120 the rebuild reports all 237 of its own modules and still carries both baseline findings —
+genuinely observed, nothing hidden — and 5e is the only thing stopping it. So the honest statement
+is: a stale fixture **cannot be exploited to hide anything**, and cannot block a release that adds
+or re-versions modules, but **cumulative renames will eventually require a refresh**.
+
+Two reasons that is acceptable. It fails in the **safe** direction — the block is loud, names this
+file, and says what to do, where the alternative is silent erosion nobody sees. And it is far away:
+real Go-module name retention on this image is 99–100% across 21 captured pairs, so reaching 50%
+cumulative rename drift takes a sustained change of character in the dependency graph, not ordinary
+churn. The gate prints the `captured` date and the current **margin** on every pass line, so drift
+is visible in green runs rather than only in the one that finally fails.
 
 ## How to refresh
 

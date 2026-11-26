@@ -1,6 +1,6 @@
 {
   "_comment": "T-0811 absolute coverage floor. Go-module NAME set observed at the last tagged release. REFRESH DELIBERATELY in the release PR with scripts/refresh-caddy-image-coverage-floor.sh; see scripts/fixtures/README-caddy-image-coverage-floor.md and caddy-image-gate.sh check 5e.",
-  "captured": "2026-11-26",
+  "captured": "2026-11-25",
   "floor_percent": 50,
   "names": [
     "caddy",
