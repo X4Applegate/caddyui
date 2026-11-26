@@ -3,10 +3,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -287,6 +289,105 @@ func oidcStringValues(v any) []string {
 	return nil
 }
 
+// oidcIdentityClaimTypes lists the ID-token claims the callback decodes into
+// typed fields, with the JSON type each must have. A claim of any other type
+// fails the decode and so the sign-in.
+//
+// Issue #158: that failure used to redirect to the generic "Single sign-on
+// failed" page with nothing in the log, so an administrator could not tell a
+// malformed claim (an IdP emitting email_verified as the string "true", say)
+// from any other problem. The type rules themselves are unchanged and stay
+// strict: a string "true" is still refused, it is now just named in the log.
+var oidcIdentityClaimTypes = []struct{ name, want string }{
+	{"email", "string"},
+	{"email_verified", "boolean"},
+	{"name", "string"},
+}
+
+// oidcJSONType names the JSON type of one raw claim value without looking at
+// more of it than the first byte.
+func oidcJSONType(raw json.RawMessage) string {
+	b := bytes.TrimSpace(raw)
+	if len(b) == 0 {
+		return "empty value"
+	}
+	switch b[0] {
+	case '"':
+		return "string"
+	case 't', 'f':
+		return "boolean"
+	case 'n':
+		return "null"
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	}
+	return "number"
+}
+
+// describeOIDCClaimsDecodeFailure explains, for the server log, why the ID
+// token's claims could not be decoded. It names the offending claim and the
+// JSON type it arrived as, and never includes a claim value or any part of
+// the token: the log is read by more people than the token was issued to.
+func describeOIDCClaimsDecodeFailure(payload []byte, err error) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(payload, &fields) != nil {
+		return "the claims are not a JSON object"
+	}
+	var problems []string
+	for _, c := range oidcIdentityClaimTypes {
+		raw, ok := fields[c.name]
+		if !ok {
+			continue
+		}
+		// null decodes as the zero value, so it is never the cause here.
+		if got := oidcJSONType(raw); got != c.want && got != "null" {
+			p := fmt.Sprintf("claim %q is a JSON %s, but CaddyUI requires a JSON %s", c.name, got, c.want)
+			if c.want == "boolean" {
+				p += " (a string such as \"true\" is not accepted; the provider must send true or false unquoted)"
+			}
+			problems = append(problems, p)
+		}
+	}
+	if len(problems) > 0 {
+		return strings.Join(problems, "; ")
+	}
+	// Not one of the claims above. The decoder's type error carries the field
+	// name and the Go type; its message can carry a numeric literal, so build
+	// the line from the fields rather than printing it.
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &te) && te.Field != "" {
+		return fmt.Sprintf("claim %q has an unexpected JSON type (expected %s)", te.Field, te.Type)
+	}
+	return fmt.Sprintf("decoder error of type %T", err)
+}
+
+// oidcEmailRejectionReason says which half of the email requirement an ID
+// token failed: whether the claims were absent or present with the wrong
+// value. fields is the token's raw claim set; email is the trimmed address.
+// Issue #158: a provider that simply never sends email_verified (Microsoft
+// Entra ID, for one) used to log the same line as one that sent false.
+func oidcEmailRejectionReason(fields map[string]json.RawMessage, email string) string {
+	var reasons []string
+	if _, ok := fields["email"]; !ok {
+		reasons = append(reasons, "the ID token has no email claim")
+	} else if email == "" {
+		reasons = append(reasons, "the email claim is empty")
+	}
+	if raw, ok := fields["email_verified"]; !ok {
+		reasons = append(reasons, "the ID token has no email_verified claim")
+	} else if oidcJSONType(raw) == "null" {
+		reasons = append(reasons, "email_verified is null")
+	} else {
+		var v bool
+		if json.Unmarshal(raw, &v) == nil && !v {
+			reasons = append(reasons, "email_verified is false")
+		}
+	}
+	return strings.Join(reasons, "; ")
+}
+
 // oidcProviderCache memoises the discovery document per issuer so each login
 // doesn't re-fetch /.well-known/openid-configuration.
 var oidcProviderCache sync.Map // issuer -> *oidc.Provider
@@ -372,6 +473,7 @@ func clearOIDCFlowCookie(w http.ResponseWriter, r *http.Request, name string) {
 func (s *Server) getOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	cfg := s.oidcConfig()
 	if !cfg.ready() {
+		log.Printf("oidc: sign-in requested but SSO is disabled or not fully configured")
 		http.Redirect(w, r, "/login?error=sso", http.StatusSeeOther)
 		return
 	}
@@ -407,6 +509,8 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if stateCookie == nil || stateCookie.Value == "" || r.URL.Query().Get("state") != stateCookie.Value {
+		// Neither value is logged: the state is a CSRF token for this flow.
+		log.Printf("oidc: rejecting callback: state missing or does not match the flow cookie (cookie present=%v)", stateCookie != nil && stateCookie.Value != "")
 		http.Redirect(w, r, "/login?error=sso_state", http.StatusSeeOther)
 		return
 	}
@@ -426,6 +530,7 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
+		log.Printf("oidc: token response from the provider carried no id_token")
 		http.Redirect(w, r, "/login?error=sso", http.StatusSeeOther)
 		return
 	}
@@ -436,6 +541,7 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if nonceCookie == nil || nonceCookie.Value == "" || idToken.Nonce != nonceCookie.Value {
+		log.Printf("oidc: rejecting sign-in: ID token nonce does not match the flow cookie (cookie present=%v)", nonceCookie != nil && nonceCookie.Value != "")
 		http.Redirect(w, r, "/login?error=sso_nonce", http.StatusSeeOther)
 		return
 	}
@@ -446,6 +552,11 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		Name          string `json:"name"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
+		// Issue #158: say which claim was malformed. The decision is
+		// unchanged — a claim of the wrong JSON type still fails sign-in.
+		var payload json.RawMessage
+		_ = idToken.Claims(&payload)
+		log.Printf("oidc: rejecting sign-in: ID token claims could not be decoded: %s", describeOIDCClaimsDecodeFailure(payload, err))
 		http.Redirect(w, r, "/login?error=sso", http.StatusSeeOther)
 		return
 	}
@@ -464,7 +575,10 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		// An unverified (or missing) email must not be trusted to match or
 		// create an account — it would allow impersonation on IdPs that let a
 		// user set an arbitrary address.
-		log.Printf("oidc: rejecting sign-in: email empty or unverified (%q verified=%v)", email, claims.EmailVerified)
+		var fields map[string]json.RawMessage
+		_ = idToken.Claims(&fields)
+		log.Printf("oidc: rejecting sign-in: email empty or unverified (%q verified=%v): %s; every SSO sign-in, including existing accounts, needs a non-empty email and email_verified=true",
+			email, claims.EmailVerified, oidcEmailRejectionReason(fields, email))
 		http.Redirect(w, r, "/login?error=sso_email", http.StatusSeeOther)
 		return
 	}
@@ -511,6 +625,7 @@ func (s *Server) getOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if u, err = models.GetUserByEmail(s.DB, email); err != nil || u == nil {
+			log.Printf("oidc: re-reading newly provisioned account %q: %v", email, err)
 			http.Redirect(w, r, "/login?error=sso", http.StatusSeeOther)
 			return
 		}
