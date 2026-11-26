@@ -892,5 +892,68 @@ else
   printf 'skip the committed fixture vs the real scan (set T0811_REAL_SCAN to run)\n'
 fi
 
+
+# 64. The fixture is captured from ONE arch, and the gate runs per arch, so it
+#     must not block the other. Go module NAMES come from the source dependency
+#     graph rather than the build target, so they do not vary by arch -- but
+#     that is a claim worth holding down, because a fixture that blocked arm64
+#     would be found at release time, on the path that moves :stable.
+#     Measured on the live image: the amd64-captured 237 names intersect the
+#     real arm64 scan at 237/237.
+if [ -r "$REAL_FX" ] && [ -n "${T0811_REAL_SCAN_ARM64:-}" ] && [ -r "${T0811_REAL_SCAN_ARM64:-}" ]; then
+  COVERAGE_FLOOR_FILE="$REAL_FX" run_cov "$T0811_REAL_SCAN_ARM64" "$T0811_REAL_SCAN_ARM64"
+  check "the amd64-captured fixture does not block the arm64 scan" pass
+else
+  printf 'skip the fixture vs the real arm64 scan (set T0811_REAL_SCAN_ARM64 to run)\n'
+fi
+
+
+# 65. A DUPLICATE .Target cannot pay for a gutted binary's floor.
+#     Found by probing 5e rather than by reading it: .Target is metadata the
+#     submitted image controls, and pkg_names_for_target aggregates every
+#     result matching it, so a second result filed under the SAME path carries
+#     the fixture's names while the real one is gutted and all findings vanish.
+#     This shape ALSO defeats checks 5 and 7 as they stand (verified: it passes
+#     with COVERAGE_FLOOR_FILE empty), which is tracked separately -- the point
+#     here is that 5e, the floor a rebuild cannot fabricate past, must not
+#     inherit it.
+jq '([.Results[]?|select(.Type=="gobinary")|.Vulnerabilities[]?.PkgName]|unique) as $v
+  | ([.Results[]|select(.Type=="gobinary")|.Packages[]]) as $all
+  | .Results = ([.Results[] | if .Type=="gobinary"
+        then (.Packages = [$all[]|select(([.Name]|inside($v)))]) | (.Vulnerabilities = [])
+        else . end]
+      + [{Target:"usr/bin/caddy", Class:"lang-pkgs", Type:"gobinary",
+          Packages:$all, Vulnerabilities:[]}])' "$B" > "$WORK/t65.json"
+mkfixture "$WORK/t65-fx.json" 237 50
+COVERAGE_FLOOR_FILE="$WORK/t65-fx.json" run_cov "$WORK/t65.json" "$B"
+check "a duplicate .Target cannot pay for a gutted binary's absolute floor" block
+
+# 66. A fixture path that EXISTS but is not a regular file is a hard stop, not
+#     a skip. `-f` is false for a directory and for a dangling symlink, so the
+#     first spelling treated both as "absent" and skipped -- fail-open on two
+#     states that are faults rather than configurations.
+mkdir -p "$WORK/t66-dir.json"
+COVERAGE_FLOOR_FILE="$WORK/t66-dir.json" run_cov "$WORK/t1.json" "$B"
+check "a directory at the fixture path blocks rather than skipping" block
+
+# 67. The same for a DANGLING symlink, which is the likelier accident (a moved
+#     or pruned fixture) and reads as absent to `-f`.
+ln -sfn "$WORK/definitely-not-here.json" "$WORK/t67-link.json"
+COVERAGE_FLOOR_FILE="$WORK/t67-link.json" run_cov "$WORK/t1.json" "$B"
+check "a dangling symlink at the fixture path blocks rather than skipping" block
+
+# 68. An unwritable $OUT must not report the floor as satisfied. The scratch
+#     lists 5e compares are written there, and an unchecked redirect would make
+#     `comm` read nothing -- a computed-as-zero floor, or worse a cleared one.
+COV_RC=0
+COV_OUT="$( (
+    OUT="/proc/t0811-cannot-exist"
+    export OUT
+    # shellcheck disable=SC2034  # read by assert_scan_coverage, called below
+    COVERAGE_FLOOR_FILE="$FX"
+    assert_scan_coverage "$WORK/t1.json" "$B" amd64
+  ) 2>&1 )" || COV_RC=$?
+check "an unwritable \$OUT blocks rather than reporting the floor satisfied" block
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

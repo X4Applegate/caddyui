@@ -1610,7 +1610,25 @@ assert_scan_coverage() {
   # was written for, reproduced end to end against the real scan, and this
   # check must not reopen it one level out.
   if [ -n "$COVERAGE_FLOOR_FILE" ]; then
-    if [ ! -f "$COVERAGE_FLOOR_FILE" ]; then
+    # -e, NOT -f, and the readability test is separate.
+    #
+    # `-f` is false for a DIRECTORY and for a DANGLING SYMLINK, so the first
+    # spelling of this treated both as "absent" and skipped -- fail-open on
+    # two states that are faults rather than configurations. Found by probing
+    # this check rather than by reading it: `COVERAGE_FLOOR_FILE=<a dir>` and a
+    # symlink to a deleted path both printed the skip NOTE and exited 0.
+    #
+    # A path that EXISTS but is not a readable regular file is therefore a hard
+    # stop, on the same reasoning as an unparseable document below: the caller
+    # named a floor, so silently not having one is the fail-open shape. Only a
+    # path that does not exist at all is the supported "no fixture" case.
+    if [ -e "$COVERAGE_FLOOR_FILE" ] || [ -L "$COVERAGE_FLOOR_FILE" ]; then
+      [ -f "$COVERAGE_FLOOR_FILE" ] \
+        || die "the coverage floor path $(safe_text "$COVERAGE_FLOOR_FILE") exists but is not a regular file (directory, dangling symlink or special file). A named floor that cannot be read asserts nothing while appearing to be configured. Point COVERAGE_FLOOR_FILE at the fixture, or set it empty to run without an absolute floor."
+      [ -r "$COVERAGE_FLOOR_FILE" ] \
+        || die "the coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") exists but is not readable. Refusing to continue without the absolute floor it names."
+    fi
+    if [ ! -e "$COVERAGE_FLOOR_FILE" ] && [ ! -L "$COVERAGE_FLOOR_FILE" ]; then
       # ABSENT is not a fault. The script is run by hand and from worktrees
       # that predate the fixture, and every check above still ran. Noted
       # rather than silent, so "5e did not run" is visible in the log and in
@@ -1631,7 +1649,7 @@ assert_scan_coverage() {
       # printing coverage OK. Validated as a whole document before any field
       # is trusted.
       local fx_type fx_target fx_pct fx_names_f fx_count fx_retained fx_floor
-      local fx_new_f fx_valid
+      local fx_new_f fx_valid fx_dupes
       fx_valid="$(jq -r '
         if (type == "object")
            and ((.schema // 0) == 1)
@@ -1666,7 +1684,10 @@ assert_scan_coverage() {
       # ordering, for the reason documented on pkg_names_for_type.
       jq -r '[ .names[]? | select(. != null and . != "")
                | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
-             | unique | .[]' "$COVERAGE_FLOOR_FILE" | LC_ALL=C sort -u > "$fx_names_f"
+             | unique | .[]' "$COVERAGE_FLOOR_FILE" | LC_ALL=C sort -u > "$fx_names_f" \
+        || die "could not write the coverage-floor name list to $(safe_text "$OUT") while running check 5e on linux/$arch. A floor that cannot be computed must not be reported as satisfied."
+      [ -r "$fx_names_f" ] \
+        || die "the coverage-floor name list for linux/$arch was not created in $(safe_text "$OUT"); check 5e could not be computed and must not be reported as satisfied."
       fx_count=$(wc -l < "$fx_names_f")
       fx_count=${fx_count//[[:space:]]/}
 
@@ -1679,10 +1700,46 @@ assert_scan_coverage() {
         die "the committed coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") lists zero package names, so it imposes no floor at all while still being present and parseable. To run without an absolute floor, unset the file or pass COVERAGE_FLOOR_FILE= explicitly; do not commit an empty one."
       fi
 
-      # Per TARGET (see above), so a decoy Go binary cannot pay for the real
-      # one's coverage.
+      # Per TARGET (see above), so a decoy Go binary at ANOTHER path cannot pay
+      # for the real one's coverage.
+      #
+      # ONE RESULT, NOT EVERY RESULT SHARING THE TARGET STRING.
+      # pkg_names_for_target aggregates `.Results[] | select(.Target == $tg)`,
+      # and .Target is attacker-chosen metadata rather than an identity: a scan
+      # may contain TWO gobinary results both claiming `usr/bin/caddy`. Probing
+      # this check found that payable -- gut the real result to its 2
+      # findings-bearing modules, append a second result with the same .Target
+      # carrying all 237, and the aggregate reads 237/237 while every finding
+      # vanishes. (That shape also defeats checks 5 and 7 as they stand, which
+      # is tracked separately; what matters here is that 5e, the one floor the
+      # rebuild cannot fabricate its way past, must not INHERIT it.)
+      #
+      # So require the target to be reported ONCE and compare that single
+      # result. A duplicate .Target is not a state any real Trivy scan of this
+      # image produces -- measured, both arches report exactly one
+      # `usr/bin/caddy` -- so refusing it costs nothing legitimate and removes
+      # the aggregation entirely rather than trusting a sum.
+      fx_dupes="$(jq -r --arg tg "$fx_target" \
+        '[ .Results[]? | select((.Target // "") == $tg) ] | length' "$new" 2>/dev/null || echo 0)"
+      case "$fx_dupes" in
+        ''|*[!0-9]*) fx_dupes=0 ;;
+      esac
+      if [ "$fx_dupes" -gt 1 ]; then
+        rm -f "$fx_names_f"
+        die "the rebuild's scan of linux/$arch reports $fx_dupes separate results for the target '$(safe_text "$fx_target")'. A real scan of this image reports exactly one, and .Target is metadata the submitted image controls, so two results sharing it would let a gutted binary's coverage be paid for by a second list filed under the same name. Refusing to sum them."
+      fi
       fx_new_f="$OUT/.cov-fixnew-$arch.names"
-      pkg_names_for_target "$new" "$fx_target" > "$fx_new_f"
+      pkg_names_for_target "$new" "$fx_target" > "$fx_new_f" \
+        || die "could not write the coverage-floor scratch list to $(safe_text "$OUT") while running check 5e on linux/$arch. A floor that cannot be computed must not be reported as satisfied."
+      # An UNWRITABLE $OUT is a hard stop, not a zero intersection and not a
+      # skip. Probing found this fail-open: with $OUT read-only the redirection
+      # above fails, `comm` reads nothing, and -- because the redirect's failure
+      # was unchecked and `wc -l` on an absent file still yields a number -- the
+      # count came out in a way that cleared the floor and printed coverage OK.
+      # Every other scratch write in this function sits inside a `die`-guarded
+      # path for the same reason.
+      [ -r "$fx_new_f" ] \
+        || die "the coverage-floor scratch list for linux/$arch was not created in $(safe_text "$OUT"); check 5e could not be computed and must not be reported as satisfied."
       fx_retained=$(LC_ALL=C comm -12 "$fx_names_f" "$fx_new_f" | wc -l)
       fx_retained=${fx_retained//[[:space:]]/}
       # Rounded UP, for the reason check 4's floor is: rounded down, a small

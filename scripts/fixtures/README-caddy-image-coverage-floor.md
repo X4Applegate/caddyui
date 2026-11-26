@@ -59,6 +59,17 @@ Commit the diff in the release PR. Review it the way you would any security-rele
 refresh that *drops* a large number of names is the thing this file exists to make visible, so it
 needs a reason in the PR description.
 
+## One fixture serves both arches
+
+The gate runs `assert_scan_coverage` once per architecture, and this file is captured from
+`linux/amd64` only. That is correct rather than an oversight: Go **module names** are a property of
+the source dependency graph, not of the build target, so they do not vary by arch. Verified against
+the live image — the amd64-captured 237 names intersect the `linux/arm64` scan at **237/237**, and
+the arm64 pass reports `absolute floor (linux/arm64): usr/bin/caddy retains 237/237`.
+
+Module *versions* and the OS package set can and do differ by arch, which is another reason this
+check is keyed on names only.
+
 ## Scoping, and why it is narrow
 
 - **`gobinary` only.** No OS-layer fixture. `apk upgrade --no-cache` is unpinned by design and
