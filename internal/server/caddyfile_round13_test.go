@@ -375,7 +375,13 @@ func TestSyncDoesNotDeployAStaleCopyOfAMigratedRow(t *testing.T) {
 
 // Issue #184 round-13 review (code 2), under -race: syncs of one server
 // run at once while the migration adapts slowly; no /load ever carries a
-// pending row's planted routes.
+// pending row's planted routes. This is a smoke test for data races in the
+// migration state, not the test of the stale-copy re-read (round-14 review,
+// code 3b): whether a sync reads a row in the window between the
+// migration's write and its clearing the pending set is up to the
+// scheduler, so it passes with the re-read removed.
+// TestSyncDoesNotDeployAStaleCopyOfAMigratedRow puts a sync's copy in that
+// window deterministically and fails without the re-read.
 func TestConcurrentSyncsNeverDeployPendingRows(t *testing.T) {
 	s, conn, sid, fc, _, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", func(body string) (int, string) {
 		time.Sleep(3 * time.Millisecond)

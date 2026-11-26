@@ -139,7 +139,7 @@ func cfSnippetPlacement(body []cfToken, def []bool) cfSnippetShape {
 			anchored = true
 			continue
 		}
-		if !anchored {
+		if !anchored && !cfMatcherNameToken(t.text) {
 			sh.placeholderLineStart = true
 		}
 		if !cfExactArgsPlaceholder(t.text) && !cfKeepsLiteral(t.text) {
@@ -150,6 +150,17 @@ func cfSnippetPlacement(body []cfToken, def []bool) cfSnippetShape {
 		}
 	}
 	return sh
+}
+
+// cfMatcherNameToken reports whether a token that starts a line is
+// always a matcher definition's name, whatever its placeholders become
+// (issue #184 round 14): it starts with `@` and something after it, so
+// the importer's arguments cannot make it `import`, a brace, a snippet
+// definition or an empty token — `@{args[0]} host {args[0]}.example.com`,
+// a common way to name a matcher after a subdomain. Its definition is
+// counted like any other (cfMatcherFacts sees the `@`).
+func cfMatcherNameToken(text string) bool {
+	return len(text) > 1 && text[0] == '@'
 }
 
 // cfSiteListeners returns the most distinct listener ports any one site

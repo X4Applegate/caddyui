@@ -297,6 +297,11 @@ type CaddyfileSnippet struct {
 	// that ends its line: such a block runs on past the body, into
 	// whatever the importer writes after the import.
 	MidLineClose bool
+	// BlockKeyed is set when the body holds a `{blocks.…}` token (issue
+	// #184 round 14): Caddy then reads the importer's block as lines of
+	// `key value…`, and puts a key's values in where that token stands, so
+	// the first value starts a line there (see CaddyfileImport.KeyArgs).
+	BlockKeyed bool
 	// Withheld is set by the server, not here: why a non-admin may not
 	// import the snippet, which is then also left out of the text CaddyUI
 	// adapts for one (issue #184 round 11).
@@ -348,6 +353,54 @@ type CaddyfileImport struct {
 	// Within is 1 + the index of the import whose block holds this one,
 	// or 0 when none does.
 	Within int
+	// BlockBraceNotLast is set when an unquoted `{` or `}` in the
+	// import's block — the `{` that opens it included — has another
+	// token after it on its line (issue #184 round 14). Caddy collects an
+	// import's block with its dispenser, which, unlike its parser, takes
+	// a token on the line of a `{` into the block and skips a `}` that has
+	// one after it: the token after the import's `{` is then the first of
+	// the block, and starts a line wherever the snippet puts the block —
+	// a matcher definition the text itself does not start a line with —
+	// and a skipped brace moves where the block ends.
+	BlockBraceNotLast bool
+	// KeyArgs are, for an import with a block, the token after the first of each line at the
+	// block's own level, when it is on that line and not a brace (issue
+	// #184 round 14). A snippet that uses `{blocks.KEY}` puts the rest of
+	// the line whose first token is KEY in its place, and the first of
+	// those tokens then starts a line.
+	KeyArgs []CaddyfileTokenAt
+}
+
+// CaddyfileTokenAt is one token of a Caddyfile: its text and the line it
+// starts on (1 for the first line).
+type CaddyfileTokenAt struct {
+	Line int
+	Text string
+}
+
+// CaddyfileLineStartSensitive reports whether a token means something
+// else when it starts a line (issue #184 round 14): a matcher definition
+// (`@name`), a snippet or named-route definition (`(name)`, `&(name)`), or
+// `import`.
+func CaddyfileLineStartSensitive(text string) bool {
+	return strings.HasPrefix(text, "@") || strings.HasPrefix(text, "(") || strings.HasPrefix(text, "&(") || text == "import"
+}
+
+// CaddyfileLineStarts returns the tokens of src that start a line, read
+// the way Caddy's lexer reads src (issue #184 round 14, for the
+// differential test of the tenant rules); ok is false when Caddy's lexer
+// would refuse src.
+func CaddyfileLineStarts(src string) (starts []CaddyfileTokenAt, ok bool) {
+	toks, err := lexCaddyfile(src)
+	if err != nil {
+		return nil, false
+	}
+	for i, t := range toks {
+		if cfIsNewLine(toks, i) {
+			starts = append(starts, CaddyfileTokenAt{Line: t.line, Text: t.text})
+		}
+	}
+	return starts, true
 }
 
 // CaddyfileSnippets returns the snippet definitions of src, read the way
@@ -383,11 +436,28 @@ func CaddyfileSnippets(src string) []CaddyfileSnippet {
 				s.BodyDefWeight += CaddyfileTokenWeight(t.text)
 			}
 			if cfBlockPlaceholder(t.text) {
+				s.BlockKeyed = s.BlockKeyed || t.text != "{block}"
 				s.BlockUses++
 				s.BlockDepth = max(s.BlockDepth, depths[i])
 			}
 		}
 		s.BodyWeight = max(weight, s.BodyBytes)
+		// Issue #184 round 14: Caddy records only the innermost import in
+		// a token's import chain, so two expansions of one `import` line
+		// of a snippet that end up back to back compare by line numbers,
+		// and inside a block the second one's first line then continues
+		// the first one's last line. Its first token may therefore be a
+		// matcher reference rather than a definition, and when the last
+		// line is a matcher definition, the next first line (and the
+		// block it opens) is part of that definition.
+		if len(body) > 0 {
+			if strings.Contains(body[0].text, "@") {
+				s.BodyRefs++
+			}
+			if def[len(body)-1] {
+				s.BodyDefWeight, s.DefArgUses = s.BodyWeight, s.ArgUses
+			}
+		}
 		s.HeadKeys = cfHeadKeys(body, depths)
 		// The body's first token starts a line wherever it is written.
 		s.Imports = cfImportSites(body, depths, func(i int) bool { return body[i].text == "import" }, true)

@@ -439,7 +439,13 @@ func tenantSnippetUnavailable(name string) string {
 //     an import's block by comparing line numbers, which the copies a
 //     snippet makes of the importer's block repeat, so an import inside
 //     one can take the following copy as its own block, at every level —
-//     an expansion without bound.
+//     an expansion without bound;
+//   - in an `import`'s block, a `{` or `}` with more on its line, and, for
+//     a snippet that uses `{blocks.…}`, a matcher definition, snippet name
+//     or `import` right after a key (round 14): Caddy starts a line with
+//     the first word of the block, and with a key's first value, wherever
+//     the snippet puts them, so the rules must see those words where a
+//     line starts too.
 //
 // The checks that need tokens run on tokens, so a comment, or text inside
 // one quoted value, is never mistaken for a directive.
@@ -510,6 +516,18 @@ func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimit
 		if imp.Within != 0 {
 			return "an `import` may not be written inside the block of another `import`", 0, 0
 		}
+		// Issue #184 round 14: what Caddy reads as the start of a line in
+		// an import's block must start one in the text too.
+		if imp.BlockBraceNotLast {
+			return "in the block of an `import`, `{` and `}` must end their line (the block's content starts on the line after the `{`)", 0, 0
+		}
+		if snippets[imp.Name].BlockKeyed {
+			for _, a := range imp.KeyArgs {
+				if caddy.CaddyfileLineStartSensitive(a.Text) {
+					return fmt.Sprintf("the snippet %q puts the rest of a line of the `import`'s block where a line starts, so a matcher definition (`@name`), a snippet name or `import` may not follow the line's first word there; write it on a line of its own", imp.Name), 0, 0
+				}
+			}
+		}
 		if lim.topLevel && imp.Depth == 0 && snippetUnsafeAtTopLevel(snippets[imp.Name], imp.ArgCount) {
 			return fmt.Sprintf("the snippet %q can only be imported inside a site block", imp.Name), 0, 0
 		}
@@ -534,7 +552,13 @@ func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimit
 	if depth > maxDepth {
 		return fmt.Sprintf("blocks are nested %d levels deep once the snippets it imports are counted; the limit is %d", depth, maxDepth), size, depth
 	}
-	if copies := tenantMatcherCopies(use, snippets); copies > tenantMaxMatcherCopyBytes {
+	copies := tenantMatcherCopies(use, snippets)
+	// Issue #184 round 14: like the size, matcher copies are made once per
+	// listener port of the widest site block.
+	if lim.topLevel && use.SiteListeners > 1 {
+		copies = satMul(copies, int64(use.SiteListeners))
+	}
+	if copies > tenantMaxMatcherCopyBytes {
 		return fmt.Sprintf("named matchers would be copied into the adapted config too often (%d KiB of matcher definitions times references; the limit is %d KiB) — reference each named matcher fewer times, or keep matcher definitions short", (copies+1023)>>10, tenantMaxMatcherCopyBytes>>10), size, depth
 	}
 	return "", size, depth
@@ -579,6 +603,12 @@ func snippetUnsafeAtTopLevel(sn caddy.CaddyfileSnippet, nargs int) bool {
 	// Round 13: a block it opens there is a site block, adapted once per
 	// listener its addresses name; only a single address is counted for.
 	if sn.HeadKeys > 1 {
+		return true
+	}
+	// Round 14: the importer's block put in at the snippet's own top level
+	// lands at the top level of the file, where its lines are site
+	// addresses and site blocks the rules counted as nested ones.
+	if sn.BlockDepth == 0 {
 		return true
 	}
 	for _, imp := range sn.Imports {
@@ -1123,7 +1153,13 @@ func sortedStringKeys(m map[string]string) []string {
 // when an `import` in it passes a lone brace or a line break as an
 // argument. A placeholder inside a token after the first of its line
 // (`header Authorization "Bearer {args[0]}"`, `{args[0]}:{args[1]}`)
-// stays available.
+// stays available, and (round 14) so does a line-start token that begins
+// with `@` (`@{args[0]} host {args[0]}.example.com`): it is a matcher
+// definition's name whatever the arguments are, and counted as one.
+//
+// Issue #184 round 14: a snippet whose own `import` blocks hold a `{` or
+// `}` with more on its line, or a matcher, snippet or `import` word after a
+// key, is withheld, as such text is refused in a non-admin's own imports.
 func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 	set := tenantSnippetSet{}
 	dup := map[string]bool{}
@@ -1182,6 +1218,15 @@ func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 				withhold(name, "it imports a snippet inside a matcher definition")
 				break
 			}
+			// Issue #184 round 14: as for a non-admin's own imports.
+			if imp.BlockBraceNotLast {
+				withhold(name, "a `{` or `}` in the block of an `import` in it has more text after it on its line")
+				break
+			}
+			if keyArgSensitive(imp) {
+				withhold(name, "a line of the block of an `import` in it continues with a matcher, snippet or `import` word after its first word")
+				break
+			}
 		}
 	}
 	// A snippet that imports itself, directly or through others, never
@@ -1232,6 +1277,18 @@ func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 		}
 	}
 	return set
+}
+
+// keyArgSensitive reports whether a line of imp's block continues, after
+// its first word, with a token that means something else where a line
+// starts (issue #184 round 14; see caddy.CaddyfileImport.KeyArgs).
+func keyArgSensitive(imp caddy.CaddyfileImport) bool {
+	for _, a := range imp.KeyArgs {
+		if caddy.CaddyfileLineStartSensitive(a.Text) {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedSnippetNames(set tenantSnippetSet) []string {

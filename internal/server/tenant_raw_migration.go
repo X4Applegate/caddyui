@@ -63,7 +63,11 @@ import (
 //   - the text is refused because of the administrator's Caddyfile (a
 //     snippet it imports is missing, unreadable, renamed or withheld), or
 //     Caddy cannot be reached (or answers anything but a result or a 400)
-//     → the row stays pending, and is tried again later;
+//     → the row stays pending, and is tried again later; a row that is
+//     still refused because of the administrator's snippets after
+//     rawMigSnippetRuns runs and rawMigSnippetGrace is held (issue #184
+//     round 14: "held: snippet unavailable"), so it is not tried again
+//     every half hour for ever;
 //   - the row changed while it was being adapted → nothing is written; it
 //     stays pending unless the change was a save that adapted it under
 //     today's rules (rawRouteMigrationSaved).
@@ -80,6 +84,16 @@ const settingTenantRawRouteMigration = "tenant_raw_route_migration_184"
 // ever.
 const rawMigMaxStrikes = 5
 
+// rawMigSnippetRuns and rawMigSnippetGrace bound how long a row waits
+// only because the administrator's snippets do not allow its text (issue
+// #184 round 14): one that is still refused for that after this many runs
+// and this long is held, as any refused row is, instead of being tried
+// again every half hour for ever. The administrator's Caddyfile being
+// unreadable for a moment at start-up does not hold anything.
+const rawMigSnippetRuns = 4
+
+var rawMigSnippetGrace = time.Hour
+
 // rawMigProbeText is what the migration adapts to tell whether Caddy
 // answers at all.
 const rawMigProbeText = "http://caddyui-probe.invalid {\n\trespond 204\n}\n"
@@ -95,6 +109,11 @@ type tenantRawMigration struct {
 	// strikes counts, per row, the runs in which adapting it failed to
 	// reach Caddy while another row adapted.
 	strikes map[int64]int
+	// snippetWaits counts, per row, the runs in which only the
+	// administrator's snippets kept it pending, and snippetSince is when
+	// the first of them was (issue #184 round 14).
+	snippetWaits map[int64]int
+	snippetSince map[int64]time.Time
 	// unreadable is set once a corrupt state has been logged.
 	unreadable bool
 	// everPending is set once this process has seen a row waiting (issue
@@ -198,7 +217,8 @@ func (s *Server) loadRawRouteMigrationLocked() error {
 	}
 	keep := s.rawMig
 	fresh := func() tenantRawMigration {
-		return tenantRawMigration{loaded: true, pending: map[int64]bool{}, lastWhy: keep.lastWhy, strikes: keep.strikes, unreadable: keep.unreadable}
+		return tenantRawMigration{loaded: true, pending: map[int64]bool{}, lastWhy: keep.lastWhy, strikes: keep.strikes, unreadable: keep.unreadable,
+			snippetWaits: keep.snippetWaits, snippetSince: keep.snippetSince}
 	}
 	switch {
 	case v == "done":
@@ -330,6 +350,9 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 		why  string
 		// broke is set when adapting the row lost the connection to Caddy.
 		broke bool
+		// snippets is set when only the administrator's snippets keep
+		// the row pending.
+		snippets bool
 	}
 	var work []pendingRow
 	drop := map[int64]bool{}
@@ -361,6 +384,7 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 		row := pendingRow{rr: *rr, out: out, json: jsonData, why: why}
 		if out == rawMigRetry {
 			row.broke = cl != nil && caddyConnectionLost(why)
+			row.snippets = strings.HasPrefix(why, rawMigSnippetWhy)
 		}
 		reached = reached || answered
 		work = append(work, row)
@@ -387,6 +411,10 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 	if s.rawMig.lastWhy == nil {
 		s.rawMig.lastWhy = map[int64]string{}
 	}
+	if s.rawMig.snippetWaits == nil {
+		s.rawMig.snippetWaits = map[int64]int{}
+		s.rawMig.snippetSince = map[int64]time.Time{}
+	}
 	changed := false
 	for id := range drop {
 		if s.rawMig.pending[id] {
@@ -408,6 +436,19 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 				out = rawMigHold
 				why = fmt.Sprintf("adapting it broke the connection to Caddy %d times while other routes adapted (%s)", s.rawMig.strikes[id], why)
 			}
+		}
+		if out == rawMigRetry && w.snippets {
+			if s.rawMig.snippetWaits[id] == 0 {
+				s.rawMig.snippetSince[id] = time.Now()
+			}
+			s.rawMig.snippetWaits[id]++
+			if s.rawMig.snippetWaits[id] >= rawMigSnippetRuns && time.Since(s.rawMig.snippetSince[id]) >= rawMigSnippetGrace {
+				out = rawMigHold
+				why = "held: snippet unavailable — " + why
+			}
+		} else {
+			delete(s.rawMig.snippetWaits, id)
+			delete(s.rawMig.snippetSince, id)
 		}
 		switch out {
 		case rawMigRetry:
@@ -443,6 +484,8 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 		delete(s.rawMig.pending, id)
 		delete(s.rawMig.lastWhy, id)
 		delete(s.rawMig.strikes, id)
+		delete(s.rawMig.snippetWaits, id)
+		delete(s.rawMig.snippetSince, id)
 		changed = true
 	}
 	if changed {
@@ -505,6 +548,10 @@ func caddyConnectionLost(why string) bool {
 	return strings.Contains(why, "EOF") || strings.Contains(why, "connection reset")
 }
 
+// rawMigSnippetWhy starts the reason a row waits because of the
+// administrator's snippets.
+const rawMigSnippetWhy = "it depends on the administrator's snippets, which do not allow it now: "
+
 // readaptForMigration adapts a non-admin's Advanced route text the way a
 // save does today. It returns the JSON to store, or why the row cannot be
 // kept (rawMigHold), or why it cannot be decided now (rawMigRetry);
@@ -520,7 +567,7 @@ func (s *Server) readaptForMigration(rr models.RawRoute, cl *caddy.Client) (json
 		if len(rr.CaddyfileSrc) > maxTenantCaddyfileBytes || tenantTextRefusalIsOwn(rr.CaddyfileSrc, tenantTextLimits{maxDepth: tenantMaxNestingDepth, maxBytes: maxTenantCaddyfileBytes, topLevel: true}) {
 			return "", msg, rawMigHold, false
 		}
-		return "", "it depends on the administrator's snippets, which do not allow it now: " + msg, rawMigRetry, false
+		return "", rawMigSnippetWhy + msg, rawMigRetry, false
 	}
 	tcl := s.tenantAdaptClient(cl)
 	if tcl == nil {
@@ -536,13 +583,16 @@ func (s *Server) readaptForMigration(rr models.RawRoute, cl *caddy.Client) (json
 			// check now comes from the administrator's snippets changing
 			// meanwhile. Anything else is Caddy's 400.
 			if s.tenantAdaptTextViolation(s.snippetsFor(rr.CaddyfileSrc, true)) != "" {
-				return "", "it depends on the administrator's snippets, which do not allow it now: " + err.Error(), rawMigRetry, false
+				return "", rawMigSnippetWhy + err.Error(), rawMigRetry, false
 			}
 			return "", "its Caddyfile no longer adapts: " + err.Error(), rawMigHold, true
 		}
 		return "", err.Error(), rawMigRetry, false
 	}
-	if listen != rr.Listen {
+	// Issue #184 round 14: a save keeps a listen set typed in the form
+	// when the text names only the standard ports (adapted listen ""), so
+	// only text that names listeners of its own is held to the stored set.
+	if listen != "" && listen != rr.Listen {
 		return "", "its Caddyfile now adapts to other listen addresses than the stored route", rawMigHold, true
 	}
 	if msg := s.tenantRawRouteAdaptedProblem(jsonData, listen, result); msg != "" {
@@ -556,10 +606,31 @@ func (s *Server) readaptForMigration(rr models.RawRoute, cl *caddy.Client) (json
 	// today — up to v2.68.16 an `import` the text does not show (one of a
 	// paste's other blocks, a file) could put them there — so the row is
 	// held, and its routes are kept for an administrator's review.
-	if !jsonEqual(rr.JSONData, jsonData) {
+	if !rawRoutesJSONEqual(rr.JSONData, jsonData) {
 		return "", "its stored routes differ from what its Caddyfile adapts to now", rawMigHold, true
 	}
 	return jsonData, "", rawMigStore, true
+}
+
+// rawRoutesJSONEqual reports whether two raw-route JSON values hold the
+// same routes (issue #184 round 14): a single route and a list holding
+// just that route are the same, as the sync deploys them (rawRouteEntries);
+// v2.68.16's API stored json_data as sent, often as a one-route list.
+func rawRoutesJSONEqual(a, b string) bool {
+	list := func(s string) (string, bool) {
+		var v any
+		if err := json.Unmarshal([]byte(s), &v); err != nil {
+			return "", false
+		}
+		if m, ok := v.(map[string]any); ok {
+			v = []any{m}
+		}
+		out, err := json.Marshal(v)
+		return string(out), err == nil
+	}
+	la, oka := list(a)
+	lb, okb := list(b)
+	return oka && okb && la == lb
 }
 
 // migrateTenantRawRoutesFor runs the migration for serverID with its own

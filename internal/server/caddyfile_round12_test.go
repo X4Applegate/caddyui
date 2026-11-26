@@ -606,19 +606,19 @@ func TestTransientAdaptErrorKeepsTheLastAppliedAdvancedConfig(t *testing.T) {
 	}
 }
 
-// Issue #184 round-12 review (9): the migration holds a row whose text now
-// adapts to other listen addresses than it was stored with (removing that
-// check makes this fail).
+// Issue #184 round-12 review (9), rewritten in round 14 (code 1a): the
+// migration holds a row whose text now adapts to other listen addresses
+// than it was stored with — text on :7071, a row stored with :7070 —
+// though its routes are exactly what the text adapts to today, so only the
+// listen-set check can hold it (removing that check makes this fail).
 func TestMigrationHoldsARowWhoseListenSetChanged(t *testing.T) {
 	s, conn, sid, _, admin, tenant := newRound12Fixture(t, "(tag) {\n\tX-Tag yes\n}\n", func(string) (int, string) {
-		return 200, round12Adapted("ls.example.test", "X-Tag") // on :443, the standard listener
+		return 200, round14Adapted("ls.example.test", ":7071")
 	})
-	// Round 13 (code 6): the stored routes are exactly what the text
-	// adapts to today, so only the listen-set check can hold the row.
-	src := "ls.example.test:7070 {\n\theader {\n\t\timport tag\n\t}\n}"
-	js, _, _, err := s.adaptRawRouteCaddyfileResult(s.tenantAdaptClient(s.Caddy), src)
-	if err != nil {
-		t.Fatal(err)
+	src := "ls.example.test:7071 {\n\theader {\n\t\timport tag\n\t}\n}"
+	js, listen, _, err := s.adaptRawRouteCaddyfileResult(s.tenantAdaptClient(s.Caddy), src)
+	if err != nil || listen == "" {
+		t.Fatalf("adapt: %v listen=%q", err, listen)
 	}
 	id, err := models.CreateRawRoute(conn, sid, tenant.ID, &models.RawRoute{Label: "ls", Enabled: true, CaddyfileSrc: src, JSONData: js,
 		Listen: models.NormalizeRawRouteListen(models.ParseRawRouteListenInput(":7070"))})

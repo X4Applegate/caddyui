@@ -646,14 +646,17 @@ func CaddyfileImportArguments(src string) (args []string, ok bool) {
 // blocks it passes included (issue #184 round 11) — and, since round 13,
 // every token at CaddyfileMinTokenWeight bytes at least, a Caddyfile once
 // per listener port of its widest site block, and matcher references
-// times matcher definitions to 1 MiB. Measured in round 13 (cgroup
-// memory.peak of one `caddy adapt`, Caddy 2.11.9, three runs each), the
-// heaviest text built within those limits — tiny tokens 32 deep, snippet
-// fan-out of empty arguments, a block placed deep, 16 imports, matcher
-// definitions and references, a site on 2 and 16 ports, on the
-// Advanced-route and the proxy-host path — peaked at ~120 MB (worst run
-// 119 MB), and ~160 MB (worst run 161 MB) at the adapt hook's looser
-// bound for text CaddyUI wraps around a non-admin's (40 levels, 68 KiB).
+// times matcher definitions to 1 MiB (once per listener port for a whole
+// Caddyfile, since round 14). Measured again in round 14 (cgroup
+// memory.peak of one `caddy adapt`, Caddy 2.11.9, worst of three runs
+// each), the heaviest text built within those limits — tiny tokens 32
+// deep, snippet fan-out of empty arguments, a block placed deep, 16
+// imports, matcher definitions and references (in the text, in an import
+// block written over several lines, and named after a snippet's
+// arguments), a site on 2 and 16 ports — peaked at 118 MB on the
+// Advanced-route path and 114 MB on the proxy-host path (matcher shapes at
+// most 40 MB), and 160 MB at the adapt hook's looser bound for text
+// CaddyUI wraps around a non-admin's (40 levels, 68 KiB).
 // An administrator's text is trusted beyond this depth limit. The depth is counted the way Caddy's own lexer reads the text, so
 // text CaddyUI's strict lexer refuses is limited too.
 const MaxCaddyfileNestingDepth = 100
@@ -839,6 +842,13 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 	sumWeight := make([]int, n+1)
 	sumRefs := make([]int, n+1)
 	sumDefWeight := make([]int, n+1)
+	// Issue #184 round 14: unquoted braces with a token after them on
+	// their line (see CaddyfileImport.BlockBraceNotLast).
+	sumBraceNotLast := make([]int, n+1)
+	// parentOpen is, for each token, the innermost unquoted `{` that is
+	// open before it (-1 for none): a key line of an import's block is
+	// one whose first token has the import's `{` as its parent.
+	parentOpen := make([]int, n)
 	b2i := func(b bool) int {
 		if b {
 			return 1
@@ -846,12 +856,17 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 		return 0
 	}
 	for k, t := range toks {
+		parentOpen[k] = -1
+		if len(stack) > 0 {
+			parentOpen[k] = stack[len(stack)-1]
+		}
 		sumBytes[k+1] = sumBytes[k] + len(t.text) + 1
 		sumArgs[k+1] = sumArgs[k] + strings.Count(t.text, "{args")
 		w := CaddyfileTokenWeight(t.text)
 		sumWeight[k+1] = sumWeight[k] + w
 		sumRefs[k+1] = sumRefs[k] + b2i(ref[k])
 		sumDefWeight[k+1] = sumDefWeight[k] + b2i(def[k])*w
+		sumBraceNotLast[k+1] = sumBraceNotLast[k] + b2i(!t.quoted && (t.text == "{" || t.text == "}") && k+1 < n && !cfIsNewLine(toks, k+1))
 		sumBlocks[k+1] = sumBlocks[k]
 		if cfBlockPlaceholder(t.text) {
 			sumBlocks[k+1]++
@@ -880,6 +895,10 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 	type open struct{ site, from, to int }
 	var within []open // the blocks of the imports enclosing the current token
 	argOf := make([]bool, n)
+	// blockOf maps the `{` that opens an import's block to the imports
+	// whose block it is (in a snippet body, an `import` that is an
+	// argument of another shares its block).
+	blockOf := map[int][]int{}
 	isOpen := func(i int) bool { return !toks[i].quoted && toks[i].text == "{" }
 	for i := range toks {
 		if !isImport(i) {
@@ -933,9 +952,25 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 			if phMax[j] >= 0 {
 				site.BlockPlaceholderDepth = phMax[j] - depths[j] - 1
 			}
+			site.BlockBraceNotLast = sumBraceNotLast[min(to+1, n)] > sumBraceNotLast[j]
+			blockOf[j] = append(blockOf[j], len(sites))
 			within = append(within, open{site: len(sites), from: from, to: to})
 		}
 		sites = append(sites, site)
+	}
+	// Issue #184 round 14: the key words of every import's block, in one
+	// pass — the second token of a line whose first token sits directly
+	// in the block (its innermost open `{` is the import's).
+	for k := 0; k+1 < n; k++ {
+		owners := blockOf[parentOpen[k]]
+		if len(owners) == 0 || !cfIsNewLine(toks, k) || cfIsNewLine(toks, k+1) {
+			continue
+		}
+		if a := toks[k+1]; a.quoted || (a.text != "{" && a.text != "}") {
+			for _, site := range owners {
+				sites[site].KeyArgs = append(sites[site].KeyArgs, CaddyfileTokenAt{Line: a.line, Text: a.text})
+			}
+		}
 	}
 	return sites
 }

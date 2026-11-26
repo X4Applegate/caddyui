@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -427,6 +428,21 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 					site.BlockPlaceholderDepth = max(site.BlockPlaceholderDepth, depths[from+k]-depths[j]-1)
 				}
 			}
+			// Round 14: braces with more on their line, the import's own
+			// `{` and closing `}` included; and the second token of each
+			// line at the block's level.
+			for k := j; k <= to && k < len(toks); k++ {
+				if !toks[k].quoted && (toks[k].text == "{" || toks[k].text == "}") && k+1 < len(toks) && !cfIsNewLine(toks, k+1) {
+					site.BlockBraceNotLast = true
+				}
+			}
+			for k := from; k+1 < to; k++ {
+				if depths[k] == depths[j]+1 && cfIsNewLine(toks, k) && !cfIsNewLine(toks, k+1) {
+					if a := toks[k+1]; a.quoted || (a.text != "{" && a.text != "}") {
+						site.KeyArgs = append(site.KeyArgs, CaddyfileTokenAt{Line: a.line, Text: a.text})
+					}
+				}
+			}
 		}
 		sites = append(sites, site)
 		ranges = append(ranges, [2]int{from, to})
@@ -461,7 +477,7 @@ func TestImportSitesAreLinearAndAgreeWithAWalk(t *testing.T) {
 			isImport := func(i int) bool { return toks[i].text == "import" && (body || cfIsNewLine(toks, i)) }
 			got := cfImportSites(toks, depths, isImport, body)
 			want := cfImportSitesReference(toks, depths, isImport, body)
-			if !slices.Equal(got, want) {
+			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("%q (body=%v):\n got %+v\nwant %+v", b.String(), body, got, want)
 			}
 		}

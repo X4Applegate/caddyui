@@ -1750,7 +1750,8 @@ func (s *Server) exportCaddyClient(serverID int64) *caddy.Client {
 }
 
 // exportAdaptClient returns a function that yields one Caddy client for a
-// whole export (created on first use), whose transport refuses every
+// whole export (created on first use), reading at most maxTenantAdaptBytes
+// of an answer (every text it adapts is a non-admin's), whose transport refuses every
 // request after one has failed to get a response (errExportAdapterDown).
 // A refused request is an adapt error, which every veto treats as "could
 // not be re-checked", so the export still fails closed.
@@ -1774,6 +1775,10 @@ func (s *Server) exportAdaptClient(serverID int64) func() *caddy.Client {
 			}
 			hc.Transport = &stickyFailTransport{inner: inner}
 			cp.HTTP = &hc
+			// Issue #184 round 14: the vetoes adapt only non-admins'
+			// text, so the export reads no more of an answer than any
+			// other path does for one (tenantAdaptClient).
+			cp.MaxAdaptBytes = maxTenantAdaptBytes
 			cl = &cp
 		})
 		return cl
