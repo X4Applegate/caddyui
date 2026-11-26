@@ -2004,15 +2004,32 @@ EOF
 # instant is accepted and anything else takes property 1's exit 2. The zero
 # time (0001-01-01, what a timestamp-rewriting reproducible build emits) is
 # refused by name rather than compared, because comparing it would block every
-# legitimate release with a message blaming the baseline.
+# legitimate release with a message blaming the baseline. BOTH zero forms are
+# refused: buildkit with SOURCE_DATE_EPOCH=0 emits `1970-01-01T00:00:00Z`
+# (measured on buildx v0.38.1), and `0001-01-01T00:00:00Z` is Go's zero Time,
+# which an image config can declare directly. A reproducible build pinned to a
+# NON-zero epoch (a commit date, the other common setting) cannot be detected
+# by name at all -- it produces a plausible older timestamp -- so the
+# backwards-comparison message names that possibility rather than pretending
+# to rule it out.
 assert_baseline_not_newer() {
   local new_created="$1" base_created="$2" arch="$3"
   local new_epoch base_epoch
 
   # RFC3339, as both docker spellings produce: a `Z` or a numeric offset, with
-  # or without fractional seconds. Anchored at both ends -- an unanchored
-  # pattern matches the instant INSIDE a longer hostile string, and `date`
-  # would then read the whole string.
+  # or without fractional seconds. Matched against the WHOLE STRING -- an
+  # unanchored match finds the instant INSIDE a longer hostile string and
+  # `date` then reads the whole string.
+  #
+  # MATCHED WITH bash's `=~` AND NOT WITH `grep -Eq`, which is a real
+  # difference and not a style preference: grep anchors `^`/`$` PER LINE, so a
+  # two-line value whose first line is a valid instant and whose second is a
+  # GNU relative item ("+ 10 years") satisfied `grep` and was then shifted by
+  # `date` -- found in review, reproduced at rc=0 on a rebuild 12 days OLDER
+  # than its baseline. bash's ERE has no multiline mode, so `$` there means
+  # end of string. (Not reachable through a real image on docker 29.9.3, which
+  # refuses to load a config whose `created` is not parseable RFC3339 and
+  # re-marshals the value on inspect -- but the check must hold on its own.)
   local rfc3339='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$'
 
   local side ts
@@ -2022,14 +2039,25 @@ assert_baseline_not_newer() {
     [ -n "$ts" ] \
       || die "the $side image for linux/$arch reports no creation timestamp, so the gate cannot tell which of the two images is newer. A gate 1 comparison run backwards reports every finding the baseline has since FIXED as newly ADDED, so this is refused rather than skipped: an unreadable precondition is not a passed one. Re-pull or rebuild the image, or check that \`docker image inspect --format '{{.Created}}'\` answers for it."
 
-    printf '%s' "$ts" | grep -Eq "$rfc3339" \
+    [[ "$ts" =~ $rfc3339 ]] \
       || die "the $side image for linux/$arch reports a creation timestamp the gate will not read: '$(safe_text "$ts")'. Only an absolute RFC3339 instant is accepted, because \`date -d\` also resolves relative words like 'now' and this value comes out of the image's own config. Refused rather than skipped, for the same reason as an absent timestamp."
 
     case "$ts" in
-      0001-01-01T*)
-        die "the $side image for linux/$arch declares the ZERO creation timestamp ($(safe_text "$ts")), which is what a build that rewrites timestamps for reproducibility emits. The gate cannot order the two images by age on that, and comparing it would block this release while blaming the other image. Either keep real build timestamps on the gated image (the workflows build with provenance disabled and no SOURCE_DATE_EPOCH, which does), or this check needs a deliberate exemption -- do not make it skip silently." ;;
+      0001-01-01T*|1970-01-01T00:00:00Z|1970-01-01T00:00:00.*)
+        die "the $side image for linux/$arch declares a ZERO creation timestamp ($(safe_text "$ts")), which is what a build that rewrites timestamps for reproducibility emits -- buildkit with SOURCE_DATE_EPOCH=0 produces 1970-01-01T00:00:00Z, and 0001-01-01T00:00:00Z is Go's zero Time. The gate cannot order the two images by age on that, and comparing it would block this release while blaming the other image. Either keep real build timestamps on the gated image (the workflows build with provenance disabled and no SOURCE_DATE_EPOCH, which does), or this check needs a deliberate exemption -- do not make it skip silently." ;;
     esac
   done
+
+  # GNU coreutils `date` ONLY. `date -u -d <rfc3339> +%s` is a GNU extension:
+  # busybox answers `invalid date`, and on BSD/macOS `-d` is the DST flag
+  # entirely. Without this probe both conversions below come back empty and
+  # the guard after them fires -- which fails CLOSED, so it is not a hole, but
+  # it blocks a legitimate publish with a message blaming the two images for a
+  # defect in the toolchain. Found in review; reproduced with busybox date on
+  # a valid release pair. Probed here rather than beside the script's other
+  # dependency checks so the suite covering this function covers it too.
+  date -u -d '2026-01-01T00:00:00Z' +%s >/dev/null 2>&1 \
+    || die "the age preflight for linux/$arch needs GNU coreutils \`date\` (it converts the images' RFC3339 creation timestamps with \`date -u -d ... +%s\`, which busybox and BSD date do not support). This is a defect in the environment running the gate, NOT in either image; install coreutils or run the gate where GNU date is on PATH."
 
   new_epoch="$(date -u -d "$new_created" +%s 2>/dev/null || true)"
   base_epoch="$(date -u -d "$base_created" +%s 2>/dev/null || true)"
@@ -2043,7 +2071,7 @@ assert_baseline_not_newer() {
   esac
 
   [ "$base_epoch" -le "$new_epoch" ] \
-    || die "the PUBLISHED image is NEWER than the image being gated for linux/$arch (published: $(safe_text "$base_created"), rebuild: $(safe_text "$new_created")) -- the comparison is the wrong way round. This is caller error, not a defect in either image: gate 1 is set arithmetic over two scans, so run backwards it reports every finding the published image has FIXED since as newly ADDED by this build, and the run blocks for a reason that has nothing to do with the image under test. Gate the newer image against the older one, or refresh the baseline you are comparing to."
+    || die "the PUBLISHED image is NEWER than the image being gated for linux/$arch (published: $(safe_text "$base_created"), rebuild: $(safe_text "$new_created")) -- the comparison is the wrong way round. This is caller error, not a defect in either image: gate 1 is set arithmetic over two scans, so run backwards it reports every finding the published image has FIXED since as newly ADDED by this build, and the run blocks for a reason that has nothing to do with the image under test. Gate the newer image against the older one, or refresh the baseline you are comparing to. One other cause reaches this message and is worth ruling out first: if the gated build rewrites its creation timestamp for reproducibility (SOURCE_DATE_EPOCH set to a commit date, say), that timestamp is not its build time, the two images cannot be ordered by age at all, and this check would need a deliberate exemption rather than a workaround."
 
   printf 'age OK (linux/%s): published %s <= rebuild %s\n' \
     "$arch" "$(safe_text "$base_created")" "$(safe_text "$new_created")"

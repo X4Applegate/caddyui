@@ -259,6 +259,96 @@ run_age "$PULLED" '0001-01-01T00:00:00Z'
 check "the zero creation time on the baseline side is refused too" die
 
 # ---------------------------------------------------------------------------
+# FOUND IN INDEPENDENT REVIEW. Each of these three passed the first version of
+# the preflight; they are here so the fixes cannot be undone silently.
+
+# 22. A TWO-LINE timestamp whose first line is a valid instant and whose second
+#     is a GNU relative item. The first spelling used `grep -Eq`, which anchors
+#     `^`/`$` PER LINE -- so this satisfied the form check and `date` then read
+#     the whole string and applied the shift: rc=0, "age OK", on a rebuild
+#     TWELVE DAYS OLDER than its baseline. The fix is bash's `=~`, whose ERE
+#     has no multiline mode. This is the single most important case in the
+#     file: it is the one where the check said pass and the answer was wrong.
+run_age "$(printf '2026-11-13T00:42:00Z\n+ 10 years')" '2026-11-25T21:06:56Z'
+check "a multi-line timestamp carrying a relative item is refused" die
+
+# 23. The same shape on the baseline side, which shifts the comparison the
+#     other way.
+run_age "$PULLED" "$(printf '2026-11-13T00:42:00Z\nnext year')"
+check "a multi-line baseline timestamp is refused too" die
+
+# 24. A trailing newline alone -- the mildest version of case 22, and the one
+#     that shows `$` is end-of-STRING here rather than end-of-line. Written
+#     with ANSI-C quoting on purpose: `$(printf '%s\n' ...)` cannot express
+#     this input at all, because command substitution strips trailing
+#     newlines -- which is also why the call site, where the value comes out
+#     of `$(docker image inspect ...)`, can never produce it. Tested anyway,
+#     because the function must hold without relying on its caller.
+run_age $'2026-11-25T21:10:45.193977204Z\n' '2026-11-13T03:45:00Z'
+check "a timestamp with a trailing newline is refused" die
+
+# 25. THE REAL ZERO TIME IS 1970, NOT 0001. The first version named only
+#     `0001-01-01` as "what a reproducible build emits"; measured on buildx
+#     v0.38.1, SOURCE_DATE_EPOCH=0 emits `1970-01-01T00:00:00Z`. So the case
+#     the guard was written for took the "PUBLISHED image is NEWER" branch
+#     instead and blamed the baseline for a build-flag change.
+run_age '1970-01-01T00:00:00Z' "$PULLED"
+check "the 1970 zero time is refused by name" die
+if printf '%s' "$OUT" | grep -qi 'ZERO creation timestamp'; then
+  printf 'ok   ...under the zero-time message, not "baseline is newer"\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ...under the zero-time message, not "baseline is newer"\n     %s\n' "$OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# 26. ...and with fractional seconds, which buildkit also emits.
+run_age '1970-01-01T00:00:00.000000000Z' "$PULLED"
+check "the 1970 zero time with fractional seconds is refused" die
+
+# 27. An ordinary 1970-adjacent timestamp that is NOT the zero instant must
+#     still reach the age comparison rather than the zero-time message, so the
+#     guard stays a guard on one value and does not swallow a whole year.
+run_age '1970-06-01T12:00:00Z' "$PULLED"
+check "a non-zero 1970 timestamp is judged on age, not refused by name" die
+if printf '%s' "$OUT" | grep -qi 'PUBLISHED image is NEWER'; then
+  printf 'ok   ...and says the baseline is newer, which it is\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ...and says the baseline is newer, which it is\n     %s\n' "$OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# 28. NON-GNU `date` IS AN ENVIRONMENT FAULT, NOT AN IMAGE FAULT.
+#     `date -u -d <rfc3339> +%s` is a GNU extension; busybox says "invalid
+#     date" and on BSD/macOS `-d` is the DST flag. Without the probe both
+#     conversions came back empty and the run died blaming the two images for
+#     a missing coreutils. Fails closed either way -- the point of this case is
+#     the DIAGNOSIS, since a message naming the wrong thing sends the reader
+#     to the wrong place on a blocked publish.
+stubdir="$(mktemp -d)"
+cat > "$stubdir/date" <<'STUB'
+#!/bin/sh
+for a in "$@"; do
+  case "$a" in -d) echo "date: invalid date" >&2; exit 1 ;; esac
+done
+exec /bin/date "$@"
+STUB
+chmod +x "$stubdir/date"
+set +e
+OUT="$(PATH="$stubdir:$PATH" bash -c '
+  '"$PRELUDE$FN"'
+  assert_baseline_not_newer "$1" "$2" amd64' -- "$LOCAL" '2026-11-13T03:45:00Z' 2>&1)"
+RC=$?
+set -e
+rm -rf "$stubdir"
+check "a date(1) without GNU -d exits 2 on a legitimate pair" die
+if printf '%s' "$OUT" | grep -qi 'GNU coreutils'; then
+  printf 'ok   ...and blames the toolchain, not either image\n'; PASS=$((PASS + 1))
+else
+  printf 'FAIL ...and blames the toolchain, not either image\n     %s\n' "$OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # NEGATIVE CONTROL. Everything above would also pass against a function that
 # does nothing at all, if the suite were only checking rc=0 cases -- so assert
 # that the blocking cases DO fail without the check. Proves this suite would
