@@ -317,6 +317,69 @@ else
   echo "SKIP  json assertions (jq not available)"
 fi
 
+# ---------------------------------------------------------------------------
+echo
+echo "=== 11. a --replace pin reads the REPLACEMENT row, not the requirement ==="
+# ---------------------------------------------------------------------------
+# `go version -m` prints a replaced module as TWO rows: the requirement
+# (`dep`, no hash) and then the replacement (`=>`) on the NEXT row. The code
+# in the binary is the second row's. An earlier filter looked for `=>` on the
+# SAME row, never matched, and indexed the requirement -- so both real
+# `--replace` pins rendered "(**lowered**)" on every run (issue #182). These
+# rows are copied from the published image's real layout, which mk_graph
+# cannot produce, so the graph is written by hand.
+mk_dockerfile "$WORK/D11" <<'EOF'
+    --replace github.com/smallstep/certificates=github.com/smallstep/certificates@v0.30.3-0.20261105213751-6d5a251fbe01 \
+    --replace go.step.sm/crypto=go.step.sm/crypto@v0.92.1 \
+    --with github.com/go-chi/chi/v5@v5.5.0 \
+EOF
+{ printf '\tpath\tgithub.com/caddyserver/caddy/v2/cmd/caddy\n'
+  printf '\tmod\tcaddy\t(devel)\t\n'
+  printf '\tdep\tgithub.com/go-chi/chi/v5\tv5.5.0\th1:fake=\n'
+  printf '\tdep\tgithub.com/smallstep/certificates\tv0.30.2\n'
+  printf '\t=>\tgithub.com/smallstep/certificates\tv0.30.3-0.20261105213751-6d5a251fbe01\th1:fake=\n'
+  printf '\tdep\tgo.step.sm/crypto\tv0.92.0\n'
+  printf '\t=>\tgo.step.sm/crypto\tv0.92.1\th1:fake=\n'
+} > "$WORK/G11"
+run "$WORK/D11" "$WORK/G11"
+check "replaced certificates reads the replacement, equal to its pin" \
+  '`v0.30.3-0.20261105213751-6d5a251fbe01`' "$(cell 'smallstep/certificates')"
+check "replaced crypto reads the replacement, equal to its pin" \
+  '`v0.92.1`' "$(cell 'go.step.sm/crypto')"
+check "an ordinary row after a replaced one is unaffected" '`v5.5.0`' "$(cell 'chi')"
+check "no row is called lowered" "0" "$(report | grep -c 'lowered')"
+
+# The control: a replacement genuinely BELOW its pin (an image built before
+# the pin moved -- the published :stable vs main after the crypto bump) must
+# still say lowered. Without this, case 11 would pass on a filter that simply
+# dropped every replaced module.
+{ printf '\tpath\tgithub.com/caddyserver/caddy/v2/cmd/caddy\n'
+  printf '\tmod\tcaddy\t(devel)\t\n'
+  printf '\tdep\tgithub.com/go-chi/chi/v5\tv5.5.0\th1:fake=\n'
+  printf '\tdep\tgithub.com/smallstep/certificates\tv0.30.2\n'
+  printf '\t=>\tgithub.com/smallstep/certificates\tv0.30.3-0.20261105213751-6d5a251fbe01\th1:fake=\n'
+  printf '\tdep\tgo.step.sm/crypto\tv0.92.0\n'
+  printf '\t=>\tgo.step.sm/crypto\tv0.92.0\th1:fake=\n'
+} > "$WORK/G11b"
+run "$WORK/D11" "$WORK/G11b"
+check "11b a replacement below its pin is still lowered" \
+  '`v0.92.0` (**lowered**)' "$(cell 'go.step.sm/crypto')"
+check "11b only that one row is lowered" "1" "$(report | grep -c '(\*\*lowered\*\*)')"
+
+# A local-path replacement has no version to name, so the requirement must
+# NOT stand in for it: the cell is not linked rather than a borrowed version.
+{ printf '\tpath\tgithub.com/caddyserver/caddy/v2/cmd/caddy\n'
+  printf '\tmod\tcaddy\t(devel)\t\n'
+  printf '\tdep\tgithub.com/go-chi/chi/v5\tv5.5.0\n'
+  printf '\t=>\t../chi\t\n'
+} > "$WORK/G11c"
+mk_dockerfile "$WORK/D11c" <<'EOF'
+    --with github.com/go-chi/chi/v5@v5.5.0 \
+EOF
+run "$WORK/D11c" "$WORK/G11c"
+check "11c a versionless replacement does not borrow the requirement version" \
+  '**not linked**' "$(cell 'chi')"
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
