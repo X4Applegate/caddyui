@@ -3680,9 +3680,26 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A non-admin's paste is held to the same rules as an Advanced route's
+	// Caddyfile before Caddy sees any of it: Caddy expands {$…} while it
+	// adapts, and an `import` of a name that is not the administrator's
+	// snippet reads a file.
+	tenantPaste := !isAdminUser(s.currentUser(r))
+	if tenantPaste {
+		if why := s.tenantRawRouteTextProblem(src); why != "" {
+			s.render(w, r, "caddyfile_import.html", map[string]any{
+				"User":    s.currentUser(r),
+				"Section": "paste",
+				"Error":   why,
+				"Input":   src,
+			})
+			return
+		}
+	}
+
 	// Auto-load snippet definitions from the mounted Caddyfile so users can use
 	// `import <name>` without pasting the definition (see withAutoLoadedSnippets).
-	fullPaste := s.snippetsFor(src, !isAdminUser(s.currentUser(r)))
+	fullPaste := s.snippetsFor(src, tenantPaste)
 
 	// Adapt the ENTIRE paste as a single unit so cross-block references work:
 	// `import <snippet>` must see `(<snippet>) { ... }` defined in the same paste,
@@ -3719,6 +3736,30 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 	// custom issuers) — these were previously dropped, so `tls { dns <p> ... }`
 	// in a pasted block never reached Caddy and ACME fell back to HTTP-01.
 	autoPolicies := extractAdaptedAutomationPolicies(adapted.Result)
+	if tenantPaste {
+		// The adapted config may hold no more than routes (each held to the
+		// tenant route rules) and subject-only TLS policies for its own
+		// hosts, as for an Advanced route — and a non-admin's paste never
+		// writes TLS automation policies into the live config.
+		subjects := map[string]bool{}
+		var listens []string
+		for _, ar := range adaptedRoutes {
+			for _, h := range hostsFromRoute(ar.Route) {
+				subjects[strings.ToLower(h)] = true
+			}
+			listens = append(listens, ar.Listen...)
+		}
+		if why := s.tenantAdaptedConfigProblem(adapted.Result, subjects, listens); why != "" {
+			s.render(w, r, "caddyfile_import.html", map[string]any{
+				"User":    s.currentUser(r),
+				"Section": "paste",
+				"Error":   "Not allowed for a non-admin account: this Caddyfile " + why + ". Ask an administrator.",
+				"Input":   src,
+			})
+			return
+		}
+		autoPolicies = nil
+	}
 	if len(routes) == 0 {
 		s.render(w, r, "caddyfile_import.html", map[string]any{
 			"User":    s.currentUser(r),
@@ -3876,6 +3917,13 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			if len(classified.Redirect) == 1 {
 				rh := classified.Redirect[0]
 				rh.Enabled = true
+				if msg := s.validateRedirectionForUser(cu, &rh); msg != "" {
+					results = append(results, caddyfileImportResult{
+						Head: label, Snippet: blockText, RouteIdx: idx,
+						Status: "error", Message: msg,
+					})
+					continue
+				}
 				id, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), ownerID, &rh)
 				if err != nil {
 					results = append(results, caddyfileImportResult{
@@ -3906,13 +3954,27 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-		id, err := models.CreateRawRoute(s.DB, s.currentServerID(r), ownerID, &models.RawRoute{
+		newRaw := &models.RawRoute{
 			Label:        label,
 			JSONData:     string(blob),
 			CaddyfileSrc: blockText,
 			Enabled:      true,
 			Listen:       routeListen[idx], // v2.36.1 (issue #64)
-		})
+		}
+		// As for an Advanced route saved from the form (tenant_guard.go,
+		// tenant_host_claims.go).
+		msg := s.validateRawRouteForUser(cu, newRaw)
+		if msg == "" {
+			msg = s.tenantRawRouteClaimProblem(cu, s.currentServerID(r), newRaw)
+		}
+		if msg != "" {
+			results = append(results, caddyfileImportResult{
+				Head: label, Snippet: blockText, RouteIdx: idx,
+				Status: "error", Message: msg,
+			})
+			continue
+		}
+		id, err := models.CreateRawRoute(s.DB, s.currentServerID(r), ownerID, newRaw)
 		if err != nil {
 			results = append(results, caddyfileImportResult{
 				Head: label, Snippet: blockText, RouteIdx: idx,
