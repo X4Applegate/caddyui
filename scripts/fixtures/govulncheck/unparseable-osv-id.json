@@ -1,0 +1,3 @@
+{"config":{"scan_mode":"source","scan_level":"symbol","scanner_version":"v1.9.0","db_last_modified":"2026-11-24T15:56:00Z"}}
+{"osv":{"id":{"not":"a string"},"summary":"a non-string advisory id breaks from_entries"}}
+{"finding":{"osv":"GO-9999-0002","fixed_version":"1.0.0","trace":[{"function":"Vuln","module":"example.com/m"}]}}

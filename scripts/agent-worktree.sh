@@ -38,6 +38,28 @@
 # worktree builds and tests with no extra wiring. Verified, not assumed — see T-0681.
 #
 # RELEASES AND TAGS STAY IN THE MAIN CHECKOUT, as they do for mothership.
+#
+# THE RELEASE-BRANCH NAME IS `release/vX.Y.Z`  (T-0754, decided 2026-11-17)
+# -------------------------------------------------------------------------
+# The branch carrying a version's final rebase-and-ship commit -- the one tagged `vX.Y.Z` and
+# merged to `main` -- is named `release/vX.Y.Z`, one name per version. First session to push it
+# owns the release; the second gets a non-fast-forward rejection instead of a silently parallel
+# sibling branch. That rejection is the whole point: in T-0678 two sessions rebased the same
+# v2.68.11 minutes apart (`3e5b69f` shipped, `7a0081e` did not) only because each invented its own
+# branch name. Per-agent worktrees do not fix that -- two worktrees rebase the same release quite
+# happily.
+#
+# Scope: this names the RELEASE branch only. The content branches that feed a release keep their
+# existing prefixes (`ci/...`, `docs/...`, `fix/...`) -- a version is assembled from several of
+# them, so making each claim the version's name would collide them against each other and turn the
+# signal into noise. Do a release's work in your own `wt/<agent>` worktree, create
+# `release/vX.Y.Z` when you are ready to publish, and tag in the main checkout.
+#
+# Convention, not machinery: there is no hook (`--no-verify` defeats one, and what is being
+# prevented is wasted effort, not a bad publish). To check before starting the work, ask the
+# remote -- a local branch creation proves nothing:
+#
+#   git ls-remote origin 'refs/heads/release/v*'
 
 set -euo pipefail
 
@@ -72,7 +94,11 @@ cmd_add() {
   mkdir -p "$WT_ROOT"
 
   if git -C "$MAIN_REPO" worktree list --porcelain | grep -qx "worktree $dir"; then
-    printf 'existing worktree: %s\n' "$dir"
+    # To STDERR, like every other progress line here. On stdout it broke the documented
+    # composition `cd "$(agent-worktree.sh add <agent>)"` on the REUSE path -- i.e. on every run
+    # after the first -- because the captured value became two lines ("existing worktree: /p\n/p")
+    # and `cd` got a non-existent directory. Measured 2026-11-17 (T-0824).
+    printf 'existing worktree: %s\n' "$dir" >&2
   elif git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$branch"; then
     # Branch exists from an earlier run but the tree is gone: re-attach rather than re-create,
     # so any unpushed commits on that branch survive.
@@ -87,6 +113,24 @@ cmd_add() {
 
   printf '%s\n' "$dir"
   printf 'branch %s (from origin/main %s)\n' "$branch" "$base" >&2
+
+  # T-0824. If this tree is already doing release work, name any OTHER LIVE session doing release
+  # work on the same surface. T-0678 was two sessions rebasing one release minutes apart, seen
+  # only afterwards; this is the cheap local signal for that, and it runs here because every
+  # session calls this script at the top of every run.
+  #
+  # Advisory and failure-tolerant on purpose: `|| true` so a missing mothership checkout, an
+  # unreachable Gateway or any bug in the checker can never stop a session from getting its tree.
+  # On a fresh tree it prints the "nothing to compare" line and costs one `git diff`.
+  # Only the warning is shown here, not the "nothing to compare" chatter: this runs on EVERY run
+  # of every session, and a line that appears every time is a line nobody reads. Run the checker
+  # once, keep its stderr, and print it only if it actually found a peer.
+  local peers="${MOTHERSHIP_MAIN_REPO:-/mnt/volumes/8TB/mothership}/scripts/release-peers.sh"
+  if [ -x "$peers" ]; then
+    local found=""
+    found="$("$peers" --repo "$dir" 2>&1 >/dev/null || true)"
+    case "$found" in *'another LIVE session'*) printf '%s\n' "$found" >&2 ;; esac
+  fi
 }
 
 cmd_list() {
@@ -125,6 +169,11 @@ usage: agent-worktree.sh <add|list|remove> [agent]
                   unpushed.
 
 Releases and tags stay in the main checkout (/mnt/volumes/8TB/caddyui).
+
+Release branches are named release/vX.Y.Z -- one name per version, so a second session that
+reaches for the same release gets a push rejection instead of a parallel sibling branch.
+Content branches feeding a release keep ci/... docs/... fix/... as before. Check with:
+  git ls-remote origin 'refs/heads/release/v*'
 USAGE
   exit 2
 }

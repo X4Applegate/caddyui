@@ -2033,6 +2033,14 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Issue #184 round 8: a non-admin's oversized Advanced config is a form
+	// error that keeps what was typed, before any adapt.
+	if errMsg := s.advancedConfigSizeRefusal(r); errMsg != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	s.applyDNSFormSelection(p)
 	if errMsg := validateSSLFlags(p.SSLEnabled, p.SSLForced, p.CertificateID); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
@@ -2098,6 +2106,10 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
 	deployTo := s.effectiveDeployTargets(s.currentServerID(r), parseDeployTo(r))
 	cu := s.currentUser(r)
+	if msg := s.pathMatcherError(r, p); msg != "" { // issue #184 review
+		s.renderProxyHostFormError(w, r, p, msg)
+		return
+	}
 	// SSRF guard (GHSA-r4wm-rgc5-q834): block non-admins from pointing the
 	// upstream (host, extra upstreams, or Host override) at loopback/link-local/
 	// internal management addresses such as the Caddy admin API.
@@ -2222,6 +2234,14 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID = id
+	// Issue #184 round 8: a non-admin's oversized Advanced config is a form
+	// error that keeps what was typed, before any adapt.
+	if errMsg := s.advancedConfigSizeRefusal(r); errMsg != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		s.renderProxyHostFormError(w, r, p, errMsg)
+		return
+	}
 	s.applyDNSFormSelection(p)
 	if errMsg := validateSSLFlags(p.SSLEnabled, p.SSLForced, p.CertificateID); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
@@ -2279,6 +2299,10 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	// Parse extra upstreams (Feature D).
 	p.ExtraUpstreams = marshalExtraUpstreams(r)
+	if msg := s.pathMatcherError(r, p); msg != "" { // issue #184 review
+		s.renderProxyHostFormError(w, r, p, msg)
+		return
+	}
 	// SSRF guard (GHSA-r4wm-rgc5-q834): re-validate on edit so a non-admin can't
 	// switch an existing host's upstream to an internal management address.
 	if msg := s.validateProxyUpstreamsForUser(cu, p); msg != "" {
@@ -2460,6 +2484,13 @@ func (s *Server) cloneProxyHost(w http.ResponseWriter, r *http.Request) {
 	var ownerID int64
 	if cu != nil {
 		ownerID = cu.ID
+	}
+	// Issue #184 review: a host saved before the Path matcher check existed
+	// may hold a matcher the check refuses; show the copy in the new-host
+	// form with the translated error so it can be fixed, not a raw 500.
+	if msg := s.pathMatcherError(r, &clone); msg != "" {
+		s.renderProxyHostFormError(w, r, &clone, msg)
+		return
 	}
 	newID, err := models.CreateProxyHost(s.DB, src.ServerID, ownerID, &clone)
 	if err != nil {

@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
@@ -73,9 +76,22 @@ func (s *Server) parseRawRouteForm(r *http.Request) (*models.RawRoute, string) {
 	// through Caddy and let the resulting JSON replace json_data. This is what
 	// makes the Caddyfile block editable after import.
 	if cfSrc != "" {
-		jsonData, adaptedListen, err := s.adaptRawRouteCaddyfile(s.caddyForRequest(r), cfSrc)
+		// Issue #184 round 8: a non-admin's text is checked before Caddy
+		// sees it, size first.
+		if !isAdminUser(s.currentUser(r)) {
+			if why := s.tenantRawRouteTextProblem(cfSrc); why != "" {
+				return nil, why
+			}
+		}
+		jsonData, adaptedListen, result, err := s.adaptRawRouteCaddyfileResult(s.caddyForRequest(r), cfSrc)
 		if err != nil {
 			return nil, "Caddyfile rejected by Caddy: " + err.Error()
+		}
+		// Issue #184 review: a non-admin's text may adapt to routes only.
+		if !isAdminUser(s.currentUser(r)) {
+			if why := s.tenantRawRouteAdaptedProblem(jsonData, adaptedListen, result); why != "" {
+				return nil, why
+			}
 		}
 		body = jsonData
 		if adaptedListen != "" {
@@ -174,10 +190,16 @@ func httpsRawRoutes(raws []models.RawRoute) []models.RawRoute {
 // duplicate-definition error. If CADDYFILE_PATH is unset or unreadable, or
 // holds no snippets, src is returned unchanged.
 //
+// This is for an administrator's text. A non-admin's goes through
+// withTenantSnippets, which never skips a snippet (issue #184 round 10).
+// Both files are read the way Caddy's lexer reads them, so a quoted,
+// backtick or heredoc value that looks like `(name) {` defines nothing,
+// for Caddy or here.
+//
 // Every path that hands user-written Caddyfile text to /adapt must go through
-// this: Advanced routes, the Caddyfile paste importer, and a proxy host's
-// Advanced config (issue #119 — that last one was missed and rejected any
-// `import <snippet>` with "File to import not found").
+// this or withTenantSnippets: Advanced routes, the Caddyfile paste importer,
+// and a proxy host's Advanced config (issue #119 — that last one was missed
+// and rejected any `import <snippet>` with "File to import not found").
 func (s *Server) withAutoLoadedSnippets(src string) string {
 	if s.CaddyfilePath == "" {
 		return src
@@ -187,19 +209,75 @@ func (s *Server) withAutoLoadedSnippets(src string) string {
 		return src
 	}
 	already := map[string]bool{}
-	for _, snip := range caddy.ExtractSnippets(src) {
-		already[caddy.HeadOfBlock(snip)] = true
+	for _, snip := range caddy.CaddyfileSnippets(src) {
+		already[snip.Name] = true
 	}
 	var loaded []string
-	for _, snip := range caddy.ExtractSnippets(string(b)) {
-		if !already[caddy.HeadOfBlock(snip)] {
-			loaded = append(loaded, snip)
+	for _, snip := range caddy.CaddyfileSnippets(string(b)) {
+		if !already[snip.Name] {
+			loaded = append(loaded, snip.Text)
 		}
 	}
 	if len(loaded) == 0 {
 		return src
 	}
-	return strings.Join(loaded, "\n\n") + "\n\n" + src
+	return snippetPrefix(loaded) + src
+}
+
+// withTenantSnippets puts the administrator's snippets (adminSnippetSet)
+// ahead of a non-admin's text, all of them, always (issue #184 round 10).
+// A non-admin may not define snippets (tenantTextRules), so nothing in the
+// text can stand in for one: were a definition skipped because the text
+// seemed to hold it, an `import` of that name would read a file of that
+// name instead. tenantAdaptTextViolation recognises exactly this prefix.
+func (s *Server) withTenantSnippets(src string) string {
+	return s.autoLoadedSnippetPrefix() + src
+}
+
+// snippetsFor is withTenantSnippets for a non-admin's text and
+// withAutoLoadedSnippets for an administrator's.
+func (s *Server) snippetsFor(src string, tenant bool) string {
+	if tenant {
+		return s.withTenantSnippets(src)
+	}
+	return s.withAutoLoadedSnippets(src)
+}
+
+// tenantClient reports whether caddyCl adapts on a non-admin's behalf:
+// such a client carries the tenant text check (caddyForRequest,
+// tenantAdaptClient).
+func tenantClient(caddyCl *caddy.Client) bool {
+	return caddyCl != nil && caddyCl.AdaptTextCheck != nil
+}
+
+// tenantAdaptClient returns a copy of cl that holds every Caddyfile it
+// adapts to the tenant text rules first (tenantAdaptTextViolation), as
+// caddyForRequest does for a non-admin's request. The live sync uses it
+// for rows a non-admin owns (issue #184 round 10).
+// maxTenantAdaptBytes is the largest adapted config CaddyUI reads from
+// Caddy for a non-admin's text, and maxTenantRawJSONBytes the largest
+// json_data it stores for a non-admin's Advanced route (issue #184 round
+// 13): the tenant text rules keep real output far below both, and an
+// answer past them is refused rather than stored and deployed on every
+// sync.
+const (
+	maxTenantAdaptBytes   = 4 << 20
+	maxTenantRawJSONBytes = 2 << 20
+)
+
+func (s *Server) tenantAdaptClient(cl *caddy.Client) *caddy.Client {
+	if cl == nil {
+		return nil
+	}
+	cp := *cl
+	cp.MaxAdaptBytes = maxTenantAdaptBytes
+	cp.AdaptTextCheck = func(text string) string {
+		if why := s.tenantAdaptTextViolation(text); why != "" {
+			return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+		}
+		return ""
+	}
+	return &cp
 }
 
 // errClientAuthInRawRoute marks the one rejection adaptRawRouteCaddyfile makes
@@ -219,11 +297,29 @@ var errClientAuthInRawRoute = errors.New("this block configures client certifica
 // all serve on the union of those ports — split them into separate Advanced
 // routes to keep them apart.
 func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (string, string, error) {
-	adapted, err := caddyCl.Adapt(s.withAutoLoadedSnippets(src))
-	if err != nil {
-		return "", "", err
+	jsonData, listen, _, err := s.adaptRawRouteCaddyfileResult(caddyCl, src)
+	return jsonData, listen, err
+}
+
+// adaptRawRouteCaddyfileResult is adaptRawRouteCaddyfile that also returns
+// the whole config Caddy adapted the text to, for the tenant checks of what
+// the text produces beyond its routes (tenantAdaptedConfigProblem).
+func (s *Server) adaptRawRouteCaddyfileResult(caddyCl *caddy.Client, src string) (string, string, map[string]any, error) {
+	if caddyCl == nil {
+		return "", "", nil, fmt.Errorf("the Caddy adapter is unavailable")
 	}
-	adaptedRoutes := extractAdaptedServerRoutes(adapted.Result)
+	adapted, err := caddyCl.Adapt(s.snippetsFor(src, tenantClient(caddyCl)))
+	if err != nil {
+		return "", "", nil, err
+	}
+	jsonData, listen, err := rawRouteFromAdapted(adapted.Result)
+	return jsonData, listen, adapted.Result, err
+}
+
+// rawRouteFromAdapted turns an adapted config into the json_data and listen
+// set an Advanced route stores; see adaptRawRouteCaddyfile.
+func rawRouteFromAdapted(result map[string]any) (string, string, error) {
+	adaptedRoutes := extractAdaptedServerRoutes(result)
 	if len(adaptedRoutes) == 0 {
 		return "", "", fmt.Errorf("the Caddyfile adapted successfully but produced no HTTP routes — include at least one site block")
 	}
@@ -231,7 +327,7 @@ func (s *Server) adaptRawRouteCaddyfile(caddyCl *caddy.Client, src string) (stri
 	// `tls { client_auth ... }` block here would be dropped on the floor and
 	// the site would serve happily without ever asking for a certificate.
 	// Refuse the save and name the setting that works instead.
-	if snis := adaptedClientAuthSNIs(adapted.Result); len(snis) > 0 {
+	if snis := adaptedClientAuthSNIs(result); len(snis) > 0 {
 		return "", "", fmt.Errorf("%w (affects %s). Caddy keeps client_auth in the server's TLS connection policies, not in the route, and an Advanced route stores routes only — so it would be discarded here and the site would accept any visitor. Configure it on the proxy host instead — Proxy Hosts → edit → Security → Client certificate authentication — and keep the rest of this block for the routing", errClientAuthInRawRoute, strings.Join(snis, ", "))
 	}
 	var addrs []string
@@ -594,6 +690,11 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Issue #184 round 12: text adapted by this save, or JSON other than
+	// what was stored, leaves the upgrade migration nothing to do.
+	if strings.TrimSpace(r.FormValue("caddyfile_src")) != "" || old == nil || !jsonEqual(old.JSONData, rr.JSONData) {
+		s.rawRouteMigrationSaved(rr.ID)
+	}
 	// v2.7.3: admin-only owner reassignment. Kept out of UpdateRawRoute so the
 	// user-role edit path can never touch ownership.
 	if isAdmin {
@@ -945,7 +1046,7 @@ func (s *Server) trySyncCaddy(serverID int64, forceTLS bool) {
 // guard must still protect user routes, but metrics management should work on
 // a fresh server without forcing the administrator to create a dummy host.
 func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheusMetricsConfig) error {
-	current, currentJSON, err := s.Caddy.FetchConfig()
+	current, currentJSON, err := s.caddyClient().FetchConfig()
 	if err != nil {
 		return fmt.Errorf("fetch current config for metrics: %w", err)
 	}
@@ -954,7 +1055,7 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 		return fmt.Errorf("clone config for metrics: %w", err)
 	}
 	applyPrometheusMetrics(proposed, metricsCfg, serverID)
-	if err := s.Caddy.Validate(proposed); err != nil {
+	if err := s.caddyClient().Validate(proposed); err != nil {
 		return fmt.Errorf("caddy rejected Prometheus metrics config: %w", err)
 	}
 	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
@@ -978,11 +1079,11 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies []models.Layer4Proxy) error {
 	// v2.58.0 (issue #122): the raw Caddyfile block plus the managed Layer4
 	// proxy rows.
-	layer4App, err := layer4AppFor(s.Caddy, srv, proxies)
+	layer4App, err := layer4AppFor(s.caddyClient(), srv, proxies)
 	if err != nil {
 		return fmt.Errorf("layer4 Caddyfile: %w", err)
 	}
-	current, currentJSON, err := s.Caddy.FetchConfig()
+	current, currentJSON, err := s.caddyClient().FetchConfig()
 	if err != nil {
 		return fmt.Errorf("fetch current config for layer4: %w", err)
 	}
@@ -992,7 +1093,7 @@ func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies
 	}
 	applyLayer4App(proposed, layer4App)
 	s.applyLayer4ListenerWrappers(proposed, serverID, proxies) // v2.61.0 (issue #126)
-	if err := s.Caddy.Validate(proposed); err != nil {
+	if err := s.caddyClient().Validate(proposed); err != nil {
 		return fmt.Errorf("caddy rejected layer4 config: %w", err)
 	}
 	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
@@ -1034,6 +1135,11 @@ func (s *Server) syncCaddyOpts(serverID int64, forceTLS, allowEmpty bool) error 
 	// basic-auth hashes — to server A (91 of 120 syncs in a stress run). Syncs
 	// are therefore serialized. Nothing reachable from a sync calls syncCaddy
 	// again, so this cannot deadlock.
+	// Issue #184 round 11: rows stored before the upgrade are adapted
+	// again, with this server's Caddy, before they can be deployed. Round
+	// 12: that happens before the sync lock is taken — adapting a row may
+	// take seconds while Caddy is slow, and other syncs need not wait.
+	s.migrateTenantRawRoutesFor(serverID)
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 	err := s.syncCaddyInner(serverID, forceTLS, allowEmpty)
@@ -1073,9 +1179,13 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// Build a per-server caddy client and swap it in for the duration of this call.
 	// syncCaddy is called from HTTP handlers (single goroutine per request) so this
 	// temporary swap is safe as long as we don't sync the same server concurrently.
-	origClient := s.Caddy
-	s.Caddy = newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
-	defer func() { s.Caddy = origClient }()
+	// Issue #184 round 13: the swap goes through setCaddyClient, and every
+	// read of s.Caddy through caddyClient, so a request reading it while a
+	// sync runs (the tenant guard's admin-host set, a save's adapt) is not
+	// a data race.
+	origClient := s.caddyClient()
+	s.setCaddyClient(newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword))
+	defer s.setCaddyClient(origClient)
 	metricsCfg := loadPrometheusMetricsConfig(s.DB)
 
 	// Use admin view for sync — all routes must be pushed to Caddy regardless of owner.
@@ -1114,7 +1224,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 		// v2.58.0 (issue #122): Layer4 proxy rows count too, and so does having
 		// had managed layer4 servers before — removing the LAST proxy on an
 		// otherwise empty server must still clear them from Caddy.
-		if strings.TrimSpace(srv.Layer4Caddyfile) != "" || len(layer4Proxies) > 0 || hasManagedLayer4Live(s.Caddy) {
+		if strings.TrimSpace(srv.Layer4Caddyfile) != "" || len(layer4Proxies) > 0 || hasManagedLayer4Live(s.caddyClient()) {
 			return s.syncLayer4Only(serverID, srv, layer4Proxies)
 		}
 		log.Printf("caddy sync skipped: no entries in DB for server %d (refusing to push empty routes)", serverID)
@@ -1188,12 +1298,12 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// this server's own admin API before fetching/mutating its config, so a
 	// typo'd block (or a build missing caddy-l4) fails the sync up front with
 	// a clear error instead of after other subtrees have already been written.
-	layer4App, err := layer4AppFor(s.Caddy, srv, layer4Proxies)
+	layer4App, err := layer4AppFor(s.caddyClient(), srv, layer4Proxies)
 	if err != nil {
 		return fmt.Errorf("layer4 Caddyfile for %s: %w", srv.Name, err)
 	}
 
-	current, currentJSON, err := s.Caddy.FetchConfig()
+	current, currentJSON, err := s.caddyClient().FetchConfig()
 	if err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_fetch_failed", "", err.Error(), false)
 		return fmt.Errorf("fetch current config: %w", err)
@@ -1227,7 +1337,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	applyErrorPages(proposed)
 
 	// Validate before touching anything. Caddy runs full provisioning.
-	if err := s.Caddy.Validate(proposed); err != nil {
+	if err := s.caddyClient().Validate(proposed); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_validation_failed", "", err.Error(), false)
 		return fmt.Errorf("caddy rejected proposed config: %s", friendlyCaddyError(err.Error()))
 	}
@@ -1341,7 +1451,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// same policies were included in validation above, so a missing Caddy DNS
 	// module is reported before any subtrees are modified.
 	if len(tlsAutomationPolicies) > 0 {
-		if err := pushAutomationPoliciesVia(s.Caddy, tlsAutomationPolicies); err != nil {
+		if err := pushAutomationPoliciesVia(s.caddyClient(), tlsAutomationPolicies); err != nil {
 			_ = models.LogActivity(s.DB, serverID, "system", "sync_apply_automation_failed", "", err.Error(), false)
 			return fmt.Errorf("apply TLS automation policies: %w", err)
 		}
@@ -1354,7 +1464,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	log.Printf("caddy synced server %d (%s): %s", serverID, srv.Name, detail)
 	// v2.38.0: post-apply expectations. `current` is the live config fetched
 	// before the apply; on failure it is loaded straight back.
-	if err := s.verifyAppliedConfig(serverID, srv.Name, s.Caddy, current); err != nil {
+	if err := s.verifyAppliedConfig(serverID, srv.Name, s.caddyClient(), current); err != nil {
 		return err
 	}
 	return nil
@@ -1406,13 +1516,25 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if strings.TrimSpace(p.AdvancedConfig) == "" {
 		return ""
 	}
+	// Issue #184 round 8: a non-admin's text (the client carries
+	// AdaptTextCheck) is held to the tenant text rules before anything else
+	// is done with it.
+	if caddyCl != nil && caddyCl.AdaptTextCheck != nil {
+		if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
+			return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
+		}
+	}
 	// v2.42.2: judge the repaired config, exactly what the adapter sees.
 	if errMsg := validateProxyAdvancedDirectives(normalizeProxyAdvancedConfig(p.AdvancedConfig)); errMsg != "" {
 		return errMsg
 	}
-	handlers, _, err := s.adaptProxyAdvancedWithClient(caddyCl, *p)
+	result, err := s.adaptProxyAdvancedResult(caddyCl, *p)
 	if err != nil {
 		return friendlyAdvancedRejection(err) // v2.42.2
+	}
+	handlers, _, err := proxyAdvancedHandlers(result)
+	if err != nil {
+		return friendlyAdvancedRejection(err)
 	}
 	// v2.57.1: for a non-admin's request (the client carries AdaptTextCheck),
 	// inspect what the text adapted to as well — a handler nested inside a block
@@ -1422,6 +1544,12 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if caddyCl != nil && caddyCl.AdaptTextCheck != nil {
 		if msg := s.validateTenantRoute(map[string]any{"handle": handlers}); msg != "" {
 			return msg
+		}
+		// Issue #184 review: and nothing beyond those handlers — the live
+		// route drops site-level directives (log, bind, tls, ...), but the
+		// Caddyfile export would write them.
+		if why := s.proxyAdvancedAdaptedProblem(result); why != "" {
+			return "Not allowed for a non-admin account: this Advanced config " + why + ". Ask an administrator."
 		}
 	}
 	return ""
@@ -1449,7 +1577,21 @@ func validateProxyAdvancedDirectives(src string) string {
 // in src whose name matches any entry in banned, or "" if none. Used to reject
 // terminal handlers in per-host AdvancedConfig before they reach Caddy's
 // adapter, which would happily accept them and produce a broken config.
+// Issue #184 round 10: lines are read on Caddy's tokens, so a brace or a
+// line inside a quoted, backtick or heredoc value is never taken for
+// structure. Text Caddy's lexer refuses falls back to the plain line scan
+// (Caddy then refuses it anyway).
 func scanTopLevelDirective(src string, banned []string) string {
+	if heads, ok := caddy.CaddyfileLineHeads(src); ok {
+		for _, h := range heads {
+			for _, b := range banned {
+				if h == b {
+					return b
+				}
+			}
+		}
+		return ""
+	}
 	depth := 0
 	for _, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -1508,26 +1650,354 @@ func (s *Server) renderProxyHostFormError(w http.ResponseWriter, r *http.Request
 // directive order inside the site block, so we get a handle[] list in the
 // correct order — we return that list untouched for the caller to splice in.
 func (s *Server) adaptProxyAdvanced(p models.ProxyHost) ([]any, map[string]any, error) {
-	return s.adaptProxyAdvancedWithClient(s.Caddy, p)
+	return s.adaptProxyAdvancedWithClient(s.caddyClient(), p)
 }
 
 // adaptProxyAdvancedWithClient adapts the Advanced config through Caddy and
 // returns the handlers that run before the host's reverse_proxy plus, since
 // v2.40.0, the fields of a `reverse_proxy { … }` block to merge into it.
 func (s *Server) adaptProxyAdvancedWithClient(caddyCl *caddy.Client, p models.ProxyHost) ([]any, map[string]any, error) {
-	// v2.42.2: repairs applied here too, so configs saved before the
-	// repairs existed adapt on the next sync without being re-saved.
-	src := fmt.Sprintf("localhost {\n%s\n}\n", normalizeProxyAdvancedConfig(p.AdvancedConfig))
-	// Issue #119: `import <snippet>` must see the snippets from CADDYFILE_PATH,
-	// exactly as it does in Advanced routes.
-	adapted, err := caddyCl.Adapt(s.withAutoLoadedSnippets(src))
+	result, err := s.adaptProxyAdvancedResult(caddyCl, p)
 	if err != nil {
 		return nil, nil, err
 	}
-	routes := extractAdaptedRoutes(adapted.Result)
+	return proxyAdvancedHandlers(result)
+}
+
+// proxyAdvancedSite is the synthetic site an Advanced config is adapted in.
+const proxyAdvancedSite = "localhost"
+
+// adaptProxyAdvancedResult returns the whole config Caddy adapts a proxy
+// host's Advanced config to, wrapped in the synthetic site.
+func (s *Server) adaptProxyAdvancedResult(caddyCl *caddy.Client, p models.ProxyHost) (map[string]any, error) {
+	if caddyCl == nil {
+		return nil, fmt.Errorf("the Caddy adapter is unavailable")
+	}
+	// v2.42.2: repairs applied here too, so configs saved before the
+	// repairs existed adapt on the next sync without being re-saved.
+	src := fmt.Sprintf("%s {\n%s\n}\n", proxyAdvancedSite, normalizeProxyAdvancedConfig(p.AdvancedConfig))
+	// Issue #119: `import <snippet>` must see the snippets from CADDYFILE_PATH,
+	// exactly as it does in Advanced routes.
+	adapted, err := caddyCl.Adapt(s.snippetsFor(src, tenantClient(caddyCl) || s.isTenantOwner(p.OwnerID)))
+	if err != nil {
+		return nil, err
+	}
+	return adapted.Result, nil
+}
+
+// proxyAdvancedHandlers picks the handlers of the synthetic site out of an
+// adapted Advanced config; see adaptProxyAdvancedWithClient.
+func proxyAdvancedHandlers(result map[string]any) ([]any, map[string]any, error) {
+	routes := extractAdaptedRoutes(result)
 	if len(routes) == 0 {
 		return nil, nil, nil
 	}
 	handle, _ := routes[0]["handle"].([]any)
 	return extractReverseProxyOverrides(handle)
+}
+
+// caddyfileExportOptions is the server context the Caddyfile export needs
+// (issue #184 review): the snippets from CADDYFILE_PATH that admin-owned
+// content may import — written into the export only for an administrator
+// (forAdmin), and then only those the export imports — which owners are
+// tenants, and a re-check through Caddy of exactly the text the export
+// writes for a tenant's raw route or proxy host with an Advanced config,
+// because rows written by older versions may hold text that never matched
+// what the live config carries.
+func (s *Server) caddyfileExportOptions(serverID int64, forAdmin bool) caddy.ExportOptions {
+	opts := caddy.ExportOptions{TenantOwned: s.isTenantOwner, IncludeSnippets: forAdmin}
+	if s.CaddyfilePath != "" {
+		if b, err := os.ReadFile(s.CaddyfilePath); err == nil {
+			opts.Snippets = caddy.ExtractSnippets(string(b))
+		}
+	}
+	// The exporter consults the vetoes only for tenant-owned content. They
+	// share one client, which stops calling Caddy once a call to it has
+	// failed: every later check then fails closed at once, instead of each
+	// waiting out the client timeout against an adapter that is down.
+	adaptClient := s.exportAdaptClient(serverID)
+	opts.RawRouteVeto = func(rr models.RawRoute, text string) string {
+		return s.rawRouteTextVeto(adaptClient(), rr, text)
+	}
+	opts.ProxyHostVeto = func(p models.ProxyHost, site string) string {
+		return s.proxyAdvancedExportVeto(adaptClient(), p, site)
+	}
+	opts.RedirectVeto = s.redirectExportVeto
+	return opts
+}
+
+// redirectExportVeto returns why a tenant's redirection host, written as
+// text, must not be exported, or "": the block must pass the tenant text
+// rules and the route the live sync builds from the row must pass the
+// tenant route rules (issue #184 round 7 — a row stored before those rules,
+// or by a path that skipped them, could otherwise export a destination the
+// live sync neutralises). The reason is generic: it is written into the
+// export, and the row's values are not.
+func (s *Server) redirectExportVeto(rh models.RedirectionHost, text string) string {
+	if s.tenantBlockTextViolation(text) != "" || s.tenantRouteViolation(caddy.BuildRedirectRoute(rh)) != "" {
+		return "its settings are not allowed for a non-admin owner"
+	}
+	return ""
+}
+
+// exportCaddyClient is the client the export re-checks text with: the
+// server's own, or s.Caddy when there is no database to look it up in.
+func (s *Server) exportCaddyClient(serverID int64) *caddy.Client {
+	if s.DB == nil {
+		return s.caddyClient()
+	}
+	return s.caddyForServer(serverID)
+}
+
+// exportAdaptClient returns a function that yields one Caddy client for a
+// whole export (created on first use), reading at most maxTenantAdaptBytes
+// of an answer (every text it adapts is a non-admin's), whose transport refuses every
+// request after one has failed to get a response (errExportAdapterDown).
+// A refused request is an adapt error, which every veto treats as "could
+// not be re-checked", so the export still fails closed.
+func (s *Server) exportAdaptClient(serverID int64) func() *caddy.Client {
+	var once sync.Once
+	var cl *caddy.Client
+	return func() *caddy.Client {
+		once.Do(func() {
+			base := s.exportCaddyClient(serverID)
+			if base == nil {
+				return
+			}
+			cp := *base
+			hc := http.Client{}
+			if base.HTTP != nil {
+				hc = *base.HTTP
+			}
+			inner := hc.Transport
+			if inner == nil {
+				inner = http.DefaultTransport
+			}
+			hc.Transport = &stickyFailTransport{inner: inner}
+			cp.HTTP = &hc
+			// Issue #184 round 14: the vetoes adapt only non-admins'
+			// text, so the export reads no more of an answer than any
+			// other path does for one (tenantAdaptClient).
+			cp.MaxAdaptBytes = maxTenantAdaptBytes
+			cl = &cp
+		})
+		return cl
+	}
+}
+
+// errExportAdapterDown is stickyFailTransport's error once it has tripped.
+var errExportAdapterDown = errors.New("the Caddy adapter did not answer earlier in this export")
+
+// stickyFailTransport passes requests to inner until one fails to get a
+// response (a dial error, a timeout), and refuses every request after that.
+type stickyFailTransport struct {
+	inner http.RoundTripper
+	down  atomic.Bool
+}
+
+func (t *stickyFailTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if t.down.Load() {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, errExportAdapterDown
+	}
+	resp, err := t.inner.RoundTrip(r)
+	if err != nil {
+		t.down.Store(true)
+	}
+	return resp, err
+}
+
+// adaptExportText adapts text exactly as the export writes it — no
+// snippets are added: tenant text may not import any, so an `import` fails
+// here and the text is left out.
+func adaptExportText(caddyCl *caddy.Client, text string) (map[string]any, error) {
+	if caddyCl == nil {
+		return nil, fmt.Errorf("the Caddy adapter is unavailable")
+	}
+	adapted, err := caddyCl.Adapt(text)
+	if err != nil {
+		return nil, err
+	}
+	return adapted.Result, nil
+}
+
+// rawRouteTextVeto returns why a tenant's raw-route Caddyfile, as the
+// export would write it (text), must not be exported: it fails the tenant
+// text rules, does not adapt (or Caddy cannot be reached to check), adapts
+// to anything beyond what its stored route carries
+// (tenantAdaptedConfigProblem), or serves hosts its stored routes do not.
+// "" means the text may be written.
+func (s *Server) rawRouteTextVeto(caddyCl *caddy.Client, rr models.RawRoute, text string) string {
+	if s.tenantOwnTextViolation(rr.CaddyfileSrc) != "" || s.tenantBlockTextViolation(text) != "" {
+		return "its Caddyfile is not allowed for a non-admin owner"
+	}
+	result, err := adaptExportText(caddyCl, text)
+	if err != nil {
+		return "its Caddyfile could not be re-checked with Caddy"
+	}
+	jsonData, _, err := rawRouteFromAdapted(result)
+	if err != nil {
+		return "its Caddyfile could not be re-checked with Caddy"
+	}
+	if why := s.tenantAdaptedConfigProblem(result, rawRouteHostSet(rr), rr.ListenAddrs()); why != "" {
+		return "its Caddyfile " + why
+	}
+	stored := rawRouteHostSet(rr)
+	for _, h := range rawRouteHosts(models.RawRoute{JSONData: jsonData}) {
+		if !stored[strings.ToLower(h)] {
+			return "its Caddyfile serves hosts its stored routes do not"
+		}
+	}
+	return ""
+}
+
+// proxyAdvancedExportVeto is rawRouteTextVeto for a tenant's proxy host,
+// with or without an Advanced config: the block (site) must pass the
+// tenant text rules and the host's generated route the tenant route rules,
+// and an Advanced config is then re-checked through Caddy. site is the
+// whole block the export would write
+// for the host — the generated directives with the Advanced text placed
+// among them — and that block is what Caddy adapts here, so the verdict is
+// about the exact bytes in the file, whatever the exporter did to place
+// the text. It may adapt to nothing a tenant's live route could not carry
+// (tenantAdaptedConfigProblem, whose route check is tenantRouteViolation),
+// and serve only the host's own domains. Any objection, adapt error or
+// unreachable Caddy means the host fails closed.
+func (s *Server) proxyAdvancedExportVeto(caddyCl *caddy.Client, p models.ProxyHost, site string) string {
+	if s.tenantOwnTextViolation(p.AdvancedConfig) != "" || s.tenantBlockTextViolation(site) != "" {
+		return "it is not allowed for a non-admin owner"
+	}
+	// Issue #184 round 7: the host's own fields, judged the way the live
+	// sync judges them (sanitizeTenantRoute) — a stored row may hold a
+	// header with an {env.…} placeholder or an upstream on the admin API,
+	// which the live route neutralises or skips. The export must be no
+	// weaker, so such a host fails closed. The reason stays generic: it is
+	// written into the export, and the route carries header values.
+	if s.tenantRouteViolation(caddy.BuildProxyRoute(p, nil)) != "" {
+		return "its settings are not allowed for a non-admin owner"
+	}
+	if strings.TrimSpace(p.AdvancedConfig) == "" {
+		return ""
+	}
+	result, err := adaptExportText(caddyCl, site)
+	if err != nil {
+		return "the exported block could not be re-checked with Caddy"
+	}
+	why := s.proxyHostSiteAdaptedProblem(result, p)
+	if why != "" && (p.ClientAuthEnabled() || p.CertificateID > 0) {
+		// The host's own client-certificate or certificate-file settings
+		// put TLS configuration in the block, which the tenant allowlist
+		// refuses as such. Set aside exactly what the same host without
+		// an Advanced config adapts to, and judge the rest.
+		base := p
+		base.AdvancedConfig = ""
+		baseline, err := adaptExportText(caddyCl, caddy.RenderProxyHostCaddyfileWithCertificate(base, s.certificateForCaddyfile(p.CertificateID)))
+		if err != nil {
+			return "the exported block could not be re-checked with Caddy"
+		}
+		removeBaselineTLS(result, baseline)
+		why = s.proxyHostSiteAdaptedProblem(result, p)
+	}
+	if why != "" {
+		return "the exported block " + why
+	}
+	return ""
+}
+
+// proxyHostSiteAdaptedProblem judges the adapted form of a tenant proxy
+// host's exported site block: nothing beyond what a tenant's live config
+// may carry, and every route matching only the host's own domains.
+func (s *Server) proxyHostSiteAdaptedProblem(result map[string]any, p models.ProxyHost) string {
+	domains := map[string]bool{}
+	for _, d := range p.DomainList() {
+		domains[strings.ToLower(d)] = true
+	}
+	if why := s.tenantAdaptedConfigProblem(result, domains, nil); why != "" {
+		return why
+	}
+	for _, route := range extractAdaptedRoutes(result) {
+		hosts := hostsFromRoute(route)
+		if len(hosts) == 0 {
+			return "serves hosts that are not the proxy host's own"
+		}
+		for _, h := range hosts {
+			if !domains[strings.ToLower(h)] {
+				return "serves hosts that are not the proxy host's own"
+			}
+		}
+	}
+	return ""
+}
+
+// removeBaselineTLS deletes from result each server's TLS connection
+// policies, and the TLS app, where they are identical to baseline's.
+func removeBaselineTLS(result, baseline map[string]any) {
+	appsOf := func(cfg map[string]any) map[string]any {
+		apps, _ := cfg["apps"].(map[string]any)
+		return apps
+	}
+	serversOf := func(cfg map[string]any) map[string]any {
+		httpApp, _ := appsOf(cfg)["http"].(map[string]any)
+		servers, _ := httpApp["servers"].(map[string]any)
+		return servers
+	}
+	baseServers := serversOf(baseline)
+	for name, v := range serversOf(result) {
+		srv, _ := v.(map[string]any)
+		baseSrv, _ := baseServers[name].(map[string]any)
+		if srv != nil && baseSrv != nil && srv["tls_connection_policies"] != nil &&
+			reflect.DeepEqual(srv["tls_connection_policies"], baseSrv["tls_connection_policies"]) {
+			delete(srv, "tls_connection_policies")
+		}
+	}
+	if apps := appsOf(result); apps != nil && apps["tls"] != nil && reflect.DeepEqual(apps["tls"], appsOf(baseline)["tls"]) {
+		delete(apps, "tls")
+	}
+}
+
+// proxyAdvancedAdaptedProblem applies tenantAdaptedConfigProblem to an
+// Advanced config adapted in its synthetic site, which must yield at most
+// the one route of that site — the live route takes its handlers from the
+// first route alone, so any other is text the export would add.
+func (s *Server) proxyAdvancedAdaptedProblem(result map[string]any) string {
+	site := map[string]bool{proxyAdvancedSite: true}
+	if why := s.tenantAdaptedConfigProblem(result, site, nil); why != "" {
+		return why
+	}
+	routes := extractAdaptedRoutes(result)
+	if len(routes) > 1 {
+		return "adds routes beyond the host's own"
+	}
+	for _, route := range routes {
+		blob, _ := json.Marshal(route)
+		for _, h := range rawRouteHosts(models.RawRoute{JSONData: string(blob)}) {
+			if !site[strings.ToLower(h)] {
+				return "adds routes beyond the host's own"
+			}
+		}
+	}
+	return ""
+}
+
+// tenantRawRouteAdaptedProblem is the save-time form of the export's
+// allowlist for a non-admin's Advanced route Caddyfile: what it adapted to
+// (result) may hold nothing beyond the routes and listen set derived from
+// it. Returns a form error message, or "".
+func (s *Server) tenantRawRouteAdaptedProblem(jsonData, listen string, result map[string]any) string {
+	derived := models.RawRoute{JSONData: jsonData, Listen: listen}
+	if why := s.tenantAdaptedConfigProblem(result, rawRouteHostSet(derived), derived.ListenAddrs()); why != "" {
+		return "Not allowed for a non-admin account: this Caddyfile " + why + ". Ask an administrator."
+	}
+	return ""
+}
+
+// rawRouteHostSet is rawRouteHosts lower-cased into a set.
+func rawRouteHostSet(rr models.RawRoute) map[string]bool {
+	out := map[string]bool{}
+	for _, h := range rawRouteHosts(rr) {
+		out[strings.ToLower(h)] = true
+	}
+	return out
 }

@@ -141,11 +141,24 @@ echo "== 6. an INVALID FS_ALLOW_RE must hard-stop, not read as clean =="
 # and a poisoned image passes as verdict=unchanged. Measured before the fix.
 # This runs the real gate far enough to hit the validation; it needs no images,
 # because the check sits above any docker work.
-bad_out=$(FS_DELTA=on FS_ALLOW_RE='^(unclosed[' "$gate" \
+#
+# The gate checks for trivy/jq/docker on PATH BEFORE this validation, so on a
+# host without trivy (the CI runner) it died with "trivy not found" -- exit 2,
+# no FS_ALLOW_RE diagnostic -- and this case failed for a reason unrelated to
+# what it tests. Put stand-ins first on PATH for the tool-presence check only.
+# They exit 97 if anything actually CALLS them: the validation sits above all
+# docker/trivy work, so a call would mean it no longer does.
+stub_bin=$(mktemp -d "${TMPDIR:-/tmp}/t0641-fsallow-bin.XXXXXX")
+for t in trivy docker; do
+  command -v "$t" >/dev/null 2>&1 && continue
+  printf '#!/bin/sh\necho "stub %s called: the FS_ALLOW_RE check is no longer above tool use" >&2\nexit 97\n' "$t" > "$stub_bin/$t"
+  chmod +x "$stub_bin/$t"
+done
+bad_out=$(PATH="$stub_bin:$PATH" FS_DELTA=on FS_ALLOW_RE='^(unclosed[' "$gate" \
             no-such-image:test no-such-base:test "${TMPDIR:-/tmp}/t0641-fsallow-$$" amd64 2>&1 || true)
-bad_rc=$(FS_DELTA=on FS_ALLOW_RE='^(unclosed[' "$gate" \
+bad_rc=$(PATH="$stub_bin:$PATH" FS_DELTA=on FS_ALLOW_RE='^(unclosed[' "$gate" \
             no-such-image:test no-such-base:test "${TMPDIR:-/tmp}/t0641-fsallow-$$" amd64 >/dev/null 2>&1; echo $?)
-rm -rf "${TMPDIR:-/tmp}/t0641-fsallow-$$"
+rm -rf "${TMPDIR:-/tmp}/t0641-fsallow-$$" "$stub_bin"
 if [ "$bad_rc" = 2 ]; then
   pass=$((pass+1))
 else

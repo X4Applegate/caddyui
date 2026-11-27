@@ -153,7 +153,7 @@ func (s *Server) validateProxyUpstreamsForUser(cu *models.User, p *models.ProxyH
 			return fmt.Sprintf("Upstream %q is not allowed: %s. Ask an administrator if this upstream is legitimate.", strings.TrimSpace(c), why)
 		}
 	}
-	if why := tenantTextViolation(p.AdvancedConfig); why != "" {
+	if why := s.tenantOwnTextViolation(p.AdvancedConfig); why != "" {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
 	// v2.57.1: also inspect the route CaddyUI would generate for this host, so

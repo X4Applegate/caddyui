@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -49,6 +50,11 @@ type Client struct {
 	// substitutes {$ENV} while adapting and its errors echo parsed text — so the
 	// text has to be refused BEFORE adapting, not inspected afterwards.
 	AdaptTextCheck func(caddyfile string) string
+	// MaxAdaptBytes, when not 0, is the largest adapted config Adapt
+	// accepts from Caddy (issue #184 round 13): CaddyUI sets it for a
+	// non-admin's request, and a larger answer is refused as the text's
+	// own fault (IsCaddyfileRejected), not read in full.
+	MaxAdaptBytes int64
 }
 
 // New returns a Client configured to talk to adminURL. Pass empty strings for
@@ -298,11 +304,31 @@ type AdaptResult struct {
 
 // Adapt sends Caddyfile source to Caddy's /adapt endpoint and returns the JSON config
 // Caddy would run if that Caddyfile were loaded. Does NOT modify the live config.
+// caddyfileRejected is an Adapt error that is about the text itself — the
+// AdaptTextCheck refused it, it nests too deeply, or Caddy's adapter
+// answered 400 — rather than about reaching Caddy (issue #184 round 11).
+type caddyfileRejected struct{ msg string }
+
+func (e caddyfileRejected) Error() string { return e.msg }
+
+// IsCaddyfileRejected reports whether err, from Adapt, says the text
+// itself was refused; any other error may go away when tried again.
+func IsCaddyfileRejected(err error) bool {
+	var r caddyfileRejected
+	return errors.As(err, &r)
+}
+
 func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
 	if c.AdaptTextCheck != nil {
 		if msg := c.AdaptTextCheck(caddyfile); msg != "" {
-			return nil, fmt.Errorf("%s", msg)
+			return nil, caddyfileRejected{msg}
 		}
+	}
+	// Issue #184 round 8: deeply nested text makes Caddy's adapter use
+	// memory that grows with tokens × depth; see MaxCaddyfileNestingDepth.
+	// Text the lexer cannot read is left for Caddy to reject.
+	if depth, ok := CaddyfileNestingDepth(caddyfile); ok && depth > MaxCaddyfileNestingDepth {
+		return nil, caddyfileRejected{fmt.Sprintf("the Caddyfile nests blocks %d levels deep; the limit is %d", depth, MaxCaddyfileNestingDepth)}
 	}
 	req, err := http.NewRequest(http.MethodPost, c.AdminURL+"/adapt", strings.NewReader(caddyfile))
 	if err != nil {
@@ -315,7 +341,18 @@ func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
 		return nil, fmt.Errorf("caddy adapt: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	var body []byte
+	if c.MaxAdaptBytes > 0 {
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, c.MaxAdaptBytes+1))
+		if int64(len(body)) > c.MaxAdaptBytes && resp.StatusCode < 300 {
+			return nil, caddyfileRejected{fmt.Sprintf("the configuration Caddy adapted the text to is larger than %d MiB; make the Caddyfile smaller", c.MaxAdaptBytes>>20)}
+		}
+	} else {
+		body, _ = io.ReadAll(resp.Body)
+	}
+	if resp.StatusCode == http.StatusBadRequest {
+		return nil, caddyfileRejected{"caddy rejected Caddyfile: " + strings.TrimSpace(string(body))}
+	}
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("caddy rejected Caddyfile: %s", strings.TrimSpace(string(body)))
 	}

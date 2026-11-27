@@ -43,7 +43,7 @@ func TestRenderProxyHostCaddyfileMergesAdvancedReverseProxyBlock(t *testing.T) {
 		t.Errorf("sub-directives should sit inside the generated block and encode stay outside:\n%s", out)
 	}
 	rest, inner := splitAdvancedReverseProxyBlock("header X 1\n")
-	if rest != "header X 1\n" || inner != nil {
+	if rest != "header X 1\n" || inner != "" {
 		t.Errorf("no block: rest=%q inner=%v", rest, inner)
 	}
 }

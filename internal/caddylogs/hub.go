@@ -54,6 +54,10 @@ type Hub struct {
 	active  map[int64]CaptureState
 
 	persistMu sync.Mutex
+
+	// resolveServer overrides models.ResolveLogServer in tests, so they can
+	// count the lookups a line costs. nil = models.ResolveLogServer.
+	resolveServer func(db *sql.DB, sourceID string, numericID int64) (int64, string, bool)
 }
 
 func New(db *sql.DB) *Hub {
@@ -82,7 +86,6 @@ func (h *Hub) AcceptLine(line []byte) {
 		Level:      strings.ToUpper(strings.TrimSpace(stringField(raw["level"]))),
 		Logger:     logger,
 		Message:    message,
-		Fields:     remainingFields(raw),
 	}
 	if entry.TS.IsZero() {
 		entry.TS = time.Now().UTC()
@@ -90,12 +93,39 @@ func (h *Hub) AcceptLine(line []byte) {
 	if entry.Level == "" {
 		entry.Level = "INFO"
 	}
+	// Classify before attributing: which server a line belongs to does not
+	// change what it says, and the cheap discard below must run before the
+	// source-ID lookup, which is a database query.
 	states := certificateStates(entry, raw)
 	// The always-on certificate event logger must subscribe to logger=events
 	// at DEBUG to receive cert_obtained. Do not let unrelated structured events
 	// or verbose TLS diagnostics fill the operational in-memory ring.
-	if strings.TrimSpace(stringField(raw["caddyui_stream"])) == certificateMonitorStream && len(states) == 0 {
+	certificateStream := strings.TrimSpace(stringField(raw["caddyui_stream"])) == certificateMonitorStream
+	if certificateStream && len(states) == 0 {
 		return
+	}
+
+	// Issue #164: a caddyui_source_id naming a fleet server wins over the
+	// numeric caddyui_server_id. The resolved numeric ID is what the ring and
+	// the certificate projection keep, so renaming the source ID later does
+	// not detach them. An unknown source ID falls back to the numeric ID (0
+	// when absent), exactly as a line without one.
+	sourceID, _ := raw["caddyui_source_id"].(string)
+	resolvedID, resolvedName, viaSource := h.resolve(sourceID, entry.ServerID)
+	if viaSource {
+		entry.ServerID, entry.ServerName = resolvedID, resolvedName
+	}
+	entry.Fields = remainingFields(raw, viaSource)
+	if entry.ServerID <= 0 {
+		// Lifecycle state needs a server to belong to; a certificate-stream
+		// line that has none stays out of the ring, as it always has.
+		states = nil
+		if certificateStream {
+			return
+		}
+	}
+	for i := range states {
+		states[i].ServerID, states[i].ServerName = entry.ServerID, entry.ServerName
 	}
 
 	h.mu.Lock()
@@ -121,6 +151,15 @@ func (h *Hub) AcceptLine(line []byte) {
 			h.OnCertificateActive(state.ServerID, state.Identifier)
 		}
 	}
+}
+
+// resolve attributes a line through ResolveLogServer (issue #164). It is a
+// database query, so AcceptLine calls it only for lines it keeps.
+func (h *Hub) resolve(sourceID string, numericID int64) (int64, string, bool) {
+	if h.resolveServer != nil {
+		return h.resolveServer(h.DB, sourceID, numericID)
+	}
+	return models.ResolveLogServer(h.DB, sourceID, numericID)
 }
 
 func (h *Hub) Since(cursor uint64, serverID int64, limit int) []Entry {
@@ -205,12 +244,20 @@ func (h *Hub) Capture(serverID int64) (CaptureState, bool) {
 	return state, ok
 }
 
-func remainingFields(raw map[string]any) map[string]any {
+// remainingFields returns the line's fields minus the ones Entry already
+// carries. A caddyui_source_id that resolved to a server is folded into
+// ServerID like caddyui_server_id; one that did not stays visible so an
+// operator can spot a mistyped or unregistered identifier.
+func remainingFields(raw map[string]any, sourceResolved bool) map[string]any {
 	fields := make(map[string]any, len(raw))
 	for key, value := range raw {
 		switch key {
 		case "ts", "level", "logger", "msg", "caddyui_server_id", "caddyui_server_name", "caddyui_stream":
 			continue
+		case "caddyui_source_id":
+			if sourceResolved {
+				continue
+			}
 		}
 		fields[key] = value
 	}
@@ -291,11 +338,14 @@ func isSuccessfulRenewalInfoUpdate(message string) bool {
 	return strings.Contains(message, "updated") || strings.Contains(message, "stored")
 }
 
+// certificateStates classifies a line into certificate lifecycle steps. It
+// does not decide attribution: AcceptLine fills ServerID/ServerName and drops
+// the states of a line that belongs to no server.
 func certificateStates(entry Entry, raw map[string]any) []models.CertificateLifecycleStatus {
 	eventName := strings.ToLower(strings.TrimSpace(stringField(raw["name"])))
 	isTLSEvent := strings.HasPrefix(entry.Logger, "tls")
 	isCertificateEvent := entry.Logger == "events" && strings.HasPrefix(eventName, "cert_")
-	if entry.ServerID <= 0 || (!isTLSEvent && !isCertificateEvent) {
+	if !isTLSEvent && !isCertificateEvent {
 		return nil
 	}
 	message := strings.ToLower(entry.Message)

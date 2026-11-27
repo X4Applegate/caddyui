@@ -36,6 +36,35 @@
 #             addition to the `--with` pins. See trap 5: the `--with` list is
 #             not the image. Without it the graph sweep is reported as NOT RUN,
 #             which reaches `attention` -- an unswept graph is not a clean one.
+#             It ALSO fills the `linked` column (below); without it that column
+#             reads *not measured* on every row.
+#
+# THE `linked` COLUMN: WRITTEN PIN vs SHIPPED ARTEFACT (T-0752).
+# This script's table reads the Dockerfile TEXT, so for its whole life it was
+# accurate about INTENT and silent about OUTCOME: it printed
+# `crowdsec/pkg/apiclient v1.7.8` while the shipped binary carried
+# `crowdsec v1.8.1`. xcaddy resolves ONE module graph across every plugin, so
+# another plugin's own floor can lift a pin above its written version, and
+# nothing in a text-derived table can see that.
+#
+# With `--binary`, each row also states what the artefact contains:
+#
+#   | module | pinned | linked           | upstream | advisories |
+#   | crowdsec/pkg/apiclient | v1.7.8 | v1.8.1 (raised) | v1.8.2 | — |
+#
+# FOUR renderings, deliberately distinct, because the failure mode here is a
+# reader misreading an absence as a finding or vice versa:
+#
+#   `v1.8.1` (raised)   measured; above the pin (another module's floor won)
+#   `v1.7.8`            measured; exactly the pin
+#   **not linked**      measured; the pin names nothing in the binary
+#   *not measured*      no readable binary -- this run cannot say
+#
+# `assert-floor-versions.sh` is the enforcing half of the same fact and runs
+# in the Dockerfile builder stage: it FAILS THE BUILD when a declared security
+# floor is linked BELOW its pin. This column is the reporting half, and it
+# deliberately does not move the verdict -- a raised pin is normal xcaddy
+# behaviour, not a defect.
 #   --also    sweep this `module@version` too, for a one-off check or a test
 #             fixture. Not a place to maintain a list of engines; use --binary.
 #   --gomod   ALSO sweep CaddyUI's OWN Go module set (T-0676). A path to a
@@ -269,7 +298,13 @@ OSV="${OSV_BASE:-https://api.osv.dev}"
 #      an uncommitted pin set while reading identically to a CI run. The fix
 #      is disclosure, NOT reading HEAD: the weekly job must grade the
 #      checked-out ref (pristine after actions/checkout) and a deliberate
-#      pre-commit run is legitimate. So state the path and whether it is dirty.
+#      pre-commit run is legitimate. So state the path, THE REVISION, and
+#      whether it is dirty -- all three. "clean vs HEAD" without the SHA was
+#      the half-fix (T-0656): it distinguishes a dirty run from a clean one
+#      in the moment, and says nothing to the person reading the stored
+#      artefact 80 days later, for whom two reports against different commits
+#      are still the same sentence. The revision is the part that makes the
+#      artefact answer "what were we pinned to on date X" by itself.
 # Before adding any new verdict, counter or row, ask what it reports when its
 # own input is missing, and whether a reader can tell the two cases apart.
 # ---------------------------------------------------------------------------
@@ -313,6 +348,18 @@ GOMOD=""
 PINREPORT_DELIM="PINREPORT_EOF_$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n' \
   || printf '%s%s' "$$" "$(date +%s%N 2>/dev/null || date +%s)")"
 
+# Defined above `die()`, and that placement is load-bearing. `die` emits
+# `input=$(clean_scalar "$DOCKERFILE")` into $GITHUB_OUTPUT, and `die` is
+# reachable from argument parsing and the `curl`/`jq` preflight -- all of
+# which run before the parser section further down. A function defined after
+# its caller is `command not found` the moment that path is taken, which here
+# would mean the one output stream a failed run has is emitted damaged, on
+# exactly the runs that matter. The reasoning for the sanitiser lives with
+# the parsers below; only the definition is hoisted.
+clean_scalar() {
+  printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-120
+}
+
 die() {
   echo "check-pinned-modules: $*" >&2
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -337,12 +384,28 @@ die() {
       echo "image_out_of_scope=unknown"
       echo "image_graph=unknown"
       echo "image_base=unknown"
+      # `unknown`, not 0, for the same reason as the counters above: a 0 here
+      # would read as "every pin was compared against the binary and matched",
+      # which is the not-measured/clean confusion the column exists to stop.
+      echo "linked_measured=unknown"
+      echo "linked_raised=unknown"
+      echo "linked_lowered=unknown"
+      echo "linked_absent=unknown"
       # Not 0, for the third time and the same reason: nothing was established
       # about caddyui's own module set either, and a 0 would read as "go.mod
       # was swept and was clean".
       echo "gomod=unknown"
       echo "gomod_findings=unknown"
       echo "gomod_unswept=unknown"
+      # The input path is known even here -- it is either the default or the
+      # `--dockerfile` value, and `die` can fire before that file has been
+      # read at all. Its REVISION is not established on this path, so it is
+      # `unknown` rather than empty: empty is what a successful run emits for
+      # "checked, and there is no revision", and a failed run must not be
+      # able to render as that (T-0656).
+      echo "input=$(clean_scalar "$DOCKERFILE")"
+      echo "input_rev=unknown"
+      echo "input_state=unknown"
       echo "report<<$PINREPORT_DELIM"
       echo "### Pinned xcaddy plugin watch"
       echo
@@ -457,13 +520,9 @@ fi
 # Sanitising at the row-write site instead would be one refactor away from a
 # new unsanitised path, which is how this class of bug comes back.
 #
-# Defined here, above the parsers, rather than next to the HTTP helpers: the
-# floor-directive parser below is the first consumer, and a function defined
-# after its caller is a crash under `set -u` the moment the directive path is
-# taken — i.e. only on the runs that matter.
-clean_scalar() {
-  printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-120
-}
+# `clean_scalar` itself is defined ABOVE `die()`, near the top of the file --
+# see the note there. This block stays here because it is where the reasoning
+# belongs, next to the parsers that are its main consumers.
 
 # A floor's REASON is prose and is the entire point of the mechanism: a reason
 # cut off mid-sentence ("OSV is clean at v1.") is worse than useless, because
@@ -928,6 +987,13 @@ fi
 # ---------------------------------------------------------------------------
 floors_file="$OUT_DIR/floors.tsv"
 : > "$floors_file"
+# `# pin-watch: security` pins — security MINIMUMS asserted against the built
+# binary by assert-floor-versions.sh (T-0667). Recorded here so the report can
+# state how many there are, and so an unknown-kind error cannot be the only
+# thing standing between a new directive and the weekly run. Not floors: a
+# security pin is still subject to the staleness comparison.
+security_file="$OUT_DIR/security-pins.tsv"
+: > "$security_file"
 
 # module \t pinned \t against \t ref \t reason  (reason last: free text)
 floor_pending=""
@@ -1030,15 +1096,49 @@ while IFS= read -r fl_raw; do
       continue ;;
   esac
 
-  # `floor` is the only kind today. An unknown kind is an error rather than a
-  # skip: a future `# pin-watch: something-else` must not read as "no floor
-  # declared" on a box running an older copy of this script.
+  # An unknown kind is an error rather than a skip: a future
+  # `# pin-watch: something-else` must not read as "no floor declared" on a
+  # box running an older copy of this script.
+  #
+  # TWO kinds are understood, and they say different things:
+  #
+  #   floor     this pin is deliberately BEHIND upstream. Reported under
+  #             "Intentional floors", not counted as behind, re-arms when
+  #             upstream passes `against=`.
+  #   security  this pin is a SECURITY MINIMUM, asserted against the BUILT
+  #             BINARY by assert-floor-versions.sh (T-0667). It says nothing
+  #             about staleness, so this script records it and moves on: a
+  #             `security` pin that is behind upstream is still behind, and
+  #             must still produce that finding.
+  #
+  # `security` exists as a separate kind rather than as another `floor`
+  # because the two are not the same claim and conflating them would corrupt
+  # both reports. Three of this Dockerfile's four security pins (x/net, chi,
+  # go-jose) are AT current upstream: marking them `floor` would file them
+  # under "Intentional floors" and exempt them from the staleness check they
+  # should be subject to, which is the "acknowledgement outliving its
+  # reasoning" failure in a new place. Marking them `security` asserts the
+  # artefact without touching staleness.
+  #
+  # A pin is NOT both at once, and the two directives do not stack: a floor
+  # and a security minimum are different claims about the SAME pin, so this
+  # script errors above ("two `# pin-watch:` directives in a row") if two
+  # land on consecutive lines with no `--with`/`--replace` between them --
+  # asserting the same linked version twice under two kinds would double-
+  # count it in the totals. assert-floor-versions.sh takes the SECOND
+  # directive and silently drops the first in that shape; the behaviours
+  # disagree, so write one directive per pin rather than relying on either.
   fl_body="${fl_dir#*pin-watch:}"
   fl_body="${fl_body#"${fl_body%%[![:space:]]*}"}"
   case "$fl_body" in
     floor|floor' '*|floor$'\t'*) ;;
+    security|security' '*|security$'\t'*)
+      # Recorded for the report, then skipped: it is not a floor, and the
+      # assertion that consumes it reads the Dockerfile itself.
+      printf '%s\t%s\n' "$fl_mod" "$fl_ver" >> "$security_file"
+      continue ;;
     *)
-      echo "unknown \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE: $(clean_scalar "$fl_body") (only \`floor\` is understood by this version)" >> "$errors"
+      echo "unknown \`# pin-watch:\` directive at line $fl_dir_line of $DOCKERFILE: $(clean_scalar "$fl_body") (only \`floor\` and \`security\` are understood by this version)" >> "$errors"
       continue ;;
   esac
   fl_body="${fl_body#floor}"
@@ -2078,6 +2178,12 @@ if [ -n "$GOMOD" ] && [ -z "$FIXTURE" ]; then
        && ( cd "$(dirname "$gomod_path")" && go list -m all 2>/dev/null ) > "$gomod_list.raw" \
        && [ -s "$gomod_list.raw" ]; then
       gomod_source="go list -m all"
+      # The PACKAGES the build links, for advisory attribution (T-0889): a
+      # package named below a go.mod module only counts when it is linked.
+      # A failure leaves no file, and the sweep then keeps the older,
+      # conservative match -- a false positive, never a false clean.
+      ( cd "$(dirname "$gomod_path")" && go list -deps ./... 2>/dev/null ) \
+        > "$OUT_DIR/gomod-packages.txt" || rm -f "$OUT_DIR/gomod-packages.txt"
       # Field 1 is the module path, field 2 the selected version. A `=>`
       # replacement line is excluded from version comparison for the same
       # reason the binary graph excludes it: the version describes upstream,
@@ -2181,6 +2287,72 @@ if [ -n "$BINARY" ] && [ -z "$FIXTURE" ]; then
         img_out_of_scope=$(( img_out_of_scope + $(awk '
           ($1=="dep"||$1=="mod") && !($2 ~ /^github\.com\// && $3 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {n++}
           END{print n+0}' "$graph_raw") ))
+        # A flat module<TAB>version index for the `linked` column (T-0752).
+        #
+        # Deliberately built from a WIDER filter than the advisory sweep just
+        # above: that one keeps only github.com modules at plain semver,
+        # because those are the only ones with a per-repository endpoint to
+        # ask. The `linked` column asks nothing -- it only states what the
+        # artefact contains -- so restricting it the same way would print
+        # not-linked for `golang.org/x/net`, a pin that IS linked and is one
+        # of the four security floors. Pseudo-versions are kept for the same
+        # reason (caddy-dns/digitalocean is pinned to one).
+        #
+        # Two classes of row are EXCLUDED, both because they would print a
+        # string that is not a linked version:
+        #
+        #   The REQUIREMENT row of a REPLACED module. `go version -m` does
+        #   NOT put `=>` on the same row as the module it replaces: it prints
+        #   the requirement as its own `dep` row (no hash) and the
+        #   replacement on the NEXT row, measured on the published image:
+        #
+        #     dep  github.com/smallstep/certificates  v0.30.2
+        #     =>   github.com/smallstep/certificates  v0.30.3-0.2026...  h1:...
+        #
+        #   The first row's version is what go.mod ASKED for; the code in the
+        #   binary is the second row's. An earlier version of this filter
+        #   tested for `=>` in a fourth field of the SAME row, which never
+        #   occurs, so it indexed the requirement version: both `--replace`
+        #   pins rendered "(**lowered**)" on every run (certificates against
+        #   its own v0.30.2 requirement, crypto against the v0.92.0 that
+        #   go.mod still asks for after the pin moved to v0.92.1). So the row
+        #   is held until the next one is read, and a `=>` row that follows it
+        #   SUPPLIES the version. A replacement without a version (a local
+        #   path) indexes nothing, because no linked version can be named.
+        #
+        #   NON-VERSION values. The main module of a locally built binary is
+        #   `mod <name> (devel)`, observed on this very image as
+        #   `mod caddy (devel)`. A pin walking up to it would render
+        #   `linked (devel)`, which reads as a version and is not one. Only
+        #   values starting `v` and a digit are admitted.
+        #
+        # Fields are split on TAB, not whitespace: `go version -m` emits a
+        # leading tab and tab separators, and the default FS would make the
+        # row's own indentation significant.
+        graph_index="$OUT_DIR/module-index.tsv"
+        awk -F'\t' '
+            function flush() {
+              if (held_mod != "" && held_ver ~ /^v[0-9]/)
+                printf "%s\t%s\n", held_mod, held_ver
+              held_mod = ""; held_ver = ""
+            }
+            {
+              # Re-index past the leading empty field the leading tab creates.
+              k=1; if ($1=="") k=2
+              typ=$k; mod=$(k+1); ver=$(k+2)
+              if (typ == "=>") {
+                # The replacement of the row held above: its version is the
+                # linked one. Versionless (local path) -> index nothing.
+                if (held_mod != "") held_ver = ver
+                flush(); next
+              }
+              flush()
+              if ((typ=="dep" || typ=="mod") && mod != "") {
+                held_mod = mod; held_ver = ver
+              }
+            }
+            END { flush() }' "$graph_raw" \
+          | sort -u > "$graph_index"
       fi
     fi
   fi
@@ -2218,6 +2390,24 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
     | awk -F'\t' '{ print ($3 == "module graph" ? 1 : 0) "\t" $0 }' \
     | sort -s -k1,1n | cut -f2- > "$img_targets.sorted" \
     && mv "$img_targets.sorted" "$img_targets"
+
+  # OWNERSHIP INPUTS FOR THE MATCHER (T-0889). One GitHub repository can hold
+  # many Go modules: aws/aws-sdk-go-v2 holds ~400, every `service/*` its own
+  # module. The per-repository endpoint returns all of their advisories, and
+  # the package-containment arm below read `.../aws-sdk-go-v2/service/rds` as
+  # a package INSIDE the root module -- on PR #194 that hung two findings on
+  # `aws-sdk-go-v2 v1.48.0`, one with a range (`< v1.108.8`) that is an rds
+  # version the root module has never had. Two narrowings, attribution only:
+  #   1. a package belongs to the LONGEST swept module containing it, so a
+  #      route53 row is judged against the route53 pin, never the root;
+  #   2. for go.mod rows, a package below the pinned module counts only if
+  #      `go list -deps ./...` says the build links it. No list, no rule 2.
+  # Exact module matches are untouched, so the CVE-less per-repository
+  # coverage (GHSA-4v5x-9mc8-gr98 on go-sql-driver/mysql) is unchanged.
+  # Pinned by scripts/test-pinned-module-attribution.sh.
+  i_owners="$(cut -f1 "$img_targets" | sort -u)"
+  i_linked=""
+  [ -s "$OUT_DIR/gomod-packages.txt" ] && i_linked="$(cat "$OUT_DIR/gomod-packages.txt")"
 
   i_gh_auth=()
   i_gh_tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
@@ -2272,6 +2462,8 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
     [ "$i_src" = "module graph" ] && img_graph_seen=$((img_graph_seen+1))
     [ "$i_src" = "go.mod" ] && gomod_seen=$((gomod_seen+1))
 
+    i_uselinked=0
+    [ "$i_src" = "go.mod" ] && [ -n "$i_linked" ] && i_uselinked=1
     while IFS= read -r -d '' i_rec; do
       case "$i_rec" in *$'\037'*) ;; *) continue ;; esac
       i_ghsa="${i_rec%%$'\037'*}";  i_rest="${i_rec#*$'\037'}"
@@ -2297,13 +2489,17 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
         "$i_mod" "$i_ver" "$(clean_scalar "$i_ghsa")" \
         "$(clean_scalar "${i_cve:-—}")" "$(clean_scalar "${i_sev:-?}")" \
         "$(clean_scalar "${i_range:-?}")" "$(clean_scalar "${i_patched:-—}")" >> "$img_extra"
-    done < <(jq -j --arg mod "$i_mod" '
+    done < <(jq -j --arg mod "$i_mod" --arg owners "$i_owners" \
+                 --arg linked "$i_linked" --arg uselinked "$i_uselinked" '
       def pw_norm: ascii_downcase | gsub("\\s+$"; "") | sub("^https?://"; "") | sub("/+$"; "");
       def pw_is_modpath: test("^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]+)?/[^ ]+$");
       def pw_demaj: sub("/v[0-9]+$"; "");
       def pw_hasmaj: test("/v[0-9]+$");
+      def pw_lines: split("\n") | map(pw_norm) | map(select(length > 0));
 
-      .[]
+      ($owners | pw_lines) as $own
+      | ($linked | pw_lines) as $lk
+      | .[]
       | . as $a
       | (.vulnerabilities // [])[]
       # The SAME matching discipline as pass 4, and for the same reason
@@ -2323,7 +2519,15 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
             ($pname == $m)
             or ((($pname | pw_demaj) == ($m | pw_demaj))
                 and ((($pname | pw_hasmaj) | not) or (($m | pw_hasmaj) | not)))
-            or ($pname | startswith($m + "/"))
+            or (($pname | startswith($m + "/"))
+                # rule 1 (T-0889): a longer swept module owns this path
+                and ([ $own[] | select(length > ($m | length))
+                       | select(. as $k | ($pname == $k) or ($pname | startswith($k + "/"))) ]
+                     | length == 0)
+                # rule 2 (T-0889): go.mod rows need the package to be linked
+                and (($uselinked != "1")
+                     or ([ $lk[] | select(. as $q | ($q == $pname) or ($q | startswith($pname + "/"))) ]
+                         | length > 0)))
             or ($m | startswith($pname + "/"))
           else
             ($pname | test("(^|[/ ])" + ($m | split("/") | .[2] | gsub("\\."; "\\\\.")) + "($|[/ @])"))
@@ -2391,6 +2595,42 @@ fi
 # ---------------------------------------------------------------------------
 # Verdict + report.
 # ---------------------------------------------------------------------------
+# T-0752: the `linked` column. `raised`/`lowered` are divergences between what
+# the Dockerfile asks for and what the artefact contains; `absent` is a pin
+# naming code the binary does not link at all.
+linked_raised=0; linked_lowered=0; linked_absent=0; linked_measured=0
+
+# Resolve a `--with` PACKAGE path to its MODULE row in the built binary.
+#
+# This is trap 1 from this file's own header, and the reason the column could
+# not simply read the proxy-resolved `module` field already on the row: that
+# field comes from proxy.golang.org, this one has to match what the LINKER
+# recorded, and the two disagree in exactly the case this column exists for --
+#
+#   --with github.com/crowdsecurity/crowdsec/pkg/apiclient   (package)
+#   dep    github.com/crowdsecurity/crowdsec                 (module)
+#
+# So the path is walked up one element at a time until a row matches. A `/v5`
+# major-version suffix is a module path in its own right and matches at full
+# length, so it needs no special case. Same algorithm as
+# assert-floor-versions.sh, kept deliberately identical: the build-time
+# assertion and the weekly report must not be able to disagree about which
+# module a pin refers to.
+linked_version_of() {
+  lv_probe="$1"
+  [ -n "${graph_index:-}" ] && [ -s "${graph_index:-/nonexistent}" ] || { printf ''; return 1; }
+  while [ -n "$lv_probe" ]; do
+    lv_hit="$(awk -F'\t' -v p="$lv_probe" '$1==p {print $2; exit}' "$graph_index")"
+    if [ -n "$lv_hit" ]; then printf '%s' "$lv_hit"; return 0; fi
+    case "$lv_probe" in
+      */*) lv_probe="${lv_probe%/*}" ;;
+      *)   lv_probe="" ;;
+    esac
+  done
+  printf ''
+  return 1
+}
+
 behind=0; advisories=0; unresolved=0; moved=0; adv_unknown=0; adv_partial=0
 floors_ack=0; floors_expired=0
 # Set only when the all-clear is actually entitled to mention go.mod.
@@ -2404,8 +2644,8 @@ report="$OUT_DIR/report.md"
   echo
   echo "\`$DOCKERFILE\` — $pin_count pinned \`--with\`/\`--replace\` arguments."
   echo
-  echo "| module | pinned | upstream | advisories |"
-  echo "| --- | --- | --- | --- |"
+  echo "| module | pinned | linked | upstream | advisories |"
+  echo "| --- | --- | --- | --- | --- |"
 } > "$report"
 
 malformed_rows=0
@@ -2613,8 +2853,65 @@ while [ "$row_i" -lt "${#row_toks[@]}" ]; do
   else
     adv_cell="—"
   fi
-  printf '| `%s` | `%s` | %s | %s |\n' \
-    "$arg" "$pinned" "$up" "$adv_cell" >> "$report"
+  # -------------------------------------------------------------------------
+  # The `linked` cell (T-0752). What the ARTEFACT contains, beside what the
+  # Dockerfile ASKS FOR. The table was accurate about intent and silent about
+  # outcome: it said crowdsec v1.7.8 while the shipped binary carried v1.8.1,
+  # a three-minor divergence a reader could only find by building the image.
+  #
+  # THE DEGRADATION STORY IS THE POINT, and it is why this is not a one-liner.
+  # An empty cell on a run without `--binary` would read as "nothing was
+  # linked", i.e. the most alarming possible reading of the most common run.
+  # Four states, four distinct renderings, none of which can be mistaken for
+  # another -- the same discipline the advisory column already applies to
+  # "asked and clean" vs "never asked":
+  #
+  #   v1.8.1 (raised)   measured, and above the pin -- the T-0667 case
+  #   v1.7.8            measured, and exactly the pin
+  #   **not linked**    measured, and the pin names nothing in the binary
+  #   *not measured*    no binary was supplied; this run cannot say
+  #
+  # `not measured` is italic and `not linked` is bold on purpose: one is an
+  # absence of evidence and the other is evidence of an absence, and the
+  # weekly reader skims the bold.
+  if [ "$img_graph_state" != "ok" ]; then
+    linked_cell="*not measured*"
+  else
+    linked_ver="$(linked_version_of "$arg")"
+    if [ -z "$linked_ver" ]; then
+      # Not a verdict on the pin's correctness -- a `--with` whose package is
+      # compiled in but whose module path the walk cannot reach would land
+      # here too -- so it is stated, counted, and left to the reader rather
+      # than folded into the exit status. assert-floor-versions.sh DOES fail
+      # the build on this for the four security floors, which is where that
+      # judgement belongs.
+      linked_cell="**not linked**"
+      linked_absent=$((linked_absent+1))
+    else
+      linked_measured=$((linked_measured+1))
+      if [ "$linked_ver" = "$pinned" ]; then
+        linked_cell="\`$linked_ver\`"
+      else
+        # `sort -V` for the direction, for the same reason the staleness
+        # compare uses it: v1.10.0 is newer than v1.9.0 and a string compare
+        # gets that backwards.
+        lv_low="$(printf '%s\n%s\n' "$pinned" "$linked_ver" | sort -V | head -1)"
+        if [ "$lv_low" = "$linked_ver" ]; then
+          # BELOW the pin. The build-time guard already fails on this for a
+          # declared floor; seeing it here means either a non-floor pin or a
+          # report run against an older artefact than the Dockerfile.
+          linked_cell="\`$linked_ver\` (**lowered**)"
+          linked_lowered=$((linked_lowered+1))
+        else
+          linked_cell="\`$linked_ver\` (raised)"
+          linked_raised=$((linked_raised+1))
+        fi
+      fi
+    fi
+  fi
+
+  printf '| `%s` | `%s` | %s | %s | %s |\n' \
+    "$arg" "$pinned" "$linked_cell" "$up" "$adv_cell" >> "$report"
 done
 
 {
@@ -2624,6 +2921,29 @@ done
     echo
   fi
   [ "$behind" -gt 0 ] && { echo "**$behind pin(s) behind upstream's newest tag.**"; echo; }
+  # What the `linked` column adds up to (T-0752). Stated as a sentence as well
+  # as a column, because the interesting case is one row in sixteen and the
+  # weekly reader skims. The no-binary run says so explicitly rather than
+  # printing a zero, which would read as "nothing diverged" -- the same
+  # not-measured/clean confusion the column itself exists to prevent.
+  if [ "$img_graph_state" != "ok" ]; then
+    echo "**The \`linked\` column was not measured.** No built binary was supplied (\`--binary PATH|image:REF\`), so this run states what the Dockerfile *asks for* and cannot state what an artefact *contains*. The two are not the same thing: xcaddy resolves a plugin's own dependency graph, so a pin can be lifted past its written version by another plugin's floor."
+    echo
+  elif [ "$linked_raised" -gt 0 ] || [ "$linked_lowered" -gt 0 ] || [ "$linked_absent" -gt 0 ]; then
+    printf '**%s of %s pin(s) do not match the built binary:**' \
+      "$(( linked_raised + linked_lowered + linked_absent ))" "$pin_count"
+    [ "$linked_raised" -gt 0 ] \
+      && printf ' %s raised above the pin by another module'\''s floor (not an error — xcaddy resolves one graph, and the highest floor wins)' "$linked_raised"
+    [ "$linked_lowered" -gt 0 ] \
+      && printf ' %s **below** the pin, which `assert-floor-versions.sh` fails the build on for a declared security floor' "$linked_lowered"
+    [ "$linked_absent" -gt 0 ] \
+      && printf ' %s naming a module the binary does not link at all' "$linked_absent"
+    echo "."
+    echo
+  elif [ "$linked_measured" -gt 0 ]; then
+    echo "Every pin above is linked into the built binary at exactly its written version ($linked_measured measured)."
+    echo
+  fi
   if [ "$floors_expired" -gt 0 ]; then
     echo "**$floors_expired intentional floor(s) have EXPIRED and are counted as behind again.** Upstream has moved past the version the decision was recorded against, so the reasoning was taken on facts that no longer hold. Re-take the decision and update \`against=\`, or move the pin."
     echo
@@ -2856,13 +3176,61 @@ done
   # Which tree did we actually read? This script reads $DOCKERFILE by plain
   # path, so say so -- a dirty file means the verdict describes uncommitted
   # pins. Disclosure, not relocation: see the design rule in the header.
+  #
+  # THE REVISION IS PART OF THE DISCLOSURE, NOT A DECORATION (T-0656). A
+  # stored report is read long after the run: the weekly workflow keeps it for
+  # 90 days, and "pinned v0.1.3" with no revision attached is indistinguishable
+  # from the same sentence taken against a committed pin. Two local runs
+  # minutes apart once disagreed about one pin for exactly this reason -- the
+  # file was briefly dirty -- and the disagreement read like a lost commit.
+  # `clean vs HEAD` alone does not fix that: it says the file matches HEAD
+  # without saying WHICH HEAD, so two reports against different commits still
+  # look identical. The short SHA is what makes "what were we pinned to on
+  # date X" answerable from the artefact alone.
+  #
+  # EVERY GIT CALL IS SCOPED TO THE DOCKERFILE'S OWN DIRECTORY, not to $PWD.
+  # `--dockerfile` takes an arbitrary path, and the test suites pass fixtures
+  # under $TMPDIR; a bare `git rev-parse` would then report the revision of
+  # whatever repo the caller happened to be standing in and attach it to a
+  # Dockerfile from somewhere else -- a wrong provenance claim, which is worse
+  # than none, since this footer exists to be trusted.
+  #
+  # UNTRACKED IS DIRTY. `git diff --quiet` compares the index and the work
+  # tree against HEAD, and succeeds for a file git has never seen -- so a
+  # fixture, or a Dockerfile.caddy that is new in this tree, would be reported
+  # `clean vs HEAD` while being absent from that commit entirely. It is
+  # checked separately and named for what it is.
   tree_note="$DOCKERFILE"
-  if git rev-parse --git-dir >/dev/null 2>&1; then
-    if git diff --quiet -- "$DOCKERFILE" 2>/dev/null; then
-      tree_note="$DOCKERFILE (clean vs HEAD)"
+  # Also emitted as machine fields (see result.json below), because the
+  # footer sentence is for a human reading the artefact and a later audit
+  # across 90 days of stored reports should not have to parse prose.
+  # `input_state` is one of clean|dirty|untracked|no-git, and `input_rev` is
+  # empty when no revision could be established -- never a placeholder SHA.
+  input_rev=""
+  input_state="no-git"
+  df_dir="$(cd "$(dirname -- "$DOCKERFILE")" 2>/dev/null && pwd)" || df_dir=""
+  if [ -n "$df_dir" ] && git -C "$df_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    # A repository with no commit yet has a --git-dir but no HEAD to resolve.
+    # That is "revision unknown", not an error: the run is still valid and the
+    # report still has to say what it could and could not establish.
+    df_rev="$(git -C "$df_dir" rev-parse --short HEAD 2>/dev/null)" || df_rev=""
+    input_rev="$df_rev"
+    df_at="${df_rev:-revision unknown}"
+    if ! git -C "$df_dir" ls-files --error-unmatch -- "$DOCKERFILE" >/dev/null 2>&1; then
+      input_state="untracked"
+      tree_note="$DOCKERFILE @ $df_at (**UNTRACKED** -- this file is not in that commit at all)"
+    elif git -C "$df_dir" diff --quiet HEAD -- "$DOCKERFILE" 2>/dev/null; then
+      input_state="clean"
+      tree_note="$DOCKERFILE @ $df_at (clean)"
     else
-      tree_note="$DOCKERFILE (**UNCOMMITTED CHANGES** vs HEAD -- these pins are not what HEAD builds)"
+      input_state="dirty"
+      tree_note="$DOCKERFILE @ $df_at (**UNCOMMITTED CHANGES** -- these pins are not what $df_at builds)"
     fi
+  else
+    # Outside a checkout entirely. Say so rather than failing: running the
+    # watcher against a Dockerfile in a bare directory is legitimate, and
+    # silence here would read as a clean tree.
+    tree_note="$DOCKERFILE (revision unknown -- not a git checkout)"
   fi
   echo "<sub>Versions from \`$PROXY\`; advisories from \`$OSV\`, queried twice per pin — by module+pinned version, and by the pinned version's upstream commit so that \`GIT\`-range records with no package field are visible too. Untagged pins compared against upstream \`HEAD\`. Read from \`$tree_note\`.</sub>"
 } >> "$report"
@@ -2941,6 +3309,16 @@ cat "$report"
 echo "verdict=$verdict"
 
 if [ "$EMIT_JSON" -eq 1 ]; then
+  # `null`, not 0, when there was no binary to measure against. A consumer
+  # branching on `.linked_raised == 0` must not read "measured and matching"
+  # out of a run that measured nothing -- the same not-measured/clean
+  # distinction the column itself draws, carried into the machine output.
+  if [ "$img_graph_state" = "ok" ]; then
+    lj_measured="$linked_measured"; lj_raised="$linked_raised"
+    lj_lowered="$linked_lowered";   lj_absent="$linked_absent"
+  else
+    lj_measured=null; lj_raised=null; lj_lowered=null; lj_absent=null
+  fi
   jq -n --arg v "$verdict" --argjson b "$behind" --argjson a "$advisories" \
         --argjson m "$moved" --argjson u "$unresolved" \
         --argjson au "$adv_unknown" --argjson ap "$adv_partial" \
@@ -2957,6 +3335,9 @@ if [ "$EMIT_JSON" -eq 1 ]; then
         --arg gm "$gomod_state" --argjson gmt "$gomod_total" \
         --argjson gms "$gomod_seen" --argjson gmu "$gomod_unswept" \
         --argjson gmo "$gomod_out_of_scope" --arg gmsrc "$gomod_source" \
+        --arg inp "$DOCKERFILE" --arg irev "$input_rev" --arg ist "$input_state" \
+        --argjson lr "$lj_raised" --argjson ll "$lj_lowered" \
+        --argjson la "$lj_absent" --argjson lm "$lj_measured" \
         '{verdict:$v, behind:$b, advisories:$a, moved:$m, unresolved:$u,
           advisory_unknown:$au, advisory_partial:$ap,
           floors_acknowledged:$fa, floors_expired:$fe,
@@ -2967,7 +3348,10 @@ if [ "$EMIT_JSON" -eq 1 ]; then
           image_graph:$ig, image_graph_modules:$igt,
           image_base:$ib, image_base_version:$ibv,
           gomod:$gm, gomod_modules:$gmt, gomod_swept:$gms,
-          gomod_unswept:$gmu, gomod_out_of_scope:$gmo, gomod_source:$gmsrc}' \
+          gomod_unswept:$gmu, gomod_out_of_scope:$gmo, gomod_source:$gmsrc,
+          input:$inp, input_rev:$irev, input_state:$ist,
+          linked_measured:$lm, linked_raised:$lr,
+          linked_lowered:$ll, linked_absent:$la}' \
     > "$OUT_DIR/result.json"
   cat "$OUT_DIR/result.json"
 fi
@@ -2991,6 +3375,21 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "image_swept=$img_swept"
     echo "image_graph=$img_graph_state"
     echo "image_base=$img_base_state"
+    # On a run without a readable binary these are `not-measured` rather than
+    # 0: a consumer branching on `linked_raised == 0` must not read "measured
+    # and matching" out of a run that measured nothing. `image_graph` already
+    # carries the same distinction for the sweep.
+    if [ "$img_graph_state" = "ok" ]; then
+      echo "linked_measured=$linked_measured"
+      echo "linked_raised=$linked_raised"
+      echo "linked_lowered=$linked_lowered"
+      echo "linked_absent=$linked_absent"
+    else
+      echo "linked_measured=not-measured"
+      echo "linked_raised=not-measured"
+      echo "linked_lowered=not-measured"
+      echo "linked_absent=not-measured"
+    fi
     # `gomod_state` alone means "the module LIST was read", which is not the
     # same as "the modules were ASKED about": with the sweep disabled, or with
     # the GitHub budget exhausted before any go.mod row, the list parses fine
@@ -3006,6 +3405,22 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "gomod=$gomod_out"
     echo "gomod_findings=$gomod_hits_out"
     echo "gomod_unswept=$gomod_unswept"
+    # The input's provenance (T-0656), so a workflow consuming these outputs
+    # can record WHICH revision a stored verdict describes without parsing the
+    # report prose. `input_rev` is empty, never a placeholder, when no
+    # revision could be established -- see `input_state`.
+    #
+    # The PATH goes through clean_scalar for the reason given above
+    # clean_scalar itself: a newline in a value written as `key=value` places
+    # the remainder at column 0 of this block, which forges a step output.
+    # `--dockerfile` is operator-supplied rather than upstream-controlled, so
+    # this is defence in depth rather than a live hole -- but "the current
+    # caller happens to be trusted" is exactly the incidental property that
+    # note warns against relying on. The revision and state are git's own
+    # output and cannot contain a newline.
+    echo "input=$(clean_scalar "$DOCKERFILE")"
+    echo "input_rev=$input_rev"
+    echo "input_state=$input_state"
     echo "report<<$PINREPORT_DELIM"
     cat "$report"
     echo "$PINREPORT_DELIM"
