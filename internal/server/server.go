@@ -198,6 +198,9 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 		runtimeLogTimers: map[int64]*time.Timer{},
 		tenantSnippets:   loadTenantSnippetPolicy(db, caddyfilePath),
 	}
+	// Before the first sync: fleet copies of non-admin rows made by earlier
+	// versions are given to their owner (fleet_copy_owners.go).
+	s.repairFleetCopyOwners()
 	go s.runHealthChecker()
 	go s.runAutoSyncLoop()
 	go s.runTenantRawRouteMigration() // issue #184 round 11

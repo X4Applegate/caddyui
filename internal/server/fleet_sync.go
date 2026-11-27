@@ -181,10 +181,17 @@ func (s *Server) upsertFleetProxyHost(sourceServerID, targetServerID int64, sour
 	// v2.57.1: the owner decides whether this copy may adopt an existing target
 	// row, and callers pass a FORM-PARSED source whose OwnerID is not populated
 	// (the owner is given to the insert separately). Always read it from the row.
+	//
+	// A copy belongs to the source row's owner, whatever the caller passed:
+	// a non-admin's copy owned by the administrator escaped every rule for
+	// non-admin rows on the target.
 	if source.ID > 0 {
-		if cur, err := models.GetProxyHost(s.DB, source.ID); err == nil && cur != nil {
-			source.OwnerID = cur.OwnerID
+		cur, err := models.GetProxyHost(s.DB, source.ID)
+		if err != nil || cur == nil {
+			return fleetUpsertResult{}, fmt.Errorf("the source proxy host could not be read: %v", err)
 		}
+		source.OwnerID = cur.OwnerID
+		ownerID = fleetOwnerID(cur.OwnerID)
 	}
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceProxy, source.ID, targetServerID)
 	if err != nil {
@@ -289,9 +296,12 @@ func preserveRedirectTargetPolicy(copy *models.RedirectionHost, existing *models
 
 func (s *Server) upsertFleetRedirectionHost(sourceServerID, targetServerID int64, source models.RedirectionHost, ownerID int64) (fleetUpsertResult, error) {
 	if source.ID > 0 { // v2.57.1: owner from the row, not the caller's form-parsed copy — see upsertFleetProxyHost
-		if cur, err := models.GetRedirectionHost(s.DB, source.ID); err == nil && cur != nil {
-			source.OwnerID = cur.OwnerID
+		cur, err := models.GetRedirectionHost(s.DB, source.ID)
+		if err != nil || cur == nil {
+			return fleetUpsertResult{}, fmt.Errorf("the source redirection could not be read: %v", err)
 		}
+		source.OwnerID = cur.OwnerID
+		ownerID = fleetOwnerID(cur.OwnerID) // the copy is the source owner's — see upsertFleetProxyHost
 	}
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceRedirect, source.ID, targetServerID)
 	if err != nil {
@@ -394,8 +404,17 @@ func preserveRawRouteTargetPolicy(copy *models.RawRoute, existing *models.RawRou
 
 func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, source models.RawRoute, ownerID int64) (fleetUpsertResult, error) {
 	if source.ID > 0 { // v2.57.1: owner from the row, not the caller's form-parsed copy — see upsertFleetProxyHost
-		if cur, err := models.GetRawRoute(s.DB, source.ID); err == nil && cur != nil {
-			source.OwnerID = cur.OwnerID
+		cur, err := models.GetRawRoute(s.DB, source.ID)
+		if err != nil || cur == nil {
+			return fleetUpsertResult{}, fmt.Errorf("the source Advanced route could not be read: %v", err)
+		}
+		source.OwnerID = cur.OwnerID
+		ownerID = fleetOwnerID(cur.OwnerID) // the copy is the source owner's — see upsertFleetProxyHost
+		// Issue #184 round 12: a row still waiting for the upgrade check is
+		// not deployed on its own server, and a copy would be a new row the
+		// check does not know — on every path, not only the fleet sync.
+		if s.rawRouteMigrationBlocks(*cur) {
+			return fleetUpsertResult{}, fmt.Errorf("the Advanced route is waiting to be checked again under the current rules (upgrade check); deploy it once that is done")
 		}
 	}
 	targetID, err := s.mappedFleetTarget(sourceServerID, models.FleetResourceRawRoute, source.ID, targetServerID)
@@ -431,6 +450,13 @@ func (s *Server) upsertFleetRawRoute(sourceServerID, targetServerID int64, sourc
 
 	copy := source
 	preserveRawRouteTargetPolicy(&copy, existing)
+	// A non-admin's copy is held to the host-claim rules on the target
+	// (tenant_host_claims.go), as a route saved there would be.
+	if s.isTenantOwner(source.OwnerID) {
+		if why := s.fleetRawRouteClaimProblem(targetServerID, copy, source.OwnerID); why != "" {
+			return fleetUpsertResult{}, fmt.Errorf("%s", why)
+		}
+	}
 	if existing == nil {
 		copy.CertificateID = s.mappedCertificateID(sourceServerID, source.CertificateID, targetServerID)
 	}

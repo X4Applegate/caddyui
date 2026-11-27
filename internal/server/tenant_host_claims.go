@@ -340,3 +340,19 @@ func (s *Server) logHeldHostClaims(raws []models.RawRoute, held map[int64]string
 		}
 	}
 }
+
+// fleetRawRouteClaimProblem is the host-claim check for a copy of a
+// non-admin's Advanced route (owned by owner) about to be written to
+// targetServerID; copy.ID is the target row it replaces, or 0.
+func (s *Server) fleetRawRouteClaimProblem(targetServerID int64, copy models.RawRoute, owner sql.NullInt64) string {
+	proxies, redirs, raws, _, ok := s.serverResources(targetServerID)
+	if !ok {
+		return "could not check which hosts are in use on the target"
+	}
+	peers := &ownerPeers{s: s, memo: map[[2]int64]bool{}}
+	always := func(hostClaim) bool { return true }
+	if why := rawRouteClaimRules(copy, serverHostClaims(proxies, redirs, raws), peers.foreignTo(owner), always); why != "" {
+		return "not allowed for a non-admin account on the target: " + why
+	}
+	return ""
+}
