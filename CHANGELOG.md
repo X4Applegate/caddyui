@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ## [Unreleased]
 
+### Fixed
+
+- **Restoring a snapshot keeps a recovery copy of the live configuration** ([#178](https://github.com/X4Applegate/caddyui/pull/178), thanks @sergey-92G). Caddy's `/load` ignores `validate_only`, so the pre-restore "validate" already applied the target and the "auto: before restoring snapshot" copy saved the wrong config. The live config is now captured and saved first, then loaded once. A restore is refused if the live config can't be fetched or the recovery snapshot can't be saved.
+- **Middleware profiles: WAF directives can now be placed before the Core Rule Set** ([#190](https://github.com/X4Applegate/caddyui/pull/190), thanks @kernaxis). Conditional exclusions (`ctl:ruleRemoveById`, `ctl:ruleRemoveTargetById`) and rule-set settings (`setvar:tx.…`) written in "Custom directives" were rendered after the rules and had no effect on rules of their own phase. A new optional field, "Directives before the Core Rule Set", is rendered between `crs-setup` and the rules. "Custom directives" is unchanged and remains the place for `SecRuleRemoveById` / `SecRuleUpdateTargetById`. Existing profiles generate exactly the same configuration as before.
+
+### Changed
+
+- **Security settings and sign-in translated** into Spanish ([#180](https://github.com/X4Applegate/caddyui/pull/180), @gnacho), French ([#185](https://github.com/X4Applegate/caddyui/pull/185), @Thibault-MTZ), Simplified Chinese ([#188](https://github.com/X4Applegate/caddyui/pull/188), @chongfenglaosiji) and Russian ([#191](https://github.com/X4Applegate/caddyui/pull/191), @tkkost). `docs/TRANSLATING.md` now lists Spanish, French and Russian.
+- Dependencies: `aws-sdk-go-v2/service/route53` v1.73.0, `modernc.org/sqlite` v1.63.0 ([#195](https://github.com/X4Applegate/caddyui/pull/195)).
+
 ## [2.68.18] - 2026-11-27 - Non-admin accounts held to stricter rules (host claims, health checks, paste import, snippets); Caddyfile export fixes
 
 ### Added

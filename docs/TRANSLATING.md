@@ -8,6 +8,9 @@ CaddyUI's interface can be shown in other languages (since v2.62.0, issue #128).
 |---|---|---|
 | `en` | English (source) | — |
 | `zh-CN` | 简体中文 (Simplified Chinese) | @chongfenglaosiji (since v2.62.1) |
+| `es` | Español (Spanish) | @gnacho |
+| `fr` | Français (French) | @Thibault-MTZ |
+| `ru` | Русский (Russian) | @tkkost |
 
 ## The catalog files
 
