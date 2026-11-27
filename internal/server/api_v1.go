@@ -980,6 +980,10 @@ func (s *Server) apiV1CreateRawRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if msg := s.tenantRawRouteClaimProblem(cu, serverID, rr); msg != "" { // see tenant_host_claims.go
+		writeJSONError(w, http.StatusBadRequest, msg)
+		return
+	}
 	newID, err := models.CreateRawRoute(s.DB, serverID, ownerID, rr)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -1049,6 +1053,10 @@ func (s *Server) apiV1UpdateRawRoute(w http.ResponseWriter, r *http.Request) {
 		existing.CertificateID = inp.CertificateID
 	}
 	if msg := s.validateRawRouteForUser(s.currentUser(r), existing); msg != "" { // v2.57.1
+		writeJSONError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if msg := s.tenantRawRouteClaimProblem(s.currentUser(r), s.currentServerID(r), existing); msg != "" { // see tenant_host_claims.go
 		writeJSONError(w, http.StatusBadRequest, msg)
 		return
 	}

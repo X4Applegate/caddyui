@@ -4259,6 +4259,13 @@ func GetRawRoute(db *sql.DB, id int64) (*RawRoute, error) {
 	return &r, nil
 }
 
+// RawRouteServerID returns the server an Advanced route belongs to.
+func RawRouteServerID(db *sql.DB, id int64) (int64, error) {
+	var sid int64
+	err := db.QueryRow(`SELECT server_id FROM raw_routes WHERE id = ?`, id).Scan(&sid)
+	return sid, err
+}
+
 func UpdateRawRoute(db *sql.DB, r *RawRoute) error {
 	_, err := db.Exec(`UPDATE raw_routes SET label=?, json_data=?, caddyfile_src=?, enabled=?,
             certificate_id=?, force_ssl=?, block_common_exploits=?,

@@ -81,6 +81,10 @@ type Server struct {
 	// from non-admins, with why (logWithheldSnippets).
 	withheldMu sync.Mutex
 	withheld   map[string]string
+	// heldClaims is the non-admin Advanced routes last logged as not
+	// deployed for their host claims, with why (tenant_host_claims.go;
+	// guarded by withheldMu).
+	heldClaims map[int64]string
 	// rawMigRunMu serializes runs of the upgrade migration; it is held
 	// while rows are adapted, rawMigMu only while the state is read or
 	// written (issue #184 round 12).

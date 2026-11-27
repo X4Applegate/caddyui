@@ -411,7 +411,8 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 // forms as well as Advanced routes.
 func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
 	caddyCl := s.caddyForServer(serverID)
-	proxies = s.applyMiddlewareProfiles(proxies) // v2.60.0 (issue #124)
+	proxies = s.applyMiddlewareProfiles(proxies)             // v2.60.0 (issue #124)
+	raws = s.withoutForeignHostClaims(proxies, redirs, raws) // as syncCaddyInner
 	current, _, err := caddyCl.FetchConfig()
 	if err != nil {
 		return ""
@@ -461,6 +462,10 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errMsg := s.validateRawRouteForUser(s.currentUser(r), rr); errMsg != "" { // v2.57.1 — see tenant_guard.go
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
+	if errMsg := s.tenantRawRouteClaimProblem(s.currentUser(r), s.currentServerID(r), rr); errMsg != "" { // see tenant_host_claims.go
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
@@ -620,6 +625,10 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	rr.ID = id
 	if errMsg := s.validateRawRouteForUser(s.currentUser(r), rr); errMsg != "" { // v2.57.1 — see tenant_guard.go
+		s.renderRawRouteFormError(w, r, rr, errMsg)
+		return
+	}
+	if errMsg := s.tenantRawRouteClaimProblem(s.currentUser(r), s.currentServerID(r), rr); errMsg != "" { // see tenant_host_claims.go
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
@@ -1230,6 +1239,12 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 		log.Printf("caddy sync skipped: no entries in DB for server %d (refusing to push empty routes)", serverID)
 		return nil
 	}
+
+	// A non-admin's Advanced route that names another account's host, or
+	// answers for every host on a shared listener, is not deployed (after
+	// the empty-config guard above, so a server whose only rows are held
+	// is still synced and the held routes leave the live config).
+	raws = s.withoutForeignHostClaims(proxies, redirs, raws)
 
 	// v2.12.14: prepend the global strip-response-headers list to each
 	// proxy host's per-host list so the eventual BuildProxyRoute emits a
