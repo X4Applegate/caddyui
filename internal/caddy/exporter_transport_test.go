@@ -27,6 +27,8 @@ var transportMergeCases = []struct{ name, advanced string }{
 	{"overrides a generated value", "reverse_proxy {\n\ttransport http {\n\t\ttls_server_name other.internal\n\t}\n}\n"},
 	{"between other options", "reverse_proxy {\n\tflush_interval -1\n\ttransport http {\n\t\tdial_timeout 7s\n\t\tresolvers 192.0.2.53\n\t}\n\theader_down -Server\n}\n"},
 	{"bare transport http", "reverse_proxy {\n\ttransport http\n\tflush_interval -1\n}\n"},
+	{"two transport blocks", "reverse_proxy {\n\ttransport http {\n\t\tdial_timeout 2s\n\t\ttls_insecure_skip_verify\n\t}\n\ttransport http {\n\t\tdial_timeout 7s\n\t}\n}\n"},
+	{"comment after the opening brace", "reverse_proxy {\n\ttransport http { # upstream tuning\n\t\t\tdial_timeout 7s\n\t\t\tkeepalive 45s\n\t}\n}\n"},
 	{"with site directives around", "header X-From-Advanced yes\nreverse_proxy {\n\ttransport http {\n\t\tkeepalive 45s\n\t}\n}\nencode gzip\n"},
 }
 
@@ -40,7 +42,44 @@ func TestExportMergesAdvancedTransport(t *testing.T) {
 			if !strings.Contains(out, "tls_server_name up.internal") {
 				t.Fatalf("generated upstream TLS settings lost:\n%s", out)
 			}
+			// The generated options come first, so an Advanced option that
+			// sets the same thing wins, as it does live.
+			gen := strings.Index(out, "\t\t\ttls_server_name up.internal\n")
+			if adv := strings.Index(out, "# from Advanced config"); adv >= 0 && adv < gen {
+				t.Fatalf("Advanced transport options must follow the generated ones:\n%s", out)
+			}
+			if !strings.Contains(out, "\t\t\ttls_insecure_skip_verify\n") {
+				t.Fatalf("an https upstream without SSL verify upstream must say tls_insecure_skip_verify, as the live route does:\n%s", out)
+			}
 		})
+	}
+}
+
+// Text-level checks that hold without a caddy binary (CI has none, so the
+// adapt parity test above is skipped there).
+func TestExportTransportBlockText(t *testing.T) {
+	p := httpsUpstreamHost("")
+	p.SSLVerifyUpstream = true
+	if out := RenderProxyHostCaddyfile(p); strings.Contains(out, "tls_insecure_skip_verify") || !strings.Contains(out, "\t\t\ttls\n") {
+		t.Fatalf("SSL verify upstream on: want tls without tls_insecure_skip_verify:\n%s", out)
+	}
+	// An Advanced option overriding a generated one is written after it.
+	out := RenderProxyHostCaddyfile(httpsUpstreamHost("reverse_proxy {\n\ttransport http {\n\t\ttls_server_name other.internal\n\t}\n}\n"))
+	want := "\t\ttransport http {\n\t\t\ttls\n\t\t\ttls_insecure_skip_verify\n\t\t\ttls_server_name up.internal\n\t\t\tdial_timeout 30s\n\t\t\tresponse_header_timeout 30s\n\t\t\t# from Advanced config\n\t\t\ttls_server_name other.internal\n\t\t}\n"
+	if !strings.Contains(out, want) {
+		t.Fatalf("want the merged block\n%s\ngot:\n%s", want, out)
+	}
+	// Two Advanced transport blocks: the last one is merged, as Caddy keeps
+	// only the last; the earlier one is left out with a note.
+	out = RenderProxyHostCaddyfile(httpsUpstreamHost("reverse_proxy {\n\ttransport http {\n\t\tdial_timeout 2s\n\t}\n\ttransport http {\n\t\tdial_timeout 7s\n\t}\n}\n"))
+	if strings.Contains(out, "dial_timeout 2s") || !strings.Contains(out, "\t\t\tdial_timeout 7s\n") || !strings.Contains(out, "1 earlier transport block(s)") {
+		t.Fatalf("two transports: want the last merged and the earlier one left out:\n%s", out)
+	}
+	// A comment after the opening brace gets its own line and does not
+	// change the indentation of what follows.
+	out = RenderProxyHostCaddyfile(httpsUpstreamHost("reverse_proxy {\n\ttransport http { # tuning }\n\t\tdial_timeout 7s\n\t}\n}\n"))
+	if !strings.Contains(out, "\t\t\t# tuning }\n\t\t\tdial_timeout 7s\n\t\t}\n") {
+		t.Fatalf("comment after the brace: want it on its own line, options indented like the rest:\n%s", out)
 	}
 }
 
@@ -115,10 +154,23 @@ func TestTakeAdvancedTransportIgnoresNonDirectives(t *testing.T) {
 			t.Errorf("%s: took %+v out of\n%s", name, tr, inner)
 		}
 	}
-	// Two transport sub-directives are found but not merged.
-	two := "\ttransport http {\n\t\tdial_timeout 1s\n\t}\n\ttransport http {\n\t\tdial_timeout 2s\n\t}\n"
-	if rest, tr := takeAdvancedTransport(two); !tr.found || tr.mergeable || rest != two {
-		t.Errorf("two transports: got %+v, rest changed %v", tr, rest != two)
+	// Two transport sub-directives: both are taken out and the last one's
+	// body is merged (Caddy keeps only the last).
+	two := "\ttransport http {\n\t\tdial_timeout 1s\n\t}\n\theader_down -Server\n\ttransport http {\n\t\tdial_timeout 2s\n\t}\n"
+	if rest, tr := takeAdvancedTransport(two); !tr.mergeable || tr.dropped != 1 || strings.TrimSpace(tr.body) != "dial_timeout 2s" || rest != "\theader_down -Server\n" {
+		t.Errorf("two transports: got %+v, rest %q", tr, rest)
+	}
+	// Not taken out when one of them cannot be, or the last is another
+	// module: rest unchanged.
+	for name, in := range map[string]string{
+		"token after the closing brace":    "\ttransport http {\n\t\tdial_timeout 1s\n\t} flush_interval -1\n",
+		"earlier one unclosed on its line": "\ttransport http { dial_timeout 1s } x\n\ttransport http {\n\t}\n",
+		"last one fastcgi":                 "\ttransport http {\n\t}\n\ttransport fastcgi {\n\t\tsplit .php\n\t}\n",
+		"no module":                        "\ttransport {\n\t}\n",
+	} {
+		if rest, tr := takeAdvancedTransport(in); !tr.found || tr.mergeable || rest != in {
+			t.Errorf("%s: got %+v, rest changed %v", name, tr, rest != in)
+		}
 	}
 	// One is taken out exactly, the rest left as written.
 	one := "\tflush_interval -1\n\ttransport http {\n\t\tdial_timeout 1s\n\t}\n\theader_down -Server\n"

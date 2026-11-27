@@ -126,6 +126,9 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 		// T-0932: written the way the live route matches them. A tenant's
 		// domains must already be plain host names (checked below).
 		domains = caddyfileSiteAddresses(domains)
+		if len(domains) == 0 && len(p.DomainList()) > 0 {
+			return fmt.Sprintf("# Proxy host #%d omitted: none of its domains is a host name (each is empty or dots); see it in CaddyUI.\n", p.ID)
+		}
 	}
 	if len(domains) == 0 {
 		return ""
@@ -300,6 +303,9 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	if p.ProxyRedirectRules != "" && p.ProxyRedirectRules != "[]" {
 		elided = append(elided, "path-based redirect rules")
 	}
+	if p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced && p.ClientAuthEnabled() {
+		elided = append(elided, "plain HTTP on :80 (with SSL off CaddyUI also serves this host on :80, where no client certificate can be asked for; this export serves it over HTTPS only, so the client certificate requirement holds)")
+	}
 	if p.OwnerEmail != "" {
 		fmt.Fprintf(&b, "# Owner: %s\n", caddyfileComment(p.OwnerEmail))
 	}
@@ -314,7 +320,7 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	}
 
 	siteAddrs := domains
-	if p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced {
+	if caddyfileServesPlainHTTP(p) {
 		// SSL off: served on :443 and, without a redirect, on :80 (T-0927).
 		siteAddrs = caddyfilePlainHTTPAddresses(domains)
 	}
@@ -336,7 +342,9 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		}
 	}
 	// SSL off with no certificate is expressed by the site addresses above
-	// (caddyfilePlainHTTPAddresses); `tls off` is not a Caddy v2 form.
+	// (caddyfilePlainHTTPAddresses); `tls off` is not a Caddy v2 form. With
+	// client-certificate auth the site keeps its plain address: Caddy
+	// refuses TLS settings in a site that also listens on plain HTTP.
 
 	// v2.64.0 (discussion #137): client certificate authentication. Emitted
 	// as its own `tls` block rather than folded into the certificate line
@@ -569,6 +577,9 @@ func RenderRedirectionCaddyfile(r models.RedirectionHost) string {
 	var b strings.Builder
 	domains := caddyfileSiteAddresses(r.DomainList()) // T-0932: as the live route matches them
 	if len(domains) == 0 {
+		if len(r.DomainList()) > 0 {
+			return fmt.Sprintf("# Redirection host #%d omitted: none of its domains is a host name (each is empty or dots); see it in CaddyUI.\n", r.ID)
+		}
 		return ""
 	}
 	if !caddyfileAddressSafe(domains...) {
