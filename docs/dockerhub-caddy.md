@@ -88,9 +88,12 @@ Point CaddyUI at it with `CADDY_ADMIN_URL=http://caddy:2019`. See the [CaddyUI i
 The image has a `HEALTHCHECK` that probes Caddy's admin API at the address in `CADDY_ADMIN` (default
 `localhost:2019`; a wildcard such as `0.0.0.0:2019` is probed on `127.0.0.1`, and `unix/<path>` over
 the socket). It requests `/metrics`, the admin route Caddy logs at debug level, so the probe adds no
-lines to the container log. If your config moves the admin listener with `admin { listen … }` or turns
-it off with `admin off`, the probe cannot follow it and the container will read *unhealthy*; disable
-the check for that container with `healthcheck: { disable: true }`.
+lines to the container log. An admin address set in your Caddy config rather than in `CADDY_ADMIN` is
+still reached when it is a wildcard or loopback address on port 2019 (e.g. `admin 0.0.0.0:2019`). The
+container reads *unhealthy* if the config moves the admin API somewhere else (a specific IP, another
+port, a unix socket), turns it off (`admin off`), or enforces origins (`enforce_origin`, or `origins`
+on a non-wildcard listener); disable the check for that container with
+`healthcheck: { disable: true }`. The probe ignores proxy variables (`--noproxy "*"`).
 
 ## Running as non-root
 

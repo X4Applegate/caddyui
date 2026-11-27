@@ -201,8 +201,13 @@ Also make any host-mounted certificate keys and log directories readable/writabl
 `NET_BIND_SERVICE` in the container's capability bounding set: with `cap_drop: [ALL]` and no
 `cap_add: [NET_BIND_SERVICE]`, the kernel refuses to exec the binary at all
 (`exec /usr/bin/caddy: operation not permitted`), because the capability is marked effective on the
-file. Verified with unprivileged-port binding disabled (`net.ipv4.ip_unprivileged_port_start=1024`),
-so the capability, not Docker's default sysctl, is what lets :80/:443 bind.
+file. Verified with unprivileged-port binding disabled (`net.ipv4.ip_unprivileged_port_start=1024`)
+when `caddy` is the container's first process. One combination does not work: that sysctl **plus**
+`no-new-privileges` **plus** a `command:` that starts `/bin/sh -c '… exec caddy …'` (the shape the
+shipped compose file uses) fails with `bind: permission denied`, because the shell starts without the
+capability and `no-new-privileges` stops `exec` from granting it. Docker's default sysctl (`0`)
+avoids the question. As non-root, Caddy also logs an error-level "failed to install root certificate"
+line at start; it is harmless (it cannot write the system trust store) and does not affect serving.
 
 Revisit this if a release can carry a migration that owners opt into explicitly (for example a
 major version whose upgrade notes include the `chown` above). `DS-0026` (no `HEALTHCHECK`) is fixed:

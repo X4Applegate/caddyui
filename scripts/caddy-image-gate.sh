@@ -331,10 +331,13 @@
 #     Healthcheck joined the list with T-0908, when Dockerfile.caddy gained a
 #     HEALTHCHECK: its Test is a command the engine EXECS INSIDE THE RUNNING
 #     CONTAINER every 30 s, so it is as much "what runs" as Entrypoint and Cmd.
-#     It is the one field here whose value is routinely longer than `clean`'s
-#     400-character cut (the shipped probe is ~420), so it is emitted in
-#     400-character chunks rather than truncated -- a change past the cut must
-#     still show up in the diff.
+#     Its Test string can exceed `clean`'s 400-character cut (the shipped
+#     probe is ~515 characters), so it is emitted in 400-character
+#     chunks rather than truncated -- a change past the cut must still show up
+#     in the diff. At most 16 chunks per element are printed, then a line
+#     carrying the total length and a checksum of the WHOLE raw value, so a
+#     submitted Dockerfile cannot bloat the summary and a change beyond the cap
+#     -- even one that keeps the length -- still changes that line.
 #
 #     ONE CLASS OF CONFIG CHANGE IS BLOCKING UNDER BOTH POLICIES: a variable
 #     that redirects the binary's outbound TLS TRUST. A newly-added or modified
@@ -2569,7 +2572,11 @@ config_from() {
   printf '%s' "$raw" | jq -r '
     def cleanall: tostring | gsub("[^A-Za-z0-9._:/@+=,() \\[\\]{}\"'"'"'*?!#$^&~`|<>-]"; "?");
     def clean: cleanall | .[0:400];
-    def chunks: cleanall as $s | [range(0; ($s | length) + 1; 400) as $i | $s[$i:$i+400]];
+    def chunks: cleanall as $s
+      | [range(0; ([($s | length), 1] | max); 400) as $i | $s[$i:$i+400]] as $c
+      | if ($c | length) > 16
+        then $c[0:16] + ["...(\($c | length) chunks, \(tostring | length) chars, sum \(tostring | explode | reduce .[] as $b (0; (. * 31 + $b) % 1000000007)); first 16 shown)"]
+        else $c end;
     def nlist: if . == null then [] else . end;
     def nobj:  if . == null then {} else . end;
     [ "User\t"         + ((.User // "")       | clean),

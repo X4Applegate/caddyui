@@ -560,15 +560,33 @@ COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 # WHERE IT CONNECTS. The admin address comes from CADDY_ADMIN, the variable the
 # shipped docker-compose.yml sets (0.0.0.0:2019) and Caddy itself reads; unset
 # means Caddy's default, localhost:2019. A wildcard host (0.0.0.0, [::], empty)
-# is probed on 127.0.0.1 -- inside the container that reaches the same
-# listener. A `tcp/` prefix is accepted, and a `unix/` address is probed over
-# the socket with curl --unix-socket, so neither form reads as unhealthy.
+# is probed on 127.0.0.1 ([::1] under `tcp6/`, which listens IPv6-only) --
+# inside the container that reaches the same listener. Every network-address
+# form Caddy accepts for it is handled, measured one by one: `tcp/`, `tcp4/`
+# and `tcp6/` prefixes, IPv6 literals, the one-port range `2019-2019` (the
+# only range Caddy accepts for the admin listener; a real range makes Caddy
+# refuse to start), and `unix/<path>` with or without Caddy's `|0600`
+# permission suffix, probed over the socket with curl --unix-socket. A host
+# with no port (`localhost`) or a set-but-empty CADDY_ADMIN makes Caddy listen
+# on a RANDOM port nobody can reach, so those read unhealthy, correctly.
 #
-# WHAT IT CANNOT SEE, ON PURPOSE. An `admin { listen ... }` set in the config
-# rather than in CADDY_ADMIN, or `admin off`, moves or removes the endpoint
-# behind the variable's back and this check then reports unhealthy. Such a
-# deployment cannot be driven by CaddyUI either; disable the check for it with
-# `healthcheck: { disable: true }` in compose rather than widening the probe.
+# `-q` first so no ~/.curlrc can add options; `--noproxy "*"` because a
+# lowercase http_proxy/ALL_PROXY set for outbound ACME traffic would otherwise
+# send the loopback probe to the proxy (measured in review: exit 28, unhealthy).
+#
+# WHAT IT FOLLOWS, AND WHAT IT CANNOT SEE. The probe follows CADDY_ADMIN, or
+# localhost:2019 when it is unset. An admin address set in the CONFIG instead
+# (`admin 0.0.0.0:2019` in a Caddyfile, `admin.listen` in JSON) is still
+# reached whenever it is a wildcard or loopback on port 2019, because the
+# default lands on it -- measured on the fleet 2026-11-27: four hosts set it in
+# config only (0.0.0.0:2019 or :2019), one also sets CADDY_ADMIN=0.0.0.0:2019,
+# one (network_mode host) has no admin block at all, and the probe reaches all
+# six shapes. It reads UNHEALTHY when the config moves the admin listener
+# somewhere neither reaches (a specific non-loopback IP, another port, a unix
+# socket) or turns it off (`admin off`), and when the admin API enforces origins
+# (`enforce_origin`, or `origins` on a non-wildcard listener -> 403, since curl
+# sends no Origin). Disable the check for such a container with
+# `healthcheck: { disable: true }` rather than widening the probe.
 #
 # WHY /metrics. It is the one admin route Caddy logs at DEBUG rather than INFO
 # (admin.go: `if r.RequestURI == "/metrics" { log.Debug(...) }`, there for
@@ -592,4 +610,11 @@ COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 # would act on it -- which is why the probe is deliberately conservative about
 # what counts as the admin endpoint rather than guessing.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=5s --retries=3 \
-  CMD ["/bin/sh", "-c", "a=\"${CADDY_ADMIN:-localhost:2019}\"; a=\"${a#tcp/}\"; case \"$a\" in unix/*) exec curl -fsS --max-time 4 -o /dev/null --unix-socket \"${a#unix/}\" http://localhost/metrics;; esac; h=\"${a%:*}\"; p=\"${a##*:}\"; case \"$h\" in ''|0.0.0.0|'[::]'|'::') h=127.0.0.1;; esac; exec curl -fsS --max-time 4 -o /dev/null \"http://$h:$p/metrics\""]
+  CMD a="${CADDY_ADMIN:-localhost:2019}"; f=tcp; \
+      case "$a" in \
+        unix/*) s="${a#unix/}"; exec curl -q --noproxy "*" -fsS --max-time 4 -o /dev/null --unix-socket "${s%|*}" http://localhost/metrics ;; \
+        tcp/*|tcp4/*|tcp6/*) f="${a%%/*}"; a="${a#*/}" ;; \
+      esac; \
+      h="${a%:*}"; p="${a##*:}"; p="${p%%-*}"; \
+      case "$h" in ''|0.0.0.0|'[::]'|::) if [ "$f" = tcp6 ]; then h='[::1]'; else h=127.0.0.1; fi ;; esac; \
+      exec curl -q --noproxy "*" -fsS --max-time 4 -o /dev/null "http://$h:$p/metrics"
