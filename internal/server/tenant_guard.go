@@ -52,13 +52,16 @@ var neutralisedPlaceholderRe = regexp.MustCompile(`(?i)\{(\s*)(env|file)(\s*)\.`
 
 func containsDangerousPlaceholder(s string) bool { return dangerousPlaceholderRe.MatchString(s) }
 
-// forbiddenTenantHandlers are Caddy handlers a non-admin may never use: they
-// read files from the Caddy container (file_server, templates), or run an ACME
-// CA (acme_server).
-var forbiddenTenantHandlers = map[string]bool{
-	"file_server": true,
-	"templates":   true,
-	"acme_server": true,
+// forbiddenTenantHandlers are Caddy handlers a non-admin may never use, with
+// why: they read files from the Caddy container (file_server, templates), run
+// an ACME CA (acme_server), or serve data about the whole server (metrics).
+var forbiddenTenantHandlers = map[string]string{
+	"file_server": "can read files from the Caddy server",
+	"templates":   "can read files from the Caddy server",
+	"acme_server": "runs a certificate authority on the Caddy server",
+	// metrics serves the Prometheus metrics of the whole Caddy process:
+	// every site's request counts and every upstream's address.
+	"metrics": "serves the metrics of every site on the Caddy server",
 }
 
 // obscureIPHostRe matches host spellings that some resolvers read as an IPv4
@@ -165,8 +168,8 @@ func (s *Server) tenantRouteViolation(route any) string {
 		switch t := v.(type) {
 		case map[string]any:
 			if h, _ := t["handler"].(string); h != "" {
-				if forbiddenTenantHandlers[h] {
-					reason = fmt.Sprintf("the %q handler can read files from the Caddy server and is admin-only", h)
+				if why, ok := forbiddenTenantHandlers[h]; ok {
+					reason = fmt.Sprintf("the %q handler %s and is admin-only", h, why)
 					return
 				}
 				if h == "reverse_proxy" {
@@ -1083,7 +1086,7 @@ func (s *Server) adminSnippets() []string {
 // non-admins is logged with the reason, once per change, for the
 // administrator: a non-admin is only told it is not available.
 func (s *Server) adminSnippetSet() tenantSnippetSet {
-	set := tenantSnippetSetFrom(s.adminSnippetDefs())
+	set := tenantSnippetSetShared(s.adminSnippetDefs(), s.tenantSnippets.shares)
 	s.logWithheldSnippets(set)
 	return set
 }
@@ -1169,6 +1172,13 @@ func sortedStringKeys(m map[string]string) []string {
 // `}` with more on its line, or a matcher, snippet or `import` word after a
 // key, is withheld, as such text is refused in a non-admin's own imports.
 func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
+	return tenantSnippetSetShared(defs, nil)
+}
+
+// tenantSnippetSetShared is tenantSnippetSetFrom with the snippets shared
+// reports false for withheld as well (tenant_snippet_sharing.go); nil
+// shares all.
+func tenantSnippetSetShared(defs []caddy.CaddyfileSnippet, shared func(string) bool) tenantSnippetSet {
 	set := tenantSnippetSet{}
 	dup := map[string]bool{}
 	for _, sn := range defs {
@@ -1187,6 +1197,9 @@ func tenantSnippetSetFrom(defs []caddy.CaddyfileSnippet) tenantSnippetSet {
 	}
 	for name, sn := range set {
 		switch {
+		case shared != nil && !shared(name):
+			withhold(name, "the administrator has not shared it with non-admin accounts ("+envTenantSnippets+")")
+			continue
 		case containsDangerousPlaceholder(sn.Text):
 			withhold(name, "it reads the Caddy server's environment or files ({env.…}, {file.…} or {$…})")
 			continue

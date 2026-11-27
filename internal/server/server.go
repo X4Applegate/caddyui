@@ -81,6 +81,9 @@ type Server struct {
 	// from non-admins, with why (logWithheldSnippets).
 	withheldMu sync.Mutex
 	withheld   map[string]string
+	// tenantSnippets is which administrator snippets non-admin accounts
+	// may import (tenant_snippet_sharing.go), loaded by New.
+	tenantSnippets tenantSnippetPolicy
 	// heldClaims is the non-admin Advanced routes last logged as not
 	// deployed for their host claims, with why (tenant_host_claims.go;
 	// guarded by withheldMu).
@@ -193,6 +196,7 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 		healthFailures:   map[int64]int{},
 		appHealth:        map[int64]appHealthEntry{},
 		runtimeLogTimers: map[int64]*time.Timer{},
+		tenantSnippets:   loadTenantSnippetPolicy(db, caddyfilePath),
 	}
 	go s.runHealthChecker()
 	go s.runAutoSyncLoop()
