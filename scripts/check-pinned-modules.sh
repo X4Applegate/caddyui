@@ -2178,6 +2178,12 @@ if [ -n "$GOMOD" ] && [ -z "$FIXTURE" ]; then
        && ( cd "$(dirname "$gomod_path")" && go list -m all 2>/dev/null ) > "$gomod_list.raw" \
        && [ -s "$gomod_list.raw" ]; then
       gomod_source="go list -m all"
+      # The PACKAGES the build links, for advisory attribution (T-0889): a
+      # package named below a go.mod module only counts when it is linked.
+      # A failure leaves no file, and the sweep then keeps the older,
+      # conservative match -- a false positive, never a false clean.
+      ( cd "$(dirname "$gomod_path")" && go list -deps ./... 2>/dev/null ) \
+        > "$OUT_DIR/gomod-packages.txt" || rm -f "$OUT_DIR/gomod-packages.txt"
       # Field 1 is the module path, field 2 the selected version. A `=>`
       # replacement line is excluded from version comparison for the same
       # reason the binary graph excludes it: the version describes upstream,
@@ -2385,6 +2391,24 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
     | sort -s -k1,1n | cut -f2- > "$img_targets.sorted" \
     && mv "$img_targets.sorted" "$img_targets"
 
+  # OWNERSHIP INPUTS FOR THE MATCHER (T-0889). One GitHub repository can hold
+  # many Go modules: aws/aws-sdk-go-v2 holds ~400, every `service/*` its own
+  # module. The per-repository endpoint returns all of their advisories, and
+  # the package-containment arm below read `.../aws-sdk-go-v2/service/rds` as
+  # a package INSIDE the root module -- on PR #194 that hung two findings on
+  # `aws-sdk-go-v2 v1.48.0`, one with a range (`< v1.108.8`) that is an rds
+  # version the root module has never had. Two narrowings, attribution only:
+  #   1. a package belongs to the LONGEST swept module containing it, so a
+  #      route53 row is judged against the route53 pin, never the root;
+  #   2. for go.mod rows, a package below the pinned module counts only if
+  #      `go list -deps ./...` says the build links it. No list, no rule 2.
+  # Exact module matches are untouched, so the CVE-less per-repository
+  # coverage (GHSA-4v5x-9mc8-gr98 on go-sql-driver/mysql) is unchanged.
+  # Pinned by scripts/test-pinned-module-attribution.sh.
+  i_owners="$(cut -f1 "$img_targets" | sort -u)"
+  i_linked=""
+  [ -s "$OUT_DIR/gomod-packages.txt" ] && i_linked="$(cat "$OUT_DIR/gomod-packages.txt")"
+
   i_gh_auth=()
   i_gh_tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   [ -n "$i_gh_tok" ] && i_gh_auth=(-H "Authorization: Bearer $i_gh_tok")
@@ -2438,6 +2462,8 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
     [ "$i_src" = "module graph" ] && img_graph_seen=$((img_graph_seen+1))
     [ "$i_src" = "go.mod" ] && gomod_seen=$((gomod_seen+1))
 
+    i_uselinked=0
+    [ "$i_src" = "go.mod" ] && [ -n "$i_linked" ] && i_uselinked=1
     while IFS= read -r -d '' i_rec; do
       case "$i_rec" in *$'\037'*) ;; *) continue ;; esac
       i_ghsa="${i_rec%%$'\037'*}";  i_rest="${i_rec#*$'\037'}"
@@ -2463,13 +2489,17 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
         "$i_mod" "$i_ver" "$(clean_scalar "$i_ghsa")" \
         "$(clean_scalar "${i_cve:-—}")" "$(clean_scalar "${i_sev:-?}")" \
         "$(clean_scalar "${i_range:-?}")" "$(clean_scalar "${i_patched:-—}")" >> "$img_extra"
-    done < <(jq -j --arg mod "$i_mod" '
+    done < <(jq -j --arg mod "$i_mod" --arg owners "$i_owners" \
+                 --arg linked "$i_linked" --arg uselinked "$i_uselinked" '
       def pw_norm: ascii_downcase | gsub("\\s+$"; "") | sub("^https?://"; "") | sub("/+$"; "");
       def pw_is_modpath: test("^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]+)?/[^ ]+$");
       def pw_demaj: sub("/v[0-9]+$"; "");
       def pw_hasmaj: test("/v[0-9]+$");
+      def pw_lines: split("\n") | map(pw_norm) | map(select(length > 0));
 
-      .[]
+      ($owners | pw_lines) as $own
+      | ($linked | pw_lines) as $lk
+      | .[]
       | . as $a
       | (.vulnerabilities // [])[]
       # The SAME matching discipline as pass 4, and for the same reason
@@ -2489,7 +2519,15 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
             ($pname == $m)
             or ((($pname | pw_demaj) == ($m | pw_demaj))
                 and ((($pname | pw_hasmaj) | not) or (($m | pw_hasmaj) | not)))
-            or ($pname | startswith($m + "/"))
+            or (($pname | startswith($m + "/"))
+                # rule 1 (T-0889): a longer swept module owns this path
+                and ([ $own[] | select(length > ($m | length))
+                       | select(. as $k | ($pname == $k) or ($pname | startswith($k + "/"))) ]
+                     | length == 0)
+                # rule 2 (T-0889): go.mod rows need the package to be linked
+                and (($uselinked != "1")
+                     or ([ $lk[] | select(. as $q | ($q == $pname) or ($q | startswith($pname + "/"))) ]
+                         | length > 0)))
             or ($m | startswith($pname + "/"))
           else
             ($pname | test("(^|[/ ])" + ($m | split("/") | .[2] | gsub("\\."; "\\\\.")) + "($|[/ @])"))
