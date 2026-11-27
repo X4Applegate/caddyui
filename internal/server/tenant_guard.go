@@ -607,6 +607,14 @@ func tenantTextCheck(text string, snippets tenantSnippetSet, lim tenantTextLimit
 		if imp.ArgNewline {
 			return "an `import` argument may not hold a line break", 0, 0
 		}
+		// T-0935: the snippet's text, or another argument, could complete
+		// a placeholder an argument starts (`{file` + `.` + `/etc/x}`).
+		if imp.ArgPlaceholder {
+			return "an `import` argument may not hold {env, {file or {$, or open a `{` it does not close", 0, 0
+		}
+		if imp.ArgEmpty && snippets[imp.Name].MatcherNameArgs {
+			return fmt.Sprintf("the snippet %q names a matcher after its arguments, so an `import` of it may not pass an empty argument", imp.Name), 0, 0
+		}
 		if imp.InMatcherDef {
 			return "an `import` may not be written inside a matcher definition", 0, 0
 		}

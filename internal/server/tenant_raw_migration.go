@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,6 +192,10 @@ func (s *Server) rawRouteMigrationSaved(id int64) {
 	if err := models.MarkRawRouteCurrent(s.DB, id); err != nil {
 		log.Printf("advanced route migration: route id=%d: %v", id, err)
 	}
+	// T-0935: routes held from it before are superseded by this save.
+	if err := models.ClearRawRouteHeldJSON(s.DB, id); err != nil {
+		log.Printf("advanced route migration: route id=%d: %v", id, err)
+	}
 	s.rawMigMu.Lock()
 	defer s.rawMigMu.Unlock()
 	if err := s.loadRawRouteMigrationLocked(); err != nil || s.rawMig.done || !s.rawMig.pending[id] {
@@ -227,14 +232,13 @@ func (s *Server) loadRawRouteMigrationLocked() error {
 		s.rawMig.everPending = keep.everPending
 		return nil
 	case v != "":
-		var st struct {
-			Pending []int64 `json:"pending"`
-		}
+		var st rawMigSavedState
 		if err := json.Unmarshal([]byte(v), &st); err == nil {
 			s.rawMig = fresh()
 			for _, id := range st.Pending {
 				s.rawMig.pending[id] = true
 			}
+			s.rawMig.restoreSnippetWaits(st)
 			s.rawMig.everPending = keep.everPending || len(st.Pending) > 0
 			return nil
 		} else if !keep.unreadable {
@@ -268,8 +272,46 @@ func (s *Server) saveRawRouteMigrationLocked() error {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	b, _ := json.Marshal(map[string][]int64{"pending": ids})
+	st := rawMigSavedState{Pending: ids}
+	for _, id := range ids {
+		if n := s.rawMig.snippetWaits[id]; n > 0 {
+			if st.SnippetWaits == nil {
+				st.SnippetWaits, st.SnippetSince = map[string]int{}, map[string]int64{}
+			}
+			key := strconv.FormatInt(id, 10)
+			st.SnippetWaits[key] = n
+			st.SnippetSince[key] = s.rawMig.snippetSince[id].Unix()
+		}
+	}
+	b, _ := json.Marshal(st)
 	return models.SetSetting(s.DB, settingTenantRawRouteMigration, string(b))
+}
+
+// rawMigSavedState is the migration state as it is stored. The snippet
+// counters are kept with it (T-0935), so a restart does not start a row's
+// wait for an unavailable snippet over again.
+type rawMigSavedState struct {
+	Pending      []int64          `json:"pending"`
+	SnippetWaits map[string]int   `json:"snippet_waits,omitempty"`
+	SnippetSince map[string]int64 `json:"snippet_since,omitempty"`
+}
+
+// restoreSnippetWaits takes the stored snippet counters of pending rows
+// this process has none for.
+func (m *tenantRawMigration) restoreSnippetWaits(st rawMigSavedState) {
+	if m.snippetWaits == nil {
+		m.snippetWaits = map[int64]int{}
+		m.snippetSince = map[int64]time.Time{}
+	}
+	for key, n := range st.SnippetWaits {
+		id, err := strconv.ParseInt(key, 10, 64)
+		since, ok := st.SnippetSince[key]
+		if err != nil || !ok || n <= 0 || !m.pending[id] || m.snippetWaits[id] > 0 {
+			continue
+		}
+		m.snippetWaits[id] = n
+		m.snippetSince[id] = time.Unix(since, 0)
+	}
 }
 
 // rawRouteMigrationCandidates returns the rows the migration covers; see
@@ -442,6 +484,7 @@ func (s *Server) migrateTenantRawRoutes(serverID int64, cl *caddy.Client) bool {
 				s.rawMig.snippetSince[id] = time.Now()
 			}
 			s.rawMig.snippetWaits[id]++
+			changed = true // stored with the state (T-0935)
 			if s.rawMig.snippetWaits[id] >= rawMigSnippetRuns && time.Since(s.rawMig.snippetSince[id]) >= rawMigSnippetGrace {
 				out = rawMigHold
 				why = "held: snippet unavailable — " + why

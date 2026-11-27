@@ -978,6 +978,8 @@ func cfImportSites(toks []cfToken, depths []int, isImport func(i int) bool, body
 				t := toks[k].text
 				site.ArgImport = site.ArgImport || strings.Contains(t, "import")
 				site.ArgNewline = site.ArgNewline || strings.ContainsAny(t, "\n\r") || toks[k].heredoc
+				site.ArgPlaceholder = site.ArgPlaceholder || cfArgPlaceholder(t)
+				site.ArgEmpty = site.ArgEmpty || t == ""
 			}
 			site.ArgCount = j - (i + 2)
 			site.ArgWeight = sumWeight[j] - sumWeight[i+2]
@@ -1309,4 +1311,29 @@ func caddyfileAddressHostPort(addr string) (host, port string, ok bool) {
 		}
 	}
 	return host, port, true
+}
+
+// cfProcessPlaceholderStart matches the start of a placeholder that reads
+// the Caddy server: {env…, {file…, {$… (any case, with spaces).
+var cfProcessPlaceholderStart = regexp.MustCompile(`(?i)\{\s*(?:env|file|\$)`)
+
+// cfArgPlaceholder reports whether an import argument holds the start of a
+// process-reading placeholder, or opens a `{` it does not close (see
+// CaddyfileImport.ArgPlaceholder).
+func cfArgPlaceholder(t string) bool {
+	if cfProcessPlaceholderStart.MatchString(t) {
+		return true
+	}
+	open := 0
+	for _, c := range t {
+		switch c {
+		case '{':
+			open++
+		case '}':
+			if open > 0 {
+				open--
+			}
+		}
+	}
+	return open > 0
 }

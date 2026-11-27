@@ -4241,6 +4241,14 @@ func MarkRawRouteCurrent(db *sql.DB, id int64) error {
 	return err
 }
 
+// ClearRawRouteHeldJSON forgets the routes the upgrade migration held
+// for the Advanced route id: once the route is saved again, they no longer
+// describe it, and restoring them would overwrite what was saved.
+func ClearRawRouteHeldJSON(db *sql.DB, id int64) error {
+	_, err := db.Exec(`UPDATE raw_routes SET held_json = '' WHERE id = ? AND COALESCE(held_json, '') <> ''`, id)
+	return err
+}
+
 // GetRawRouteHeldJSON returns the routes the upgrade migration took off
 // the Advanced route id when it held it (issue #184 round 13), or "". For
 // an administrator only: they may hold whatever an `import` read up to

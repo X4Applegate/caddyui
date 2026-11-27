@@ -277,6 +277,10 @@ type CaddyfileSnippet struct {
 	// token that is exactly one placeholder (round 13): the arguments
 	// alone decide what it is, `{` or `}` included.
 	PlaceholderNoLiteral bool
+	// MatcherNameArgs is set when a line starts with a matcher name made
+	// from `{args…}` (`@{args[0]} host …`): an empty argument leaves the
+	// name `@`, so a non-admin may not pass one (T-0935).
+	MatcherNameArgs bool
 	// DefBlock is set when the importer's block is put inside a matcher
 	// definition (round 13: its size then counts as the definition's).
 	DefBlock bool
@@ -334,6 +338,13 @@ type CaddyfileImport struct {
 	// in a snippet's place, a line break moves the tokens after it to a
 	// new line, where a directive starts.
 	ArgImport, ArgNewline bool
+	// ArgPlaceholder is set when an argument opens a placeholder it does
+	// not close, or holds the start of one that reads the Caddy server
+	// (`{env`, `{file`, `{$`): put in a snippet's place next to another
+	// argument or the snippet's own text, it can complete one
+	// (`{args[0]}.{args[1]}` with `{file` and `/etc/hostname}`). ArgEmpty
+	// is set when an argument is empty (`""`).
+	ArgPlaceholder, ArgEmpty bool
 	// ArgWeight and BlockWeight weigh the arguments' and the block's
 	// tokens as the tenant rules count them (CaddyfileTokenWeight);
 	// ArgRefs and BlockRefs count those that may name a matcher;
@@ -421,6 +432,7 @@ func CaddyfileSnippets(src string) []CaddyfileSnippet {
 		ref, def := cfMatcherFacts(body, depths)
 		sh := cfSnippetPlacement(body, def)
 		s.BlockNotAlone, s.PlaceholderLineStart, s.PlaceholderNoLiteral, s.DefBlock = sh.blockNotAlone, sh.placeholderLineStart, sh.placeholderNoLiteral, sh.defBlock
+		s.MatcherNameArgs = sh.matcherNameArgs
 		weight := 0
 		for i, t := range body {
 			weight += CaddyfileTokenWeight(t.text)

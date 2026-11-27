@@ -271,6 +271,7 @@ func (s *Server) tenantAdaptClient(cl *caddy.Client) *caddy.Client {
 	}
 	cp := *cl
 	cp.MaxAdaptBytes = maxTenantAdaptBytes
+	cp.SanitizeAdaptErrors = true // T-0935: no Caddy internals in a non-admin's errors
 	cp.AdaptTextCheck = func(text string) string {
 		if why := s.tenantAdaptTextViolation(text); why != "" {
 			return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
@@ -1802,6 +1803,7 @@ func (s *Server) exportAdaptClient(serverID int64) func() *caddy.Client {
 			// text, so the export reads no more of an answer than any
 			// other path does for one (tenantAdaptClient).
 			cp.MaxAdaptBytes = maxTenantAdaptBytes
+			cp.SanitizeAdaptErrors = true // T-0935: the export may be a non-admin's
 			cl = &cp
 		})
 		return cl

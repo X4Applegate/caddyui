@@ -55,6 +55,10 @@ type Client struct {
 	// non-admin's request, and a larger answer is refused as the text's
 	// own fault (IsCaddyfileRejected), not read in full.
 	MaxAdaptBytes int64
+	// SanitizeAdaptErrors, when set, keeps Caddy's internals out of the
+	// errors Adapt returns (SanitizeCaddyError): it is set on the clients
+	// that adapt text on a non-admin's behalf (T-0935).
+	SanitizeAdaptErrors bool
 }
 
 // New returns a Client configured to talk to adminURL. Pass empty strings for
@@ -349,6 +353,9 @@ func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
 		}
 	} else {
 		body, _ = io.ReadAll(resp.Body)
+	}
+	if resp.StatusCode >= 300 && c.SanitizeAdaptErrors {
+		body = []byte(SanitizeCaddyError(string(body)))
 	}
 	if resp.StatusCode == http.StatusBadRequest {
 		return nil, caddyfileRejected{"caddy rejected Caddyfile: " + strings.TrimSpace(string(body))}
@@ -4692,4 +4699,40 @@ func (c *Client) HasWAFModule() (present, known bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// maxSanitizedCaddyError is the most of a Caddy error SanitizeCaddyError
+// keeps.
+const maxSanitizedCaddyError = 600
+
+// goSourceRefRe matches what Caddy's internals look like in an error: a Go
+// source file with its line, and the module paths of a stack frame.
+var goSourceRefRe = regexp.MustCompile(`(?:[\w./@~+-]*/)?[\w.-]+\.go:\d+(?:\s*\+0x[0-9a-f]+)?|(?:github\.com|golang\.org|go\.uber\.org|google\.golang\.org)/[\w./@~+()*-]+`)
+
+// SanitizeCaddyError reduces an error body from Caddy's adapter to what a
+// non-admin may see (T-0935): the message, not Caddy's internals. A panic
+// (a goroutine dump) becomes a fixed message; otherwise only the first
+// line is kept, Go source references and module paths are cut out, and the
+// result is shortened.
+func SanitizeCaddyError(body string) string {
+	b := strings.TrimSpace(body)
+	// The admin API answers {"error": "..."}: read the message.
+	var wrapped struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(b), &wrapped) == nil && wrapped.Error != "" {
+		b = wrapped.Error
+	}
+	lower := strings.ToLower(b)
+	if strings.Contains(lower, "goroutine ") || strings.Contains(lower, "panic") || strings.Contains(b, "runtime/debug") {
+		return "Caddy's Caddyfile adapter failed on this text (an internal error); change the text, or ask an administrator to check the Caddy logs"
+	}
+	if i := strings.IndexAny(b, "\r\n"); i >= 0 {
+		b = b[:i]
+	}
+	b = goSourceRefRe.ReplaceAllString(b, "…")
+	if len(b) > maxSanitizedCaddyError {
+		b = b[:maxSanitizedCaddyError] + "…"
+	}
+	return b
 }

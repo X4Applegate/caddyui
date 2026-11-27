@@ -95,6 +95,9 @@ func cfKeepsLiteral(text string) bool {
 // cfSnippetShape is what CaddyfileSnippets learns about where a snippet's
 // placeholders sit (issue #184 round 13).
 type cfSnippetShape struct {
+	// matcherNameArgs: a line starts with a matcher name built from
+	// `{args…}` (`@{args[0]}`), which an empty argument leaves as `@`.
+	matcherNameArgs bool
 	// placeholderLineStart: an `{args…}` token can be the first token of
 	// a line once the snippet is imported.
 	placeholderLineStart bool
@@ -141,6 +144,9 @@ func cfSnippetPlacement(body []cfToken, def []bool) cfSnippetShape {
 		}
 		if !anchored && !cfMatcherNameToken(t.text) {
 			sh.placeholderLineStart = true
+		}
+		if !anchored && cfMatcherNameToken(t.text) {
+			sh.matcherNameArgs = true
 		}
 		if !cfExactArgsPlaceholder(t.text) && !cfKeepsLiteral(t.text) {
 			sh.placeholderNoLiteral = true
