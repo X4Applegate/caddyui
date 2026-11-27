@@ -381,6 +381,13 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	// into the host's own handler at sync time (v2.40.0), so its
 	// sub-directives render inside the generated reverse_proxy block.
 	advancedRest, advancedInner := splitAdvancedReverseProxyBlock(p.AdvancedConfig)
+	// T-0931: one transport block, the generated options merged with the
+	// Advanced block's own, as the live route merges them.
+	transportLines := caddyfileTransportLines(p)
+	var advTransport advancedTransport
+	if len(transportLines) > 0 {
+		advancedInner, advTransport = takeAdvancedTransport(advancedInner)
+	}
 	advancedInRoute := ""
 	if wrapInRoute && strings.TrimSpace(advancedRest) != "" {
 		var ok bool
@@ -523,27 +530,8 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		b.WriteString("\t\tflush_interval -1\n")
 	}
 
-	// Transport block — only emit if anything inside is non-default.
-	if p.ForwardScheme == "https" || p.UpstreamSNI != "" || p.KeepaliveConns > 0 || p.UpstreamTimeoutSec > 0 || p.DisableUpstreamCompression {
-		b.WriteString("\t\ttransport http {\n")
-		if p.ForwardScheme == "https" {
-			b.WriteString("\t\t\ttls\n")
-		}
-		if p.UpstreamSNI != "" {
-			fmt.Fprintf(&b, "\t\t\ttls_server_name %s\n", caddyfileValue(p.UpstreamSNI))
-		}
-		if p.KeepaliveConns > 0 {
-			fmt.Fprintf(&b, "\t\t\tkeepalive_idle_conns %d\n", p.KeepaliveConns)
-		}
-		if p.UpstreamTimeoutSec > 0 {
-			fmt.Fprintf(&b, "\t\t\tdial_timeout %ds\n", p.UpstreamTimeoutSec)
-			fmt.Fprintf(&b, "\t\t\tresponse_header_timeout %ds\n", p.UpstreamTimeoutSec)
-		}
-		if p.DisableUpstreamCompression {
-			b.WriteString("\t\t\tcompression off\n") // v2.12.52
-		}
-		b.WriteString("\t\t}\n")
-	}
+	// Transport block — only emitted if anything inside is non-default.
+	writeTransportBlock(&b, transportLines, advTransport)
 
 	if strings.TrimSpace(advancedInner) != "" {
 		b.WriteString("\t\t# from Advanced config\n")
