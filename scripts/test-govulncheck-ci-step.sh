@@ -201,6 +201,26 @@ else
   bad "8 continue-on-error is set on the govulncheck step or job, which silently restores report-only"
 fi
 
+# ---------------------------------------------------------------------------
+# 9. THE GATE'S REMEDIATION TEXT NAMES THE SAME PIN AS EVERY WORKFLOW.
+#    govulncheck-gate.sh tells a human what to install via PINNED_SCANNER; if
+#    the workflows move to a new pin and the constant does not, the advice
+#    sends an operator to a scanner CI no longer uses (T-0894).
+gate_pin="$(sed -n 's/^PINNED_SCANNER="\(v[0-9.]*\)"$/\1/p' "$repo/scripts/govulncheck-gate.sh")"
+for wfname in ci.yml caddy-image-refresh.yml release-docker.yml; do
+  f="$repo/.github/workflows/$wfname"
+  n=$((n+1))
+  if [ -z "$gate_pin" ]; then
+    bad "9 govulncheck-gate.sh has no PINNED_SCANNER constant"
+  elif ! grep -q 'cmd/govulncheck@' "$f" 2>/dev/null; then
+    ok "9 $wfname does not install govulncheck"
+  elif grep -q "cmd/govulncheck@$gate_pin\b" "$f"; then
+    ok "9 $wfname pins govulncheck@$gate_pin, matching the gate's advice"
+  else
+    bad "9 $wfname pins a govulncheck other than the gate's PINNED_SCANNER ($gate_pin)"
+  fi
+done
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

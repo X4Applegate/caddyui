@@ -102,6 +102,13 @@ set -uo pipefail
 
 PROG="govulncheck-gate"
 
+# The scanner version this repo installs, kept identical to the three workflows
+# (ci.yml, caddy-image-refresh.yml, release-docker.yml). Remediation text must name
+# THIS version and not `@latest`: `@latest` resolves to v1.10.0, whose type checker
+# cannot parse this tree's go1.27 stdlib, so an operator told to install `@latest`
+# goes from exit 3 straight back to exit 3. Re-evaluate the pin under T-0887.
+PINNED_SCANNER="v1.9.0"
+
 MODE=""
 TARGET=""
 OUT_DIR="govulncheck-out"
@@ -291,7 +298,7 @@ resolve_tool() {
   local p
   p="$(command -v govulncheck 2>/dev/null)" || true
   if [ -z "$p" ]; then
-    note "govulncheck is not on \$PATH, so nothing was scanned. Install it with the tree's own toolchain: \`go install golang.org/x/vuln/cmd/govulncheck@latest\`"
+    note "govulncheck is not on \$PATH, so nothing was scanned. Install it with the tree's own toolchain: \`go install golang.org/x/vuln/cmd/govulncheck@${PINNED_SCANNER}\`"
     return 1
   fi
   TOOL_RESOLVED="$p"
@@ -622,9 +629,9 @@ else
         # exactly what produced this stale scanner, so saying it again would
         # be a circular remedy on a check that then goes red every week.
         if [ -n "${bin_go:-}" ] && [ "$required_go" = "$bin_go" ] && [ "$required_go" != "$tree_toolchain" ]; then
-          remedy="install the scanner under Go \`$required_go\` or newer -- the BINARY's Go, not this tree's \`${tree_toolchain:-unknown}\`: the binary was built by the upstream Caddy builder image, whose Go moves independently of go.mod, so installing under \`go-version-file: go.mod\` reproduces this exact stale scanner. In CI, \`setup-go\` with \`go-version: stable\` (not \`go-version-file: go.mod\`) then \`go install\` at the pinned govulncheck version"
+          remedy="install the scanner under Go \`$required_go\` or newer -- the BINARY's Go, not this tree's \`${tree_toolchain:-unknown}\`: the binary was built by the upstream Caddy builder image, whose Go moves independently of go.mod, so installing under \`go-version-file: go.mod\` reproduces this exact stale scanner. In CI, \`setup-go\` with \`go-version: stable\` (not \`go-version-file: go.mod\`) then \`go install\` at the pinned govulncheck version (\`${PINNED_SCANNER}\`)"
         else
-          remedy="\`go install golang.org/x/vuln/cmd/govulncheck@latest\` under this tree's toolchain (in CI, \`setup-go\` with \`go-version-file: go.mod\` then \`go install\`)"
+          remedy="\`go install golang.org/x/vuln/cmd/govulncheck@${PINNED_SCANNER}\` under this tree's toolchain (in CI, \`setup-go\` with \`go-version-file: go.mod\` then \`go install\`)"
         fi
         note "**the scanner is older than the tree it was asked to scan — reinstall it.** govulncheck was built with \`$tool_go\`; this scan needs at least \`$required_go\` ($required_src). A govulncheck built on an older Go embeds that release's type checker and cannot parse a newer stdlib: it exits non-zero with a \`package patterns\` error and NO findings, which reads as an operator mistake and records as a pass. Fix: $remedy."
       fi

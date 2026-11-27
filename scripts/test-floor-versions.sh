@@ -297,29 +297,42 @@ echo "=== 17. against the REAL Dockerfile and the REAL measured graph ==="
 # this is the shipped-image case end to end.
 #
 # THIS FIXTURE TRACKS THE LIVE DOCKERFILE AND WILL GO STALE WHEN A FLOOR IS
-# ADDED. It did: route53 gained a `# pin-watch: floor` directive (T-0637)
-# after this case was written, and because a floor whose module has no row in
-# the graph is a hard error rather than a pass — correctly, that is the
-# fail-open shape assert-floor-versions.sh exists to remove — the omission
-# surfaced as four failures here rather than as a silent miscount. Adding a
-# floor to Dockerfile.caddy therefore means adding its module row below and
-# moving the two counts; that coupling is the point, not an inconvenience.
+# ADDED OR REPINNED. It has three times: route53 gained a `# pin-watch: floor`
+# directive (T-0637) after this case was written, I182 added a `security`
+# floor on aws-sdk-go-v2/service/route53, and T-0753 repinned crowdsec to
+# v1.8.1 and go-jose to v4.1.9. Because a floor whose module has no
+# row in the graph is a hard error rather than a pass — correctly, that is the
+# fail-open shape assert-floor-versions.sh exists to remove — each drift
+# surfaced as failures here rather than as a silent miscount. Keeping this case
+# green therefore means updating the graph when a pin moves; that coupling is
+# the point, not an inconvenience.
+#
+# The graph below is what the PUBLISHED binary links, measured with
+# `go version -m` on /usr/bin/caddy extracted from applegater/caddyui-caddy:stable.
+# Since T-0753 the written pins equal it exactly, so the live file has no
+# divergence left and passes under --strict — which is the condition the
+# publish paths now depend on, asserted here against the real file.
 mk_graph "$WORK/G17" <<EOF
 github.com/crowdsecurity/crowdsec	v1.8.1
 golang.org/x/net	v0.62.0
 github.com/go-chi/chi/v5	v5.5.0
-github.com/go-jose/go-jose/v4	v4.1.7
+github.com/go-jose/go-jose/v4	v4.1.9
 github.com/aws/aws-sdk-go-v2/service/route53	v1.59.4
 github.com/caddy-dns/route53	v1.6.2
 EOF
 run "$REPO/Dockerfile.caddy" "$WORK/G17"
 check "rc=0"                      "0" "$(rc)"
-check "crowdsec floor diverged"   "1" "$(out | grep -c '\[DIVERGED\]')"
+check "no divergence left"        "0" "$(out | grep -c '\[DIVERGED\]')"
 check "no parse error"            "0" "$(err | grep -c 'ERROR')"
 # The coverage assertion. A regression that drops a directive would still
 # exit 0 with a clean-looking report, so the COUNT is checked explicitly.
 check "all 6 declared floors checked" "1" "$(out | grep -c '6 floor(s) checked')"
-check "the other 5 are [ok]"          "5" "$(out | grep -c '\[ok\]')"
+check "all 6 are [ok]"                "6" "$(out | grep -c '\[ok\]')"
+# The publish paths pass --strict (T-0753), so the live file must satisfy the
+# strict reading too. If it does not, every release fails — which is a thing to
+# learn here rather than from a red pipeline.
+run "$REPO/Dockerfile.caddy" "$WORK/G17" --strict
+check "live pins pass --strict"       "0" "$(rc)"
 
 echo
 echo "=== 18. the live Dockerfile is readable by the WATCHER too ==="
@@ -533,6 +546,216 @@ check "21c says nothing was compared"    "1" "$(err | grep -c 'no .*pkg@version.
 # And the control: with all three left alone, the live file still passes.
 run "$LIVE_DF" "$WORK/G17" --expect "$LIVE_EXPECT_21"
 check "21 control: untouched still rc=0" "0" "$(rc)"
+echo
+echo "=== 22. --strict turns a divergence into a build failure ==="
+# The reporting/strict split IS the T-0753 decision, so both readings of the
+# same input are asserted rather than one. Same Dockerfile, same graph, one
+# flag apart.
+mk_dockerfile "$WORK/D20" '# pin-watch: floor pin=v1.7.8 against=v1.8.2 ref=T-0753 reason=test' \
+  '--with github.com/crowdsecurity/crowdsec/pkg/apiclient@v1.7.8 \'
+mk_graph "$WORK/G20" <<< $'github.com/crowdsecurity/crowdsec\tv1.8.1'
+run "$WORK/D20" "$WORK/G20"
+check "reporting: lift exits 0"      "0" "$(rc)"
+check "reporting: names it diverged" "1" "$(out | grep -c '\[DIVERGED\]')"
+run "$WORK/D20" "$WORK/G20" --strict
+check "strict: lift exits 1"         "1" "$(rc)"
+check "strict: still names it"       "1" "$(out | grep -c '\[DIVERGED\]')"
+# --strict must not change the BELOW-pin answer, which was never optional.
+mk_graph "$WORK/G20b" <<< $'github.com/crowdsecurity/crowdsec\tv1.7.0'
+run "$WORK/D20" "$WORK/G20b"
+check "below pin fails without --strict too" "1" "$(rc)"
+# And a clean run is still clean under --strict: the flag escalates the
+# divergence and nothing else. Without this case a --strict that failed
+# unconditionally would satisfy every other assertion here.
+mk_graph "$WORK/G20c" <<< $'github.com/crowdsecurity/crowdsec\tv1.7.8'
+run "$WORK/D20" "$WORK/G20c" --strict
+check "strict: equal is still ok"    "0" "$(rc)"
+
+echo
+echo "=== 23. a pin BEHIND the artefact fails --strict, which is what T-0753 fixed ==="
+# The state this card found: go-jose written v4.1.7 while the binary shipped
+# v4.1.9, because the go.step.sm/crypto --replace (T-0718) requires v4.1.9.
+# Nothing reported it until the pins were asserted against the artefact. The
+# pre-T-0753 Dockerfile is reconstructed here so the regression cannot return
+# silently: whatever the live file says, THIS shape must still fail --strict.
+mk_dockerfile "$WORK/D21" '# pin-watch: security pin=v4.1.7 ref=T-0646 reason=test' \
+  '--with github.com/go-jose/go-jose/v4@v4.1.7 \'
+mk_graph "$WORK/G21" <<EOF
+github.com/go-jose/go-jose/v4	v4.1.9
+github.com/caddy-dns/route53	v1.6.2
+EOF
+run "$WORK/D21" "$WORK/G21"
+check "reporting: the stale pin builds"  "0" "$(rc)"
+check "reporting: and is named"          "1" "$(out | grep -c '\[DIVERGED\]')"
+run "$WORK/D21" "$WORK/G21" --strict
+check "strict: the stale pin does NOT"   "1" "$(rc)"
+
+echo
+echo "=== 24. every publish path passes FLOOR_STRICT=1 ==="
+# A build-arg is invisible to every other check in this repo. The Dockerfile
+# defaults to the REPORTING reading on purpose, so a publish step that loses
+# `FLOOR_STRICT=1` keeps building, keeps passing, and publishes under the
+# weaker standard with nothing to show it happened. Hence a structural
+# assertion against the workflows rather than a review habit.
+#
+# The step list is DERIVED from the YAML at run time, not written here: the set
+# of steps that build Dockerfile.caddy is whatever the workflows say today, so a
+# new publish step is covered the moment it is added rather than when somebody
+# remembers to extend a fixture.
+# Reviewer-found gaps (independent review of this card), all fixed here:
+#   - `with.file` was matched by exact string, so `file: ./Dockerfile.caddy`
+#     silently dropped a step out of scope. Matched by basename now.
+#   - only `missing == 0` was asserted, never `total`, so a deleted publish
+#     step read as a pass having examined nothing. `total` is now pinned to
+#     the real count of Dockerfile.caddy build steps in THIS tree, read from
+#     the files rather than hard-coded, so adding a step is still covered.
+#   - the negative control only ever de-stricted release-docker.yml, so a
+#     dropped flag on caddy-image-refresh.yml's OWN three build steps was
+#     unexercised. The control now runs once per workflow file that actually
+#     has a Dockerfile.caddy build step, and asserts the sed edit really
+#     changed something before trusting its result.
+if python3 -c 'import yaml' 2>/dev/null; then
+  probe="$WORK/strict-probe.py"
+  cat > "$probe" <<'PY'
+import sys, pathlib, yaml
+root = pathlib.Path(sys.argv[1])
+bad, total = [], 0
+for wf in sorted(root.glob("*.yml")):
+    doc = yaml.safe_load(wf.read_text()) or {}
+    for jname, job in (doc.get("jobs") or {}).items():
+        for step in (job.get("steps") or []):
+            with_ = step.get("with") or {}
+            raw = str(with_.get("file", "")).strip().strip('"').strip("'")
+            if pathlib.PurePosixPath(raw).name != "Dockerfile.caddy":
+                continue
+            total += 1
+            args = with_.get("build-args") or ""
+            if isinstance(args, list):
+                args = "\n".join(str(a) for a in args)
+            pairs = [l.strip() for l in str(args).splitlines() if l.strip()]
+            if "FLOOR_STRICT=1" not in pairs:
+                bad.append("%s:%s:%s" % (wf.name, jname, step.get("name", "?")))
+print("total=%d" % total)
+print("missing=%d" % len(bad))
+for b in bad:
+    print("BAD %s" % b)
+PY
+  python3 -I "$probe" "$REPO/.github/workflows" > "$WORK/strict.txt" 2>&1 || true
+  st_total="$(sed -n 's/^total=//p' "$WORK/strict.txt" | head -1)"
+  st_missing="$(sed -n 's/^missing=//p' "$WORK/strict.txt" | head -1)"
+  # A parse failure leaves both empty, and an empty total would let the
+  # missing-count check pass having examined nothing. "No publish step was
+  # found" and "every publish step is strict" must not share a result, so the
+  # count is asserted to be a positive number FIRST.
+  case "${st_total:-}" in
+    ''|*[!0-9]*) parsed="no: $(head -3 "$WORK/strict.txt" | tr '\n' ' ')" ;;
+    0)           parsed="no: found no Dockerfile.caddy build step at all" ;;
+    *)           parsed=yes ;;
+  esac
+  check "workflows parsed, steps found"          "yes" "$parsed"
+  # EXACTLY 4, not merely ">0": the live count of Dockerfile.caddy build steps
+  # across every workflow today (caddy-image-refresh.yml's 2 scan builds + 1
+  # publish build, release-docker.yml's 1 publish build). A step silently
+  # removed or renamed out of scope must fail THIS check, not read as
+  # "nothing to report". When a step is legitimately added or removed, update
+  # this number in the same change.
+  check "exactly 4 Dockerfile.caddy build steps found" "4" "${st_total:-0}"
+  check "every Dockerfile.caddy build is strict" "0"   "${st_missing:-unparsed}"
+  [ "${st_missing:-1}" = "0" ] || grep '^BAD ' "$WORK/strict.txt" || true
+  # The probe must be able to FAIL, against EVERY workflow file that has a
+  # Dockerfile.caddy build step -- not just one of them, which is what let a
+  # dropped flag on caddy-image-refresh.yml's three build steps go unexercised
+  # (reviewer finding). One de-stricted copy per such file, each checked alone
+  # so a miss on any one is attributable.
+  neg_dir="$WORK/wfneg"
+  mkdir -p "$neg_dir"
+  for wf in "$REPO"/.github/workflows/*.yml; do
+    grep -q 'file: Dockerfile.caddy' "$wf" || continue
+    wfname="$(basename "$wf")"
+    rm -rf "$neg_dir"; mkdir -p "$neg_dir"
+    sed 's/^\( *\)FLOOR_STRICT=1$/\1FLOOR_STRICT=0/' "$wf" > "$neg_dir/$wfname"
+    # The control's own precondition: the sed edit must have changed
+    # something, or "nothing to flip" and "probe caught it" are indistinguishable.
+    check "$wfname: the negative control actually flipped a line" "1" \
+      "$( ! diff -q "$wf" "$neg_dir/$wfname" >/dev/null 2>&1 && echo 1 || echo 0 )"
+    python3 -I "$probe" "$neg_dir" > "$WORK/strict-neg-$wfname.txt" 2>&1 || true
+    # The sed flips EVERY FLOOR_STRICT=1 line in the file, so a file with
+    # several build steps (caddy-image-refresh.yml has 3) reports several
+    # missing, not exactly 1. The property under test is "the probe noticed",
+    # i.e. non-zero, not a specific count tied to today's step count.
+    neg_missing="$(sed -n 's/^missing=//p' "$WORK/strict-neg-$wfname.txt" | head -1)"
+    check "$wfname: the probe catches a dropped flag" "caught" \
+      "$( [ "${neg_missing:-0}" -gt 0 ] 2>/dev/null && echo caught || echo "not caught (missing=${neg_missing:-?})" )"
+  done
+else
+  echo "SKIP  python3 yaml unavailable; cannot assert the workflows' FLOOR_STRICT"
+  check "python3 yaml is available (do not silently skip the FLOOR_STRICT guard)" "1" "0"
+fi
+
+echo
+echo "=== 25. FLOOR_STRICT is validated, not interpolated ==="
+# The Dockerfile derives the flag from the ARG through a `case`. A typo must be
+# a hard error, because silently building the WEAKER way is the one outcome
+# that would make the strict reading losable by accident.
+dfp="$REPO/Dockerfile.caddy"
+check "ARG FLOOR_STRICT defaults to 0" "1" \
+  "$(grep -c '^ARG FLOOR_STRICT=0$' "$dfp")"
+# Comment lines are stripped first: the block above DOCUMENTS the unsafe form
+# in prose, so a grep over the whole file matches the explanation and reports
+# the very defect it is warning about. Checked in both directions — the raw ARG
+# must never reach the script's argument list, and the DERIVED variable must,
+# because "neither is passed" would satisfy a one-sided check while silently
+# dropping --strict everywhere.
+check "the ARG never reaches the arg list" "0" \
+  "$(grep -v '^[[:space:]]*#' "$dfp" | grep -cE '(assert-floor-versions\.sh|--expect).*\$FLOOR_STRICT' || true)"
+check "the derived flag does"              "1" \
+  "$(grep -cE '^[[:space:]]+\$strict$' "$dfp" || true)"
+check "an unknown value is rejected" "1" \
+  "$(grep -c 'FLOOR_STRICT must be 0 or 1' "$dfp")"
+# Runs the Dockerfile's OWN case statement, extracted from the file, so this
+# tests the shipped logic rather than a copy of it that can drift from it.
+case_src="$(sed -n '/^ARG FLOOR_STRICT=0$/,/^    sh \/tmp\/assert-floor-versions.sh/p' "$dfp" \
+            | sed -e '1d' -e '$d' -e 's/^RUN //' -e 's/\\$//')"
+check "the case statement was extracted" "1" \
+  "$(printf '%s' "$case_src" | grep -c 'case "\$FLOOR_STRICT" in')"
+strict_of() { # $1=FLOOR_STRICT value -> prints "rc=<n> strict=<selected flag>"
+  local v="$1" rc=0 res
+  res="$(FLOOR_STRICT="$v" sh -c "$case_src"' printf "%s" "${strict-}"' 2>/dev/null)" || rc=$?
+  printf 'rc=%s strict=%s' "$rc" "$res"
+}
+check "1 selects --strict"      "rc=0 strict=--strict" "$(strict_of 1)"
+check "0 selects reporting"     "rc=0 strict="         "$(strict_of 0)"
+# '' used to be in the reporting arm, so an unset/blank --build-arg silently
+# built the weaker way (reviewer finding). ARG FLOOR_STRICT=0 already covers
+# "not passed at all"; an EXPLICITLY blank value is now a hard error like any
+# other unrecognised spelling, not a second way to ask for reporting.
+check "explicit empty is rejected, not silent reporting" "rc=2 strict=" "$(strict_of '')"
+check "true selects --strict"   "rc=0 strict=--strict" "$(strict_of true)"
+check "a typo is exit 2"        "rc=2 strict="         "$(strict_of stirct)"
+check "junk is exit 2"          "rc=2 strict="         "$(strict_of '--strict; echo pwned')"
+
+echo
+echo "=== 26. zero directives without --expect (T-0906) ==="
+# 21a covers the stripped file WITH --expect. Without it, a hand run used to
+# get "nothing to assert", exit 0 -- the fail-open this pins shut.
+run "$WORK/D21a" "$WORK/G17" --strict
+check "26a stripped, --strict, no --expect -> rc=2" "2" "$(rc)"
+check "26a names the cause" "1" "$(err | grep -c 'under --strict; nothing was asserted')"
+run "$WORK/D21a" "$WORK/G17" --min-floors 1
+check "26b stripped, --min-floors 1 -> rc=2" "2" "$(rc)"
+check "26b names the count" "1" "$(err | grep -c 'parsed 0 .*--min-floors requires at least 1')"
+LIVE_MIN_22="$(sed -n 's/^ARG FLOOR_MIN=\([0-9]*\)$/\1/p' "$LIVE_DF" | head -1)"
+check "26c the live FLOOR_MIN is readable" "0" "$( [ -n "$LIVE_MIN_22" ] && echo 0 || echo 1 )"
+check "26c FLOOR_MIN equals the pins in FLOOR_SELFCHECK" "$(echo $LIVE_EXPECT_21 | wc -w | tr -d ' ')" "$LIVE_MIN_22"
+run "$LIVE_DF" "$WORK/G17" --expect "$LIVE_EXPECT_21" --min-floors "$LIVE_MIN_22" --strict
+check "26d live file at its own FLOOR_MIN -> rc=0" "0" "$(rc)"
+run "$LIVE_DF" "$WORK/G17" --min-floors "$(( LIVE_MIN_22 + 1 ))"
+check "26e one more than the live count -> rc=2" "2" "$(rc)"
+run "$WORK/D21a" "$WORK/G17" --min-floors 'x1'
+check "26f non-integer --min-floors -> rc=2" "2" "$(rc)"
+check "26g Dockerfile passes --min-floors" "1" "$(grep -c -- '--min-floors "\$FLOOR_MIN"' "$LIVE_DF")"
+# Case 1 is unchanged on purpose: no --strict, no --min-floors, zero
+# directives is still "nothing to assert", exit 0.
 
 echo
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
