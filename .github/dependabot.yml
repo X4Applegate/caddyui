@@ -14,6 +14,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # Same week's cooldown as the other ecosystems: a compromised module
+    # release is usually caught and yanked before it is proposed here.
+    # Security updates ignore cooldown, so CVE fixes still arrive at once.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       go-minor-and-patch:
