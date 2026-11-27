@@ -122,6 +122,11 @@ func RenderProxyHostCaddyfileWithOptions(p models.ProxyHost, cert *models.Certif
 
 func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOptions) string {
 	domains := p.DomainList()
+	if !opts.tenant(p.OwnerID) {
+		// T-0932: written the way the live route matches them. A tenant's
+		// domains must already be plain host names (checked below).
+		domains = caddyfileSiteAddresses(domains)
+	}
 	if len(domains) == 0 {
 		return ""
 	}
@@ -562,7 +567,7 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 // block using the `redir` directive.
 func RenderRedirectionCaddyfile(r models.RedirectionHost) string {
 	var b strings.Builder
-	domains := r.DomainList()
+	domains := caddyfileSiteAddresses(r.DomainList()) // T-0932: as the live route matches them
 	if len(domains) == 0 {
 		return ""
 	}
