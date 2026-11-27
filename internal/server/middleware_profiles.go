@@ -61,7 +61,7 @@ func applyProfileToHost(p *models.ProxyHost, prof *models.MiddlewareProfile) {
 		if paranoia < 1 {
 			paranoia = 1
 		}
-		p.WAF = &models.WAFSettings{Mode: prof.WAFMode, CRS: prof.WAFCRS, Paranoia: paranoia, Directives: prof.WAFDirectives}
+		p.WAF = &models.WAFSettings{Mode: prof.WAFMode, CRS: prof.WAFCRS, Paranoia: paranoia, Directives: prof.WAFDirectives, PreDirectives: prof.WAFPreDirectives}
 	}
 	p.CustomReqHeaders = mergeHeaderJSON(prof.CustomReqHeaders, p.CustomReqHeaders)
 	p.CustomRespHeaders = mergeHeaderJSON(prof.CustomRespHeaders, p.CustomRespHeaders)
@@ -179,6 +179,9 @@ func validateMiddlewareProfile(p *models.MiddlewareProfile) string {
 	if len(p.WAFDirectives) > 8192 || strings.ContainsRune(p.WAFDirectives, 0) {
 		return "Custom WAF directives must be plain text up to 8 KB."
 	}
+	if len(p.WAFPreDirectives) > 8192 || strings.ContainsRune(p.WAFPreDirectives, 0) {
+		return "WAF directives before the Core Rule Set must be plain text up to 8 KB."
+	}
 	for label, raw := range map[string]string{"Request headers": p.CustomReqHeaders, "Response headers": p.CustomRespHeaders} {
 		if strings.TrimSpace(raw) == "" {
 			continue
@@ -213,10 +216,11 @@ func parseMiddlewareProfileForm(r *http.Request) *models.MiddlewareProfile {
 		AccessList:           t("access_list"), IPBlocklist: t("ip_blocklist"),
 		CustomReqHeaders: t("custom_req_headers"), CustomRespHeaders: t("custom_resp_headers"),
 		WAFMode: t("waf_mode"), WAFCRS: r.FormValue("waf_crs") == "on", WAFDirectives: strings.TrimSpace(r.FormValue("waf_directives")),
+		WAFPreDirectives: strings.TrimSpace(r.FormValue("waf_pre_directives")),
 	}
 	p.WAFParanoia, _ = strconv.Atoi(t("waf_paranoia"))
 	if p.WAFMode == models.WAFModeOff {
-		p.WAFCRS, p.WAFParanoia, p.WAFDirectives = false, 0, ""
+		p.WAFCRS, p.WAFParanoia, p.WAFDirectives, p.WAFPreDirectives = false, 0, "", ""
 	}
 	if p.ForwardAuthMethod == "GET" {
 		p.ForwardAuthMethod = ""

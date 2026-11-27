@@ -113,6 +113,10 @@
       <span>Load the OWASP Core Rule Set <span class="block text-xs text-ink-500">Recommended. Without it only Coraza's base configuration and your own directives apply.</span></span>
     </label>
     <div>
+      <label class="block text-xs text-ink-600 mb-1">Directives before the Core Rule Set <span class="text-ink-400">(optional SecLang, placed before the rules are loaded — for conditional exclusions such as <span class="font-mono">ctl:ruleRemoveById</span> and rule set settings such as <span class="font-mono">setvar:tx.…</span>; rules run in the order they are declared, so a <span class="font-mono">ctl:</span> exclusion placed after the rules has no effect on rules of its own phase)</span></label>
+      <textarea name="waf_pre_directives" rows="4" placeholder='SecRule REQUEST_URI "@beginsWith /api/upload" "id:1000001,phase:1,pass,nolog,ctl:ruleRemoveById=920420"' class="w-full rounded-lg border border-ink-200 px-3 py-2 text-xs font-mono bg-white focus:border-brand-500 focus:outline-none">{{.Row.WAFPreDirectives}}</textarea>
+    </div>
+    <div>
       <label class="block text-xs text-ink-600 mb-1">Custom directives <span class="text-ink-400">(optional SecLang, applied last — for example <span class="font-mono">SecRuleRemoveById 942100</span> to silence one rule)</span></label>
       <textarea name="waf_directives" rows="4" placeholder="SecRuleRemoveById 942100" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-xs font-mono bg-white focus:border-brand-500 focus:outline-none">{{.Row.WAFDirectives}}</textarea>
     </div>

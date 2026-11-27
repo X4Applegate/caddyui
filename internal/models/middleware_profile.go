@@ -44,6 +44,11 @@ type MiddlewareProfile struct {
 	WAFCRS        bool   // load the OWASP Core Rule Set
 	WAFParanoia   int    // 1-4 (0 is treated as 1)
 	WAFDirectives string // extra SecLang appended after the engine line
+	// WAFPreDirectives is SecLang placed after crs-setup and BEFORE the rules
+	// are included: runtime exclusions (ctl:ruleRemoveById…) and CRS settings
+	// (setvar:tx.…). Rules are evaluated in declaration order within a phase,
+	// so a ctl: written after the CRS runs too late for any rule of its own phase.
+	WAFPreDirectives string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -67,6 +72,9 @@ type WAFSettings struct {
 	CRS        bool   // load the embedded OWASP Core Rule Set
 	Paranoia   int    // CRS blocking paranoia level 1-4
 	Directives string // extra SecLang appended after the engine line
+	// PreDirectives is SecLang placed before the Core Rule Set is included
+	// (after crs-setup and the paranoia action).
+	PreDirectives string
 }
 
 // ErrProfileInUse is returned by DeleteMiddlewareProfile while hosts use it.
@@ -76,7 +84,7 @@ const middlewareProfileCols = `id, name, COALESCE(description,''), COALESCE(secu
 	COALESCE(permissions_policy,''), COALESCE(csp_header,''), COALESCE(forward_auth_url,''), COALESCE(forward_auth_method,''),
 	COALESCE(forward_auth_copy_headers,''), COALESCE(forward_auth_headers_prefix,''), COALESCE(forward_auth_skip_paths,''),
 	COALESCE(access_list,''), COALESCE(ip_blocklist,''), COALESCE(custom_req_headers,''), COALESCE(custom_resp_headers,''), created_at, updated_at,
-	COALESCE(waf_mode,''), COALESCE(waf_crs,0), COALESCE(waf_paranoia,0), COALESCE(waf_directives,'')`
+	COALESCE(waf_mode,''), COALESCE(waf_crs,0), COALESCE(waf_paranoia,0), COALESCE(waf_directives,''), COALESCE(waf_pre_directives,'')`
 
 func scanMiddlewareProfile(sc interface{ Scan(...any) error }) (MiddlewareProfile, error) {
 	var p MiddlewareProfile
@@ -84,7 +92,7 @@ func scanMiddlewareProfile(sc interface{ Scan(...any) error }) (MiddlewareProfil
 		&p.PermissionsPolicy, &p.CSPHeader, &p.ForwardAuthURL, &p.ForwardAuthMethod,
 		&p.ForwardAuthCopyHeaders, &p.ForwardAuthHeadersPrefix, &p.ForwardAuthSkipPaths,
 		&p.AccessList, &p.IPBlocklist, &p.CustomReqHeaders, &p.CustomRespHeaders, &p.CreatedAt, &p.UpdatedAt,
-		&p.WAFMode, &p.WAFCRS, &p.WAFParanoia, &p.WAFDirectives)
+		&p.WAFMode, &p.WAFCRS, &p.WAFParanoia, &p.WAFDirectives, &p.WAFPreDirectives)
 	return p, err
 }
 
@@ -155,12 +163,12 @@ func CreateMiddlewareProfile(db *sql.DB, p *MiddlewareProfile) (int64, error) {
 	res, err := db.Exec(`INSERT INTO middleware_profiles
 		(name, description, security_headers, x_frame_options, referrer_policy, permissions_policy, csp_header,
 		 forward_auth_url, forward_auth_method, forward_auth_copy_headers, forward_auth_headers_prefix, forward_auth_skip_paths,
-		 access_list, ip_blocklist, custom_req_headers, custom_resp_headers, waf_mode, waf_crs, waf_paranoia, waf_directives)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 access_list, ip_blocklist, custom_req_headers, custom_resp_headers, waf_mode, waf_crs, waf_paranoia, waf_directives, waf_pre_directives)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		strings.TrimSpace(p.Name), p.Description, p.SecurityHeaders, p.XFrameOptions, p.ReferrerPolicy, p.PermissionsPolicy, p.CSPHeader,
 		p.ForwardAuthURL, p.ForwardAuthMethod, p.ForwardAuthCopyHeaders, p.ForwardAuthHeadersPrefix, p.ForwardAuthSkipPaths,
 		p.AccessList, p.IPBlocklist, p.CustomReqHeaders, p.CustomRespHeaders,
-		p.WAFMode, p.WAFCRS, p.WAFParanoia, p.WAFDirectives)
+		p.WAFMode, p.WAFCRS, p.WAFParanoia, p.WAFDirectives, p.WAFPreDirectives)
 	if err != nil {
 		return 0, err
 	}
@@ -171,11 +179,11 @@ func UpdateMiddlewareProfile(db *sql.DB, p *MiddlewareProfile) error {
 	_, err := db.Exec(`UPDATE middleware_profiles SET name=?, description=?, security_headers=?, x_frame_options=?, referrer_policy=?,
 		permissions_policy=?, csp_header=?, forward_auth_url=?, forward_auth_method=?, forward_auth_copy_headers=?,
 		forward_auth_headers_prefix=?, forward_auth_skip_paths=?, access_list=?, ip_blocklist=?, custom_req_headers=?,
-		custom_resp_headers=?, waf_mode=?, waf_crs=?, waf_paranoia=?, waf_directives=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		custom_resp_headers=?, waf_mode=?, waf_crs=?, waf_paranoia=?, waf_directives=?, waf_pre_directives=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 		strings.TrimSpace(p.Name), p.Description, p.SecurityHeaders, p.XFrameOptions, p.ReferrerPolicy,
 		p.PermissionsPolicy, p.CSPHeader, p.ForwardAuthURL, p.ForwardAuthMethod, p.ForwardAuthCopyHeaders,
 		p.ForwardAuthHeadersPrefix, p.ForwardAuthSkipPaths, p.AccessList, p.IPBlocklist, p.CustomReqHeaders,
-		p.CustomRespHeaders, p.WAFMode, p.WAFCRS, p.WAFParanoia, p.WAFDirectives, p.ID)
+		p.CustomRespHeaders, p.WAFMode, p.WAFCRS, p.WAFParanoia, p.WAFDirectives, p.WAFPreDirectives, p.ID)
 	return err
 }
 

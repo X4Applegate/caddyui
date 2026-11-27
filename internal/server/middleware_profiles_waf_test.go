@@ -64,11 +64,13 @@ func TestProfileWAFOverlayAndValidation(t *testing.T) {
 		t.Fatalf("valid WAF profile refused: %s", msg)
 	}
 	for name, mod := range map[string]func(*models.MiddlewareProfile){
-		"unknown mode":       func(p *models.MiddlewareProfile) { p.WAFMode = "paranoid" },
-		"paranoia 0 enabled": func(p *models.MiddlewareProfile) { p.WAFParanoia = 0 },
-		"paranoia 5":         func(p *models.MiddlewareProfile) { p.WAFParanoia = 5 },
-		"huge directives":    func(p *models.MiddlewareProfile) { p.WAFDirectives = strings.Repeat("a", 9000) },
-		"NUL in directives":  func(p *models.MiddlewareProfile) { p.WAFDirectives = "SecRuleEngine\x00On" },
+		"unknown mode":        func(p *models.MiddlewareProfile) { p.WAFMode = "paranoid" },
+		"paranoia 0 enabled":  func(p *models.MiddlewareProfile) { p.WAFParanoia = 0 },
+		"paranoia 5":          func(p *models.MiddlewareProfile) { p.WAFParanoia = 5 },
+		"huge directives":     func(p *models.MiddlewareProfile) { p.WAFDirectives = strings.Repeat("a", 9000) },
+		"NUL in directives":   func(p *models.MiddlewareProfile) { p.WAFDirectives = "SecRuleEngine\x00On" },
+		"huge pre directives": func(p *models.MiddlewareProfile) { p.WAFPreDirectives = strings.Repeat("a", 9000) },
+		"NUL in pre":          func(p *models.MiddlewareProfile) { p.WAFPreDirectives = "SecAction\x00" },
 	} {
 		p := ok()
 		mod(p)
@@ -201,7 +203,7 @@ func TestProfileFormShowsTheWAFSectionWithSafeDefaults(t *testing.T) {
 	rec := httptest.NewRecorder()
 	f.s.newMiddlewareProfile(rec, cookieReq(t, "/middleware-profiles/new", nil, f.source))
 	body := rec.Body.String()
-	for _, want := range []string{`name="waf_mode"`, "Detection only", `name="waf_crs"`, `name="waf_paranoia"`, `name="waf_directives"`, "Start with Detection only"} {
+	for _, want := range []string{`name="waf_mode"`, "Detection only", `name="waf_crs"`, `name="waf_paranoia"`, `name="waf_directives"`, `name="waf_pre_directives"`, "Start with Detection only"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the profile form is missing %q", want)
 		}
@@ -211,5 +213,43 @@ func TestProfileFormShowsTheWAFSectionWithSafeDefaults(t *testing.T) {
 	}
 	if !strings.Contains(body, `name="waf_crs" checked`) {
 		t.Error("the Core Rule Set should default to on")
+	}
+}
+
+// The "before the Core Rule Set" slot is stored, carried to the host copy,
+// cleared with the WAF, and rendered ahead of the rule set in the live route.
+func TestWAFPreDirectivesRoundTripAndReachTheRoute(t *testing.T) {
+	prof := &models.MiddlewareProfile{Name: "waf", WAFMode: "block", WAFCRS: true, WAFParanoia: 1, WAFPreDirectives: "SecAction \"id:1000001,phase:1,pass,nolog\""}
+	h := models.ProxyHost{}
+	applyProfileToHost(&h, prof)
+	if h.WAF == nil || h.WAF.PreDirectives != prof.WAFPreDirectives {
+		t.Fatalf("pre directives not carried to the host copy: %+v", h.WAF)
+	}
+
+	f := newL4Fleet(t)
+	setWAFModule(f.fSource, "present")
+	pre := `SecRule REQUEST_URI "@beginsWith /webapi/" "id:1000105,phase:1,pass,nolog,ctl:ruleRemoveById=930130"`
+	stored := f.createProfile(t, wafProfileForm("WAF", url.Values{"waf_pre_directives": {"  " + pre + "\n"}}))
+	if stored.WAFPreDirectives != pre || stored.WAFDirectives != "SecRuleRemoveById 942100" {
+		t.Fatalf("stored pre=%q post=%q", stored.WAFPreDirectives, stored.WAFDirectives)
+	}
+	f.createProxy(t, "app.example.com", url.Values{"middleware_profile_id": {strconv.FormatInt(stored.ID, 10)}})
+	routes := f.lastSrv0Routes(t, f.source)
+	// The route is JSON, so compare on a fragment free of quotes.
+	p, rules, post := strings.Index(routes, "ctl:ruleRemoveById=930130"), strings.Index(routes, "@owasp_crs/*.conf"), strings.Index(routes, "SecRuleRemoveById 942100")
+	if p < 0 || rules < 0 || post < 0 || !(p < rules && rules < post) {
+		t.Errorf("want pre < rules < post in the live route (pre=%d rules=%d post=%d):\n%.1200s", p, rules, post, routes)
+	}
+
+	// Turning the WAF off clears the slot like the others.
+	off := parseMiddlewareProfileForm(cookieReq(t, "/middleware-profiles", url.Values{"name": {"x"}, "waf_mode": {""}, "waf_pre_directives": {pre}}, f.source))
+	if off.WAFPreDirectives != "" {
+		t.Errorf("a WAF-off profile kept pre directives: %q", off.WAFPreDirectives)
+	}
+
+	// A form that predates the field (no waf_pre_directives) still saves.
+	legacy := f.createProfile(t, wafProfileForm("Legacy", nil))
+	if legacy.WAFPreDirectives != "" || legacy.WAFDirectives != "SecRuleRemoveById 942100" {
+		t.Errorf("legacy form stored pre=%q post=%q", legacy.WAFPreDirectives, legacy.WAFDirectives)
 	}
 }
