@@ -114,17 +114,18 @@ func TestTenantRawRouteHealthCheckIsRefusedAndNotDeployed(t *testing.T) {
 	if rec.Code == http.StatusSeeOther {
 		t.Error("form: accepted")
 	}
-	// A row stored by an older version is not deployed.
+	// A row stored by an older version is deployed without the health check.
 	out, _ := json.Marshal(e.s.buildMergedRoutes(nil, nil, []models.RawRoute{{Label: "hc", JSONData: js, Enabled: true, OwnerID: ownerNull(e.ids["alice"])}}))
 	if strings.Contains(string(out), "127.0.0.1:2019") {
 		t.Errorf("deployed: %s", out)
 	}
 	// So is a proxy host whose stored Advanced config merges it in: the
-	// sync builds the same merged route and the guard drops it.
+	// sync builds the same merged route and the guard drops the check.
 	p := models.ProxyHost{Domains: "hc.example.test", ForwardScheme: "http", ForwardHost: "203.0.113.5", ForwardPort: 80, Enabled: true, OwnerID: ownerNull(e.ids["alice"])}
 	r := buildProxyRouteWithOverrides(p, map[string]any{"health_checks": map[string]any{"active": map[string]any{"upstream": "127.0.0.1:2019"}}})
-	if _, ok := e.s.sanitizeTenantRoute(p.OwnerID, "proxy host", r); ok {
-		t.Error("a merged route with an admin-API health check passed the sync guard")
+	safe, ok := e.s.sanitizeTenantRoute(p.OwnerID, "proxy host", r)
+	if b, _ := json.Marshal(safe); !ok || strings.Contains(string(b), "127.0.0.1:2019") {
+		t.Errorf("want the host deployed without the admin-API health check (ok=%v): %s", ok, b)
 	}
 }
 

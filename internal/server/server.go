@@ -84,10 +84,10 @@ type Server struct {
 	// tenantSnippets is which administrator snippets non-admin accounts
 	// may import (tenant_snippet_sharing.go), loaded by New.
 	tenantSnippets tenantSnippetPolicy
-	// heldClaims is the non-admin Advanced routes last logged as not
+	// heldClaims is, per server, the non-admin rows last logged as not
 	// deployed for their host claims, with why (tenant_host_claims.go;
 	// guarded by withheldMu).
-	heldClaims map[int64]string
+	heldClaims map[int64]map[string]string
 	// rawMigRunMu serializes runs of the upgrade migration; it is held
 	// while rows are adapted, rawMigMu only while the state is read or
 	// written (issue #184 round 12).
@@ -3246,6 +3246,10 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once — edit the existing entry or remove it before reusing the name.", conflict))
 		return
 	}
+	if msg := s.tenantDomainClaimProblem(s.currentUser(r), s.currentServerID(r), claimRedirect, 0, rh.DomainList()); msg != "" {
+		s.renderRedirectionHostFormError(w, r, rh, msg)
+		return
+	}
 	if errMsg := validateZoneMatchesHostname(rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, rh.DomainList()); errMsg != "" {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
@@ -3273,7 +3277,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
-	if errMsg := s.previewRedirectValidate(s.currentServerID(r), rh); errMsg != "" { // v2.42.1 (issue #74)
+	if errMsg := s.previewMessageFor(r, s.previewRedirectValidate(s.currentServerID(r), rh)); errMsg != "" { // v2.42.1 (issue #74)
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
@@ -3347,11 +3351,20 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	// v2.7.7: domain-conflict guard. excludeRedirectID=rh.ID keeps a no-op
 	// edit (e.g. user toggling SSL on the same redirect) from flagging itself.
-	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), rh.DomainList(), 0, rh.ID); err != nil {
+	rhServer, err := s.claimServerID(claimRedirect, rh.ID, s.currentServerID(r))
+	if err != nil {
+		s.renderRedirectionHostFormError(w, r, rh, "Could not validate domains: "+err.Error())
+		return
+	}
+	if conflict, err := models.DomainsConflict(s.DB, rhServer, rh.DomainList(), 0, rh.ID); err != nil {
 		s.renderRedirectionHostFormError(w, r, rh, "Could not validate domains: "+err.Error())
 		return
 	} else if conflict != "" {
 		s.renderRedirectionHostFormError(w, r, rh, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once.", conflict))
+		return
+	}
+	if msg := s.tenantDomainClaimProblem(s.currentUser(r), rhServer, claimRedirect, rh.ID, rh.DomainList()); msg != "" {
+		s.renderRedirectionHostFormError(w, r, rh, msg)
 		return
 	}
 	if errMsg := validateZoneMatchesHostname(rh.DNSProvider, rh.DNSZoneID, rh.DNSZoneName, rh.DomainList()); errMsg != "" {
@@ -3374,7 +3387,7 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
-	if errMsg := s.previewRedirectValidate(s.currentServerID(r), rh); errMsg != "" { // v2.42.1 (issue #74)
+	if errMsg := s.previewMessageFor(r, s.previewRedirectValidate(s.currentServerID(r), rh)); errMsg != "" { // v2.42.1 (issue #74)
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
@@ -3895,7 +3908,11 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 				// comes straight from the pasted Caddyfile block, so it needs
 				// the same non-admin upstream guard the REST/form create
 				// paths already enforce.
-				if msg := s.validateProxyUpstreamsForUser(cu, &ph); msg != "" {
+				msg := s.validateProxyUpstreamsForUser(cu, &ph)
+				if msg == "" {
+					msg = s.tenantDomainClaimProblem(cu, s.currentServerID(r), claimProxy, 0, ph.DomainList())
+				}
+				if msg != "" {
 					results = append(results, caddyfileImportResult{
 						Head: label, Snippet: blockText, RouteIdx: idx,
 						Status: "error", Message: msg,
@@ -3924,7 +3941,11 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			if len(classified.Redirect) == 1 {
 				rh := classified.Redirect[0]
 				rh.Enabled = true
-				if msg := s.validateRedirectionForUser(cu, &rh); msg != "" {
+				msg := s.validateRedirectionForUser(cu, &rh)
+				if msg == "" {
+					msg = s.tenantDomainClaimProblem(cu, s.currentServerID(r), claimRedirect, 0, rh.DomainList())
+				}
+				if msg != "" {
 					results = append(results, caddyfileImportResult{
 						Head: label, Snippet: blockText, RouteIdx: idx,
 						Status: "error", Message: msg,

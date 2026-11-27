@@ -412,8 +412,8 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 // forms as well as Advanced routes.
 func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
 	caddyCl := s.caddyForServer(serverID)
-	proxies = s.applyMiddlewareProfiles(proxies)             // v2.60.0 (issue #124)
-	raws = s.withoutForeignHostClaims(proxies, redirs, raws) // as syncCaddyInner
+	proxies = s.applyMiddlewareProfiles(proxies)                                 // v2.60.0 (issue #124)
+	proxies, redirs, raws = s.withoutForeignHostClaims(0, proxies, redirs, raws) // as syncCaddyInner
 	current, _, err := caddyCl.FetchConfig()
 	if err != nil {
 		return ""
@@ -471,7 +471,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyRawDNSFormSelection(rr)
-	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {
+	if errMsg := s.previewMessageFor(r, s.previewRawRouteValidate(s.currentServerID(r), rr)); errMsg != "" {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
@@ -692,7 +692,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 	needCreate := rr.DNSProvider != "" && rr.DNSZoneID != "" && !rr.DNSSkipRecord && len(newHosts) > 0 &&
 		(rr.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || fqdnChanged || recordModeChanged)
 
-	if errMsg := s.previewRawRouteValidate(s.currentServerID(r), rr); errMsg != "" {
+	if errMsg := s.previewMessageFor(r, s.previewRawRouteValidate(s.currentServerID(r), rr)); errMsg != "" {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
@@ -846,6 +846,11 @@ func (s *Server) postReclassifyRawRoutes(w http.ResponseWriter, r *http.Request)
 				nKept++
 				continue
 			}
+			// The new row is held to the save-time checks of its kind.
+			if msg := s.reclassifyClaimProblem(cu, s.currentServerID(r), claimProxy, row, ph.DomainList()); msg != "" {
+				nKept++
+				continue
+			}
 			if _, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph); err != nil {
 				nKept++
 				continue
@@ -857,6 +862,14 @@ func (s *Server) postReclassifyRawRoutes(w http.ResponseWriter, r *http.Request)
 		if len(classified.Redirect) == 1 {
 			rh := classified.Redirect[0]
 			rh.Enabled = row.Enabled
+			if msg := s.validateRedirectionForUser(cu, &rh); msg != "" {
+				nKept++
+				continue
+			}
+			if msg := s.reclassifyClaimProblem(cu, s.currentServerID(r), claimRedirect, row, rh.DomainList()); msg != "" {
+				nKept++
+				continue
+			}
 			if _, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), ownerID, &rh); err != nil {
 				nKept++
 				continue
@@ -1245,7 +1258,7 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// answers for every host on a shared listener, is not deployed (after
 	// the empty-config guard above, so a server whose only rows are held
 	// is still synced and the held routes leave the live config).
-	raws = s.withoutForeignHostClaims(proxies, redirs, raws)
+	proxies, redirs, raws = s.withoutForeignHostClaims(serverID, proxies, redirs, raws)
 
 	// v2.12.14: prepend the global strip-response-headers list to each
 	// proxy host's per-host list so the eventual BuildProxyRoute emits a

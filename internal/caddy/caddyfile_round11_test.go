@@ -386,6 +386,8 @@ func cfImportSitesReference(toks []cfToken, depths []int, isImport func(i int) b
 				}
 				site.ArgImport = site.ArgImport || strings.Contains(t, "import")
 				site.ArgNewline = site.ArgNewline || strings.ContainsAny(t, "\n\r") || toks[j].heredoc
+				site.ArgPlaceholder = site.ArgPlaceholder || cfArgPlaceholder(t)
+				site.ArgEmpty = site.ArgEmpty || t == ""
 				site.ArgArgUses += strings.Count(t, "{args")
 				if cfBlockPlaceholder(t) {
 					site.ArgBlockUses++

@@ -342,6 +342,19 @@ func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
 	c.applyAuth(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		if c.SanitizeAdaptErrors {
+			// The error names the admin API's address; keep only how the
+			// request failed (the upgrade check tells a connection Caddy
+			// dropped mid-request from one it never accepted).
+			msg := "caddy adapt: Caddy could not be reached"
+			switch e := err.Error(); {
+			case strings.Contains(e, "EOF"):
+				msg += " (EOF)"
+			case strings.Contains(e, "connection reset"):
+				msg += " (connection reset)"
+			}
+			return nil, sanitizedError{msg, err}
+		}
 		return nil, fmt.Errorf("caddy adapt: %w", err)
 	}
 	defer resp.Body.Close()
@@ -365,10 +378,23 @@ func (c *Client) Adapt(caddyfile string) (*AdaptResult, error) {
 	}
 	var out AdaptResult
 	if err := json.Unmarshal(body, &out); err != nil {
+		if c.SanitizeAdaptErrors {
+			return nil, sanitizedError{"parse adapt response: Caddy's answer could not be read", err}
+		}
 		return nil, fmt.Errorf("parse adapt response: %w", err)
 	}
 	return &out, nil
 }
+
+// sanitizedError shows msg but keeps the underlying error for errors.Is
+// and errors.As, so callers still tell an unreachable Caddy apart.
+type sanitizedError struct {
+	msg string
+	err error
+}
+
+func (e sanitizedError) Error() string { return e.msg }
+func (e sanitizedError) Unwrap() error { return e.err }
 
 func (c *Client) send(method, path string, val any) error {
 	body, err := json.Marshal(val)

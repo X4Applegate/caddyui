@@ -228,6 +228,11 @@ func (s *Server) upsertFleetProxyHost(sourceServerID, targetServerID int64, sour
 			return fleetUpsertResult{}, fmt.Errorf("domain %q is already claimed on the target environment", conflict)
 		}
 	}
+	if s.isTenantOwner(source.OwnerID) {
+		if why := s.fleetDomainClaimProblem(targetServerID, claimProxy, targetID, source.DomainList(), source.OwnerID); why != "" {
+			return fleetUpsertResult{}, fmt.Errorf("%s", why)
+		}
+	}
 
 	copy := source
 	preserveProxyTargetPolicy(&copy, existing, targetServerID)
@@ -336,6 +341,11 @@ func (s *Server) upsertFleetRedirectionHost(sourceServerID, targetServerID int64
 			return fleetUpsertResult{}, err
 		} else if conflict != "" {
 			return fleetUpsertResult{}, fmt.Errorf("domain %q is already claimed on the target environment", conflict)
+		}
+	}
+	if s.isTenantOwner(source.OwnerID) {
+		if why := s.fleetDomainClaimProblem(targetServerID, claimRedirect, targetID, source.DomainList(), source.OwnerID); why != "" {
+			return fleetUpsertResult{}, fmt.Errorf("%s", why)
 		}
 	}
 

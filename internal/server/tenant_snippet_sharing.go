@@ -107,7 +107,13 @@ func loadTenantSnippetPolicy(db *sql.DB, caddyfilePath string) tenantSnippetPoli
 		log.Printf("caddyfile snippets: could not read %s, so no snippet is shared with non-admin accounts: %v", settingTenantSnippetsShared, err)
 		return parseTenantSnippetList("")
 	}
-	p := tenantSnippetPolicy{loaded: true, names: withSnippetImports(tenantImportedNames(db), caddyfilePath)}
+	imported, err := tenantImportedNames(db)
+	if err != nil {
+		// Not stored: the seed is taken again at the next start.
+		log.Printf("caddyfile snippets: could not read which snippets non-admin accounts import, so none is shared until the next start: %v", err)
+		return parseTenantSnippetList("")
+	}
+	p := tenantSnippetPolicy{loaded: true, names: withSnippetImports(imported, caddyfilePath)}
 	if err := models.SetSetting(db, settingTenantSnippetsShared, p.String()); err != nil {
 		log.Printf("caddyfile snippets: could not store %s: %v", settingTenantSnippetsShared, err)
 	}
@@ -117,28 +123,37 @@ func loadTenantSnippetPolicy(db *sql.DB, caddyfilePath string) tenantSnippetPoli
 
 // tenantImportedNames is every name non-admin accounts' stored Caddyfile
 // text — Advanced routes and proxy hosts' Advanced configs — imports.
-func tenantImportedNames(db *sql.DB) map[string]bool {
+func tenantImportedNames(db *sql.DB) (map[string]bool, error) {
 	names := map[string]bool{}
 	admins := map[int64]bool{}
-	if rows, err := db.Query(`SELECT id FROM users WHERE is_admin = 1 OR role = ?`, models.RoleAdmin); err == nil {
-		for rows.Next() {
-			var id int64
-			if rows.Scan(&id) == nil {
-				admins[id] = true
-			}
-		}
-		_ = rows.Close()
+	rows, err := db.Query(`SELECT id FROM users WHERE COALESCE(role, CASE WHEN is_admin=1 THEN 'admin' ELSE 'view' END) = ? OR is_admin = 1`, models.RoleAdmin)
+	if err != nil {
+		return nil, err
 	}
-	collect := func(query string) {
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		admins[id] = true
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	collect := func(query string) error {
 		rows, err := db.Query(query)
 		if err != nil {
-			return
+			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var owner int64
 			var text string
-			if rows.Scan(&owner, &text) != nil || admins[owner] {
+			if err := rows.Scan(&owner, &text); err != nil {
+				return err
+			}
+			if admins[owner] {
 				continue
 			}
 			args, _ := caddy.CaddyfileImportArguments(text)
@@ -146,14 +161,20 @@ func tenantImportedNames(db *sql.DB) map[string]bool {
 				names[a] = true
 			}
 		}
+		return rows.Err()
 	}
-	collect(`SELECT owner_id, COALESCE(caddyfile_src, '') FROM raw_routes WHERE owner_id IS NOT NULL AND COALESCE(caddyfile_src, '') <> ''`)
-	collect(`SELECT owner_id, COALESCE(advanced_config, '') FROM proxy_hosts WHERE owner_id IS NOT NULL AND COALESCE(advanced_config, '') <> ''`)
-	return names
+	if err := collect(`SELECT owner_id, COALESCE(caddyfile_src, '') FROM raw_routes WHERE owner_id IS NOT NULL AND COALESCE(caddyfile_src, '') <> ''`); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT owner_id, COALESCE(advanced_config, '') FROM proxy_hosts WHERE owner_id IS NOT NULL AND COALESCE(advanced_config, '') <> ''`); err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
-// withSnippetImports adds to names every snippet the server Caddyfile's
-// snippets of those names import, directly or in turn.
+// withSnippetImports keeps of names those the server Caddyfile defines as
+// snippets, and adds every snippet those import, directly or in turn. When
+// the Caddyfile cannot be read, names are kept as they are.
 func withSnippetImports(names map[string]bool, caddyfilePath string) map[string]bool {
 	if caddyfilePath == "" {
 		return names
@@ -164,8 +185,16 @@ func withSnippetImports(names map[string]bool, caddyfilePath string) map[string]
 	}
 	imports := map[string][]string{}
 	for _, sn := range caddy.CaddyfileSnippets(string(b)) {
+		imports[sn.Name] = append(imports[sn.Name], "")
 		for _, imp := range sn.Imports {
 			imports[sn.Name] = append(imports[sn.Name], imp.Name)
+		}
+	}
+	// Only names the server Caddyfile defines: a name that is not a
+	// snippet now must not become one that is shared later.
+	for n := range names {
+		if _, ok := imports[n]; !ok {
+			delete(names, n)
 		}
 	}
 	pending := make([]string, 0, len(names))

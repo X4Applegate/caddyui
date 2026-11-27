@@ -679,7 +679,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	// v2.42.1 (issue #74): a file-path certificate Caddy cannot open is
 	// refused here, with the container-path explanation, instead of being
 	// saved and breaking every later sync of this server.
-	if errMsg := s.previewCertificateValidate(s.currentServerID(r), c); errMsg != "" {
+	if errMsg := s.previewMessageFor(r, s.previewCertificateValidate(s.currentServerID(r), c)); errMsg != "" {
 		s.renderCertificateFormError(w, r, c, errMsg)
 		return
 	}
@@ -780,7 +780,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.ID = id
-	if errMsg := s.previewCertificateValidate(s.currentServerID(r), c); errMsg != "" { // v2.42.1 (issue #74)
+	if errMsg := s.previewMessageFor(r, s.previewCertificateValidate(s.currentServerID(r), c)); errMsg != "" { // v2.42.1 (issue #74)
 		s.renderCertificateFormError(w, r, c, errMsg)
 		return
 	}

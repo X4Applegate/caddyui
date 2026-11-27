@@ -186,7 +186,7 @@ func TestSyncDoesNotDeployForeignHostClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	proxies, redirs, raws, _, _ := e.s.serverResources(1)
-	kept := e.s.withoutForeignHostClaims(proxies, redirs, raws)
+	_, _, kept := e.s.withoutForeignHostClaims(0, proxies, redirs, raws)
 	b, _ := json.Marshal(e.s.buildMergedRoutes(proxies, redirs, kept))
 	out := string(b)
 	for _, dial := range []string{"203.0.113.11", "203.0.113.12", "203.0.113.13", "203.0.113.14"} {
@@ -232,7 +232,8 @@ func TestSyncClaimTieBreaksBetweenTenants(t *testing.T) {
 	own, _ := models.CreateRawRoute(e.db, 1, e.ids["alice"], &models.RawRoute{Label: "alice 2", JSONData: claimRoute("shared.example.test", "203.0.113.23:80"), Enabled: true})
 	_, _, raws, _, _ := e.s.serverResources(1)
 	ids := map[int64]bool{}
-	for _, rr := range e.s.withoutForeignHostClaims(nil, nil, raws) {
+	_, _, kept := e.s.withoutForeignHostClaims(0, nil, nil, raws)
+	for _, rr := range kept {
 		ids[rr.ID] = true
 	}
 	if !ids[older] || ids[newer] || ids[own] {
@@ -242,7 +243,8 @@ func TestSyncClaimTieBreaksBetweenTenants(t *testing.T) {
 	_, _ = models.ToggleRawRoute(e.db, older)
 	_, _, raws, _, _ = e.s.serverResources(1)
 	ids = map[int64]bool{}
-	for _, rr := range e.s.withoutForeignHostClaims(nil, nil, raws) {
+	_, _, kept = e.s.withoutForeignHostClaims(0, nil, nil, raws)
+	for _, rr := range kept {
 		if rr.Enabled {
 			ids[rr.ID] = true
 		}

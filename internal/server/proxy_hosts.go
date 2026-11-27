@@ -2074,6 +2074,10 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once — edit the existing entry or remove it before reusing the name.", conflict))
 		return
 	}
+	if msg := s.tenantDomainClaimProblem(s.currentUser(r), s.currentServerID(r), claimProxy, 0, p.DomainList()); msg != "" {
+		s.renderProxyHostFormError(w, r, p, msg)
+		return
+	}
 	// v2.7.8: refuse to save a proxy whose first hostname doesn't live in the
 	// selected DNS zone. The form's amber mismatch warning was advisory only
 	// — users were saving anyway and ending up with rows that either failed
@@ -2133,7 +2137,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	// v2.42.1 (issue #74): refuse a host Caddy would not load instead of
 	// saving it and failing every later sync.
-	if errMsg := s.previewProxyHostValidate(s.currentServerID(r), p); errMsg != "" {
+	if errMsg := s.previewMessageFor(r, s.previewProxyHostValidate(s.currentServerID(r), p)); errMsg != "" {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
@@ -2265,11 +2269,20 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	// proxy or redirect. excludeProxyID=p.ID lets the user save their own
 	// edit unchanged — only OTHER rows count as conflicts. Symmetric with the
 	// create path above; same rationale (Caddy resolves routes by hostname).
-	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), p.DomainList(), p.ID, 0); err != nil {
+	phServer, err := s.claimServerID(claimProxy, p.ID, s.currentServerID(r))
+	if err != nil {
+		s.renderProxyHostFormError(w, r, p, "Could not validate domains: "+err.Error())
+		return
+	}
+	if conflict, err := models.DomainsConflict(s.DB, phServer, p.DomainList(), p.ID, 0); err != nil {
 		s.renderProxyHostFormError(w, r, p, "Could not validate domains: "+err.Error())
 		return
 	} else if conflict != "" {
 		s.renderProxyHostFormError(w, r, p, fmt.Sprintf("Domain %q is already in use by another proxy or redirect on this server. Each domain can only be claimed once.", conflict))
+		return
+	}
+	if msg := s.tenantDomainClaimProblem(s.currentUser(r), phServer, claimProxy, p.ID, p.DomainList()); msg != "" {
+		s.renderProxyHostFormError(w, r, p, msg)
 		return
 	}
 	// v2.7.8: zone/hostname match check — same as create path. Editing path
@@ -2348,7 +2361,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	needCreate := p.DNSProvider != "" && p.DNSZoneID != "" && !p.DNSSkipRecord &&
 		(p.DNSRecordID == "" || providerChanged || profileChanged || zoneChanged || domainChanged || recordModeChanged)
 
-	if errMsg := s.previewProxyHostValidate(s.currentServerID(r), p); errMsg != "" { // v2.42.1 (issue #74)
+	if errMsg := s.previewMessageFor(r, s.previewProxyHostValidate(s.currentServerID(r), p)); errMsg != "" { // v2.42.1 (issue #74)
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}

@@ -19,7 +19,9 @@ import (
 // the upgrade check of #184 and the export's checks. Copies are now made
 // for the source row's owner (upsertFleet*). This repairs the copies made
 // before: once, at start-up, every copy whose source row belongs to a
-// non-admin account is given to that account, so the rules apply to it from
+// non-admin account and that still has no owner (as the old code left it;
+// a copy an administrator gave to someone since is left alone) is given to
+// that account, so the rules apply to it from
 // the next sync on. An Advanced-route copy whose routes, Caddyfile or listen
 // set no longer match its source's is also disabled: its routes were never
 // checked under the current rules (the source's may have been held by the
@@ -99,7 +101,7 @@ func (s *Server) repairFleetCopy(c fleetCopy) (owned, disabled bool, err error) 
 			return false, false, nil
 		}
 		srcOwner, dstOwner = src.OwnerID, dst.OwnerID
-		if !s.isTenantOwner(srcOwner) || dstOwner == srcOwner {
+		if !s.isTenantOwner(srcOwner) || dstOwner.Valid {
 			return false, false, nil
 		}
 		err = models.SetProxyHostOwner(s.DB, dst.ID, srcOwner.Int64)
@@ -109,8 +111,11 @@ func (s *Server) repairFleetCopy(c fleetCopy) (owned, disabled bool, err error) 
 		if e1 != nil || e2 != nil || src == nil || dst == nil {
 			return false, false, nil
 		}
+		if sid, err := s.claimServerID(claimRedirect, dst.ID, 0); err != nil || sid != c.targetServer {
+			return false, false, nil
+		}
 		srcOwner, dstOwner = src.OwnerID, dst.OwnerID
-		if !s.isTenantOwner(srcOwner) || dstOwner == srcOwner {
+		if !s.isTenantOwner(srcOwner) || dstOwner.Valid {
 			return false, false, nil
 		}
 		err = models.SetRedirectionHostOwner(s.DB, dst.ID, srcOwner.Int64)
@@ -124,7 +129,7 @@ func (s *Server) repairFleetCopy(c fleetCopy) (owned, disabled bool, err error) 
 			return false, false, nil
 		}
 		srcOwner, dstOwner = src.OwnerID, dst.OwnerID
-		if !s.isTenantOwner(srcOwner) || dstOwner == srcOwner {
+		if !s.isTenantOwner(srcOwner) || dstOwner.Valid {
 			return false, false, nil
 		}
 		if err = models.SetRawRouteOwner(s.DB, dst.ID, srcOwner.Int64); err != nil {

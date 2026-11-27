@@ -823,6 +823,10 @@ func (s *Server) apiAIExecTool(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("domain %q is already used by another proxy or redirect on this server", conflict)})
 			return
 		}
+		if msg := s.tenantDomainClaimProblem(cu, sid, claimProxy, 0, ph.DomainList()); msg != "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+			return
+		}
 		id, err := models.CreateProxyHost(s.DB, sid, ownerID, ph)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "create proxy host: " + err.Error()})
@@ -853,6 +857,15 @@ func (s *Server) apiAIExecTool(w http.ResponseWriter, r *http.Request) {
 		}
 		if rh.Domains == "" || rh.ForwardDomain == "" {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing required argument (domains, forward_domain)"})
+			return
+		}
+		// As every other redirect path (validateRedirectionForUser).
+		if msg := s.validateRedirectionForUser(cu, rh); msg != "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+			return
+		}
+		if msg := s.tenantDomainClaimProblem(cu, sid, claimRedirect, 0, rh.DomainList()); msg != "" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 			return
 		}
 		if conflict, err := models.DomainsConflict(s.DB, sid, rh.DomainList(), 0, 0); err != nil {

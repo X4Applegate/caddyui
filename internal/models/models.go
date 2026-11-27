@@ -4420,7 +4420,7 @@ func DomainsConflict(db *sql.DB, serverID int64, domains []string, excludeProxyI
 			continue
 		}
 		for _, d := range h.DomainList() {
-			existing[strings.ToLower(strings.TrimSpace(d))] = struct{}{}
+			existing[strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".")] = struct{}{}
 		}
 	}
 	for _, r := range redirs {
@@ -4428,11 +4428,11 @@ func DomainsConflict(db *sql.DB, serverID int64, domains []string, excludeProxyI
 			continue
 		}
 		for _, d := range r.DomainList() {
-			existing[strings.ToLower(strings.TrimSpace(d))] = struct{}{}
+			existing[strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".")] = struct{}{}
 		}
 	}
 	for _, d := range domains {
-		key := strings.ToLower(strings.TrimSpace(d))
+		key := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".")
 		if key == "" {
 			continue
 		}

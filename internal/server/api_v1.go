@@ -322,6 +322,10 @@ func (s *Server) apiV1CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
 		return
 	}
+	if msg := s.tenantDomainClaimProblem(cu, serverID, claimProxy, 0, ph.DomainList()); msg != "" {
+		writeJSONError(w, http.StatusConflict, msg)
+		return
+	}
 	newID, err := models.CreateProxyHost(s.DB, serverID, ownerID, ph)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -483,6 +487,10 @@ func (s *Server) apiV1UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if conflict != "" {
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
+		return
+	}
+	if msg := s.tenantDomainClaimProblem(cu, existing.ServerID, claimProxy, existing.ID, existing.DomainList()); msg != "" {
+		writeJSONError(w, http.StatusConflict, msg)
 		return
 	}
 	if err := models.UpdateProxyHost(s.DB, existing); err != nil {
@@ -705,6 +713,10 @@ func (s *Server) apiV1CreateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
 		return
 	}
+	if msg := s.tenantDomainClaimProblem(cu, serverID, claimRedirect, 0, rh.DomainList()); msg != "" {
+		writeJSONError(w, http.StatusConflict, msg)
+		return
+	}
 	newID, err := models.CreateRedirectionHost(s.DB, serverID, ownerID, rh)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -778,11 +790,20 @@ func (s *Server) apiV1UpdateRedirectionHost(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if conflict, err := models.DomainsConflict(s.DB, s.currentServerID(r), existing.DomainList(), 0, existing.ID); err != nil {
+	rhServer, err := s.claimServerID(claimRedirect, existing.ID, s.currentServerID(r))
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "could not validate domains: "+err.Error())
+		return
+	}
+	if conflict, err := models.DomainsConflict(s.DB, rhServer, existing.DomainList(), 0, existing.ID); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "could not validate domains: "+err.Error())
 		return
 	} else if conflict != "" {
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict))
+		return
+	}
+	if msg := s.tenantDomainClaimProblem(s.currentUser(r), rhServer, claimRedirect, existing.ID, existing.DomainList()); msg != "" {
+		writeJSONError(w, http.StatusConflict, msg)
 		return
 	}
 	if err := models.UpdateRedirectionHost(s.DB, existing); err != nil {

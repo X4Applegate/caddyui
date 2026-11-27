@@ -4,9 +4,11 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -158,7 +160,15 @@ func dialBlockedForTenant(dial string, adminHosts map[string]bool) string {
 // non-admin must not be deployed, or "" when it is fine. It walks the whole
 // route, including nested subroutes and handle_response routes.
 func (s *Server) tenantRouteViolation(route any) string {
+	// The route is judged as Caddy will read it: as JSON. Routes CaddyUI
+	// builds hold typed maps and slices (map[string][]string for headers)
+	// that a walk over map[string]any would not see into.
+	route, err := jsonRoundTrip(route)
+	if err != nil {
+		return "the route could not be read"
+	}
 	adminHosts := s.adminHostSet()
+	var wafAllowed map[string]bool
 	var reason string
 	var walk func(v any)
 	walk = func(v any) {
@@ -171,6 +181,18 @@ func (s *Server) tenantRouteViolation(route any) string {
 				if why, ok := forbiddenTenantHandlers[h]; ok {
 					reason = fmt.Sprintf("the %q handler %s and is admin-only", h, why)
 					return
+				}
+				// The WAF reads its directives' files on the Caddy server;
+				// only the handler an administrator's middleware profile
+				// builds is allowed.
+				if h == "waf" {
+					if wafAllowed == nil {
+						wafAllowed = s.profileWAFHandlers()
+					}
+					if b, _ := json.Marshal(t); !wafAllowed[string(b)] {
+						reason = "the \"waf\" handler can read files from the Caddy server and is admin-only (use a middleware profile)"
+						return
+					}
 				}
 				if h == "reverse_proxy" {
 					reason = reverseProxyViolation(t, adminHosts)
@@ -229,8 +251,20 @@ func reverseProxyViolation(h map[string]any, adminHosts map[string]bool) string 
 	}
 	if headers, ok := h["headers"].(map[string]any); ok {
 		if req, ok := headers["request"].(map[string]any); ok {
+			for _, op := range []string{"add", "replace"} {
+				if m, ok := req[op].(map[string]any); ok {
+					for k := range m {
+						if strings.EqualFold(strings.TrimSpace(k), "Host") || strings.Contains(k, "{") {
+							return "changing the Host header other than by setting it is admin-only"
+						}
+					}
+				}
+			}
 			if set, ok := req["set"].(map[string]any); ok {
 				for k, v := range set {
+					if strings.Contains(k, "{") {
+						return "placeholders in a request header name are admin-only"
+					}
 					if strings.EqualFold(k, "Host") {
 						for _, hv := range asAnySlice(v) {
 							if sv, _ := hv.(string); sv != "" {
@@ -309,6 +343,11 @@ func activeHealthCheckViolation(v any, check func(string) string) string {
 	}
 	if hdrs, ok := act["headers"].(map[string]any); ok {
 		for k, v := range hdrs {
+			// Caddy replaces placeholders in these names before it looks
+			// for Host.
+			if strings.Contains(k, "{") {
+				return "placeholders in an active health check header name are admin-only"
+			}
 			if !strings.EqualFold(strings.TrimSpace(k), "Host") {
 				continue
 			}
@@ -420,9 +459,19 @@ func (s *Server) sanitizeTenantRoute(owner sql.NullInt64, what string, route any
 	if route == nil || !s.isTenantOwner(owner) {
 		return route, true
 	}
+	route, err := jsonRoundTrip(route)
+	if err != nil {
+		log.Printf("caddy sync: %s: route skipped, it could not be read", what)
+		return nil, false
+	}
 	route, changed := neutraliseTenantPlaceholders(route)
 	if changed {
 		log.Printf("caddy sync: %s: neutralised {env.…}/{file.…} placeholders in a non-admin-owned route", what)
+	}
+	// Active health check settings a non-admin may no longer save are
+	// dropped rather than taking the whole site offline on upgrade.
+	if s.neutraliseTenantHealthChecks(route) {
+		log.Printf("caddy sync: %s: active health check settings not allowed for a non-admin owner were left out", what)
 	}
 	if why := s.tenantRouteViolation(route); why != "" {
 		// why is derived from the route, which carries header and API-key
@@ -1465,6 +1514,9 @@ func (s *Server) validateRawRouteForUser(cu *models.User, rr *models.RawRoute) s
 	if len(rr.CaddyfileSrc) > maxTenantCaddyfileBytes {
 		return tenantCaddyfileTooLarge("the Caddyfile")
 	}
+	if why := tenantListenProblem(rr.ListenAddrs(), s.reservedListenPorts()); why != "" {
+		return "Not allowed for a non-admin account: " + why + "."
+	}
 	// Issue #184 round 13: the stored routes are deployed on every sync.
 	if len(rr.JSONData) > maxTenantRawJSONBytes {
 		return fmt.Sprintf("Not allowed for a non-admin account: the route JSON is too large (the limit is %d MiB). Ask an administrator.", maxTenantRawJSONBytes>>20)
@@ -1549,4 +1601,143 @@ func (s *Server) tenantRawRouteTextProblem(src string) string {
 		return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
 	}
 	return ""
+}
+
+// jsonRoundTrip returns v as Caddy will read it: marshalled to JSON and
+// back into maps, slices and plain values.
+func jsonRoundTrip(v any) (any, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	err = json.Unmarshal(b, &out)
+	return out, err
+}
+
+// profileWAFHandlers is the JSON of the WAF handler each middleware
+// profile builds — the only WAF handlers a non-admin's route may hold.
+func (s *Server) profileWAFHandlers() map[string]bool {
+	out := map[string]bool{}
+	if s == nil || s.DB == nil {
+		return out
+	}
+	profiles, err := models.ListMiddlewareProfiles(s.DB)
+	if err != nil {
+		return out
+	}
+	for i := range profiles {
+		var p models.ProxyHost
+		applyProfileToHost(&p, &profiles[i])
+		if p.WAF == nil {
+			continue
+		}
+		if v, err := jsonRoundTrip(caddy.BuildWAFHandler(p.WAF)); err == nil {
+			if b, err := json.Marshal(v); err == nil {
+				out[string(b)] = true
+			}
+		}
+	}
+	return out
+}
+
+// neutraliseTenantHealthChecks removes, in place, the active health check
+// settings activeHealthCheckViolation refuses from every reverse_proxy in
+// route (a JSON round-trip value): follow_redirects, a body, a method
+// other than GET or HEAD, a header whose name holds a placeholder, a Host
+// header that fails the upstream rules — and the whole active check when
+// its upstream does. It reports whether anything changed.
+func (s *Server) neutraliseTenantHealthChecks(route any) bool {
+	var adminHosts map[string]bool
+	changed := false
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			if h, _ := t["handler"].(string); h == "reverse_proxy" {
+				if hc, ok := t["health_checks"].(map[string]any); ok {
+					if act, ok := hc["active"].(map[string]any); ok {
+						if adminHosts == nil {
+							adminHosts = s.adminHostSet()
+						}
+						if fixActiveHealthCheck(hc, act, adminHosts) {
+							changed = true
+						}
+					}
+				}
+			}
+			for _, child := range t {
+				walk(child)
+			}
+		case []any:
+			for _, child := range t {
+				walk(child)
+			}
+		}
+	}
+	walk(route)
+	return changed
+}
+
+func fixActiveHealthCheck(hc, act map[string]any, adminHosts map[string]bool) bool {
+	check := func(dial string) string { return dialBlockedForTenant(dial, adminHosts) }
+	if raw, ok := act["upstream"]; ok {
+		if up, isStr := raw.(string); !isStr || check(up) != "" {
+			delete(hc, "active")
+			return true
+		}
+	}
+	changed := false
+	if v := act["follow_redirects"]; v != nil && !isFalse(v) {
+		delete(act, "follow_redirects")
+		changed = true
+	}
+	if b := act["body"]; b != nil && b != "" {
+		delete(act, "body")
+		changed = true
+	}
+	if m := act["method"]; m != nil {
+		method, _ := m.(string)
+		switch strings.ToUpper(strings.TrimSpace(method)) {
+		case "", "GET", "HEAD":
+		default:
+			delete(act, "method")
+			changed = true
+		}
+	}
+	if hdrs, ok := act["headers"].(map[string]any); ok {
+		for k, v := range hdrs {
+			drop := strings.Contains(k, "{")
+			if !drop && strings.EqualFold(strings.TrimSpace(k), "Host") {
+				for _, hv := range asAnySlice(v) {
+					if sv, _ := hv.(string); sv != "" && check(sv) != "" {
+						drop = true
+					}
+				}
+			}
+			if drop {
+				delete(hdrs, k)
+				changed = true
+			}
+		}
+	} else if act["headers"] != nil {
+		delete(act, "headers")
+		changed = true
+	}
+	return changed
+}
+
+// quotedRe matches a quoted value in an error message.
+var quotedRe = regexp.MustCompile("\"[^\"]*\"|'[^']*'|`[^`]*`")
+
+// previewMessageFor is a preview-validation message (Caddy's answer to the
+// whole server's proposed config) as the requester may see it: unchanged
+// for an administrator; for anyone else reduced to its first line without
+// Caddy's internals and without quoted values, which can hold the content
+// of a file a module read or another account's settings.
+func (s *Server) previewMessageFor(r *http.Request, msg string) string {
+	if msg == "" || isAdminUser(s.currentUser(r)) {
+		return msg
+	}
+	return quotedRe.ReplaceAllString(caddy.SanitizeCaddyError(msg), `"…"`)
 }

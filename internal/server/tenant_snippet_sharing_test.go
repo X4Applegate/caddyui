@@ -138,8 +138,8 @@ func TestTenantSnippetPolicyLoading(t *testing.T) {
 	_ = models.DeleteSetting(e.db, settingTenantSnippetsShared)
 	path := filepath.Join(t.TempDir(), "Caddyfile")
 	_ = os.WriteFile(path, []byte("(one) {\n\timport inner\n}\n\n(inner) {\n\theader X 1\n}\n\n(other) {\n\theader Y 1\n}\n"), 0o600)
-	if got := loadTenantSnippetPolicy(e.db, path).String(); got != "inner,one,three,two" {
-		t.Errorf("seed with the server Caddyfile = %q, want inner,one,three,two", got)
+	if got := loadTenantSnippetPolicy(e.db, path).String(); got != "inner,one" {
+		t.Errorf("seed with the server Caddyfile = %q, want inner,one (only names it defines, and what they import)", got)
 	}
 	// A Server built without New shares every snippet, as before.
 	if !(tenantSnippetPolicy{}).shares("anything") {
