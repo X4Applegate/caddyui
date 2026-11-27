@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ## [Unreleased]
 
+## [2.68.18] - 2026-11-27 - Non-admin accounts held to stricter rules (host claims, health checks, paste import, snippets); Caddyfile export fixes
+
 ### Added
 
 - **The one part of the `caddy-l4` v0.1.3 delta with no test on either side: multi-route precedence.** [[T-0631]]'s harness drives a single SSH route plus pass-through, so it cannot say anything about which of several competing routes wins a given first packet. v0.1.3 replaced the single `lastNeedsMoreIdx` watermark in `layer4/routes.go` with `anyRouteNeedsMore(before)`, which scans the per-route status map instead; upstream's own comment names what the watermark got wrong — *"a conclusively unmatched route can bury an earlier one that is still waiting for data"*. `scripts/layer4-concurrency/precedence.sh` measures it. Full write-up: `scripts/layer4-concurrency/PRECEDENCE.md`.
