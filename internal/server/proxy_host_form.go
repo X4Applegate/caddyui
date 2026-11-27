@@ -6,12 +6,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/X4Applegate/caddyui/internal/dns"
 	"github.com/X4Applegate/caddyui/internal/models"
 )
+
+// maxProxyAdvancedConfigBytes caps a non-admin's proxy host Advanced config
+// (issue #184 rounds 7 and 8). An Advanced config is a handful of
+// directives spliced into one site block; 64 KiB is room for well over a
+// thousand lines of them. The cap bounds the text's size, not its cost on
+// its own: how much work Caddy's adapter does also depends on how deeply
+// the text nests blocks, which the tenant text rules limit separately
+// (tenantMaxNestingDepth). Administrators are not capped.
+const maxProxyAdvancedConfigBytes = maxTenantCaddyfileBytes
+
+// advancedConfigSizeRefusal returns the form error for a non-admin's
+// Advanced config over maxProxyAdvancedConfigBytes, or "".
+func (s *Server) advancedConfigSizeRefusal(r *http.Request) string {
+	if isAdminUser(s.currentUser(r)) || len(r.FormValue("advanced_config")) <= maxProxyAdvancedConfigBytes {
+		return ""
+	}
+	return tenantCaddyfileTooLarge("the Advanced config")
+}
 
 // Proxy-host form parsing.
 //
@@ -788,4 +807,20 @@ func parseProxyHostForm(r *http.Request) (*models.ProxyHost, error) {
 	// v2.38.0: expectations_json — post-apply checks; stored canonicalised.
 	ph.Expectations = models.NormalizeHostExpectationsJSON(r.FormValue("expectations_json"))
 	return ph, nil
+}
+
+// pathMatcherError returns the translated error for a Path matcher that
+// models.PathMatcherProblem rejects, or "" when it is acceptable (issue #184
+// review: control characters let the value break out of the Caddyfile
+// export, and Caddy refuses a regexp that does not compile).
+func (s *Server) pathMatcherError(r *http.Request, p *models.ProxyHost) string {
+	switch models.PathMatcherProblem(p.PathMatcher, p.PathMatcherType) {
+	case models.PathMatcherOK:
+		return ""
+	case models.PathMatcherBadRegexp:
+		_, err := regexp.Compile(p.PathMatcher)
+		return s.tr(r, "proxy_host.error.path_matcher_regexp", "error", err)
+	default:
+		return s.tr(r, "proxy_host.error.path_matcher_control")
+	}
 }

@@ -3,3 +3,11 @@ Copyright 2026 Richard Applegate (X4Applegate)
 
 This product includes software developed at the CaddyUI project
 (https://github.com/X4Applegate/caddyui).
+
+This product includes software adapted from Caddy
+(https://github.com/caddyserver/caddy), Copyright 2015 Matthew Holt and
+The Caddy Authors, licensed under the Apache License, Version 2.0:
+internal/caddy/caddyfile_lexer.go is adapted from
+caddyconfig/caddyfile/lexer.go (Caddy v2.11.9), and
+internal/caddy/caddyfile_safety.go mirrors Caddy's placeholder-shorthand
+and directive-order tables.

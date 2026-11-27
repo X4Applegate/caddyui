@@ -72,7 +72,7 @@ run CaddyUI directly in an LXC, VM, or bare-metal host.
 
 ### Analytics, certificates and local services in v2.39 – v2.52
 
-- **OIDC / SSO login** *(v2.52.0)* — sign in through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP; configure under Settings → Security. Standard auth-code flow with state/nonce and `go-oidc` token verification; verified-email matching with opt-in auto-provisioning.
+- **OIDC / SSO login** *(v2.52.0)* — sign in through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP; configure under Settings → Security. Standard auth-code flow with state/nonce and `go-oidc` token verification; verified-email matching with opt-in auto-provisioning. **Every** SSO sign-in — existing and invited accounts included, not only auto-created ones — requires the ID token to carry a non-empty `email` claim and `email_verified` as the JSON boolean `true`; a sign-in without them is refused, and the reason is written to the server log. Providers that don't send `email_verified`, such as Microsoft Entra ID, are not supported yet ([#158](https://github.com/X4Applegate/caddyui/issues/158)).
 - **Scheduled off-host backups** *(v2.52.0)* — automatic SQLite snapshots to a directory on an interval (keep the newest N), plus a **Back up now** button, under Settings → Backup. Point the directory at a mounted volume or share to keep copies off the host.
 - **Per-host rate limiting** *(v2.51.0)* — cap a host at *N requests per M seconds, per client IP* (429 on excess), via the `caddy-ratelimit` module now built into `Dockerfile.caddy`. Rebuild your custom Caddy image to use it.
 - **Block an IP from analytics** *(v2.50.0)* — a visitor's drill-down page gains one-click **Block on this host** and **Block everywhere (fleet-wide)** actions; the global blocklist is managed under Settings → Security. Turns "who's probing me?" into a one-click 403.
@@ -237,6 +237,26 @@ is disabled. Every managed Caddy node must be able to reach that private
 host and port (default `caddyui:9019` on the repository Docker network); a
 node on another host gets its own **Log ingest target** on its Caddy Fleet
 entry *(v2.37.0)*. Do not publish the ingest listener to the internet.
+
+A node whose log forwarding you configure yourself (an **External** server
+provisioned with Ansible, for example) can identify itself with a name you
+choose instead of CaddyUI's generated numeric ID: set **Log source ID** on its
+Caddy Fleet entry (e.g. `edge-home`) and add the same value as
+`caddyui_source_id` to its forwarded log lines, e.g. with Caddy's `append`
+encoder: `{"format":"append","fields":{"caddyui_source_id":"edge-home"},"wrap":{"format":"json"}}`.
+Access logs, certificate events and runtime logs are attributed to that
+server *(issue #164)*. `caddyui_server_id` keeps working unchanged. When a
+line carries both, a `caddyui_source_id` that matches a fleet server wins;
+one that matches nothing is ignored and `caddyui_server_id` (if any) applies.
+Identifiers are up to 64 characters of letters, digits, `.`, `-` and `_`,
+start with a letter or digit, are never all digits (so they cannot be confused
+with a numeric ID), are case-insensitive and unique across the fleet. Rows are
+stored against the server's numeric ID when they arrive, so renaming the
+identifier later keeps existing history attributed to the server.
+The ingest listener does not authenticate senders, so a log source ID (like
+the numeric ID) is a label, not a credential: anyone who can reach the port
+can attribute lines to any server. Keep port 9019 on a private network or
+firewalled to your Caddy nodes.
 
 ### Operational
 

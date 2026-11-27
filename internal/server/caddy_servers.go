@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -151,6 +152,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		// "deploy_to" — on this form that is the layer4 "Also copy to" picker.
 		DefaultDeployTargets: s.parseDefaultDeployTargets(r, 0),
 		PropagateDeletions:   r.FormValue("propagate_deletions") != "", // v2.59.0 (issue #120)
+		LogSourceID:          r.FormValue("log_source_id"),             // issue #164
 	}
 	renderErr := func(msg string) {
 		s.render(w, r, "server_form.html", map[string]any{
@@ -173,6 +175,10 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 		renderErr("Admin URL must start with http://, https://, or unix:///")
 		return
 	}
+	if msg := s.logSourceIDError(r, models.CheckLogSourceID(s.DB, c, 0), c.LogSourceID); msg != "" {
+		renderErr(msg)
+		return
+	}
 	// v2.56.0 (issue #113): adapt the pasted layer4 block against this
 	// server's own admin API right now, so a typo or a Caddy build missing
 	// the caddy-l4 module surfaces here instead of silently breaking every
@@ -185,7 +191,7 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := models.CreateCaddyServer(s.DB, c)
 	if err != nil {
-		renderErr(err.Error())
+		renderErr(s.logSourceIDError(r, err, c.LogSourceID))
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "server_create", fmt.Sprintf("server:%d", id), c.Name, true)
@@ -244,6 +250,7 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 	existing.Layer4Caddyfile = strings.TrimSpace(r.FormValue("layer4_caddyfile")) // v2.56.0 (issue #113)
 	existing.DefaultDeployTargets = s.parseDefaultDeployTargets(r, id)            // v2.57.0 (issue #120)
 	existing.PropagateDeletions = r.FormValue("propagate_deletions") != ""        // v2.59.0 (issue #120)
+	existing.LogSourceID = r.FormValue("log_source_id")                           // issue #164
 	// Password: if the form submitted a blank value AND the user didn't explicitly
 	// check the "clear password" box, keep the existing one. Protects against
 	// masked-field UX where the password isn't re-typed on every edit.
@@ -267,6 +274,10 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if existing.AdminURL == "" || !isValidAdminURL(existing.AdminURL) {
 		renderErr("Admin URL must start with http://, https://, or unix:///")
+		return
+	}
+	if msg := s.logSourceIDError(r, models.CheckLogSourceID(s.DB, existing, id), existing.LogSourceID); msg != "" {
+		renderErr(msg)
 		return
 	}
 	if s.caddyLogHub != nil {
@@ -295,7 +306,7 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := models.UpdateCaddyServer(s.DB, existing); err != nil {
-		renderErr(err.Error())
+		renderErr(s.logSourceIDError(r, err, existing.LogSourceID))
 		return
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "server_update", fmt.Sprintf("server:%d", id), existing.Name, true)
@@ -317,6 +328,22 @@ func (s *Server) updateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/servers", http.StatusSeeOther)
+}
+
+// logSourceIDError turns a log source ID validation error (issue #164) into
+// the translated form message, or "" when err is nil. Any other error is
+// returned as its text so a failed lookup is not silently ignored.
+func (s *Server) logSourceIDError(r *http.Request, err error, value string) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, models.ErrLogSourceIDInvalid):
+		return s.tr(r, "servers.log_source_id.error_invalid", "max", models.LogSourceIDMaxLen)
+	case errors.Is(err, models.ErrLogSourceIDTaken):
+		return s.tr(r, "servers.log_source_id.error_taken", "id", value)
+	default:
+		return err.Error()
+	}
 }
 
 // newDeployTargetsNotice explains, when a save adds automatic deployment

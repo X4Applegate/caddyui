@@ -309,6 +309,7 @@ github.com/crowdsecurity/crowdsec	v1.8.1
 golang.org/x/net	v0.62.0
 github.com/go-chi/chi/v5	v5.5.0
 github.com/go-jose/go-jose/v4	v4.1.7
+github.com/aws/aws-sdk-go-v2/service/route53	v1.59.4
 github.com/caddy-dns/route53	v1.6.2
 EOF
 run "$REPO/Dockerfile.caddy" "$WORK/G17"
@@ -317,8 +318,8 @@ check "crowdsec floor diverged"   "1" "$(out | grep -c '\[DIVERGED\]')"
 check "no parse error"            "0" "$(err | grep -c 'ERROR')"
 # The coverage assertion. A regression that drops a directive would still
 # exit 0 with a clean-looking report, so the COUNT is checked explicitly.
-check "all 5 declared floors checked" "1" "$(out | grep -c '5 floor(s) checked')"
-check "the other 4 are [ok]"          "4" "$(out | grep -c '\[ok\]')"
+check "all 6 declared floors checked" "1" "$(out | grep -c '6 floor(s) checked')"
+check "the other 5 are [ok]"          "5" "$(out | grep -c '\[ok\]')"
 
 echo
 echo "=== 18. the live Dockerfile is readable by the WATCHER too ==="
@@ -332,7 +333,7 @@ if "$REPO/scripts/check-pinned-modules.sh" --dockerfile "$REPO/Dockerfile.caddy"
 # compares "0\n0" against "0". Count through wc instead, which always exits 0.
 check "no unknown-kind error" "0" \
   "$(grep 'unknown .*pin-watch' "$WORK/w18/errors.txt" 2>/dev/null | wc -l | tr -d ' ')"
-check "3 security pins recorded" "3" \
+check "4 security pins recorded" "4" \
   "$(wc -l < "$WORK/w18/security-pins.tsv" 2>/dev/null | tr -d ' ')"
 
 echo

@@ -61,6 +61,30 @@ type Server struct {
 	pendingTOTP sync.Map   // token → userID (int64), auto-deleted after 5 min
 	setupMu     sync.Mutex // serializes first-run setup (see postSetup)
 	syncMu      sync.Mutex // serializes syncCaddy: it swaps the shared s.Caddy client
+	// caddyMu guards the Caddy field, which a sync swaps for its server's
+	// client while requests may read it (issue #184 round 13): read it
+	// with caddyClient, set it with setCaddyClient.
+	caddyMu sync.RWMutex
+	// rawMigMu guards rawMig, the state of the one-time migration of
+	// non-admin Advanced routes (tenant_raw_migration.go, issue #184).
+	rawMigMu sync.Mutex
+	rawMig   tenantRawMigration
+	// advFail is the last reason, per proxy host, its Advanced config
+	// failed to apply at sync (noteAdvancedFailure).
+	advFailMu sync.Mutex
+	advFail   map[int64]string
+	// advGood is the last Advanced config output, per proxy host, that
+	// applied at sync, with the text it came from: kept while Caddy cannot
+	// be reached (issue #184 round 12).
+	advGood map[int64]advancedGood
+	// withheld is the administrator's snippets last logged as withheld
+	// from non-admins, with why (logWithheldSnippets).
+	withheldMu sync.Mutex
+	withheld   map[string]string
+	// rawMigRunMu serializes runs of the upgrade migration; it is held
+	// while rows are adapted, rawMigMu only while the state is read or
+	// written (issue #184 round 12).
+	rawMigRunMu sync.Mutex
 	// pendingTOTPAttempts counts wrong second-factor codes per pending token
 	// (token → *int32) so one password check cannot buy unlimited guesses.
 	pendingTOTPAttempts sync.Map
@@ -168,6 +192,7 @@ func New(db *sql.DB, caddyClient *caddy.Client, templates fs.FS, static fs.FS, c
 	}
 	go s.runHealthChecker()
 	go s.runAutoSyncLoop()
+	go s.runTenantRawRouteMigration() // issue #184 round 11
 	go s.runFleetDeletionReconciler() // v2.59.0 (issue #120)
 	go s.runMaintenanceWindowLoop()
 	go s.runActivityLogCleanup()
@@ -675,6 +700,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/api/v1/redirection-hosts/{id}", s.apiV1GetRedirectionHost)
 		r.Get("/api/v1/raw-routes", s.apiV1ListRawRoutes)
 		r.Get("/api/v1/raw-routes/{id}", s.apiV1GetRawRoute)
+		r.Get("/api/v1/raw-routes/{id}/held-json", s.apiV1HeldRawRouteJSON) // admin only (issue #184 round 13)
 		r.Get("/api/v1/certificates", s.apiV1ListCertificates)
 		r.Get("/api/v1/certificates/{id}", s.apiV1GetCertificate)
 		r.Get("/api/v1/servers", s.apiV1ListServers)
@@ -3652,7 +3678,7 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-load snippet definitions from the mounted Caddyfile so users can use
 	// `import <name>` without pasting the definition (see withAutoLoadedSnippets).
-	fullPaste := s.withAutoLoadedSnippets(src)
+	fullPaste := s.snippetsFor(src, !isAdminUser(s.currentUser(r)))
 
 	// Adapt the ENTIRE paste as a single unit so cross-block references work:
 	// `import <snippet>` must see `(<snippet>) { ... }` defined in the same paste,
@@ -4717,6 +4743,23 @@ func (s *Server) currentServerID(r *http.Request) int64 {
 	return 1
 }
 
+// caddyClient returns s.Caddy, read under caddyMu (a sync swaps it).
+func (s *Server) caddyClient() *caddy.Client {
+	if s == nil {
+		return nil
+	}
+	s.caddyMu.RLock()
+	defer s.caddyMu.RUnlock()
+	return s.Caddy
+}
+
+// setCaddyClient sets s.Caddy under caddyMu.
+func (s *Server) setCaddyClient(cl *caddy.Client) {
+	s.caddyMu.Lock()
+	s.Caddy = cl
+	s.caddyMu.Unlock()
+}
+
 // caddyForRequest returns a Caddy client pointed at the currently-selected
 // server's admin API. Falls back to the primary client on any lookup error.
 // Credentials (if set on the server row) are threaded into the client so
@@ -4726,20 +4769,13 @@ func (s *Server) caddyForRequest(r *http.Request) *caddy.Client {
 	if srv, err := models.GetCaddyServer(s.DB, s.currentServerID(r)); err == nil {
 		cl = caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	} else {
-		cl = s.Caddy
+		cl = s.caddyClient()
 	}
 	// v2.57.1: for a non-admin's request, refuse Caddyfile text that reads the
 	// Caddy server's environment or files BEFORE it is adapted (see
 	// Client.AdaptTextCheck). Copy first — s.Caddy is shared.
 	if cl != nil && !isAdminUser(s.currentUser(r)) {
-		cp := *cl
-		cp.AdaptTextCheck = func(text string) string {
-			if why := tenantTextViolation(text); why != "" {
-				return "Not allowed for a non-admin account: " + why + ". Ask an administrator."
-			}
-			return ""
-		}
-		return &cp
+		return s.tenantAdaptClient(cl)
 	}
 	return cl
 }
@@ -4749,7 +4785,7 @@ func (s *Server) caddyForServer(serverID int64) *caddy.Client {
 	if srv, err := models.GetCaddyServer(s.DB, serverID); err == nil {
 		return caddy.New(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
 	}
-	return s.Caddy
+	return s.caddyClient()
 }
 
 func (s *Server) createManualSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -5170,26 +5206,47 @@ func (s *Server) buildMergedRoutes(proxies []models.ProxyHost, redirs []models.R
 				if realm == "" {
 					realm = "Restricted"
 				}
-				if h := s.buildBasicAuthHandler(s.Caddy, baUsers, realm); h != nil {
+				if h := s.buildBasicAuthHandler(s.caddyClient(), baUsers, realm); h != nil {
 					preHandlers = []any{h}
 				}
 			}
 		}
 		var advanced []any
 		var advancedOverrides map[string]any
-		if strings.TrimSpace(p.AdvancedConfig) != "" && s.isTenantOwner(p.OwnerID) && tenantTextViolation(p.AdvancedConfig) != "" {
-			// {$ENV} is substituted by Caddy while ADAPTING, so the value would
-			// already be baked into the handlers; refuse before adapting.
-			log.Printf("caddy sync: proxy id=%d advanced_config skipped, not allowed for a non-admin owner: %s", p.ID, tenantTextViolation(p.AdvancedConfig))
-		} else if strings.TrimSpace(p.AdvancedConfig) != "" {
-			h, overrides, err := s.adaptProxyAdvanced(p)
-			if err != nil {
-				// Don't fail the whole sync — log and push the route without advanced
-				// handlers. The form-level validation should have caught bad syntax
-				// before save, so this branch is for rare drift cases.
-				log.Printf("caddy sync: proxy id=%d advanced_config adapt failed: %v", p.ID, err)
-			} else {
+		if strings.TrimSpace(p.AdvancedConfig) != "" {
+			// Issue #184 round 11: an Advanced config that cannot be
+			// applied — refused by the tenant rules, or not adapted by
+			// Caddy — no longer leaves the host deployed as a bare
+			// reverse_proxy: whatever the config added (authentication,
+			// an access rule) would be gone. The host answers 503 instead,
+			// for every owner, until the config is fixed.
+			//
+			// Round 12: when only reaching Caddy failed (no answer, a
+			// timeout), the host keeps the output the same config last
+			// adapted to in this process, if there is one; else it, too,
+			// answers 503 until the config adapts.
+			h, overrides, why, transient := s.syncAdaptProxyAdvanced(p)
+			if why != "" && transient {
+				h, overrides, ok := s.advancedGoodFor(p)
+				if ok {
+					log.Printf("caddy sync: proxy id=%d (%s): Caddy could not adapt its Advanced config just now, so the host keeps the config it last applied: %s", p.ID, p.Domains, why)
+					s.noteAdvancedFailure(p, why, true)
+					advanced, advancedOverrides = h, overrides
+					why = ""
+				}
+			} else if why == "" {
+				s.noteAdvancedFailure(p, "", false)
 				advanced, advancedOverrides = h, overrides
+			}
+			if why != "" {
+				log.Printf("caddy sync: proxy id=%d (%s): its Advanced config could not be applied, so the host answers 503 until it applies: %s", p.ID, p.Domains, why)
+				s.noteAdvancedFailure(p, why, false)
+				// Round 12: the 503 route carries the host's own match,
+				// held to the same rules as its normal route.
+				if safe, ok := s.sanitizeTenantRoute(p.OwnerID, "proxy host "+p.Domains, advancedFailedRoute(p)); ok {
+					routes = append(routes, safe)
+				}
+				continue
 			}
 		}
 		route := caddy.BuildProxyRoute(p, append(preHandlers, advanced...))
@@ -5450,10 +5507,33 @@ func applyPlainHTTPServer(cfg map[string]any, routes []any) {
 // tenantSafeRawEntries is rawRouteEntries with the non-admin enforcement of
 // tenant_guard.go applied to each entry (v2.57.1).
 func (s *Server) tenantSafeRawEntries(rr models.RawRoute) []any {
-	entries := rawRouteEntries(rr)
 	if !s.isTenantOwner(rr.OwnerID) {
-		return entries
+		return rawRouteEntries(rr)
 	}
+	// Issue #184 round 8: a route whose Caddyfile breaks the tenant text
+	// rules is not deployed. Its stored JSON was adapted from that text, so
+	// a file the text imported may be baked into it (as header names, for
+	// one); the Caddyfile export leaves the same route out. Round 10: the
+	// rules count imports at their expanded size, so an over-budget row is
+	// not deployed either.
+	if strings.TrimSpace(rr.CaddyfileSrc) != "" && s.tenantOwnTextViolation(rr.CaddyfileSrc) != "" {
+		log.Printf("caddy sync: advanced route id=%d skipped, its Caddyfile is not allowed for a non-admin owner", rr.ID)
+		return nil
+	}
+	// Issue #184 round 11: a row the one-time upgrade migration has not
+	// adapted again yet is not deployed (tenant_raw_migration.go): its
+	// stored JSON may hold a file an `import` read up to v2.68.16.
+	// Round 13: or one whose copy here may predate the migration's write
+	// (rawRouteMigrationBlocks).
+	if s.rawRouteMigrationBlocks(rr) {
+		log.Printf("caddy sync: advanced route id=%d skipped until it is adapted again under the current rules (upgrade migration)", rr.ID)
+		return nil
+	}
+	if len(rr.JSONData) > maxTenantRawJSONBytes {
+		log.Printf("caddy sync: advanced route id=%d skipped, its stored routes are larger than a non-admin's may be", rr.ID)
+		return nil
+	}
+	entries := rawRouteEntries(rr)
 	out := make([]any, 0, len(entries))
 	for _, e := range entries {
 		if safe, ok := s.sanitizeTenantRoute(rr.OwnerID, "advanced route "+rr.Label, e); ok {
@@ -5521,12 +5601,18 @@ func (s *Server) buildRawListenServers(raws []models.RawRoute) map[string]map[st
 		if name == "" {
 			continue
 		}
+		// Issue #184 round 10: a route that is not deployed — a non-admin's
+		// whose Caddyfile or routes are refused — opens no listener either.
+		entries := s.tenantSafeRawEntries(rr)
+		if len(entries) == 0 {
+			continue
+		}
 		g, ok := groups[name]
 		if !ok {
 			g = &group{addrs: addrs}
 			groups[name] = g
 		}
-		g.routes = append(g.routes, s.tenantSafeRawEntries(rr)...)
+		g.routes = append(g.routes, entries...)
 	}
 	out := make(map[string]map[string]any, len(groups))
 	for name, g := range groups {
@@ -5565,7 +5651,7 @@ func applyRawListenServers(cfg map[string]any, want map[string]map[string]any) {
 // port that moved between two names is never bound twice, then the desired
 // servers are written in name order (PATCH when the key exists, PUT otherwise).
 func (s *Server) writeRawListenServersSubtree(want map[string]map[string]any) error {
-	raw, err := s.Caddy.FetchPath("/config/apps/http/servers")
+	raw, err := s.caddyClient().FetchPath("/config/apps/http/servers")
 	if err != nil {
 		return err
 	}
@@ -5577,7 +5663,7 @@ func (s *Server) writeRawListenServersSubtree(want map[string]map[string]any) er
 		if _, keep := want[name]; keep {
 			continue
 		}
-		if err := s.Caddy.DeletePath("/config/apps/http/servers/" + name); err != nil {
+		if err := s.caddyClient().DeletePath("/config/apps/http/servers/" + name); err != nil {
 			return err
 		}
 	}
@@ -5589,12 +5675,12 @@ func (s *Server) writeRawListenServersSubtree(want map[string]map[string]any) er
 	for _, name := range names {
 		path := "/config/apps/http/servers/" + name
 		if _, exists := existing[name]; exists {
-			if err := s.Caddy.PatchPath(path, want[name]); err != nil {
+			if err := s.caddyClient().PatchPath(path, want[name]); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := s.Caddy.PutPath(path, want[name]); err != nil {
+		if err := s.caddyClient().PutPath(path, want[name]); err != nil {
 			return err
 		}
 	}
@@ -5952,14 +6038,14 @@ func filterNonCaddyUICerts(in []any) []any {
 // (which would produce [existing..., [new_routes]] — a nested array Caddy rejects).
 // Falls back to POST when routes don't exist yet (PATCH 404s on missing paths).
 func (s *Server) writeRoutesSubtree(routes []any) error {
-	existing, err := s.Caddy.FetchPath("/config/apps/http/servers/srv0/routes")
+	existing, err := s.caddyClient().FetchPath("/config/apps/http/servers/srv0/routes")
 	if err != nil {
 		return err
 	}
 	if existing == nil {
-		return s.Caddy.PutPath("/config/apps/http/servers/srv0/routes", routes)
+		return s.caddyClient().PutPath("/config/apps/http/servers/srv0/routes", routes)
 	}
-	return s.Caddy.PatchPath("/config/apps/http/servers/srv0/routes", routes)
+	return s.caddyClient().PatchPath("/config/apps/http/servers/srv0/routes", routes)
 }
 
 // writeListenSubtree ensures srv0.listen is [":443"]. Uses PATCH when the path
@@ -5967,7 +6053,7 @@ func (s *Server) writeRoutesSubtree(routes []any) error {
 // paths cannot use POST-append semantics, same reason writeRoutesSubtree splits.
 func (s *Server) writeListenSubtree() error {
 	want := []any{":443"}
-	existing, err := s.Caddy.FetchPath("/config/apps/http/servers/srv0/listen")
+	existing, err := s.caddyClient().FetchPath("/config/apps/http/servers/srv0/listen")
 	if err != nil {
 		return err
 	}
@@ -5975,9 +6061,9 @@ func (s *Server) writeListenSubtree() error {
 		return nil
 	}
 	if existing == nil {
-		return s.Caddy.PutPath("/config/apps/http/servers/srv0/listen", want)
+		return s.caddyClient().PutPath("/config/apps/http/servers/srv0/listen", want)
 	}
-	return s.Caddy.PatchPath("/config/apps/http/servers/srv0/listen", want)
+	return s.caddyClient().PatchPath("/config/apps/http/servers/srv0/listen", want)
 }
 
 // writeProtocolsSubtree pushes the protocols list (or absence thereof) to
@@ -5987,7 +6073,7 @@ func (s *Server) writeProtocolsSubtree(db *sql.DB) error {
 	const path = "/config/apps/http/servers/srv0/protocols"
 	if v, _ := models.GetSetting(db, settingDisableHTTP3); v == "1" {
 		want := []any{"h1", "h2"}
-		existing, err := s.Caddy.FetchPath(path)
+		existing, err := s.caddyClient().FetchPath(path)
 		if err != nil {
 			return err
 		}
@@ -5995,20 +6081,20 @@ func (s *Server) writeProtocolsSubtree(db *sql.DB) error {
 			return nil
 		}
 		if existing == nil {
-			return s.Caddy.PutPath(path, want)
+			return s.caddyClient().PutPath(path, want)
 		}
-		return s.Caddy.PatchPath(path, want)
+		return s.caddyClient().PatchPath(path, want)
 	}
 	// Setting is off — remove the key if it exists so Caddy uses its default.
-	existing, err := s.Caddy.FetchPath(path)
+	existing, err := s.caddyClient().FetchPath(path)
 	if err != nil || existing == nil {
 		return nil
 	}
-	return s.Caddy.DeletePath(path)
+	return s.caddyClient().DeletePath(path)
 }
 
 func (s *Server) writeTLSSubtree(loadPEM, loadFiles []any, force bool) error {
-	raw, err := s.Caddy.FetchPath("/config/apps/tls")
+	raw, err := s.caddyClient().FetchPath("/config/apps/tls")
 	if err != nil {
 		return err
 	}
@@ -6056,11 +6142,11 @@ func (s *Server) writeTLSSubtree(loadPEM, loadFiles []any, force bool) error {
 	if raw == nil && len(tlsMap) == 0 {
 		return nil
 	}
-	return s.Caddy.PutPath("/config/apps/tls", tlsMap)
+	return s.caddyClient().PutPath("/config/apps/tls", tlsMap)
 }
 
 func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, disableRedirects, force bool) error {
-	raw, err := s.Caddy.FetchPath("/config/apps/http/servers/srv0/automatic_https")
+	raw, err := s.caddyClient().FetchPath("/config/apps/http/servers/srv0/automatic_https")
 	if err != nil {
 		return err
 	}
@@ -6091,7 +6177,7 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, disableRedirects, f
 	if !existed && len(autoMap) == 0 {
 		return nil
 	}
-	return s.Caddy.PutPath("/config/apps/http/servers/srv0/automatic_https", autoMap)
+	return s.caddyClient().PutPath("/config/apps/http/servers/srv0/automatic_https", autoMap)
 }
 
 // writePlainHTTPServerSubtree owns only the caddyui_http server. Replacing the
@@ -6099,7 +6185,7 @@ func (s *Server) writeAutomaticHTTPSSubtree(skipCerts []any, disableRedirects, f
 // without touching user-managed HTTP servers.
 func (s *Server) writePlainHTTPServerSubtree(routes []any) error {
 	const path = "/config/apps/http/servers/caddyui_http"
-	existing, err := s.Caddy.FetchPath(path)
+	existing, err := s.caddyClient().FetchPath(path)
 	if err != nil {
 		return err
 	}
@@ -6107,16 +6193,16 @@ func (s *Server) writePlainHTTPServerSubtree(routes []any) error {
 		if existing == nil {
 			return nil
 		}
-		return s.Caddy.DeletePath(path)
+		return s.caddyClient().DeletePath(path)
 	}
 	want := map[string]any{
 		"listen": []any{":80"},
 		"routes": routes,
 	}
 	if existing == nil {
-		return s.Caddy.PutPath(path, want)
+		return s.caddyClient().PutPath(path, want)
 	}
-	return s.Caddy.PatchPath(path, want)
+	return s.caddyClient().PatchPath(path, want)
 }
 
 // writeTLSConnectionPoliciesSubtree replaces srv0.tls_connection_policies.
@@ -6126,7 +6212,7 @@ func (s *Server) writePlainHTTPServerSubtree(routes []any) error {
 // linger after the last host that used them is updated.
 func (s *Server) writeTLSConnectionPoliciesSubtree(policies []any) error {
 	path := "/config/apps/http/servers/srv0/tls_connection_policies"
-	existing, err := s.Caddy.FetchPath(path)
+	existing, err := s.caddyClient().FetchPath(path)
 	if err != nil {
 		return err
 	}
@@ -6135,19 +6221,19 @@ func (s *Server) writeTLSConnectionPoliciesSubtree(policies []any) error {
 			return nil // nothing to write or clear
 		}
 		// Clear stale policies with an empty array (Caddy treats [] as "no policies").
-		return s.Caddy.PatchPath(path, []any{})
+		return s.caddyClient().PatchPath(path, []any{})
 	}
 	if existing == nil {
-		return s.Caddy.PutPath(path, policies)
+		return s.caddyClient().PutPath(path, policies)
 	}
-	return s.Caddy.PatchPath(path, policies)
+	return s.caddyClient().PatchPath(path, policies)
 }
 
 // writeAccessLogsSubtree updates srv0.logs.skip_hosts to suppress access-log
 // entries for proxy hosts with DisableAccessLog=true.
 func (s *Server) writeAccessLogsSubtree(skipHosts []any) error {
 	path := "/config/apps/http/servers/srv0/logs"
-	raw, err := s.Caddy.FetchPath(path)
+	raw, err := s.caddyClient().FetchPath(path)
 	if err != nil {
 		return err
 	}
@@ -6168,7 +6254,7 @@ func (s *Server) writeAccessLogsSubtree(skipHosts []any) error {
 	if !existed && len(logsMap) == 0 {
 		return nil
 	}
-	return s.Caddy.PutPath(path, logsMap)
+	return s.caddyClient().PutPath(path, logsMap)
 }
 
 // certsEqual compares two cert-loader arrays for semantic equality via JSON normalization.
@@ -7248,7 +7334,7 @@ func (s *Server) exportProxyHostCaddyfile(w http.ResponseWriter, r *http.Request
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	body := caddy.RenderProxyHostCaddyfileWithCertificate(*ph, s.certificateForCaddyfile(ph.CertificateID))
+	body := caddy.RenderProxyHostCaddyfileWithOptions(*ph, s.certificateForCaddyfile(ph.CertificateID), s.caddyfileExportOptions(ph.ServerID, isAdminUser(s.currentUser(r))))
 	fname := strings.ReplaceAll(strings.SplitN(ph.Domains, ",", 2)[0], "*", "_")
 	fname = strings.TrimSpace(fname)
 	if fname == "" {
@@ -7327,7 +7413,7 @@ func (s *Server) exportServerCaddyfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	certs, _ := models.ListCertificates(s.DB, sid)
-	body := caddy.RenderServerCaddyfile(serverName, hosts, redirects, raws, certs)
+	body := caddy.RenderServerCaddyfile(serverName, hosts, redirects, raws, certs, s.caddyfileExportOptions(sid, isAdminUser(cu)))
 	ts := time.Now().Format("20060102-150405")
 	fname := "Caddyfile"
 	if serverName != "" {
@@ -7375,6 +7461,10 @@ func (s *Server) importProxyHost(w http.ResponseWriter, r *http.Request) {
 	var ownerID int64
 	if cu != nil {
 		ownerID = cu.ID
+	}
+	if msg := s.pathMatcherError(r, &ph); msg != "" { // issue #184 review
+		http.Error(w, msg, http.StatusBadRequest)
+		return
 	}
 	// GHSA-r4wm-rgc5-q834 (3rd finding) follow-up: this handler builds a
 	// ProxyHost straight from attacker-controlled uploaded JSON, including

@@ -734,7 +734,7 @@ func crowdSecRouteExcluded(route map[string]any, excluded map[string]bool) bool 
 
 func (s *Server) writeLoggingConfig(proposed map[string]any) error {
 	want, _ := proposed["logging"].(map[string]any)
-	existing, err := s.Caddy.FetchPath("/config/logging")
+	existing, err := s.caddyClient().FetchPath("/config/logging")
 	if err != nil {
 		return err
 	}
@@ -742,18 +742,18 @@ func (s *Server) writeLoggingConfig(proposed map[string]any) error {
 		if existing == nil {
 			return nil
 		}
-		return s.Caddy.DeletePath("/logging")
+		return s.caddyClient().DeletePath("/logging")
 	}
 	if configValuesEqual(existing, want) {
 		return nil
 	}
-	return s.Caddy.PutPath("/config/logging", want)
+	return s.caddyClient().PutPath("/config/logging", want)
 }
 
 func (s *Server) writeCrowdSecApp(proposed map[string]any, enabled bool) error {
 	apps, _ := proposed["apps"].(map[string]any)
 	want, _ := apps["crowdsec"].(map[string]any)
-	existing, err := s.Caddy.FetchPath("/config/apps/crowdsec")
+	existing, err := s.caddyClient().FetchPath("/config/apps/crowdsec")
 	if err != nil {
 		return err
 	}
@@ -761,12 +761,12 @@ func (s *Server) writeCrowdSecApp(proposed map[string]any, enabled bool) error {
 		if existing == nil {
 			return nil
 		}
-		return s.Caddy.DeletePath("/apps/crowdsec")
+		return s.caddyClient().DeletePath("/apps/crowdsec")
 	}
 	if configValuesEqual(existing, want) {
 		return nil
 	}
-	return s.Caddy.PutPath("/config/apps/crowdsec", want)
+	return s.caddyClient().PutPath("/config/apps/crowdsec", want)
 }
 
 // writeLayer4App pushes or removes the apps.layer4 subtree populated by
@@ -777,7 +777,7 @@ func (s *Server) writeCrowdSecApp(proposed map[string]any, enabled bool) error {
 func (s *Server) writeLayer4App(proposed map[string]any) error {
 	apps, _ := proposed["apps"].(map[string]any)
 	want, _ := apps["layer4"].(map[string]any)
-	existing, err := s.Caddy.FetchPath("/config/apps/layer4")
+	existing, err := s.caddyClient().FetchPath("/config/apps/layer4")
 	if err != nil {
 		return err
 	}
@@ -785,12 +785,12 @@ func (s *Server) writeLayer4App(proposed map[string]any) error {
 		if existing == nil {
 			return nil
 		}
-		return s.Caddy.DeletePath("/apps/layer4")
+		return s.caddyClient().DeletePath("/apps/layer4")
 	}
 	if configValuesEqual(existing, want) {
 		return nil
 	}
-	return s.Caddy.PutPath("/config/apps/layer4", want)
+	return s.caddyClient().PutPath("/config/apps/layer4", want)
 }
 
 // writeFleetServerOptions applies the small server-level fields managed by the
@@ -818,7 +818,7 @@ func (s *Server) writeFleetServerOptions(proposed map[string]any) error {
 }
 
 func (s *Server) writeOptionalConfigValue(path string, want any) error {
-	existing, err := s.Caddy.FetchPath(path)
+	existing, err := s.caddyClient().FetchPath(path)
 	if err != nil {
 		return err
 	}
@@ -826,15 +826,15 @@ func (s *Server) writeOptionalConfigValue(path string, want any) error {
 		if existing == nil {
 			return nil
 		}
-		return s.Caddy.DeletePath(strings.TrimPrefix(path, "/config"))
+		return s.caddyClient().DeletePath(strings.TrimPrefix(path, "/config"))
 	}
 	if existing == nil {
-		return s.Caddy.PutPath(path, want)
+		return s.caddyClient().PutPath(path, want)
 	}
 	if configValuesEqual(existing, want) {
 		return nil
 	}
-	return s.Caddy.PatchPath(path, want)
+	return s.caddyClient().PatchPath(path, want)
 }
 
 func configValuesEqual(a, b any) bool {

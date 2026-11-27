@@ -352,7 +352,12 @@ ack_error=0
 
 load_acks() {
   local file="$1" lineno=0 line id rest today
-  today="$(date -u +%Y-%m-%d)"
+  # LOCAL date, not UTC. The expiry is a calendar day a human wrote, so
+  # comparing it against a UTC "today" retires the ack early for anyone west
+  # of Greenwich -- `expires=2026-11-25` was already expired at 17:28 on
+  # 2026-11-25 in US/Pacific, up to 16 h of an ack's last day lost. The
+  # FORMAT is still validated in UTC-independent terms below.
+  today="$(date +%Y-%m-%d)"
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno + 1))
     line="${line%%$'\r'}"
@@ -383,7 +388,13 @@ load_acks() {
         rest="${rest%%reason=*}"
         ;;
     esac
+    # WORD SPLITTING IS WANTED HERE; GLOB EXPANSION IS NOT. `$rest` is
+    # attacker-adjacent text from a file, and an unquoted expansion also
+    # globs, so a field like `ref=*` would be replaced by matching filenames.
+    # It fails closed today (an expanded token hits the unknown-field arm and
+    # becomes exit 3) but that is luck, not design.
     local kv
+    set -f
     for kv in $rest; do
       case "$kv" in
         expires=*)  expires="${kv#expires=}" ;;
@@ -395,6 +406,7 @@ load_acks() {
           ack_error=1 ;;
       esac
     done
+    set +f
 
     # Trim the prose.
     reason="${reason#"${reason%%[![:space:]]*}"}"
@@ -431,13 +443,27 @@ load_acks() {
     # Live or expired. Two independent re-arms, and the EARLIER one wins.
     local live=1 why=""
     if [ "$expires" \< "$today" ]; then live=0; why="expired on $expires"; fi
-    if [ -n "$fixed_in" ] && [ -n "$tree_toolchain" ]; then
+    # AN UNEVALUABLE RE-ARM IS NOT A LIVE ACK. `fixed_in=` is the field that
+    # makes an acknowledgement self-healing, so the one thing it must not do
+    # is quietly stay honoured when the comparison could not be made -- a
+    # question that could not be answered rendering as suppression. Two ways
+    # that happened: no readable `toolchain` in the tree, and a comparison
+    # that returned neither 0 nor 1. Both now report the ack as not in force,
+    # which is the safe direction: the finding goes back to failing the gate
+    # and the note says the re-arm could not be evaluated.
+    if [ -n "$fixed_in" ]; then
       local c
-      if c="$(go_version_cmp "$tree_toolchain" "$fixed_in")"; then
+      if [ -z "$tree_toolchain" ]; then
+        live=0
+        why="${why:+$why; }re-arm could not be evaluated: fixed_in=$fixed_in, but this tree has no readable Go toolchain to compare it against, so whether the fix is available is unknown"
+      elif c="$(go_version_cmp "$tree_toolchain" "$fixed_in")"; then
         if [ "$c" != "-1" ]; then
           live=0
           why="${why:+$why; }re-armed: the tree is on $tree_toolchain, which is at or past fixed_in=$fixed_in, so the fix is available"
         fi
+      else
+        live=0
+        why="${why:+$why; }re-arm could not be evaluated: fixed_in=$fixed_in could not be compared with the tree's $tree_toolchain, so whether the fix is available is unknown"
       fi
     fi
     ACK_LIVE[$id]="$live"
@@ -487,7 +513,15 @@ db_modified=""
 scanner_version=""
 could_not_run=0
 extract_dir=""
-cleanup() { [ -n "$extract_dir" ] && rm -rf "$extract_dir"; return 0; }
+# The container id is cleaned up here as well as inline, because the inline
+# removal only runs on the paths that reach it: an abnormal exit between
+# `docker create` and that point would otherwise leave a stopped container
+# behind on every run.
+cleanup() {
+  [ -n "$extract_dir" ] && rm -rf "$extract_dir"
+  [ -n "${cid:-}" ] && docker rm -f "$cid" >/dev/null 2>&1
+  return 0
+}
 trap cleanup EXIT
 
 scan_target="$TARGET"
@@ -624,7 +658,15 @@ if [ "$could_not_run" = 0 ]; then
       "$TOOL_RESOLVED" -mode=binary -format json "$scan_target" > "$STREAM" 2> "$OUT_DIR/stderr.txt"
     fi
     scan_rc=$?
-    set -e
+    # NOT `set -e`. This script's header is `set -uo pipefail` -- errexit was
+    # never on, so `set -e` here would ENABLE it for the whole rest of the
+    # script rather than restore the previous state. That matters because
+    # every later step deliberately inspects a non-zero status instead of
+    # dying on it: with errexit on, an unguarded command would abort with ITS
+    # OWN status, and in this script's convention 1 reads as "findings
+    # present" and 2 as "a called finding" -- a crash reported as a result.
+    # `set +e` above is therefore a no-op kept for readability at the one
+    # place a failure is expected, and nothing needs undoing.
     if [ "$scan_rc" -ne 0 ]; then
       could_not_run=1
       note "govulncheck exited $scan_rc. In \`-format json\` a findings result still exits 0, so a non-zero status here means the scan itself failed — most often an unreadable target or a scanner/toolchain mismatch. Its stderr: $(head -c 800 "$OUT_DIR/stderr.txt" 2>/dev/null | tr '\n' ' ')"
@@ -765,6 +807,15 @@ while IFS=$'\037' read -r id called modules fixed symbols summary aliases; do
     ACK_SEEN[$id]=1
     [ "${ACK_LIVE[$id]}" = 1 ] && live_ack=1
   fi
+  # One escaping pass for every cell this row will put in a markdown table.
+  # `$id` needs no escaping: it is shape-validated against `GO-...` before it
+  # reaches a row, and it is rendered inside backticks.
+  modules_e="${modules//|/\\|}"
+  fixed_e="${fixed//|/\\|}"
+  symbols_e="${symbols//|/\\|}"
+  summary_e="${summary//|/\\|}"
+  aliases_e="${aliases//|/\\|}"
+
   if [ "$called" = yes ]; then
     called_total=$((called_total + 1))
     if [ "$live_ack" = 1 ]; then
@@ -772,11 +823,16 @@ while IFS=$'\037' read -r id called modules fixed symbols summary aliases; do
       ack_rows+=("| \`$id\` | ${modules:-—} | ${fixed:-**no fix available**} | acknowledged until ${ACK_EXPIRES[$id]}${ACK_FIXEDIN[$id]:+, or when the tree reaches ${ACK_FIXEDIN[$id]}} | ${ACK_REASON[$id]}${ACK_REF[$id]:+ (${ACK_REF[$id]})} |")
     else
       called_live=$((called_live + 1))
-      called_rows+=("| \`$id\` | ${modules:-—} | ${fixed:-**no fix available**} | ${symbols:-—} | ${summary//|/\\|} | ${aliases:-none} |")
+      # EVERY third-party-derived cell is pipe-escaped, not just the summary.
+    # A `|` anywhere in an advisory id, module list, version, symbol list or
+    # alias list breaks the column alignment and can shift a value under the
+    # wrong heading -- which in this table means a fix version appearing as a
+    # symbol, or a summary read as an alias.
+    called_rows+=("| \`$id\` | ${modules_e:-—} | ${fixed_e:-**no fix available**} | ${symbols_e:-—} | ${summary_e} | ${aliases_e:-none} |")
     fi
   else
     present_total=$((present_total + 1))
-    present_rows+=("| \`$id\` | ${modules:-—} | ${fixed:-**no fix available**} | ${summary//|/\\|} | ${aliases:-none} |")
+    present_rows+=("| \`$id\` | ${modules_e:-—} | ${fixed_e:-**no fix available**} | ${summary_e} | ${aliases_e:-none} |")
   fi
 done < "$rows_file"
 
@@ -814,7 +870,15 @@ fi
   case "$verdict" in
     ok)        echo "### govulncheck — no findings" ;;
     attention)
-      if [ "$called_acked" -gt 0 ]; then
+      # THREE CASES, NOT TWO. `attention` is also where a called/linked
+      # finding lands under `--fail-on never`, which is what BOTH image call
+      # sites use -- so without the first arm the headline read "2 finding(s),
+      # none linked" directly above a table listing two linked ones. The
+      # headline is the line a reader skims, so it must not contradict the
+      # rows under it. Measured on the published :stable image.
+      if [ "$called_live" -gt 0 ]; then
+        echo "### govulncheck — **$called_live $noun_called finding(s)** (report-only)"
+      elif [ "$called_acked" -gt 0 ]; then
         echo "### govulncheck — $total finding(s); $called_acked $noun_called but **acknowledged**"
       else
         echo "### govulncheck — $total finding(s), none $noun_called"
