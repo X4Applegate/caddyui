@@ -953,9 +953,20 @@ jobs:
       # it, not something to switch on in passing.
       #
       # Runs only on a pushing run, because it reads the pushed digest.
-      # `setup-go` with `go-version-file: go.mod` then a fresh `go install`
-      # is what keeps the scanner from being older than what it scans
-      # (T-0740); the gate script asserts that pair itself as well.
+      # `go-version: stable`, NOT `go-version-file: go.mod` (T-0893). The
+      # scanner must not be older than what it scans (T-0740), and what this
+      # step scans is /usr/bin/caddy, whose Go comes from the upstream
+      # `caddy:*-builder` image in Dockerfile.caddy -- independent of this
+      # repo's `toolchain` line. Under go.mod, the first week upstream's
+      # builder moves to a newer Go than our pin, the gate's guard sees an
+      # older scanner and this goes exit 3 every run. Latest stable Go is
+      # always >= any released builder's Go and >= go.mod's toolchain.
+      # GOTOOLCHAIN is deliberately left at `auto`: run from the checkout, `go
+      # install` still honours go.mod's `toolchain` line as a floor (measured
+      # 2026-11-25), so the scanner's Go is max(stable, go.mod) and a lagging
+      # setup-go manifest cannot drop it below the tree. The gate script
+      # checks the pair itself as well.
+      #
       # `continue-on-error` ON THE PREREQUISITES, NOT ONLY ON THE SCAN.
       # The scan itself is report-only and says so, but these two steps sit
       # in the `caddy` job AHEAD of the tag steps, and those are guarded on
@@ -975,7 +986,7 @@ jobs:
         continue-on-error: true
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: stable
           cache: true
 
       - name: Install govulncheck
