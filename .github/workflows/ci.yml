@@ -145,7 +145,6 @@ jobs:
             test-caddy-image-gate-trust-env.sh   # TLS-trust env rules, 40 cases
             test-caddy-image-gate-age.sh         # baseline-newer-than-rebuild preflight (T-0863), string-level
             test-image-gate-coverage.sh          # scan-coverage floors (T-0638/T-0809), crafted Trivy JSON
-            test-image-gate-floor-greps.sh       # Dockerfile.caddy's build-time floor greps (T-0840), 44 cases
           )
 
           for s in "${suites[@]}"; do

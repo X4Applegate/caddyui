@@ -297,10 +297,11 @@ echo "=== 17. against the REAL Dockerfile and the REAL measured graph ==="
 # this is the shipped-image case end to end.
 #
 # THIS FIXTURE TRACKS THE LIVE DOCKERFILE AND WILL GO STALE WHEN A FLOOR IS
-# ADDED OR REPINNED. It has three times: route53 gained a `# pin-watch: floor`
+# ADDED OR REPINNED. It has four times: route53 gained a `# pin-watch: floor`
 # directive (T-0637) after this case was written, I182 added a `security`
-# floor on aws-sdk-go-v2/service/route53, and T-0753 repinned crowdsec to
-# v1.8.1 and go-jose to v4.1.9. Because a floor whose module has no
+# floor on aws-sdk-go-v2/service/route53, T-0753 repinned crowdsec to v1.8.1
+# and go-jose to v4.1.9, and T-0905 put T-0840's otel/sdk/log and x/crypto
+# floors under `security` directives (they had been hand-rolled greps). Because a floor whose module has no
 # row in the graph is a hard error rather than a pass — correctly, that is the
 # fail-open shape assert-floor-versions.sh exists to remove — each drift
 # surfaced as failures here rather than as a silent miscount. Keeping this case
@@ -319,6 +320,8 @@ github.com/go-chi/chi/v5	v5.5.0
 github.com/go-jose/go-jose/v4	v4.1.9
 github.com/aws/aws-sdk-go-v2/service/route53	v1.59.4
 github.com/caddy-dns/route53	v1.6.2
+go.opentelemetry.io/otel/sdk/log	v1.47.0
+golang.org/x/crypto	v0.59.0
 EOF
 run "$REPO/Dockerfile.caddy" "$WORK/G17"
 check "rc=0"                      "0" "$(rc)"
@@ -326,13 +329,48 @@ check "no divergence left"        "0" "$(out | grep -c '\[DIVERGED\]')"
 check "no parse error"            "0" "$(err | grep -c 'ERROR')"
 # The coverage assertion. A regression that drops a directive would still
 # exit 0 with a clean-looking report, so the COUNT is checked explicitly.
-check "all 6 declared floors checked" "1" "$(out | grep -c '6 floor(s) checked')"
-check "all 6 are [ok]"                "6" "$(out | grep -c '\[ok\]')"
+check "all 8 declared floors checked" "1" "$(out | grep -c '8 floor(s) checked')"
+check "all 8 are [ok]"                "8" "$(out | grep -c '\[ok\]')"
 # The publish paths pass --strict (T-0753), so the live file must satisfy the
 # strict reading too. If it does not, every release fails — which is a thing to
 # learn here rather than from a red pipeline.
 run "$REPO/Dockerfile.caddy" "$WORK/G17" --strict
 check "live pins pass --strict"       "0" "$(rc)"
+
+echo
+echo "=== 17b. T-0840's two floors are asserted by directive, not by grep (T-0905) ==="
+# These two pins were guarded by hand-rolled `grep -qE` lines in the builder
+# stage (and a 44-case suite for those greps). T-0905 moved them under
+# `# pin-watch: security` directives, so the protection now lives here. Each
+# floor linked BELOW its pin must fail the build exactly as the greps did, and
+# a version the greps' two-digit alternation could not express must not
+# false-fail, because ver_cmp compares numerically.
+mk_g17() { # $1=dest $2=sdk/log version $3=x/crypto version
+  mk_graph "$1" <<EOG
+github.com/crowdsecurity/crowdsec	v1.8.1
+golang.org/x/net	v0.62.0
+github.com/go-chi/chi/v5	v5.5.0
+github.com/go-jose/go-jose/v4	v4.1.9
+github.com/aws/aws-sdk-go-v2/service/route53	v1.59.4
+github.com/caddy-dns/route53	v1.6.2
+go.opentelemetry.io/otel/sdk/log	$2
+golang.org/x/crypto	$3
+EOG
+}
+mk_g17 "$WORK/G17b1" v0.22.0 v0.59.0
+run "$REPO/Dockerfile.caddy" "$WORK/G17b1"
+check "17b sdk/log at Caddy's v0.22.0 -> rc=1"       "1" "$(rc)"
+check "17b names sdk/log as [VIOLATED]"              "1" "$(out | grep '\[VIOLATED\]' | grep -c 'otel/sdk/log')"
+mk_g17 "$WORK/G17b2" v1.47.0 v0.58.0
+run "$REPO/Dockerfile.caddy" "$WORK/G17b2"
+check "17b x/crypto one minor below -> rc=1"         "1" "$(rc)"
+check "17b names x/crypto/chacha20 as [VIOLATED]"    "1" "$(out | grep '\[VIOLATED\]' | grep -c 'x/crypto/chacha20')"
+mk_g17 "$WORK/G17b3" v1.100.0 v0.100.0
+run "$REPO/Dockerfile.caddy" "$WORK/G17b3"
+check "17b three-digit minors are not a violation"   "0" "$(rc)"
+check "17b ...and read as two divergences"           "2" "$(out | grep -c '\[DIVERGED\]')"
+run "$REPO/Dockerfile.caddy" "$WORK/G17b3" --strict
+check "17b ...which --strict (publish) refuses"      "1" "$(rc)"
 
 echo
 echo "=== 18. the live Dockerfile is readable by the WATCHER too ==="
@@ -346,7 +384,7 @@ if "$REPO/scripts/check-pinned-modules.sh" --dockerfile "$REPO/Dockerfile.caddy"
 # compares "0\n0" against "0". Count through wc instead, which always exits 0.
 check "no unknown-kind error" "0" \
   "$(grep 'unknown .*pin-watch' "$WORK/w18/errors.txt" 2>/dev/null | wc -l | tr -d ' ')"
-check "4 security pins recorded" "4" \
+check "6 security pins recorded" "6" \
   "$(wc -l < "$WORK/w18/security-pins.tsv" 2>/dev/null | tr -d ' ')"
 
 echo
