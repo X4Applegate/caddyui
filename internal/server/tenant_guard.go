@@ -1761,18 +1761,37 @@ func (s *Server) messageFor(r *http.Request, msg string) string {
 }
 
 // addrPortRe matches an IP address or host with a port.
-var addrPortRe = regexp.MustCompile(`\[?[0-9A-Za-z.:-]*[0-9a-fA-F]\]?:\d{1,5}\b`)
+var addrPortRe = regexp.MustCompile(`\[?[0-9A-Za-z.:-]*[0-9A-Za-z]\]?:\d{1,5}\b`)
+
+// caddyfileLineRe is a Caddyfile line reference (kept in messages).
+var caddyfileLineRe = regexp.MustCompile(`^Caddyfile:\d+$`)
 
 // tenantSafeMessage reduces a Caddy error for a non-admin: its first line,
 // without Caddy's internals, cut before the first quote or brace (Caddy's
 // JSON bodies escape the quotes of the values they carry, so a value
 // cannot be told apart from the text around it) and without addresses.
 func tenantSafeMessage(msg string) string {
+	// Caddy's answer usually ends in its JSON body ({"error":"…"}) after a
+	// prefix; decode it, so the cut below falls inside Caddy's message
+	// rather than at the start of the body.
+	if i := strings.Index(msg, `{"error"`); i >= 0 {
+		var body struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(msg[i:])), &body) == nil && body.Error != "" {
+			msg = msg[:i] + body.Error
+		}
+	}
 	m := caddy.SanitizeCaddyError(msg)
 	if i := strings.IndexAny(m, "\"'`{"); i >= 0 {
 		m = strings.TrimSpace(m[:i]) + " …"
 	}
-	m = addrPortRe.ReplaceAllString(m, "…")
+	m = addrPortRe.ReplaceAllStringFunc(m, func(a string) string {
+		if caddyfileLineRe.MatchString(a) {
+			return a
+		}
+		return "…"
+	})
 	return m
 }
 

@@ -1292,7 +1292,13 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	// v2.38.0: servers held after a failed post-apply check — layout banner.
 	if _, ok := data["SyncHolds"]; !ok {
 		if servers, ok := data["Servers"].([]models.CaddyServer); ok && len(servers) > 0 {
-			data["SyncHolds"] = s.activeSyncHolds(servers)
+			holds := s.activeSyncHolds(servers)
+			if r != nil && !isAdminUser(s.currentUser(r)) {
+				for i := range holds {
+					holds[i].Detail = tenantSafeMessage(holds[i].Detail)
+				}
+			}
+			data["SyncHolds"] = holds
 		}
 	}
 	// v2.42.1: servers whose last sync failed — layout banner.
@@ -3521,7 +3527,7 @@ func (s *Server) cloneRedirectionHost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) reloadCaddy(w http.ResponseWriter, r *http.Request) {
 	if err := s.syncCaddy(s.currentServerID(r), true); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, s.messageFor(r, err.Error()), http.StatusBadGateway)
 		return
 	}
 	// v2.12.19: was returning 204 No Content + HX-Trigger header on the
