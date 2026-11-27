@@ -1547,7 +1547,7 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	if err != nil {
 		return friendlyAdvancedRejection(err) // v2.42.2
 	}
-	handlers, _, err := proxyAdvancedHandlers(result)
+	handlers, overrides, err := proxyAdvancedHandlers(result)
 	if err != nil {
 		return friendlyAdvancedRejection(err)
 	}
@@ -1558,6 +1558,14 @@ func (s *Server) validateProxyAdvanced(caddyCl *caddy.Client, p *models.ProxyHos
 	// route silently; this gives the user the reason instead.
 	if caddyCl != nil && caddyCl.AdaptTextCheck != nil {
 		if msg := s.validateTenantRoute(map[string]any{"handle": handlers}); msg != "" {
+			return msg
+		}
+		// And the host's own reverse_proxy with the settings the text merges
+		// into it (MergeReverseProxyOverrides: health checks, transport,
+		// headers), as the sync builds it.
+		merged := caddy.BuildProxyRoute(*p, handlers)
+		caddy.MergeReverseProxyOverrides(merged, overrides)
+		if msg := s.validateTenantRoute(merged); msg != "" {
 			return msg
 		}
 		// Issue #184 review: and nothing beyond those handlers — the live

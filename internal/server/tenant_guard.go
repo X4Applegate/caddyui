@@ -179,7 +179,13 @@ func (s *Server) tenantRouteViolation(route any) string {
 					}
 				}
 			}
-			for _, child := range t {
+			for k, child := range t {
+				// Caddy expands placeholders in some keys too — header
+				// field names, for one — so keys are held to the same rule.
+				if containsDangerousPlaceholder(k) {
+					reason = "{env.…}, {file.…} and {$…} placeholders read the Caddy server's environment and files and are admin-only"
+					return
+				}
 				walk(child)
 			}
 		case []any:
@@ -238,6 +244,9 @@ func reverseProxyViolation(h map[string]any, adminHosts map[string]bool) string 
 			}
 		}
 	}
+	if why := activeHealthCheckViolation(h["health_checks"], check); why != "" {
+		return why
+	}
 	if tr, ok := h["transport"].(map[string]any); ok {
 		if np, ok := tr["network_proxy"].(map[string]any); ok {
 			if u, _ := np["url"].(string); u != "" {
@@ -249,6 +258,75 @@ func reverseProxyViolation(h map[string]any, adminHosts map[string]bool) string 
 	}
 	return ""
 }
+
+// activeHealthCheckViolation checks a reverse_proxy's active health checks
+// for a non-admin. Caddy sends them itself, on a timer: `upstream` is
+// dialed in place of the upstreams (so it is held to the upstream rules,
+// as is a Host header), and following redirects would let the upstream
+// send the probe anywhere — the Caddy admin API included, whose answer
+// `expect_body` could then test. Like CaddyUI's own health checks for
+// non-admins, the probe may only GET or HEAD, without a body. A port
+// override is allowed: it stays on an upstream host the rules allowed.
+// Passive health checks and load-balancing retries send no requests of
+// their own.
+func activeHealthCheckViolation(v any, check func(string) string) string {
+	hc, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	act, ok := hc["active"].(map[string]any)
+	if !ok {
+		if _, present := hc["active"]; present && hc["active"] != nil {
+			return "active health check settings CaddyUI cannot read are admin-only"
+		}
+		return ""
+	}
+	if raw, present := act["upstream"]; present {
+		up, isStr := raw.(string)
+		if !isStr {
+			return "an active health check upstream CaddyUI cannot read is admin-only"
+		}
+		if why := check(up); why != "" {
+			return "active health check " + why
+		}
+	}
+	if v := act["follow_redirects"]; v != nil && !isFalse(v) {
+		return "active health checks that follow redirects are admin-only"
+	}
+	if m := act["method"]; m != nil {
+		method, isStr := m.(string)
+		if !isStr {
+			method = "?"
+		}
+		switch strings.ToUpper(strings.TrimSpace(method)) {
+		case "", "GET", "HEAD":
+		default:
+			return "active health checks are limited to GET and HEAD for non-admin accounts"
+		}
+	}
+	if b := act["body"]; b != nil && b != "" {
+		return "an active health check request body is admin-only"
+	}
+	if hdrs, ok := act["headers"].(map[string]any); ok {
+		for k, v := range hdrs {
+			if !strings.EqualFold(strings.TrimSpace(k), "Host") {
+				continue
+			}
+			for _, hv := range asAnySlice(v) {
+				if sv, _ := hv.(string); sv != "" {
+					if why := check(sv); why != "" {
+						return "active health check Host header " + why
+					}
+				}
+			}
+		}
+	} else if act["headers"] != nil {
+		return "active health check headers CaddyUI cannot read are admin-only"
+	}
+	return ""
+}
+
+func isFalse(v any) bool { b, ok := v.(bool); return ok && !b }
 
 func asAnySlice(v any) []any {
 	switch t := v.(type) {
@@ -287,6 +365,14 @@ func neutraliseTenantPlaceholders(v any) (any, bool) {
 		case map[string]any:
 			for k, child := range t {
 				t[k] = rec(child)
+			}
+			// Keys too (header field names are expanded by Caddy).
+			for k, child := range t {
+				if neutralisedPlaceholderRe.MatchString(k) {
+					changed = true
+					delete(t, k)
+					t[neutralisedPlaceholderRe.ReplaceAllString(k, "{blocked-$2.")] = child
+				}
 			}
 			return t
 		case []any:
