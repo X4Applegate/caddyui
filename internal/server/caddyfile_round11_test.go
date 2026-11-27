@@ -430,7 +430,10 @@ func TestUpgradeMigrationFailsClosed(t *testing.T) {
 	if strings.Count(live, round11Secret) != 1 { // the administrator's own row
 		t.Errorf("the planted content is deployed for a non-admin row: %s", live)
 	}
-	if v, _ := models.GetSetting(conn, settingTenantRawRouteMigration); v != fmt.Sprintf(`{"pending":[%d]}`, refused) {
+	// The state also carries the row's snippet-wait counters (T-0935).
+	v, _ := models.GetSetting(conn, settingTenantRawRouteMigration)
+	var st rawMigSavedState
+	if err := json.Unmarshal([]byte(v), &st); err != nil || len(st.Pending) != 1 || st.Pending[0] != refused {
 		t.Errorf("migration state %q, want only the row importing an undefined name left", v)
 	}
 }
