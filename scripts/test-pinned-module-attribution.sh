@@ -98,7 +98,7 @@ printf 'module example.com/caddyui-fixture\n\ngo 1.26.0\n' > "$WORK/mod/go.mod"
 
 run() { # $1 = name, $2 = advisory dir, $3 = deps-ok|deps-fail ; prints findings tsv path
   mkshims "$WORK/shim-$1" "$2" "$3"
-  PATH="$WORK/shim-$1:$PATH" GH_TOKEN= GITHUB_TOKEN= bash "$SCRIPT" \
+  PATH="$WORK/shim-$1:$PATH" GH_TOKEN='' GITHUB_TOKEN='' bash "$SCRIPT" \
     --dockerfile "$REPO_ROOT/Dockerfile.caddy" --gomod "$WORK/mod/go.mod" \
     --out-dir "$WORK/o-$1" >/dev/null 2>&1 || true
   printf '%s' "$WORK/o-$1/image-extra.tsv"
