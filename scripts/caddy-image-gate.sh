@@ -211,8 +211,14 @@
 #     defined"). Both sit on both sides, so both cancel out, and the gate's
 #     question stays "is the rebuild worse than what the fleet runs" rather
 #     than "is the image perfect" -- a standard that would block every
-#     release from the first run. Fixing those two is separate work, not this
-#     gate's job to force.
+#     release from the first run. T-0908 added a HEALTHCHECK, so DS-0026 is
+#     fixed from the first image built with it (it shows as a REMOVED finding
+#     on that release, which is not a block). DS-0002 is ACKNOWLEDGED, not
+#     fixed: the default user stays root because existing fleet volumes and
+#     host-mounted keys are root-owned 0600/0700 and a non-root default breaks
+#     them on upgrade -- see SECURITY.md "Why the Caddy image runs as root".
+#     It keeps cancelling out here; no ignore file hides it (see the
+#     TRIVY_NO_IGNOREFILE note below for why there is none).
 #
 #  2. Module set, from `caddy list-modules --versions`. Every --with argument
 #     in Dockerfile.caddy now carries a version, so a rebuild should reproduce
@@ -315,11 +321,20 @@
 #     the script already runs to verify each side's architecture.
 #
 #     Fields compared: Config.User, Config.Entrypoint, Config.Cmd, Config.Env,
-#     Config.ExposedPorts, Config.Volumes, Config.WorkingDir. Deliberately NOT
-#     Labels (every build stamps fresh org.opencontainers.image.* values, so it
-#     differs on every single build and would make this gate meaningless noise)
-#     and NOT Healthcheck/StopSignal (absent on both sides today; add them here
-#     if that changes rather than carrying a field that is always empty).
+#     Config.ExposedPorts, Config.Volumes, Config.WorkingDir and
+#     Config.Healthcheck. Deliberately NOT Labels (every build stamps fresh
+#     org.opencontainers.image.* values, so it differs on every single build
+#     and would make this gate meaningless noise) and NOT StopSignal (absent on
+#     both sides; add it here if that changes rather than carrying a field that
+#     is always empty).
+#
+#     Healthcheck joined the list with T-0908, when Dockerfile.caddy gained a
+#     HEALTHCHECK: its Test is a command the engine EXECS INSIDE THE RUNNING
+#     CONTAINER every 30 s, so it is as much "what runs" as Entrypoint and Cmd.
+#     It is the one field here whose value is routinely longer than `clean`'s
+#     400-character cut (the shipped probe is ~420), so it is emitted in
+#     400-character chunks rather than truncated -- a change past the cut must
+#     still show up in the diff.
 #
 #     ONE CLASS OF CONFIG CHANGE IS BLOCKING UNDER BOTH POLICIES: a variable
 #     that redirects the binary's outbound TLS TRUST. A newly-added or modified
@@ -2552,7 +2567,9 @@ config_from() {
     die "cannot inspect the image configuration of $ref; refusing to guess it"
   fi
   printf '%s' "$raw" | jq -r '
-    def clean: tostring | gsub("[^A-Za-z0-9._:/@+=,() \\[\\]{}\"'"'"'*?!#$^&~`|<>-]"; "?") | .[0:400];
+    def cleanall: tostring | gsub("[^A-Za-z0-9._:/@+=,() \\[\\]{}\"'"'"'*?!#$^&~`|<>-]"; "?");
+    def clean: cleanall | .[0:400];
+    def chunks: cleanall as $s | [range(0; ($s | length) + 1; 400) as $i | $s[$i:$i+400]];
     def nlist: if . == null then [] else . end;
     def nobj:  if . == null then {} else . end;
     [ "User\t"         + ((.User // "")       | clean),
@@ -2562,10 +2579,18 @@ config_from() {
       "ExposedPorts\t" + ((.ExposedPorts | nobj | keys | sort | map(clean)) | @json),
       "Volumes\t"      + ((.Volumes      | nobj | keys | sort | map(clean)) | @json)
     ]
+    + ( (.Healthcheck // null) as $h
+        | if $h == null then ["Healthcheck\tnone"]
+          else [ "Healthcheck\t" + ("Interval=\($h.Interval // 0) Timeout=\($h.Timeout // 0) StartPeriod=\($h.StartPeriod // 0) StartInterval=\($h.StartInterval // 0) Retries=\($h.Retries // 0)" | clean) ]
+               + ( ($h.Test // []) | to_entries
+                   | map(.key as $k | (.value | chunks | to_entries
+                         | map("Healthcheck\tTest[\($k)]#\(.key)\t" + .value)))
+                   | flatten )
+          end )
     + ((.Env | nlist | map(clean) | sort) | map("Env\t" + .))
     | .[]' > "$out" \
     || die "cannot parse the image configuration of $ref"
-  # A non-empty result is guaranteed by construction (six fixed lines), so an
+  # A non-empty result is guaranteed by construction (seven fixed lines), so an
   # empty file means jq produced nothing despite exiting 0 -- treat it as a
   # failed read rather than as "no configuration", which would compare clean.
   [ -s "$out" ] || die "no image configuration parsed from $ref"
@@ -3684,7 +3709,7 @@ fi
     echo "  - For the \`--with\` plugin pins, the weekly pin watcher (\`check-pinned-modules.sh\`) asks that endpoint — read it, not this gate, for \"are there known advisories\"."
     echo "  - For CaddyUI's own \`go.mod\`, **nothing currently asks it.** Dependabot covers \`go.mod\` but keys on GitHub's *global* advisory index, which omits CVE-less records the same way OSV does. See \`SECURITY.md\` → \"How \`go.mod\` is watched for advisories\"."
     echo "- **This gate is a difference, not an audit.** A finding present on both images cancels out by construction, because a zero-findings standard could never publish anything. \`$verdict\` means *no worse than the image the fleet already runs* — which is the question it asks, and the only one it answers."
-    echo "  - That applies to the \`secret\` and \`misconfig\` scanners too, and they currently cancel something real: the published image **fails** \`DS-0002\` (\"Image user should not be 'root'\") and \`DS-0026\` (\"No HEALTHCHECK defined\"). Both sit on both sides, so neither blocks — a standing finding, not a clean bill. Fixing them is separate work."
+    echo "  - That applies to the \`secret\` and \`misconfig\` scanners too, and they currently cancel something real: the published image **fails** \`DS-0002\` (\"Image user should not be 'root'\"), on both sides, so it never blocks — a standing finding, not a clean bill. It is acknowledged rather than fixed: a non-root default breaks existing root-owned volumes and host-mounted keys on upgrade (SECURITY.md → \"Why the Caddy image runs as root\"). \`DS-0026\` (no HEALTHCHECK) is fixed from the release that added one (T-0908)."
     echo "- **A quiet \`secret\` scanner and a clean one produce the same output, and this gate cannot tell them apart.** Trivy emits a \`secret\` result only when it finds a credential, so there is no positive signal for \"it ran and found nothing\" — unlike the misconfig scanner, whose \`config\` result is always present and is now required outright by the coverage precondition (check 3b). What stands in for it is that both scans are issued from the same two variables a few lines apart in this script, so an asymmetric edit is not expressible; a \`trivy.yaml\` in the working directory or a change to Trivy's defaults would turn it off for both scans at once and nothing here would notice. Read \"no embedded secret\" as \"neither scan reported one\"."
     echo
     echo "</details>"

@@ -543,3 +543,53 @@ FROM caddy:2.11.9-alpine
 # upgrade here so this image ships them (e.g. brotli-libs 1.2.1, CVE-2026-111497).
 RUN apk upgrade --no-cache
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+# NO `USER` LINE, ON PURPOSE (T-0908, Trivy DS-0002 acknowledged). Every image so
+# far ran as root, so existing /data and /config volumes are root-owned 0700/0600
+# and host-mounted keys are commonly root 0600; a non-root default makes Caddy
+# exit with `permission denied` on upgrade. The binary already carries
+# cap_net_bind_service=ep (XCADDY_SETCAP in the builder), so an operator can opt
+# in with `user:` after a one-time chown. See SECURITY.md, "Why the Caddy image
+# runs as root", before adding a USER here.
+#
+# HEALTHCHECK (T-0908, Trivy DS-0026). Probes Caddy's admin API, which is the
+# one endpoint every deployment of this image has: CaddyUI drives Caddy through
+# it, so an admin API that does not answer is a Caddy that CaddyUI cannot
+# manage, whatever the proxy ports are doing.
+#
+# WHERE IT CONNECTS. The admin address comes from CADDY_ADMIN, the variable the
+# shipped docker-compose.yml sets (0.0.0.0:2019) and Caddy itself reads; unset
+# means Caddy's default, localhost:2019. A wildcard host (0.0.0.0, [::], empty)
+# is probed on 127.0.0.1 -- inside the container that reaches the same
+# listener. A `tcp/` prefix is accepted, and a `unix/` address is probed over
+# the socket with curl --unix-socket, so neither form reads as unhealthy.
+#
+# WHAT IT CANNOT SEE, ON PURPOSE. An `admin { listen ... }` set in the config
+# rather than in CADDY_ADMIN, or `admin off`, moves or removes the endpoint
+# behind the variable's back and this check then reports unhealthy. Such a
+# deployment cannot be driven by CaddyUI either; disable the check for it with
+# `healthcheck: { disable: true }` in compose rather than widening the probe.
+#
+# WHY /metrics. It is the one admin route Caddy logs at DEBUG rather than INFO
+# (admin.go: `if r.RequestURI == "/metrics" { log.Debug(...) }`, there for
+# scrapers). Measured: a /config/... probe writes an `admin.api received
+# request` INFO line on every run -- 2880 lines a day into the container log at
+# a 30 s interval -- while /metrics writes none. It is always registered on the
+# admin listener, answers 200 on every config, and is cheap (11 KB, under 1 ms
+# on the busiest fleet host). A GET: it cannot change the config.
+#
+# curl, not wget: the caddy base image ships both, but only curl speaks to a
+# unix socket. `-f` turns an HTTP error into a non-zero exit; `-sS` keeps the
+# reason in `docker inspect`'s health log without the progress meter.
+#
+# --start-interval probes every 5 s during the start period so a fresh container
+# reads healthy within seconds rather than after the first 30 s interval;
+# engines older than Docker 25 ignore it and simply use --interval.
+#
+# Docker only RECORDS health: a plain `docker run` / compose deployment does not
+# restart an unhealthy container, so a false negative here is a status flag,
+# not an outage. Something that acts on health (Swarm, an autoheal sidecar)
+# would act on it -- which is why the probe is deliberately conservative about
+# what counts as the admin endpoint rather than guessing.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=5s --retries=3 \
+  CMD ["/bin/sh", "-c", "a=\"${CADDY_ADMIN:-localhost:2019}\"; a=\"${a#tcp/}\"; case \"$a\" in unix/*) exec curl -fsS --max-time 4 -o /dev/null --unix-socket \"${a#unix/}\" http://localhost/metrics;; esac; h=\"${a%:*}\"; p=\"${a##*:}\"; case \"$h\" in ''|0.0.0.0|'[::]'|'::') h=127.0.0.1;; esac; exec curl -fsS --max-time 4 -o /dev/null \"http://$h:$p/metrics\""]

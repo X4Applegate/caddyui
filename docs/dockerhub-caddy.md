@@ -83,6 +83,22 @@ Point CaddyUI at it with `CADDY_ADMIN_URL=http://caddy:2019`. See the [CaddyUI i
 
 **Never expose the admin API (port 2019) to the internet** — it can rewrite Caddy's whole configuration.
 
+## Health check
+
+The image has a `HEALTHCHECK` that probes Caddy's admin API at the address in `CADDY_ADMIN` (default
+`localhost:2019`; a wildcard such as `0.0.0.0:2019` is probed on `127.0.0.1`, and `unix/<path>` over
+the socket). It requests `/metrics`, the admin route Caddy logs at debug level, so the probe adds no
+lines to the container log. If your config moves the admin listener with `admin { listen … }` or turns
+it off with `admin off`, the probe cannot follow it and the container will read *unhealthy*; disable
+the check for that container with `healthcheck: { disable: true }`.
+
+## Running as non-root
+
+The image runs Caddy as root by default so existing root-owned volumes keep working on upgrade. The
+binary carries `cap_net_bind_service`, so it also runs as any other uid once that uid owns `/data` and
+`/config` — see [SECURITY.md](https://github.com/X4Applegate/caddyui/blob/main/SECURITY.md) →
+*Why the Caddy image runs as root*.
+
 ## Links
 
 - CaddyUI on GitHub: https://github.com/X4Applegate/caddyui

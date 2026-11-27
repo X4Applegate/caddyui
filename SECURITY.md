@@ -163,6 +163,50 @@ and the preconditions were admin-authored config: a `root` built from `{host}`, 
 `file_server` with the data directory fallen back to `./caddy`, or a `file` matcher or `rewrite` using
 the file-matcher remainder. CaddyUI generates none of those, and `file_server`, `templates` and
 `acme_server` are admin-only — see *Roles and Permissions*.
+
+### Why the Caddy image runs as root (Trivy `DS-0002`, acknowledged)
+
+Trivy reports `DS-0002` ("Image user should not be 'root'") on `applegater/caddyui-caddy`. That is a
+deliberate, measured decision, not an oversight, and it is recorded here because the image gate pins
+an **empty** ignore file on purpose — no `.trivyignore` hides it, so every hand scan will show it and
+this section is the acknowledgement.
+
+**Why the default stays root.** Every image published so far ran Caddy as root, so every existing
+deployment's state is root-owned and private. Measured on volumes written by the published image:
+`/data/caddy/pki` is `root:root 0700`, the CA and certificate keys are `0600`, and
+`/config/caddy/autosave.json` is `root:root 0600`. Started on those same volumes as a non-root user,
+Caddy exits at once with `open /config/caddy/autosave.json: permission denied` — an upgrade would take
+the proxy down. TLS keys bind-mounted from the host (`/etc/ssl/private/*.key`, `root 0600`, the usual
+layout) become unreadable the same way. An entrypoint that `chown`s at start does not help: it must
+itself run as root (so `DS-0002` stays), and it would rewrite the ownership of host bind mounts that
+other software on the host may rely on.
+
+**What already limits it.** The `caddy` binary carries the file capability
+`cap_net_bind_service=ep`, so a non-root Caddy can bind :80 and :443 without any other privilege, and
+the image is ready for non-root use whenever an operator opts in.
+
+**Running it as non-root (opt-in).** Pick a uid, give it the state, then set `user:`:
+
+```sh
+docker run --rm -v caddy_data:/data -v caddy_config:/config --entrypoint chown \
+  applegater/caddyui-caddy:stable -R 1000:1000 /data /config     # once, with Caddy stopped
+```
+
+```yaml
+  caddy:
+    user: "1000:1000"
+```
+
+Also make any host-mounted certificate keys and log directories readable/writable by that uid. Keep
+`NET_BIND_SERVICE` in the container's capability bounding set: with `cap_drop: [ALL]` and no
+`cap_add: [NET_BIND_SERVICE]`, the kernel refuses to exec the binary at all
+(`exec /usr/bin/caddy: operation not permitted`), because the capability is marked effective on the
+file. Verified with unprivileged-port binding disabled (`net.ipv4.ip_unprivileged_port_start=1024`),
+so the capability, not Docker's default sysctl, is what lets :80/:443 bind.
+
+Revisit this if a release can carry a migration that owners opt into explicitly (for example a
+major version whose upgrade notes include the `chown` above). `DS-0026` (no `HEALTHCHECK`) is fixed:
+the image probes Caddy's admin API — see `docs/dockerhub-caddy.md` → *Health check*.
 ---
 
 ## Threat Model Notes
