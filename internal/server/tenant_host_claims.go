@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,7 +67,7 @@ const (
 // trimmed, without a trailing dot (Caddy matches host names without regard
 // to case or a trailing dot).
 func claimHost(h string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+	return models.NormalizeHostname(h) // also drops a port, as the route builders do
 }
 
 // tenantClaimHostProblem returns why h (claimHost form) may not be a
@@ -124,7 +125,7 @@ func rawRouteMatchShape(jsonData string) (hosts []string, hostless bool, bad str
 			for _, n := range names {
 				str, ok := n.(string)
 				h := claimHost(str)
-				if !ok || tenantClaimHostProblem(h) != "" {
+				if !ok || tenantClaimHostProblem(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(str)), ".")) != "" {
 					if bad == "" {
 						bad = fmt.Sprint(n)
 					}
@@ -242,8 +243,9 @@ type claimPolicy struct {
 	foreign func(sql.NullInt64) bool
 	// keeps reports whether the other row keeps a contested name (or port).
 	keeps func(hostClaim) bool
-	// wildcards reports whether wildcard coverage counts against the row.
-	wildcards func(hostClaim) bool
+	// wildcards reports whether wildcard coverage of the row's name h by
+	// (or of) the other row counts against the row.
+	wildcards func(h string, c hostClaim) bool
 }
 
 // hostConflict returns a message for the first of hosts another row keeps,
@@ -256,7 +258,7 @@ func (ix *claimIndex) hostConflict(self hostClaim, hosts []string, pol claimPoli
 				continue
 			}
 			if cd.wildcard {
-				if !pol.wildcards(c) {
+				if !pol.wildcards(h, c) {
 					continue
 				}
 				return fmt.Sprintf("the host %q overlaps a wildcard name of another account's %s on this server", h, c.kind)
@@ -327,8 +329,14 @@ func listenPortRange(addr string) (lo, hi int, ok bool) {
 // address that cannot be read is taken to overlap.
 func listenSetsOverlap(a, b []string) bool {
 	for _, x := range a {
+		if socketListen(x) {
+			continue
+		}
 		xl, xh, xok := listenPortRange(x)
 		for _, y := range b {
+			if socketListen(y) {
+				continue
+			}
 			yl, yh, yok := listenPortRange(y)
 			if !xok || !yok || (xl <= yh && yl <= xh) {
 				return true
@@ -344,6 +352,9 @@ func sameListenSet(a, b []string) bool {
 	slices.Sort(y)
 	return slices.Equal(x, y)
 }
+
+// layer4PortRe finds ports in a Layer4 Caddyfile.
+var layer4PortRe = regexp.MustCompile(`:(\d{1,5})(?:-(\d{1,5}))?`)
 
 // maxTenantListenRange is the widest port range a non-admin's listen
 // address may name.
@@ -379,10 +390,61 @@ func tenantListenProblem(addrs []string, reserved map[int]bool) string {
 		if hi-lo+1 > maxTenantListenRange {
 			return fmt.Sprintf("the listen address %q is not allowed: a port range may span at most %d ports", a, maxTenantListenRange)
 		}
-		for p := range reserved {
-			if p >= lo && p <= hi {
+		for p := lo; p <= hi; p++ {
+			if reserved[p] {
 				return fmt.Sprintf("the listen address %q is not allowed: port %d is used by the server itself", a, p)
 			}
+		}
+	}
+	if n := listenPortCount(addrs); n > maxTenantListenRange {
+		return fmt.Sprintf("the route would listen on %d ports; non-admin accounts may use at most %d per route", n, maxTenantListenRange)
+	}
+	return ""
+}
+
+// maxTenantOwnerListenPorts is how many ports one non-admin account's
+// Advanced routes may listen on, per server, together.
+const maxTenantOwnerListenPorts = 64
+
+// listenPortCount is how many ports addrs name; an address that cannot be
+// read counts as one.
+func listenPortCount(addrs []string) int {
+	n := 0
+	for _, a := range addrs {
+		if lo, hi, ok := listenPortRange(a); ok {
+			n += hi - lo + 1
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
+// ownerListenBudget returns why rr would take its owner's Advanced routes
+// on the server (raws, the stored rows; rr replaces the one with its ID)
+// over maxTenantOwnerListenPorts, or "".
+func ownerListenBudget(rr models.RawRoute, raws []models.RawRoute) string {
+	n := listenPortCount(rr.ListenAddrs())
+	if n == 0 {
+		return ""
+	}
+	for _, other := range raws {
+		if other.ID != rr.ID && other.OwnerID == rr.OwnerID && rr.OwnerID.Valid {
+			n += listenPortCount(other.ListenAddrs())
+		}
+	}
+	if n > maxTenantOwnerListenPorts {
+		return fmt.Sprintf("the account's Advanced routes would listen on %d ports on this server; the limit is %d", n, maxTenantOwnerListenPorts)
+	}
+	return ""
+}
+
+// wildcardOverTLD returns why one of hosts is a wildcard over a whole
+// top-level domain, or "".
+func wildcardOverTLD(hosts []string) string {
+	for _, h := range hosts {
+		if rest, ok := strings.CutPrefix(h, "*."); ok && !strings.Contains(rest, ".") {
+			return fmt.Sprintf("the domain %q is a wildcard over a whole top-level domain", h)
 		}
 	}
 	return ""
@@ -400,6 +462,22 @@ func (s *Server) reservedListenPorts() map[int]bool {
 		for _, srv := range servers {
 			if u, err := url.Parse(srv.AdminURL); err == nil {
 				if p, err := strconv.Atoi(u.Port()); err == nil {
+					out[p] = true
+				}
+			}
+		}
+	}
+	// Ports named in a server's free-form Layer4 Caddyfile, read
+	// generously: any ":PORT" or ":LO-HI" in the text.
+	if servers, err := models.ListCaddyServers(s.DB); err == nil {
+		for _, srv := range servers {
+			for _, m := range layer4PortRe.FindAllStringSubmatch(srv.Layer4Caddyfile, -1) {
+				lo, _ := strconv.Atoi(m[1])
+				hi := lo
+				if m[2] != "" {
+					hi, _ = strconv.Atoi(m[2])
+				}
+				for p := lo; p <= hi && p <= 65535 && p-lo < 65536; p++ {
 					out[p] = true
 				}
 			}
@@ -446,12 +524,16 @@ func (o *ownerTenancy) tenant(owner sql.NullInt64) bool {
 				var id int64
 				var isAdmin bool
 				var role string
-				if rows.Scan(&id, &isAdmin, &role) == nil {
-					o.known[id] = true
-					o.admins[id] = isAdmin || role == models.RoleAdmin
+				if rows.Scan(&id, &isAdmin, &role) != nil {
+					o.known = nil // fall back to one lookup per owner
+					break
 				}
+				o.known[id] = true
+				o.admins[id] = isAdmin || role == models.RoleAdmin
 			}
-			_ = rows.Close()
+			if rows.Close() != nil || rows.Err() != nil {
+				o.known = nil
+			}
 		}
 	}
 	if o.known == nil {
@@ -482,13 +564,44 @@ func (o *ownerTenancy) foreignTo(owner sql.NullInt64) func(sql.NullInt64) bool {
 
 // savePolicy is the save-time policy for a non-admin (cu): every row it
 // cannot manage, and every administrator's row, is foreign and keeps its
-// names; wildcard coverage always counts.
-func (s *Server) savePolicy(cu *models.User, o *ownerTenancy) claimPolicy {
+// names; wildcard coverage counts — except, for a name the row being
+// updated already holds (held), coverage by an administrator's row, which
+// the sync does not enforce either: an existing row stays editable.
+func (s *Server) savePolicy(cu *models.User, o *ownerTenancy, held map[string]bool) claimPolicy {
 	return claimPolicy{
-		foreign:   func(owner sql.NullInt64) bool { return !o.tenant(owner) || !s.canManageOwned(cu, owner) },
-		keeps:     func(hostClaim) bool { return true },
-		wildcards: func(hostClaim) bool { return true },
+		foreign: func(owner sql.NullInt64) bool { return !o.tenant(owner) || !s.canManageOwned(cu, owner) },
+		keeps:   func(hostClaim) bool { return true },
+		wildcards: func(h string, c hostClaim) bool {
+			return !held[h] || o.tenant(c.owner)
+		},
 	}
+}
+
+// heldNames is the names the stored row (kind, id) holds now, or nil.
+func (s *Server) heldNames(kind string, id int64) map[string]bool {
+	if id == 0 {
+		return nil
+	}
+	var names []string
+	switch kind {
+	case claimProxy:
+		if p, err := models.GetProxyHost(s.DB, id); err == nil && p != nil {
+			names = p.DomainList()
+		}
+	case claimRedirect:
+		if rd, err := models.GetRedirectionHost(s.DB, id); err == nil && rd != nil {
+			names = rd.DomainList()
+		}
+	case claimRaw:
+		if rr, err := models.GetRawRoute(s.DB, id); err == nil && rr != nil {
+			names = rawRouteHosts(*rr)
+		}
+	}
+	out := map[string]bool{}
+	for _, n := range names {
+		out[claimHost(n)] = true
+	}
+	return out
 }
 
 // claimServerID is the server a stored row is on, or fallback for a new
@@ -522,7 +635,20 @@ func (s *Server) tenantRawRouteClaimProblem(cu *models.User, serverID int64, rr 
 	if !ok {
 		return claimCheckFailed
 	}
-	if why := rawRouteClaimRules(*rr, newClaimIndex(serverHostClaims(proxies, redirs, raws)), s.savePolicy(cu, s.newOwnerTenancy())); why != "" {
+	o := s.newOwnerTenancy()
+	if why := rawRouteClaimRules(*rr, newClaimIndex(serverHostClaims(proxies, redirs, raws)), s.savePolicy(cu, o, s.heldNames(claimRaw, rr.ID))); why != "" {
+		return "Not allowed for a non-admin account: " + why + "."
+	}
+	// The budget is the row owner's: the requester on create, the stored
+	// row's owner (perhaps a group peer) on update.
+	budget := *rr
+	budget.OwnerID = sql.NullInt64{Int64: cu.ID, Valid: cu != nil}
+	if rr.ID != 0 {
+		if stored, err := models.GetRawRoute(s.DB, rr.ID); err == nil && stored != nil {
+			budget.OwnerID = stored.OwnerID
+		}
+	}
+	if why := ownerListenBudget(budget, raws); why != "" {
 		return "Not allowed for a non-admin account: " + why + "."
 	}
 	return ""
@@ -557,7 +683,7 @@ func (s *Server) tenantDomainClaimProblem(cu *models.User, serverID int64, kind 
 		hosts = append(hosts, h)
 	}
 	self := hostClaim{kind: kind, id: id}
-	if why := newClaimIndex(serverHostClaims(proxies, redirs, raws)).hostConflict(self, hosts, s.savePolicy(cu, s.newOwnerTenancy())); why != "" {
+	if why := newClaimIndex(serverHostClaims(proxies, redirs, raws)).hostConflict(self, hosts, s.savePolicy(cu, s.newOwnerTenancy(), s.heldNames(kind, id))); why != "" {
 		return "Not allowed for a non-admin account: " + why + "."
 	}
 	return ""
@@ -575,8 +701,12 @@ func (s *Server) fleetRawRouteClaimProblem(targetServerID int64, copy models.Raw
 		return "could not check which hosts are in use on the target"
 	}
 	o := s.newOwnerTenancy()
-	pol := claimPolicy{foreign: o.foreignTo(owner), keeps: func(hostClaim) bool { return true }, wildcards: func(hostClaim) bool { return true }}
+	pol := claimPolicy{foreign: o.foreignTo(owner), keeps: func(hostClaim) bool { return true }, wildcards: func(_ string, c hostClaim) bool { return o.tenant(c.owner) }}
 	if why := rawRouteClaimRules(copy, newClaimIndex(serverHostClaims(proxies, redirs, raws)), pol); why != "" {
+		return "not allowed for a non-admin account on the target: " + why
+	}
+	copy.OwnerID = owner
+	if why := ownerListenBudget(copy, raws); why != "" {
 		return "not allowed for a non-admin account on the target: " + why
 	}
 	return ""
@@ -597,7 +727,7 @@ func (s *Server) fleetDomainClaimProblem(targetServerID int64, kind string, id i
 		}
 	}
 	o := s.newOwnerTenancy()
-	pol := claimPolicy{foreign: o.foreignTo(owner), keeps: func(hostClaim) bool { return true }, wildcards: func(hostClaim) bool { return true }}
+	pol := claimPolicy{foreign: o.foreignTo(owner), keeps: func(hostClaim) bool { return true }, wildcards: func(_ string, c hostClaim) bool { return o.tenant(c.owner) }}
 	if why := newClaimIndex(serverHostClaims(proxies, redirs, raws)).hostConflict(hostClaim{kind: kind, id: id}, hosts, pol); why != "" {
 		return "not allowed for a non-admin account on the target: " + why
 	}
@@ -631,7 +761,7 @@ func (s *Server) withoutForeignHostClaims(serverID int64, proxies []models.Proxy
 	// models.DomainsConflict).
 	adminRaw := claimPolicy{
 		keeps:     func(c hostClaim) bool { return c.kind == claimRaw && !o.tenant(c.owner) },
-		wildcards: func(hostClaim) bool { return false },
+		wildcards: func(string, hostClaim) bool { return false },
 	}
 	keptProxies := make([]models.ProxyHost, 0, len(proxies))
 	for _, p := range proxies {
@@ -642,7 +772,11 @@ func (s *Server) withoutForeignHostClaims(serverID int64, proxies []models.Proxy
 			for _, d := range p.DomainList() {
 				hosts = append(hosts, claimHost(d))
 			}
-			if why := ix.hostConflict(self, hosts, adminRaw); why != "" {
+			why := wildcardOverTLD(hosts)
+			if why == "" {
+				why = ix.hostConflict(self, hosts, adminRaw)
+			}
+			if why != "" {
 				held[fmt.Sprintf("proxy:%d", p.ID)] = why
 				continue
 			}
@@ -658,7 +792,11 @@ func (s *Server) withoutForeignHostClaims(serverID int64, proxies []models.Proxy
 			for _, d := range rd.DomainList() {
 				hosts = append(hosts, claimHost(d))
 			}
-			if why := ix.hostConflict(self, hosts, adminRaw); why != "" {
+			why := wildcardOverTLD(hosts)
+			if why == "" {
+				why = ix.hostConflict(self, hosts, adminRaw)
+			}
+			if why != "" {
 				held[fmt.Sprintf("redirect:%d", rd.ID)] = why
 				continue
 			}
@@ -666,6 +804,7 @@ func (s *Server) withoutForeignHostClaims(serverID int64, proxies []models.Proxy
 		keptRedirs = append(keptRedirs, rd)
 	}
 	keptRaws := make([]models.RawRoute, 0, len(raws))
+	ownerPorts := map[int64]int{}
 	for _, rr := range raws {
 		if rr.Enabled && o.tenant(rr.OwnerID) {
 			if reserved == nil {
@@ -673,11 +812,19 @@ func (s *Server) withoutForeignHostClaims(serverID int64, proxies []models.Proxy
 			}
 			why := tenantListenProblem(rr.ListenAddrs(), reserved)
 			if why == "" {
+				n := listenPortCount(rr.ListenAddrs())
+				if ownerPorts[rr.OwnerID.Int64]+n > maxTenantOwnerListenPorts {
+					why = fmt.Sprintf("its account's Advanced routes would listen on more than %d ports on this server", maxTenantOwnerListenPorts)
+				} else {
+					ownerPorts[rr.OwnerID.Int64] += n
+				}
+			}
+			if why == "" {
 				id := rr.ID
 				pol := claimPolicy{
 					foreign:   o.foreignTo(rr.OwnerID),
 					keeps:     func(c hostClaim) bool { return c.kind != claimRaw || !o.tenant(c.owner) || c.id < id },
-					wildcards: func(c hostClaim) bool { return o.tenant(c.owner) },
+					wildcards: func(_ string, c hostClaim) bool { return o.tenant(c.owner) },
 				}
 				why = rawRouteClaimRules(rr, ix, pol)
 			}
@@ -733,4 +880,12 @@ func (s *Server) reclassifyClaimProblem(cu *models.User, serverID int64, kind st
 		return "the domain is in use"
 	}
 	return s.tenantDomainClaimProblem(cu, serverID, kind, 0, domains)
+}
+
+// socketListen reports whether a listen address is a socket or file
+// descriptor rather than a TCP/UDP port (an administrator's; a non-admin
+// may not use one), which shares no port with anything.
+func socketListen(addr string) bool {
+	a := strings.ToLower(strings.TrimSpace(addr))
+	return strings.HasPrefix(a, "unix") || strings.HasPrefix(a, "fd/") || strings.HasPrefix(a, "fdgram/")
 }

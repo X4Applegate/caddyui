@@ -553,6 +553,12 @@ func (s *Server) apiV1ToggleProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
 	}
+	if !ph.Enabled {
+		if msg := s.tenantDomainClaimProblem(s.currentUser(r), ph.ServerID, claimProxy, ph.ID, ph.DomainList()); msg != "" {
+			writeJSONError(w, http.StatusConflict, msg)
+			return
+		}
+	}
 	ph.Enabled = !ph.Enabled
 	if err := models.UpdateProxyHost(s.DB, ph); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -861,6 +867,12 @@ func (s *Server) apiV1ToggleRedirectionHost(w http.ResponseWriter, r *http.Reque
 	if !s.canManageOwned(s.currentUser(r), existing.OwnerID) {
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return
+	}
+	if !existing.Enabled {
+		if msg := s.tenantDomainClaimProblem(s.currentUser(r), 0, claimRedirect, existing.ID, existing.DomainList()); msg != "" {
+			writeJSONError(w, http.StatusConflict, msg)
+			return
+		}
 	}
 	enabled, err := models.ToggleRedirectionHost(s.DB, id)
 	if err != nil {

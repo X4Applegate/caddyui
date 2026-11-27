@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
 	"github.com/X4Applegate/caddyui/internal/models"
@@ -254,7 +255,10 @@ func reverseProxyViolation(h map[string]any, adminHosts map[string]bool) string 
 			for _, op := range []string{"add", "replace"} {
 				if m, ok := req[op].(map[string]any); ok {
 					for k := range m {
-						if strings.EqualFold(strings.TrimSpace(k), "Host") || strings.Contains(k, "{") {
+						if strings.Contains(k, "{") {
+							return "placeholders in a request header name are admin-only"
+						}
+						if strings.EqualFold(strings.TrimSpace(k), "Host") {
 							return "changing the Host header other than by setting it is admin-only"
 						}
 					}
@@ -326,6 +330,9 @@ func activeHealthCheckViolation(v any, check func(string) string) string {
 	}
 	if v := act["follow_redirects"]; v != nil && !isFalse(v) {
 		return "active health checks that follow redirects are admin-only"
+	}
+	if v, ok := act["interval"]; ok && durationBelow(v, time.Second) {
+		return "active health checks may run at most once a second for non-admin accounts"
 	}
 	if m := act["method"]; m != nil {
 		method, isStr := m.(string)
@@ -1697,13 +1704,21 @@ func fixActiveHealthCheck(hc, act map[string]any, adminHosts map[string]bool) bo
 		changed = true
 	}
 	if m := act["method"]; m != nil {
-		method, _ := m.(string)
+		method, isStr := m.(string)
 		switch strings.ToUpper(strings.TrimSpace(method)) {
 		case "", "GET", "HEAD":
+			if !isStr {
+				delete(act, "method")
+				changed = true
+			}
 		default:
 			delete(act, "method")
 			changed = true
 		}
+	}
+	if v, ok := act["interval"]; ok && durationBelow(v, time.Second) {
+		delete(act, "interval")
+		changed = true
 	}
 	if hdrs, ok := act["headers"].(map[string]any); ok {
 		for k, v := range hdrs {
@@ -1727,17 +1742,50 @@ func fixActiveHealthCheck(hc, act map[string]any, adminHosts map[string]bool) bo
 	return changed
 }
 
-// quotedRe matches a quoted value in an error message.
-var quotedRe = regexp.MustCompile("\"[^\"]*\"|'[^']*'|`[^`]*`")
-
 // previewMessageFor is a preview-validation message (Caddy's answer to the
 // whole server's proposed config) as the requester may see it: unchanged
 // for an administrator; for anyone else reduced to its first line without
 // Caddy's internals and without quoted values, which can hold the content
 // of a file a module read or another account's settings.
 func (s *Server) previewMessageFor(r *http.Request, msg string) string {
+	return s.messageFor(r, msg)
+}
+
+// messageFor is a Caddy error message as the requester may see it:
+// unchanged for an administrator, tenantSafeMessage for anyone else.
+func (s *Server) messageFor(r *http.Request, msg string) string {
 	if msg == "" || isAdminUser(s.currentUser(r)) {
 		return msg
 	}
-	return quotedRe.ReplaceAllString(caddy.SanitizeCaddyError(msg), `"…"`)
+	return tenantSafeMessage(msg)
+}
+
+// addrPortRe matches an IP address or host with a port.
+var addrPortRe = regexp.MustCompile(`\[?[0-9A-Za-z.:-]*[0-9a-fA-F]\]?:\d{1,5}\b`)
+
+// tenantSafeMessage reduces a Caddy error for a non-admin: its first line,
+// without Caddy's internals, cut before the first quote or brace (Caddy's
+// JSON bodies escape the quotes of the values they carry, so a value
+// cannot be told apart from the text around it) and without addresses.
+func tenantSafeMessage(msg string) string {
+	m := caddy.SanitizeCaddyError(msg)
+	if i := strings.IndexAny(m, "\"'`{"); i >= 0 {
+		m = strings.TrimSpace(m[:i]) + " …"
+	}
+	m = addrPortRe.ReplaceAllString(m, "…")
+	return m
+}
+
+// durationBelow reports whether a Caddy duration value (nanoseconds as a
+// number, or a duration string) is below d; a value that cannot be read
+// counts as below.
+func durationBelow(v any, d time.Duration) bool {
+	switch t := v.(type) {
+	case float64:
+		return time.Duration(t) < d
+	case string:
+		pd, err := time.ParseDuration(t)
+		return err != nil || pd < d
+	}
+	return true
 }

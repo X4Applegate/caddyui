@@ -296,6 +296,13 @@ func (s *Server) toggleProxyHost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		// Enabling a row is saving it live: the host claims apply.
+		if !host.Enabled {
+			if msg := s.tenantDomainClaimProblem(cu, host.ServerID, claimProxy, host.ID, host.DomainList()); msg != "" {
+				http.Error(w, msg, http.StatusConflict)
+				return
+			}
+		}
 	}
 	enabled, err := models.ToggleProxyHost(s.DB, id)
 	if err != nil {
@@ -365,6 +372,9 @@ func (s *Server) bulkToggleProxyHosts(w http.ResponseWriter, r *http.Request) {
 		}
 		// Ownership check: admin can toggle any, others only their own.
 		if !isAdmin && (!s.canManageOwned(cu, ph.OwnerID)) {
+			continue
+		}
+		if enabled && !ph.Enabled && s.tenantDomainClaimProblem(cu, ph.ServerID, claimProxy, ph.ID, ph.DomainList()) != "" {
 			continue
 		}
 		if ph.Enabled != enabled {
@@ -929,6 +939,9 @@ func (s *Server) bulkToggleRedirectionHosts(w http.ResponseWriter, r *http.Reque
 		if !isAdmin && (cu == nil || !s.canManageOwned(cu, rh.OwnerID)) {
 			continue
 		}
+		if enabled && !rh.Enabled && s.tenantDomainClaimProblem(cu, 0, claimRedirect, rh.ID, rh.DomainList()) != "" {
+			continue
+		}
 		if rh.Enabled != enabled {
 			rh.Enabled = enabled
 			if err := models.UpdateRedirectionHost(s.DB, rh); err != nil {
@@ -1045,6 +1058,12 @@ func (s *Server) toggleRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		if err != nil || rh == nil || !s.canManageOwned(cu, rh.OwnerID) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
+		}
+		if !rh.Enabled {
+			if msg := s.tenantDomainClaimProblem(cu, 0, claimRedirect, rh.ID, rh.DomainList()); msg != "" {
+				http.Error(w, msg, http.StatusConflict)
+				return
+			}
 		}
 	}
 	enabled, err := models.ToggleRedirectionHost(s.DB, id)

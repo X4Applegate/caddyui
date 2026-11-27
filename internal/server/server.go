@@ -1298,7 +1298,13 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	// v2.42.1: servers whose last sync failed — layout banner.
 	if _, ok := data["SyncErrors"]; !ok {
 		if servers, ok := data["Servers"].([]models.CaddyServer); ok && len(servers) > 0 {
-			data["SyncErrors"] = s.activeSyncErrors(servers)
+			errs := s.activeSyncErrors(servers)
+			if r != nil && !isAdminUser(s.currentUser(r)) {
+				for i := range errs {
+					errs[i].Error = tenantSafeMessage(errs[i].Error)
+				}
+			}
+			data["SyncErrors"] = errs
 		}
 	}
 	if _, ok := data["CurrentServer"]; !ok {
@@ -4033,7 +4039,7 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			s.render(w, r, "caddyfile_import.html", map[string]any{
 				"User":    s.currentUser(r),
 				"Section": "paste",
-				"Error":   "Imported to DB but sync to Caddy failed: " + err.Error(),
+				"Error":   "Imported to DB but sync to Caddy failed: " + s.messageFor(r, err.Error()),
 				"Results": results,
 				"Input":   src,
 			})
@@ -5707,6 +5713,11 @@ func (s *Server) buildRawListenServers(raws []models.RawRoute) map[string]map[st
 			groups[name] = g
 		}
 		g.routes = append(g.routes, entries...)
+	}
+	// As on the shared servers (issue #129): exact names before wildcards,
+	// whichever route was created first.
+	for _, g := range groups {
+		g.routes = sortRoutesBySpecificity(g.routes)
 	}
 	out := make(map[string]map[string]any, len(groups))
 	for name, g := range groups {
@@ -7574,6 +7585,10 @@ func (s *Server) importProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if conflict != "" {
 		http.Error(w, fmt.Sprintf("domain %q is already in use by another proxy or redirect on this server", conflict), http.StatusConflict)
+		return
+	}
+	if msg := s.tenantDomainClaimProblem(cu, s.currentServerID(r), claimProxy, 0, ph.DomainList()); msg != "" {
+		http.Error(w, msg, http.StatusConflict)
 		return
 	}
 	newID, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, &ph)

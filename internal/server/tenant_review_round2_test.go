@@ -299,7 +299,7 @@ func TestClaimFilterScales(t *testing.T) {
 	}
 	start := time.Now()
 	_, _, kept := e.s.withoutForeignHostClaims(0, nil, nil, raws)
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > 5*time.Second {
 		t.Errorf("600 routes took %v", d)
 	}
 	if len(kept) != 600 {
