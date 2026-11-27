@@ -32,12 +32,33 @@
 #   FS_ALLOW_RE         Extended regex of paths a NEW file may appear at under
 #                       gate 4 without objection. Defaulted in the body; see
 #                       the note there before widening it.
-#   MODULE_DRIFT_POLICY block (default) | report. Governs gates 2 AND 3 below.
+#   MODULE_DRIFT_POLICY block (default) | report. Governs gate 2, gate 3, the
+#                       hard-stop limbs of coverage checks 5b/5c, AND gate 4's
+#                       filesystem delta (`fs_blocks`, which reads the same
+#                       variable and is only reachable with FS_DELTA=on) --
+#                       FIVE controls on ONE variable, which matters because
+#                       release-docker.yml sets it from whether the submitter
+#                       edited Dockerfile.caddy. See "THE ONE SWITCH" below
+#                       (T-0823) before reading any of them as cover for
+#                       another.
 #                       The default is the strict one so a caller that forgets
 #                       the variable gets the SAFER behaviour, never the weaker
-#                       one. The name predates gate 3 and is kept because all
-#                       three call sites set it; it reads as "how strict is
-#                       drift", which is what it now means for both gates.
+#                       one. The name predates gates 3 and 4 and is kept because
+#                       it reads as "how strict is drift", which is what it now
+#                       means for all five.
+#                       Set explicitly by BOTH call sites. The refresh path
+#                       spells out `block` rather than relying on the default
+#                       above, so the standard that path holds to is stated
+#                       where it is read rather than inherited silently.
+#   COVERAGE_FLOOR_FILE Path to the committed absolute coverage floor for
+#                       coverage check 5e. Default
+#                       scripts/fixtures/caddy-image-coverage-floor.json,
+#                       resolved against the REPO (cwd), because both CI callers
+#                       `cp` this script into $RUNNER_TEMP and run it from the
+#                       checkout. Set EMPTY to run with no absolute floor. An
+#                       absent file is a visible skip; a file that is present
+#                       but unparseable, empty or wrongly typed is a hard stop.
+#                       See scripts/fixtures/README-caddy-image-coverage-floor.md.
 #
 # Requires: trivy, jq, docker. Trivy's DB must already be downloaded
 # (`trivy image --download-db-only`): the caller does that ONCE so every scan
@@ -54,10 +75,105 @@
 #
 #  0. Scan coverage. Before either gate runs, assert the new image's Trivy scan
 #     actually looked at the image: an OS was detected, it is not end-of-life,
-#     every scan target the baseline had is still present, and each shared
-#     target's package count has not collapsed. This is a precondition rather
-#     than a gate because it produces no verdict -- it exits 2 ("the gate could
-#     not run"), which all three call sites already treat as blocking.
+#     every scan target the baseline had is still present, each shared target's
+#     package count has not collapsed, the retained packages are the SAME
+#     packages by name, at least half of them at the same name@version, and
+#     (for the pinned Go module types, under the strict policy) no
+#     findings-bearing package has moved version while its findings vanished,
+#     and the Go binary the baseline scanned is still being scanned. This is a
+#     precondition rather than a gate because it produces no verdict -- it
+#     exits 2 ("the gate could not run"), which all three call sites already
+#     treat as blocking.
+#
+#     That sentence is deliberately long. An earlier spelling said "the SAME
+#     packages by name AND at the same versions", which promised more than
+#     any of these checks deliver; over-claiming in a security control's own
+#     summary is how a later reader trusts more than the code enforces, and
+#     review has now caught that twice on this function.
+#
+#     The later checks are there because a COUNT IS NOT AN IDENTITY (T-0638).
+#     The count floor asks "are there still at least half as many rows", so it
+#     is cleared by a package list that was replaced rather than retained --
+#     padding with fabricated names keeps the count up while every finding
+#     against a dropped real package cancels out of gate 1 as though the
+#     rebuild had fixed it. Likewise "a gobinary result exists" is not "the
+#     binary this image runs was scanned", since Trivy emits one result per Go
+#     binary it finds. Every bypass named here was demonstrated end-to-end
+#     against the real :stable scan before being closed.
+#
+#     BE PRECISE ABOUT WHAT THE NAME FLOOR DOES AND DOES NOT PROMISE. A 50%
+#     intersection is NOT "the same packages", and on its own it is weaker
+#     than it looks in two specific ways, both measured:
+#
+#       - it is indifferent to WHICH names survive, so a rebuild may retain
+#         119 innocuous modules of 237, drop exactly the five that carry
+#         findings, and clear the floor by one;
+#       - its denominator is the BASELINE's name set, and a published image
+#         becomes the baseline. Fabricated names therefore carry forward and
+#         count as retained on the next release, which made the blinding
+#         ratchet FASTER than the count floor alone, not slower.
+#
+#     Check 5b is what actually closes both, and it is the load-bearing one:
+#     a package carrying a finding in the baseline must still be reported by
+#     the rebuild, with no percentage. It is anchored to observed
+#     vulnerabilities rather than to whatever the previous image listed, so a
+#     fabricated name can never satisfy it and cannot be inherited. Read the
+#     name floor as coarse protection against wholesale replacement, and 5b
+#     as the rule that makes "this finding is gone" mean fixed rather than
+#     unobserved.
+#
+#     Checks 4, 5 and 5b are per TYPE, and that aggregation is itself a
+#     bypass when a type has several results: a decoy Go binary carrying the
+#     baseline's whole name set pays for the shipped binary's coverage while
+#     usr/bin/caddy is gutted to a single package. Check 7 applies the same
+#     identity floor per retained gobinary TARGET, which is what stops it.
+#
+#     AND A NAME IS NOT A VERSION (T-0810). Checks 5, 5b and 7 all compare
+#     `.Packages[].Name`; until T-0810 nothing compared `.Packages[].Version`
+#     anywhere in this function. So a rebuild could report an identical
+#     package name set -- 237/237 intersection, every floor cleared, every
+#     findings-bearing package still present -- while the versions behind
+#     those names were entirely different. Measured against the real :stable
+#     scan: keep all 237 names, replace every version, and the precondition
+#     printed "scan coverage OK" while gate 1 reported ADDED=0 REMOVED=7,
+#     verdict=improved, exit 0.
+#
+#     Two checks close it, in the same relationship 5 and 5b have:
+#
+#       5c  a package carrying findings in the baseline must still be
+#           reported AT THE SAME VERSION, unless EVERY ONE of those findings
+#           is still reported against it. This is the load-bearing half. The
+#           targeted form of the attack -- swap the versions of only the five
+#           findings-bearing modules -- sits at 97% name@version retention
+#           and clears any ratio, exactly as pass A's targeted drop cleared
+#           check 5's.
+#
+#           "EVERY ONE", compared as an ID SET, is load-bearing and not
+#           pedantry. Asking merely whether the package still carries SOME
+#           finding exempted a package carrying several by retaining any one
+#           of them, and the real baseline reports three CVEs against
+#           github.com/go-jose/go-jose/v3 -- so that spelling laundered two
+#           of them as fixed, under the strict policy, with no note. Set
+#           comparison against the BASELINE's ids also means a fabricated
+#           finding cannot buy the exemption, which is the standard 5b holds
+#           itself to.
+#       5d  a loose 50% name@version floor per type, which catches the
+#           wholesale replacement 5c's narrow rule is indifferent to.
+#
+#     NEITHER MAKES gate 1 VERSION-AWARE, and that is deliberate: `ids_from`
+#     still keys findings on ID+package only, for the reason written out
+#     above it. 5c's first limb is what keeps the two compatible -- a package
+#     that moved version and STILL CARRIES the finding is the upgrade
+#     `ids_from` exists to protect, and it satisfies 5c outright. Verified on
+#     the documented case (x/crypto v0.57.0 -> v0.58.0 still reporting
+#     GO-2026-5932): gate 1 reports added=0 removed=0 and 5c passes.
+#
+#     5c's hard stop is scoped to `gobinary`/`gomod`, because those versions
+#     are reproducible by construction (every xcaddy --with is pinned) while
+#     `apk upgrade --no-cache` is unpinned BY DESIGN and picking up new OS
+#     package versions is the whole purpose of a refresh. Unscoped, it would
+#     have blocked the T-0592 refresh -- the one that fixed CVE-2026-4738 by
+#     moving zlib 1.3.2-r1 -> 1.4-r0.
 #
 #     It exists because gate 1 is set arithmetic, and set arithmetic reads an
 #     EMPTY findings list as a perfect score. That made this the ONE fail-open
@@ -65,7 +181,7 @@
 #     so the subset check passes and the verdict comes out `improved` precisely
 #     because nothing could be seen. See assert_scan_coverage below.
 #
-#  1. Vulnerability subset. The rebuild's findings must be a SUBSET of the
+#  1. Finding subset. The rebuild's findings must be a SUBSET of the
 #     published image's, per arch. Deliberately not "zero findings": every
 #     image to date carries GO-2026-5932 (x/crypto/openpgp unmaintained, no
 #     fix, not reached by the binary), so a zero-findings rule could never
@@ -77,6 +193,26 @@
 #     Compared as ID+package, not ID alone: the same CVE ID appearing against
 #     a DIFFERENT package is a new exposure, and comparing bare IDs would let
 #     it cancel out.
+#
+#     THREE scanners feed this gate, not one: `vuln`, `secret` and
+#     `misconfig`. A credential baked into a layer and a Dockerfile-level
+#     misconfiguration are both things a rebuild must not introduce, and both
+#     come free from a scan that was already running. They are keyed into the
+#     same set arithmetic under `vuln:`/`secret:`/`misconfig:` prefixes so
+#     the three classes cannot collide -- see ids_from.
+#
+#     The misconfig scanner needs `--image-config-scanners` as well as
+#     `--scanners` to see an image's build configuration at all; the
+#     measurement behind that is at the trivy call site.
+#
+#     Baseline-relative here too, and for the same reason as everywhere else
+#     in this script: the published image already FAILS two Dockerfile checks
+#     (DS-0002 "Image user should not be 'root'" and DS-0026 "No HEALTHCHECK
+#     defined"). Both sit on both sides, so both cancel out, and the gate's
+#     question stays "is the rebuild worse than what the fleet runs" rather
+#     than "is the image perfect" -- a standard that would block every
+#     release from the first run. Fixing those two is separate work, not this
+#     gate's job to force.
 #
 #  2. Module set, from `caddy list-modules --versions`. Every --with argument
 #     in Dockerfile.caddy now carries a version, so a rebuild should reproduce
@@ -106,6 +242,60 @@
 #     vulnerability still blocks, under either policy. Drift stops being an
 #     automatic verdict; it does not stop being reviewed. The release diff is
 #     the reviewable record of what the module set change actually was.
+#
+#     THE ONE SWITCH, AND WHAT IS AND IS NOT COVER FOR WHAT (T-0823).
+#     ---------------------------------------------------------------
+#     This gate is NOT a separate safety net from coverage checks 5b/5c, and
+#     neither should be read as independent cover for the other. All of them
+#     take their block-vs-report posture from the SAME MODULE_DRIFT_POLICY
+#     variable, and release-docker.yml sets that variable from whether the
+#     submitter edited Dockerfile.caddy. So on the one release where module
+#     versions can move -- the release that edits the pins -- this gate AND
+#     the scan's version checks degrade to advisory SIMULTANEOUSLY, selected
+#     by the submitter's own change. Two controls, one switch, held by the
+#     party being checked.
+#
+#     COUNT IT PROPERLY: the variable relaxes FIVE things, not two and not
+#     four -- gate 2 (this one), gate 3 (image configuration), gate 4's
+#     filesystem delta (`fs_blocks`, reachable only with FS_DELTA=on, i.e. on
+#     the refresh path) and the hard-stop limbs of coverage checks 5b and 5c.
+#     An earlier version of this note said four and omitted gate 4; on a note
+#     whose entire thesis is "say exactly how many controls one switch
+#     relaxes", getting the number wrong is the defect it describes. The
+#     release path is the only path that ever sets `report`, and it is also
+#     the path where FS_DELTA is off, so gate 4 is not among the controls
+#     actually relaxed THERE -- but it shares the switch, and a future caller
+#     turning FS_DELTA on for a release would relax it too, without editing
+#     anything that mentions gate 4.
+#
+#     That coupling is deliberate and is not a defect to be fixed by giving
+#     the scan checks their own policy. MEASURED: make 5c's hard stop ignore
+#     the policy and the gate's own suite fails on the case that matters --
+#     "a module upgraded and its finding really gone" becomes exit 2, which
+#     is the normal shape of every security release this repo cuts (v2.68.11,
+#     v2.68.12 and v2.68.14 each cleared advisories exactly that way). An
+#     always-blocking version check does not harden the release path; it
+#     forbids it.
+#
+#     So be precise about what carries the weight on the release path:
+#
+#       - gate 1 still blocks on any NEW vulnerability, under either policy;
+#       - this gate is the STRONGER evidence where it runs, because it
+#         executes the built binary and asks what modules it contains,
+#         rather than trusting a scanner's reading of the image;
+#       - the compensating control for the relaxed limbs is review of the
+#         Dockerfile.caddy diff and the pin set, which is where a module
+#         substitution would have to be introduced, plus the human approval
+#         the release path already requires;
+#       - nothing in the scan independently confirms that a version move was
+#         the one the pin edit asked for. Only the diff says that, and only a
+#         reviewer reads the diff.
+#
+#     The open improvement is therefore NOT a second policy variable: it is
+#     to cross-check each moved version against the pin set the submitter
+#     edited, so an unexplained move still blocks on the release path while
+#     an explained one passes. That is a real feature with its own design and
+#     is tracked, not stubbed in here.
 #
 #  3. Image configuration, from `docker image inspect`. Gates 1 and 2 read the
 #     image's CONTENTS -- its packages and its linked Go modules -- and neither
@@ -300,13 +490,27 @@ mkdir -p "$OUT"
 rm -f "$OUT/verdict" "$OUT/summary.md" \
       "$OUT"/added-*.ids "$OUT"/removed-*.ids \
       "$OUT"/new-*.ids "$OUT"/old-*.ids \
-      "$OUT"/mods-*.txt "$OUT"/cfg-*.txt "$OUT"/fs-*.txt 2>/dev/null || true
+      "$OUT"/mods-*.txt "$OUT"/cfg-*.txt "$OUT"/fs-*.txt \
+      "$OUT"/.cov-*.names 2>/dev/null || true
 # cfg-trustenv-*.txt is covered by the cfg-*.txt glob above, and the verdict
 # reads its LINE COUNT rather than merely testing the diff, so a stale copy
 # would be counted as this run's finding -- i.e. it would BLOCK a clean image
 # on evidence from a previous run. That makes the clearing above load-bearing
 # for it in a way it is not for the diffs: keep the name prefixed `cfg-` if it
 # is ever renamed.
+#
+# .cov-*.names are the scratch files of coverage checks 5, 5b, 5c, 5d, 5e and 7
+# (T-0638, T-0810, T-0811). Each is removed as soon as its target has been compared,
+# so they do not normally survive a run -- but a `die` from a LATER target, or
+# a kill between the two writes, leaves one behind. Cleared for the same
+# reason: this directory is reused on a local run, and those checks read the
+# paths back, so a stale file would be read as this run's package list for
+# that target.
+#
+# KEEP THE .names SUFFIX on any scratch file added to those checks. 5d's
+# name@version lists are `.cov-old-nv-*.names` rather than `*.nv` precisely so
+# this glob keeps covering them; a new suffix would fall outside the sweep
+# without anything failing visibly.
 
 command -v trivy >/dev/null || die "trivy not found"
 command -v jq    >/dev/null || die "jq not found"
@@ -321,6 +525,107 @@ SUMMARY_DELIM="GATE_SUMMARY_EOF_$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr
 readonly SUMMARY_DELIM
 
 SEVERITY="${TRIVY_SEVERITY:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
+
+# PIN THE IGNORE/CONFIG FILES, OR THE GATED TREE CHOOSES THEM (independent
+# review finding B1).
+#
+# Trivy resolves `.trivyignore`, `trivy.yaml` and `trivy-secret.yaml` against
+# the process's CURRENT DIRECTORY by default (`trivy image --help`), and every
+# call site runs this gate from inside the checked-out release tree -- the tree
+# the party being gated controls. `release-docker.yml` runs the gate step with
+# no `working-directory`, so cwd is `$GITHUB_WORKSPACE` at the release tag;
+# `caddy-image-refresh.yml` checks the release tag out over the whole tree
+# before the gate step. So a `.trivyignore` committed at the repository root
+# suppresses findings from BOTH scans, before gate 1 ever sees them, with no
+# error anywhere.
+#
+# MEASURED with the real binary in the exact shape the workflows produce (cwd
+# = the checkout): a one-line `.trivyignore` naming a real finding took it
+# from reported to absent on both sides -- `verdict=unchanged`, rc 0 -- and it
+# works the same for a CVE id, a secret RuleID and a misconfig id, i.e. all
+# three classes this gate compares. A `trivy.yaml` does it indirectly via its
+# own `ignorefile:` key, and would also redirect `--checks-bundle-repository`
+# for the prefetch below, which both scans are then PINNED to.
+#
+# The worst part is not the suppression, it is what gets printed over it: in
+# the suppressed run the `secret` CLASS result still appears, carrying an
+# empty list, so the summary's secret clause reads as a comparison that
+# happened. The most reassuring sentence this gate can emit would be printed
+# over exactly the baked-in credential the secret scanner was added to catch.
+#
+# Pinned to files created HERE, fresh, under $OUT -- a directory this run
+# creates (`mkdir -p "$OUT"` above) and that is not part of the checked-out
+# tree or of either image, so neither side can seed their content. Created
+# after the stale-output sweep above so a previous run's copies cannot
+# survive into this one.
+#
+# `--secret-config ""` disables that lookup outright, which is Trivy's own
+# documented meaning for the empty string. `--ignorefile` and `--config` need
+# an EXISTING file on 0.76.1 -- an absent path is a hard `FATAL`, measured --
+# so each gets an empty one rather than a path that would abort the gate.
+TRIVY_NO_IGNOREFILE="$OUT/.trivy-no-ignorefile"
+TRIVY_NO_CONFIG="$OUT/.trivy-no-config.yaml"
+: > "$TRIVY_NO_IGNOREFILE"
+printf '{}\n' > "$TRIVY_NO_CONFIG"
+readonly TRIVY_NO_IGNOREFILE TRIVY_NO_CONFIG
+
+# The misconfig scanner needs a REGO CHECKS BUNDLE, which is a second cache,
+# fetched from a different place, on a different flag from the vulnerability
+# DB -- and the callers pre-download only the DB.
+#
+# Measured on Trivy 0.76.1:
+#   - `trivy image --download-db-only` (what all three call sites run once,
+#     before any scan) does NOT create the checks cache.
+#   - `--skip-db-update` does NOT cover checks either; the separate flag is
+#     `--skip-check-update`.
+#   - Without a cache, a misconfig scan silently fetches the bundle from
+#     `mirror.gcr.io/aquasec/trivy-checks:2` at scan time.
+#
+# Two reasons that fetch must not happen inside the gate's scan loop:
+#
+#  - It is an UNPINNED NETWORK DEPENDENCY in the middle of the comparison.
+#    The whole reason this script never updates the vulnerability DB is that
+#    a subset comparison across two data versions is meaningless; a check
+#    bundle that moves between the baseline scan and the rebuild scan is the
+#    same bug with a different data source, and it would land as phantom
+#    added or removed `misconfig:` rows.
+#  - A registry hiccup would turn into either a failed step or, worse, a scan
+#    that quietly reports no misconfigurations -- the exact fail-open shape
+#    the coverage precondition exists to catch.
+#
+# So fetch it ONCE here, before the loop, and pin both scans to that copy
+# with `--skip-check-update`. `trivy image --download-db-only` already
+# established network access by this point in every call site, so this adds
+# a fetch, not a new requirement.
+#
+# CHECKS_BUNDLE_REPOSITORY lets a caller point at an internal mirror; the
+# default is Trivy's own. Set TRIVY_SKIP_CHECK_PREFETCH=1 to skip the
+# prefetch when the cache is known to be warm (the local docker image ships
+# one, so a local dry-run does not need it).
+CHECKS_PREFETCH_ARGS=()
+if [ "${TRIVY_SKIP_CHECK_PREFETCH:-0}" != 1 ]; then
+  checks_repo_args=()
+  [ -n "${CHECKS_BUNDLE_REPOSITORY:-}" ] \
+    && checks_repo_args=(--checks-bundle-repository "$CHECKS_BUNDLE_REPOSITORY")
+  # `trivy config` on an empty dir is the cheapest way to populate the checks
+  # cache: it downloads the bundle and scans nothing. Failure is NOT fatal --
+  # a warm cache makes it unnecessary, and the coverage precondition will
+  # catch a genuinely absent misconfig result regardless. But say so, because
+  # a silent skip here is how an unpinned mid-loop fetch sneaks back in.
+  # `--config` pinned for the same reason as the scans below: an unpinned
+  # prefetch reads `trivy.yaml` from cwd, which is the gated checkout, and
+  # that file can set `checks-bundle-repository`. Both scans are then pinned
+  # to whatever this fetched with `--skip-check-update`, so a redirect here
+  # would choose the Rego checks the misconfig half of the gate runs.
+  _checks_tmp="$(mktemp -d)"
+  if trivy config --quiet --config "$TRIVY_NO_CONFIG" "${checks_repo_args[@]}" "$_checks_tmp" >/dev/null 2>&1; then
+    CHECKS_PREFETCH_ARGS=(--skip-check-update)
+    echo "misconfig checks bundle pre-fetched; both scans pinned to it (--skip-check-update)"
+  else
+    echo "::warning::could not pre-fetch the Trivy checks bundle; the misconfig scanner will fetch it during the first scan. Both scans still run with identical flags, and a missing misconfig result is caught by the coverage precondition, but the fetch is unpinned."
+  fi
+  rm -rf "$_checks_tmp"
+fi
 
 # Unset or empty means block: a caller that forgets this variable gets the
 # strict refresh behaviour. Only the two spellings are accepted — a typo such
@@ -355,6 +660,21 @@ case "$FS_DELTA" in
   on|off) ;;
   *) die "FS_DELTA must be 'on' or 'off' (got: $FS_DELTA)" ;;
 esac
+
+# The committed absolute coverage floor (T-0811). See check 5e.
+#
+# Resolved relative to the REPO, not to this script's own directory, because
+# both CI callers `cp` the script into $RUNNER_TEMP and run it from the repo
+# checkout as cwd -- so `dirname $0` points at a temp directory holding one
+# file, and a fixture looked up there would be permanently absent, i.e. the
+# check would be silently off on the exact path it exists to guard. cwd is the
+# repo on both paths and for a local run from the repo root.
+#
+# Overridable so the test harness can point at a crafted fixture, and so a
+# local run from elsewhere can still find it. An EMPTY value is accepted and
+# means "no fixture", which is how a caller deliberately turns 5e off; it is
+# distinct from a path that is set but unreadable, which 5e treats as a fault.
+COVERAGE_FLOOR_FILE="${COVERAGE_FLOOR_FILE-scripts/fixtures/caddy-image-coverage-floor.json}"
 
 # Paths a NEW file may legitimately appear at without the gate objecting.
 #
@@ -491,12 +811,56 @@ printf '' | grep -Eq "$FS_ALLOW_RE" 2>/dev/null || fs_allow_rc=$?
 # rather than dropped, keeping the row readable and visibly tampered. Field
 # order is preserved by sanitizing inside jq, so the tab-separated structure
 # the readers rely on cannot be broken by embedding a tab either.
+#
+# THREE FINDING CLASSES, ONE KEYSPACE. Since the gate also runs the `secret`
+# and `misconfig` scanners, three differently-shaped finding lists have to
+# land in one sorted id file that `comm` can difference. They live under
+# different keys with different id fields, measured on Trivy 0.76.1:
+#
+#   .Results[].Vulnerabilities[]   .VulnerabilityID + .PkgName
+#   .Results[].Secrets[]           .RuleID          + .Target (the FILE)
+#   .Results[].Misconfigurations[] .ID              + .Namespace
+#
+# Each class is prefixed (`vuln:`, `secret:`, `misconfig:`) so the three
+# cannot collide in the shared keyspace. Without a prefix a Trivy secret rule
+# and a CVE id are both bare tokens in the same column, and a crafted rule
+# name could cancel a real vulnerability out of the subset arithmetic. The
+# prefix also makes every row in `added-*.ids` self-describing, which is what
+# the summary prints.
+#
+# WHY EACH SECOND FIELD:
+#
+#  - Secrets. A secret result's `.Target` is the path INSIDE the image
+#    (`/app/.env`), not the image reference, so unlike a vulnerability result
+#    it does not differ between the two sides by construction and is safe to
+#    key on. It is also the only thing distinguishing two hits of the same
+#    rule, and `the same rule firing in a NEW file` is a new exposure that
+#    must not cancel out. StartLine is deliberately excluded: a line number
+#    moves when anything above it changes, which would report an unchanged
+#    credential as removed+added and block a clean refresh.
+#
+#  - Misconfigurations. `.AVDID` is EMPTY on every Dockerfile finding this
+#    image produces -- measured: DS-0002, DS-0026 and DS-0031 all report
+#    `AVDID: null` -- so keying on it would collapse every misconfiguration
+#    to one indistinguishable blank id. `.ID` (`DS-0002`) is the populated
+#    field, and `.Namespace` (`builtin.dockerfile.DS002`) distinguishes the
+#    same rule id arriving from a different check bundle.
+#
+# Only FAILING misconfigurations are emitted. Trivy reports PASS results in
+# the same array, and counting a passed check as a finding would make a
+# rebuild that FIXES a misconfiguration look like it added one (the PASS row
+# appears where no row was before).
 ids_from() {
-  jq -r '[.Results[]?.Vulnerabilities[]?
-          | ((.VulnerabilityID // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120]) as $id
-          | ((.PkgName // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) as $pkg
-          | "\($id)\t\($pkg)"]
-         | unique | .[]' "$1"
+  jq -r '
+    def clean($n): (. // "") | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:$n];
+    [ ( .Results[]?.Vulnerabilities[]?
+        | "vuln:\(.VulnerabilityID | clean(120))\t\(.PkgName | clean(160))" ),
+      ( .Results[]? | .Target as $t | .Secrets[]?
+        | "secret:\(.RuleID | clean(120))\t\($t | clean(160))" ),
+      ( .Results[]?.Misconfigurations[]?
+        | select((.Status // "") != "PASS")
+        | "misconfig:\(.ID | clean(120))\t\(.Namespace | clean(160))" )
+    ] | unique | .[]' "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -538,8 +902,50 @@ ids_from() {
 # its own as the image changes. A hardcoded list of expected types would have
 # to be edited by the same release that is being gated -- which is precisely
 # the actor this check exists to constrain.
+#
+# PACKAGE-BEARING RESULTS ONLY. With the secret and misconfig scanners on,
+# `.Results[]` contains classes that carry no package list by design, and the
+# coverage checks below are all about package visibility. Measured on Trivy
+# 0.76.1 against the real image:
+#
+#   Class=os-pkgs    Type=alpine      Packages: array (32)   <- measurable
+#   Class=lang-pkgs  Type=gobinary    Packages: array (237)  <- measurable
+#   Class=config     Type=dockerfile  Packages: null         <- NOT measurable
+#   Class=secret     Type: ABSENT     Packages: null         <- NOT measurable
+#
+# So coverage is asserted over `os-pkgs` and `lang-pkgs` only. Selecting on
+# CLASS rather than on "does Packages happen to be an array" is the load-
+# bearing choice: the whole point of check 4 is to catch a package-bearing
+# target whose package list went missing, and a predicate that skips results
+# with no package list would skip exactly the failure it exists to detect.
+# Class is Trivy's own statement of what KIND of result this is, so a gutted
+# `lang-pkgs` result is still required to be measurable and still dies.
+#
+# A secret result has NO `.Type` at all (verified: the key is absent, with
+# `Class: "secret"` and the file path in `.Target`), so it was already being
+# dropped by the `select(. != null)` here. The class filter makes that
+# explicit rather than incidental, and additionally excludes the misconfig
+# result, which DOES have `Type: "dockerfile"` and would otherwise reach the
+# check-4 loop and die as `unmeasurable` on every single run.
 scan_types() {
-  jq -r '[.Results[]?.Type | select(. != null and . != "")] | unique | .[]' "$1"
+  jq -r '[.Results[]?
+          | select((.Class // "") == "os-pkgs" or (.Class // "") == "lang-pkgs")
+          | .Type | select(. != null and . != "")] | unique | .[]' "$1"
+}
+
+# The finding CLASSES a scan produced, independent of coverage. Check 3 asks
+# "did we lose a package-bearing target"; this asks the companion question for
+# the two scanners that have no packages to count: "did we stop LOOKING for
+# secrets or misconfigurations at all?"
+#
+# Needed because those two scanners can be silently disabled in ways that
+# produce no error: `--scanners` edited, `--image-config-scanners` dropped, a
+# `trivy.yaml` in the build context, or a Trivy upgrade that changes a
+# default. Each one removes the whole result class, which gate 1 reads as
+# "every secret finding was fixed" -- the same fail-open shape the rest of
+# this function exists to close, through a different door.
+scan_classes() {
+  jq -r '[.Results[]?.Class | select(. != null and . != "")] | unique | .[]' "$1"
 }
 
 # Scan-derived strings are UNTRUSTED. .Metadata.OS.Family and .Results[].Type
@@ -593,9 +999,217 @@ pkg_count_for_type() {
       end' "$1"
 }
 
+# The set of package NAMES for a type, deduplicated and sorted, one per line.
+#
+# This is what check 5 compares, and it is the answer to the half of the
+# coverage problem a COUNT cannot reach. pkg_count_for_type counts ROWS; two
+# package lists of the same length are not the same package list. A rebuild
+# that drops 120 real Go modules and adds 120 fabricated ones has the same
+# count, clears the 50% floor outright, and contributes no findings for any of
+# the 120 it dropped -- which then cancel out of gate 1's set arithmetic as
+# "closed by the rebuild". Measured on the real images by security pass A:
+# alpine 16 / gobinary 118 with ZERO vulnerabilities passes every count-based
+# check and reports verdict=improved, and padding with 500 fabricated entries
+# passes too, because names were never compared.
+#
+# Names are sanitized on the same grounds as ids_from and config_from: for a
+# `gobinary` result Trivy copies PkgName out of the Go build info of a binary
+# built from a Dockerfile the submitter controls, so these strings are
+# attacker-chosen and they flow into ::error:: lines and into summary.md, which
+# is appended to $GITHUB_OUTPUT inside a heredoc. Sanitizing INSIDE jq keeps
+# one name per line, so an embedded newline cannot forge extra list entries
+# either -- which matters more here than in ids_from, because this list is fed
+# to `comm` and a split row would be a spurious set member on both sides.
+#
+# Sorted with LC_ALL=C so the ordering matches `comm`'s expectation exactly;
+# a locale-dependent collation is the classic way to make comm silently
+# under-report an intersection.
+pkg_names_for_type() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?.Name
+      | select(. != null and . != "")
+      | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
+# The same, for ONE RESULT identified by its .Target rather than for a whole
+# type. Checks 4 and 5 aggregate every result of a type together, and that
+# aggregation is itself a bypass (found by the security review of the first
+# spelling of check 6):
+#
+#   ship usr/bin/caddy gutted to a single package, and ALONGSIDE it a decoy
+#   Go binary at usr/bin/helper carrying all 237 of the baseline's real module
+#   names. The type-level count is 238 and the type-level name intersection is
+#   237/237, so checks 4 and 5 are satisfied; check 6 is satisfied too, because
+#   usr/bin/caddy IS still a scanned target -- it is simply empty. All 7
+#   findings vanish and the verdict is `improved`. Reproduced end to end
+#   against the real :stable scan before check 7 below was written.
+#
+# So the per-type checks cannot be the only ones: a type whose results are
+# per-FILE needs its floors applied per file, or one file's coverage can be
+# paid for with another's.
+pkg_names_for_target() {
+  jq -r --arg tg "$2" '
+    [ .Results[]? | select((.Target // "") == $tg) | .Packages[]?.Name
+      | select(. != null and . != "")
+      | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
+# name@version pairs for a type (T-0810).
+#
+# Checks 5, 5b and 7 all compare `.Packages[].Name`, and NOTHING compares
+# `.Packages[].Version`, so a rebuild can report an identical package name set
+# -- 237/237 intersection, every floor cleared -- while the versions behind
+# those names are entirely different from the baseline's. Measured against the
+# real :stable scan: keep all 237 names, replace every version, zero the
+# findings, and the precondition prints "scan coverage OK" while gate 1 reports
+# ADDED=0 REMOVED=7, verdict=improved, exit 0.
+#
+# Packages with no readable Version are SKIPPED rather than rendered as
+# `name@` or `name@null`. Trivy does not populate Version for every row -- on
+# the real gobinary result the root `caddy` package carries none, so 236 of 237
+# rows have one -- and a synthetic empty version would otherwise be a pair that
+# matches on both sides for free, diluting the ratio in the attacker's favour.
+# The denominator is therefore the number of pairs that CAN be compared, which
+# is the same shape as check 5 counting distinct names rather than rows.
+pkg_vers_for_type() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((.Name // "") != "" and (.Version // "") != "")
+      | ((.Name | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) + "@" +
+         (.Version | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120])) ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
+# The NAMES of the rows pkg_vers_for_type emitted a pair for -- i.e. the rows
+# that HAVE a readable version -- for the denominator-ratchet check below.
+#
+# This exists instead of recovering the name by splitting the pair on its last
+# `@`, which is what the first spelling of that check did and which the round-2
+# review broke. The split is correct when the NAME contains `@` (Go module
+# paths legitimately do), but wrong when the VERSION does -- and the sanitizer
+# charclass permits `@`, so an attacker-chosen version survives into the
+# compared string. `name@v0.58.0@1` splits to `name@v0.58.0`, which is in
+# NEITHER name list, so `comm -12` drops the row and the ratchet never counts
+# it. Reproduced end to end against a baseline whose x/crypto version was
+# `v0.58.0@1`: the rebuild dropped the Version key and the CVE, coverage
+# printed OK and gate 1 reported the finding as REMOVED, under STRICT policy.
+# The control with a plain version blocked, so the `@` was the whole bug.
+#
+# Deriving the name from `.Name` directly has no parse step to confuse: it is
+# the SAME select and the SAME sanitization as pkg_vers_for_type, so the two
+# outputs correspond row for row by construction rather than by agreement
+# between a formatter and a parser. No legitimacy cost: for any row whose
+# version contains no `@` the two spellings agree exactly, and the real scans
+# contain no such version -- so this can only ever ADD rows the split silently
+# dropped, never remove one it counted.
+pkg_versioned_names_for_type() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((.Name // "") != "" and (.Version // "") != "")
+      | (.Name | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
+# Count rows whose Version would be CHANGED by the 120-character truncation
+# pkg_vers_for_type and pkg_ver_of_name apply.
+#
+# Truncation makes two versions sharing their first 120 sanitized characters
+# indistinguishable, and that is a laundering channel rather than a cosmetic
+# limit: plant `v0.58.0+build.<140 chars>` in one release -- which compares
+# EQUAL to itself, keeps its finding and so passes silently, looking like
+# ordinary `+build` metadata -- and from then on that package's version can be
+# changed beyond character 120 while 5c and 5d see no movement at all.
+# Reproduced in review against the real :stable scan: the second step dropped
+# a CVE with the gate reporting coverage OK.
+#
+# A real Go module version or apk revision is far shorter than 120 characters
+# -- measured across the captured pairs, the longest is a 37-character Go
+# pseudo-version -- so refusing to compare a version that does not survive the
+# cut costs nothing legitimate and removes the channel rather than widening
+# the window.
+# Counted on BOTH sides by the caller, because the plant has to be accepted
+# once before it can be exploited.
+long_version_count() {
+  jq -r --arg t "$2" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((.Name // "") != "" and (.Version // "") != "")
+      | (.Version | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?"))
+      | select(length > 120) ]
+    | length' "$1"
+}
+
+# The version a given package name is reported at, for one type. Used by 5c to
+# ask whether a findings-bearing package MOVED, as distinct from whether it is
+# still present (which is 5b's question).
+#
+# A name listed at several versions yields several lines; the caller treats any
+# difference in the set as a move, which is the conservative reading.
+#
+# SANITIZE .Name INSIDE THE SELECT, because the needle this is called with is
+# ALREADY sanitized: it comes from the vulnerability list, which is written
+# through the same gsub/truncate. Comparing a sanitized needle against a raw
+# haystack silently matches NOTHING for any name carrying a character outside
+# the allowed class or longer than 160 bytes -- `old_v` then comes back empty
+# and 5c skips the package as "no readable version". That is fail-OPEN on the
+# load-bearing check, and directly attacker-selectable, since a `gobinary`
+# PkgName is copied from Go build info in a submitter-controlled image: one
+# `~` in a module path was enough to turn 5c off. Found in review; the control
+# with a plain name blocks correctly, so the asymmetry was the whole bug.
+# Both sides must pass through the SAME transformation.
+pkg_ver_of_name() {
+  jq -r --arg t "$2" --arg n "$3" '
+    [ .Results[]? | select(.Type == $t) | .Packages[]?
+      | select((((.Name // "") | tostring
+                 | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) == $n)
+               and (.Version // "") != "")
+      | (.Version | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120]) ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
+# The set of finding IDs reported against one package name, for one type.
+#
+# 5c's exemption asks whether a package that MOVED VERSION still carries the
+# findings it carried in the baseline. That question must be asked per FINDING,
+# not per package: a package carrying several findings would otherwise be
+# exempted by retaining any ONE of them while the rest cancel out of gate 1 as
+# fixed. That is not hypothetical on this image -- the real :stable baseline
+# reports THREE CVEs against github.com/go-jose/go-jose/v3.
+#
+# Both the ID and the name are sanitized here, for the reason pkg_ver_of_name
+# is: the caller's needle is sanitized, and the baseline's ID set is compared
+# against the rebuild's, so the two must be rendered identically or a name
+# needing sanitization silently yields an empty set on one side.
+#
+# An EMPTY id is kept rather than filtered, and that is deliberate: `ids_from`
+# has no such filter, so a row whose VulnerabilityID is "" or absent is a
+# finding gate 1 counts. Filtering it here but not there made it invisible to
+# this set while still cancelling out of gate 1 -- so it could vanish while the
+# package's version moved, and 5c would exempt. Whatever the two functions
+# disagree about is laundering surface; they must render the same row the same
+# way. A whitespace-only id sanitizes to `???` and was already caught.
+vuln_ids_for_pkg() {
+  jq -r --arg t "$2" --arg n "$3" '
+    [ .Results[]? | select(.Type == $t) | .Vulnerabilities[]?
+      | select((((.PkgName // "") | tostring
+                 | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160]) == $n))
+      | ((.VulnerabilityID // "") | tostring
+         | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:120]) ]
+    | unique | .[]' "$1" | LC_ALL=C sort -u
+}
+
 assert_scan_coverage() {
   local new="$1" old="$2" arch="$3"
   local os_family new_types old_types missing t new_pkgs old_pkgs floor eosl
+  local old_names_f new_names_f old_named retained name_floor
+  local vuln_names_f lost_vuln lost_vuln_1l
+  local vuln_names_f_keep vn old_v new_v moved_vuln moved_vuln_1l moved_vuln_n lost_ids_n
+  local vuln_ver_blocking
+  local old_nv_f new_nv_f old_nv nv_retained nv_floor
+  local nv_names_f nv_newnames_f dropped_ver long_old long_new
+  local old_gotargets new_gotargets lost_go old_gocount
+  local new_classes old_classes missing_classes
 
   # The baseline must be a readable scan before it can define the standard.
   #
@@ -659,6 +1273,75 @@ assert_scan_coverage() {
     old_1l="$(safe_text "$(printf '%s' "$old_types"    | tr '\n' ' ')")"; old_1l="${old_1l% }"
     new_1l="$(safe_text "$(printf '%s' "$new_types"    | tr '\n' ' ')")"; new_1l="${new_1l% }"
     die "the rebuild's scan of linux/$arch lost scan target(s) the published image has: $missing_1l -- that target is now UNOBSERVED, not clean, so any finding it used to report would silently cancel out of the subset comparison. (published: $old_1l / rebuild: $new_1l)"
+  fi
+
+  # 3b. The MISCONFIG scanner must have run -- asserted absolutely, on both
+  #     scans -- and no other finding class may be present on one side only.
+  #
+  # Check 3 compares package-bearing TYPES, which by construction says nothing
+  # about the secret and misconfig scanners: they produce no packages and are
+  # excluded from `scan_types` on purpose. Without something here they are the
+  # one part of the scan with no coverage assertion at all -- turn a scanner
+  # off and its findings vanish from BOTH the added and removed sets, and the
+  # gate reports `improved` over an image nobody looked for credentials in.
+  #
+  # WHY THE MISCONFIG HALF IS ABSOLUTE AND NOT BASELINE-RELATIVE. An
+  # independent review of the first spelling, which was relative in both
+  # halves, measured it detecting NONE of the causes its own message named.
+  # Both scans in this loop run from ONE hardcoded flag set, so every stated
+  # cause -- `--scanners` edited, `--image-config-scanners` dropped, a
+  # trivy.yaml in the context, a Trivy default change -- removes the class
+  # from both sides at once and a relative comparison finds nothing. Measured
+  # against the real :stable with `--image-config-scanners` dropped on both
+  # sides: classes `lang-pkgs os-pkgs`, rc=0, `scan coverage OK`. A relative
+  # check cannot see a symmetric loss, and symmetric is the only kind a single
+  # flag set can produce.
+  #
+  # So `config` is required OUTRIGHT. That is safe because it is not
+  # finding-dependent: Trivy emits the Dockerfile result whenever the image
+  # config is a scan target, and this image fails DS-0002 and DS-0026
+  # permanently. Measured present even under `--severity CRITICAL`.
+  #
+  # WHY THE SECRET CLASS IS EXCLUDED FROM BOTH HALVES, AND WHAT THAT COSTS.
+  # `secret` appears ONLY when a secret is actually found, so there is no
+  # positive signal in the JSON for "the secret scanner ran and found
+  # nothing". That cuts both ways and the first spelling got the wrong half:
+  # asserting it RELATIVELY made a rebuild that FIXED the last secret -- the
+  # class legitimately disappears -- a hard stop, reported as "a scanner was
+  # disabled". Reproduced by review. It cannot be asserted absolutely either,
+  # because a clean image has no secret result at all.
+  #
+  # BE HONEST ABOUT THE RESULT: nothing in this function establishes that the
+  # secret scanner ran. What stands in for it is that both scans are issued
+  # from the same two variables a few lines apart, so an asymmetric edit is
+  # not expressible, plus review of the diff that would have to change them.
+  # A trivy.yaml in the build context or a Trivy default change WOULD turn it
+  # off invisibly, and the summary says so rather than implying coverage.
+  new_classes="$(scan_classes "$new")"
+  old_classes="$(scan_classes "$old")"
+
+  local side_name side_classes
+  for side_name in rebuild published; do
+    if [ "$side_name" = rebuild ]; then side_classes="$new_classes"
+    else                                side_classes="$old_classes"; fi
+    printf '%s\n' "$side_classes" | grep -qx config \
+      || die "the $side_name scan of linux/$arch reports no 'config' result, so the image-configuration (misconfig) scanner did not run on it -- a whole class of finding is UNSEARCHED rather than clean, and anything it would have reported cancels out of the subset comparison on both sides at once. Trivy emits a \`config\` result whenever the image config is a scan target, so its ABSENCE means the scanner was disabled: \`--scanners\`, a missing \`--image-config-scanners\`, a trivy.yaml in the working directory, or a Trivy default change. (Only that direction is asserted. Presence is necessary, not sufficient: Trivy also emits \`Class=config\` for a config file found inside the image FILESYSTEM, so an image that shipped a Dockerfile would satisfy this check without the image config having been scanned. Reaching that needs a script edit to drop the flag as well, and the pinned flag set is what stands behind the other direction.) Required outright rather than compared against the other scan, because one flag set drives both scans and a symmetric loss is invisible to any comparison. (classes seen: $(safe_text "$(printf '%s' "$side_classes" | tr '\n' ' ')"))"
+  done
+
+  # The relative half, now narrowed to what it can actually mean: a class on
+  # one side and not the other. `secret` is excluded for the reason above --
+  # losing it is the shape of a FIX. With the flags identical this should be
+  # unreachable, which is the point: it fires on an ASYMMETRIC difference, and
+  # the message does not assert a cause the gate has not established.
+  missing_classes="$(comm -13 \
+      <(printf '%s\n' "$new_classes" | grep -vx secret | sort) \
+      <(printf '%s\n' "$old_classes" | grep -vx secret | sort))"
+  if [ -n "$missing_classes" ]; then
+    local mc_1l oc_1l nc_1l
+    mc_1l="$(safe_text "$(printf '%s' "$missing_classes" | tr '\n' ' ')")"; mc_1l="${mc_1l% }"
+    oc_1l="$(safe_text "$(printf '%s' "$old_classes"     | tr '\n' ' ')")"; oc_1l="${oc_1l% }"
+    nc_1l="$(safe_text "$(printf '%s' "$new_classes"     | tr '\n' ' ')")"; nc_1l="${nc_1l% }"
+    die "the two scans of linux/$arch do not cover the same finding class(es): $mc_1l present for the published image and absent for the rebuild. Both scans are issued from one flag set here, so an asymmetric difference is not something this gate can explain -- it means the two scans were not run the same way, or Trivy read one image differently from the other. Either way that class is unsearched on one side and anything it reported cancels out as fixed. (published: $oc_1l / rebuild: $nc_1l)"
   fi
 
   # 4. A package-count floor per shared target.
@@ -734,14 +1417,1026 @@ assert_scan_coverage() {
     if [ "$new_pkgs" -lt "$floor" ]; then
       die "the rebuild's '$(safe_text "$t")' scan of linux/$arch sees $new_pkgs package(s) where the published image has $old_pkgs (floor $floor): the target is present but its contents largely could not be read, so most of it is UNOBSERVED rather than fixed. A findings list this far short of the baseline's cannot be compared against it."
     fi
+
+    # 5. The retained packages must be the SAME packages (T-0638).
+    #
+    # Check 4 is arithmetic on row counts, and a count is not an identity. It
+    # asks "are there still at least half as many rows", never "are these the
+    # same packages". So it is cleared by a list that has been REPLACED rather
+    # than retained: drop the real modules, pad with fabricated names, keep the
+    # count up. Every finding against a dropped package then has nothing to
+    # match on the new side and cancels out of gate 1 as though the rebuild had
+    # fixed it.
+    #
+    # So apply the SAME 50% floor to the INTERSECTION instead of to the raw
+    # count: of the packages the baseline could see, at least half must still
+    # be present BY NAME. Padding is now useless, because a fabricated name
+    # does not intersect the baseline and therefore cannot contribute to the
+    # number being floored.
+    #
+    # Deliberately the same loose 50%, and deliberately an intersection rather
+    # than a subset assertion, for the reason check 4's floor is loose: a
+    # legitimate release really does remove packages, and dropping a plugin
+    # removes its whole dependency subtree. Requiring the baseline's names to
+    # be a strict SUBSET of the rebuild's would block that ordinary case and
+    # get the check switched off. Measured for scale against the real pair:
+    # v2.68.12 retains 237/237 gobinary and 32/32 alpine names from :stable,
+    # i.e. 100% against a 50% floor -- the same order of slack check 4 has.
+    #
+    # This does NOT replace check 4. Count catches a target gutted down to
+    # nothing; identity catches one swapped out for something else. The two
+    # compose, which is why both run: a list half the size made of entirely
+    # real retained packages passes 5 and is caught by 4's absolute floors,
+    # and a full-size list made of fabricated names passes 4 and is caught
+    # here.
+    old_names_f="$OUT/.cov-old-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    new_names_f="$OUT/.cov-new-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    pkg_names_for_type "$old" "$t" > "$old_names_f"
+    pkg_names_for_type "$new" "$t" > "$new_names_f"
+
+    # Count DISTINCT names, not rows: the floor below is computed from this
+    # number, so it has to be the same denominator the intersection is drawn
+    # from. A result that lists one package twice would otherwise set a floor
+    # the intersection cannot reach.
+    old_named=$(wc -l < "$old_names_f")
+    old_named=${old_named//[[:space:]]/}
+
+    # A baseline whose rows carry no usable names cannot define an identity
+    # floor. Not a die: .Packages[].Name is guaranteed for neither every
+    # ecosystem nor every Trivy version, and check 4's count floor has already
+    # run on this target, so the coverage assertion still has a measurement
+    # here. Skipping is sound precisely because this check is additive.
+    #
+    # SKIP THIS CHECK ONLY -- DO NOT `continue` THE TYPE. The earlier spelling
+    # was a `continue`, which was correct while 5 and 5b were the only checks
+    # below it and both keyed on .Packages[].Name. It stopped being correct
+    # when 5c and 5d were added (T-0810): 5c keys on the VULNERABILITY's
+    # .PkgName, a different field that can be populated when the package rows
+    # are not, and 5d keys on name@version. A `continue` therefore disabled
+    # every version check for a baseline whose package rows carry versions but
+    # no names -- found in review, reproduced, and exactly the
+    # self-perpetuating shape documented for check 4's zero-package baseline
+    # above: check 3 still passes because the TYPE is present on both sides,
+    # so one such image publishes once and :stable IS the blind baseline from
+    # then on.
+    if [ "$old_named" -eq 0 ]; then
+      : # no identity floor available for this target; 5b/5c/5d still apply
+    else
+      retained=$(LC_ALL=C comm -12 "$old_names_f" "$new_names_f" | wc -l)
+      retained=${retained//[[:space:]]/}
+      name_floor=$(( (old_named + 1) / 2 ))
+      if [ "$retained" -lt "$name_floor" ]; then
+        rm -f "$old_names_f" "$new_names_f"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch retains only $retained of the published image's $old_named package name(s) (floor $name_floor), though it reports $new_pkgs package(s) in total: the package list was REPLACED rather than retained, so the baseline's findings for the missing packages would cancel out of the comparison as though they had been fixed. A package count is not a package identity."
+      fi
+    fi
+
+    # 5b. Every package that CARRIES A FINDING in the baseline must still be
+    #     present in the rebuild, by name. No percentage.
+    #
+    # The 50% floor above is deliberately loose and deliberately indifferent
+    # to WHICH names survive, and those are the same property viewed twice:
+    # an attacker may retain any 119 of 237 names, so they retain innocuous
+    # ones and drop exactly the packages whose findings they want gone.
+    # Measured against the real pair: dropping the five findings-bearing Go
+    # modules while padding back to 237 clears the floor BY ONE and gate 1
+    # then reports ADDED=0 REMOVED=7, verdict=improved, and the moving tags
+    # advance onto an image whose vulnerabilities were simply hidden.
+    #
+    # So the loose floor keeps its job -- tolerating ordinary churn and
+    # legitimate plugin drops -- and this narrower, absolute rule covers the
+    # packages that actually decide the verdict. A finding only cancels out
+    # of gate 1's subset arithmetic as FIXED if its package stops being
+    # reported; requiring those packages to still be observed is what makes
+    # "this finding is gone" mean "gone" rather than "unobserved".
+    #
+    # This also removes the CARRY CHANNEL that the name floor alone has
+    # across releases. Fabricated names become baseline names once published,
+    # so they count toward the next release's intersection and the floor can
+    # be walked down much faster than the count floor alone allowed. A
+    # fabricated name never carries a finding, so it can never satisfy THIS
+    # rule -- it is anchored to real, observed vulnerabilities rather than to
+    # whatever the previous image happened to list.
+    #
+    # Measured cost on the real pair: ZERO. The baseline's five
+    # findings-bearing modules are all present in the rebuild, so the refresh
+    # path and an ordinary release are unaffected.
+    #
+    # A genuine plugin removal CAN legitimately drop a vulnerable package, so
+    # this is absolute only under the strict policy. Under `report` -- the
+    # release path, where removing a plugin is a documented reason to edit
+    # Dockerfile.caddy -- it is printed and carried into the summary for the
+    # reviewer instead, exactly as gates 2 and 3 treat their drift. That
+    # keeps the rule from being the one that gets switched off, while still
+    # putting the disappearance in front of the human approving the release.
+    vuln_names_f="$OUT/.cov-vuln-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    jq -r --arg t "$t" '
+      [ .Results[]? | select(.Type == $t) | .Vulnerabilities[]?.PkgName
+        | select(. != null and . != "")
+        | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+      | unique | .[]' "$old" | LC_ALL=C sort -u > "$vuln_names_f"
+    lost_vuln="$(LC_ALL=C comm -23 "$vuln_names_f" "$new_names_f")"
+    # Kept for check 5c below, which asks a different question of the same
+    # list -- not "is this package still present" but "is it still the same
+    # version". Removed at the end of 5c rather than here.
+    vuln_names_f_keep="$vuln_names_f"
+    if [ -n "$lost_vuln" ]; then
+      lost_vuln_1l="$(safe_text "$(printf '%s' "$lost_vuln" | tr '\n' ' ')")"
+      lost_vuln_1l="${lost_vuln_1l% }"
+      if [ "$DRIFT_POLICY" = block ]; then
+        rm -f "$old_names_f" "$new_names_f" "$vuln_names_f_keep"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch no longer reports package(s) that carry findings in the published image: $lost_vuln_1l -- those findings have nothing to match against on the new side, so they would cancel out of the comparison as FIXED when they are merely unobserved. A rebuild of an unchanged Dockerfile must not drop a package the baseline is reporting a vulnerability for."
+      fi
+      printf 'NOTE (linux/%s): the rebuild no longer reports %s package(s) that carry findings in the published image: %s. Those findings will read as fixed in the comparison below; confirm the package was removed deliberately.\n' \
+        "$arch" "$(safe_text "$t")" "$lost_vuln_1l"
+    fi
+
+    # 5c. A package that CARRIES FINDINGS in the baseline must still be
+    #     reported AT THE SAME VERSION -- unless EVERY ONE of those findings
+    #     is still reported against it (T-0810).
+    #
+    # 5b makes "this finding is gone" mean the package is still observed. It
+    # does not make it mean the SAME package was observed. Checks 5/5b/7 all
+    # compare names, so swapping only the versions of the findings-bearing
+    # packages satisfies every one of them while the findings still cancel
+    # out of gate 1 as fixed. Measured against the real :stable scan: swap
+    # the versions of just the five findings-bearing Go modules and the
+    # name@version retention is 231/236 = 97%, far above any ratio floor,
+    # while all 7 findings disappear and the verdict comes out improved.
+    # That is pass A's "drop exactly the packages that decide the verdict"
+    # recurring one level down, and a ratio cannot catch it for the same
+    # reason it could not catch the first one.
+    #
+    # WHY THIS IS NOT ids_from's EXCLUDED VERSION, REINTRODUCED.
+    # ---------------------------------------------------------
+    # ids_from deliberately keys findings on ID+package and NOT on
+    # InstalledVersion, because including it made an UPGRADE of a
+    # still-affected package look like one finding removed plus one added --
+    # measured on GO-2026-5932 across v0.57.0 -> v0.58.0 -- so a security
+    # release that bumps a module still carrying a standing advisory could
+    # never ship. Nothing here changes that: gate 1's set arithmetic is
+    # untouched and stays version-blind.
+    #
+    # The rule's FIRST limb is what keeps the two compatible. A package whose
+    # version moved and which STILL CARRIES THE FINDING on the new side is
+    # exactly the upgrade ids_from protects, and it satisfies this check
+    # outright -- the finding did not cancel, so there is nothing to
+    # misread. Verified on the documented case: with the baseline's x/crypto
+    # at v0.57.0 and the rebuild's at v0.58.0 still reporting GO-2026-5932,
+    # gate 1 reports added=0 removed=0 and this check passes.
+    #
+    # So the only state this blocks is the one that is genuinely ambiguous:
+    # the finding vanished AND the thing it was reported against is no longer
+    # the same thing. Under `block` -- the refresh path, rebuilding an
+    # UNCHANGED Dockerfile.caddy from a release tag -- a findings-bearing
+    # package cannot legitimately change version at all, so that state is
+    # wrong by definition and blocking is the whole point. Under `report` --
+    # the release path -- an upgrade that actually FIXES the advisory
+    # produces precisely this shape and is the normal reason to cut a
+    # security release, so it is printed for the reviewer instead, exactly
+    # as 5b and gates 2/3 treat their drift. The scan alone cannot tell a
+    # real fix from a substituted version; the release diff and the pin set
+    # in Dockerfile.caddy can, and that is the reviewer's job.
+    #
+    # WHY THIS BLOCKS ONLY WHERE VERSIONS ARE REPRODUCIBLE BY CONSTRUCTION.
+    # ---------------------------------------------------------------------
+    # The argument above -- "a refresh rebuilds an unchanged Dockerfile, so a
+    # findings-bearing package cannot legitimately change version" -- is true
+    # for Go modules and FALSE for OS packages, and the difference is written
+    # into Dockerfile.caddy. Every xcaddy `--with` carries a version (pinned
+    # in v2.68.9), so the module set is reproducible and any movement in it
+    # is drift the refresh path already blocks on through gate 2. The alpine
+    # layer is the opposite: `apk upgrade --no-cache` is UNPINNED BY DESIGN
+    # and `FROM caddy:2.11.9-alpine` is a moving tag, so picking up new OS
+    # package versions is not drift -- it is the entire purpose of a weekly
+    # refresh.
+    #
+    # Measured, not reasoned: the T-0592 refresh moved alpine-release
+    # 3.23.7-r0 -> 3.23.8-r0, apk-tools and libapk 3.0.8-r0 -> 3.0.9-r0, and
+    # zlib 1.3.2-r1 -> 1.4-r0, and that last one is what FIXED CVE-2026-4738.
+    # Blocking OS version movement under `block` would therefore have blocked
+    # the refresh that delivered a security fix -- the same "the gate calls
+    # your fix a regression" failure ids_from exists to avoid, reappearing in
+    # a different place. A rule that blocks the fix it is meant to protect
+    # gets switched off, and then protects nothing.
+    #
+    # So the hard stop is scoped to the types whose versions are pinned, and
+    # everything else is reported with the same note. That is not a weaker
+    # rule where it matters: the supply-chain substitution this check exists
+    # for is a swapped Go MODULE, which is exactly where the block applies.
+    # An OS package version that moves while its finding disappears is the
+    # ordinary, expected shape of an `apk upgrade`, and the note puts it in
+    # front of the reviewer either way.
+    #
+    # The block limb therefore forbids nothing the refresh path already
+    # allowed: a Go module whose version moved is module drift, and gate 2
+    # diffs `caddy list-modules --versions` and fails the whole run on any
+    # drift under this same policy. What this adds is a second observation of
+    # the same fact derived from the scan rather than from executing the
+    # binary, which matters because the two can disagree.
+    #
+    # BE HONEST ABOUT HOW INDEPENDENT THAT SECOND OBSERVATION ACTUALLY IS.
+    # It is not two separate safety nets on the release path. Gate 2 and this
+    # check are governed by the SAME MODULE_DRIFT_POLICY variable, and
+    # release-docker.yml sets it from whether the submitter edited
+    # Dockerfile.caddy -- so the attacker's own change selects the weaker
+    # posture for BOTH at once, and both degrade to advisory together. Gate 2
+    # is also the stronger evidence where it runs, because it executes the
+    # binary while this check reads JSON the image authored. Read 5c as a
+    # cross-check ON gate 2, not as independent cover FOR it: where they
+    # disagree, one of them is being lied to, and the scan is the likelier
+    # liar.
+    # Measured on the real release pair v2.68.9 -> v2.68.12, which fixed three
+    # CVEs by upgrading go-jose/v4, x/net and stdlib: under `report` all three
+    # are printed as notes and the release passes, which is the intended
+    # outcome -- the reviewer is told the findings cleared because versions
+    # moved, and the release diff says whether those moves were the ones asked
+    # for.
+    case "$t" in
+      gobinary|gomod) vuln_ver_blocking=1 ;;
+      *)              vuln_ver_blocking=0 ;;
+    esac
+
+    # Measured cost on the real pair: ZERO under both policies. All five
+    # findings-bearing modules are reported at identical versions on both
+    # sides of v2.68.12 vs :stable.
+    # Counted as well as listed. safe_text caps every interpolated string at
+    # 200 characters -- a deliberate log-injection defence, not a bug -- so a
+    # long list is truncated mid-package in both the die and the note. A
+    # reviewer reading a truncated list would not know how much was cut, and
+    # on the release path that note is the ONLY thing standing between a
+    # substituted version and an approval. The count is generated here rather
+    # than taken from the string, so it survives the cut.
+    moved_vuln=""
+    moved_vuln_n=0
+    while IFS= read -r vn; do
+      [ -n "$vn" ] || continue
+      # EXEMPT ONLY ON FULL RETENTION OF THE BASELINE'S FINDINGS FOR THIS
+      # PACKAGE, compared as an ID SET rather than as a count.
+      #
+      # The first spelling of this asked `length > 0` -- "does this package
+      # name appear in any vulnerability row on the new side" -- and that is
+      # wrong in two ways, both found in review and both reproduced against
+      # the real :stable scan.
+      #
+      # (1) PER-PACKAGE, NOT PER-FINDING. A package carrying several findings
+      #     was exempted by retaining any ONE of them while the others
+      #     cancelled as fixed. Live on this image: the baseline reports three
+      #     CVEs against github.com/go-jose/go-jose/v3, so substituting its
+      #     version and keeping one of the three gave coverage OK, ADDED=0
+      #     REMOVED=2, verdict=improved, exit 0 -- under the STRICT policy,
+      #     and with no note printed either.
+      #
+      # (2) THE EXEMPTION ACCEPTED A FABRICATED FINDING. Every string in this
+      #     JSON is attacker-chosen, so the image could manufacture its own
+      #     exemption by adding one invented vulnerability row naming the
+      #     package. That failed the standard 5b sets for itself a few lines
+      #     up -- anchored to real, observed vulnerabilities -- while claiming
+      #     to follow it.
+      #
+      # Comparing the BASELINE's ID set against the new side's fixes both: a
+      # fabricated ID is not in the baseline set so it cannot complete it, and
+      # a partial retention is not a full one. `comm -23` is the baseline IDs
+      # not present on the new side; empty means every one survived, which is
+      # the upgrade case ids_from protects and the only state exempted here.
+      #
+      # COUNTED BY LINE, NOT TESTED FOR EMPTINESS. An empty VulnerabilityID is
+      # a finding `ids_from` counts (it keys on "\($id)\t\($pkg)", with no
+      # filter on $id), so it must be a member of this set too -- but a set
+      # whose ONLY lost member is the empty id is a single empty line, and
+      # command substitution strips it to a zero-length string. `[ -n ... ]`
+      # then reads "nothing was lost" and 5c exempts the version move, while
+      # gate 1 still cancels that finding as FIXED. Reproduced: baseline
+      # go-jose/v3 with three CVEs plus one empty-id row, rebuild moving the
+      # version and keeping the three -- coverage OK, the empty-id finding
+      # removed. `wc -l` counts the line the string cannot hold.
+      lost_ids_n="$(LC_ALL=C comm -23 \
+                      <(vuln_ids_for_pkg "$old" "$t" "$vn") \
+                      <(vuln_ids_for_pkg "$new" "$t" "$vn") | wc -l)"
+      lost_ids_n=${lost_ids_n//[[:space:]]/}
+      [ "$lost_ids_n" -gt 0 ] || continue
+      old_v="$(pkg_ver_of_name "$old" "$t" "$vn")"
+      new_v="$(pkg_ver_of_name "$new" "$t" "$vn")"
+      # No readable version on either side: 5b already asserted presence and
+      # there is nothing further to compare. Not a die, for the reason check
+      # 5 skips a nameless baseline -- the check is additive.
+      [ -n "$old_v" ] || continue
+      # Absent from the new side entirely is 5b's case, already handled above.
+      [ -n "$new_v" ] || continue
+      if [ "$old_v" != "$new_v" ]; then
+        moved_vuln="$moved_vuln$vn ($(printf '%s' "$old_v" | tr '\n' ',' | sed 's/,$//') -> $(printf '%s' "$new_v" | tr '\n' ',' | sed 's/,$//')) "
+        moved_vuln_n=$(( moved_vuln_n + 1 ))
+      fi
+    done < "$vuln_names_f_keep"
+    if [ -n "$moved_vuln" ]; then
+      moved_vuln_1l="$(safe_text "${moved_vuln% }")"
+      if [ "$DRIFT_POLICY" = block ] && [ "$vuln_ver_blocking" -eq 1 ]; then
+        rm -f "$old_names_f" "$new_names_f" "$vuln_names_f_keep"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch reports $moved_vuln_n package(s) that carry findings in the published image at a DIFFERENT version, and no longer reports those findings: $moved_vuln_1l -- the finding cancels out of the comparison as FIXED, but the package it was reported against is not the same one, so nothing establishes it was fixed rather than substituted. Every xcaddy --with in Dockerfile.caddy carries a version, so a rebuild of an unchanged Dockerfile must reproduce the same module versions; a module that moved here did not come from the pin set. Cut a release if the bump is intended."
+      fi
+      printf 'NOTE (linux/%s): the rebuild reports %s %s package(s) at a different version than the published image, and no longer reports the finding(s) they carried: %s. Those findings read as FIXED in the comparison below on the strength of the version change alone, so confirm each new version is the intended upgrade rather than a substitution. (List truncated at 200 characters; the count is exact.)\n' \
+        "$arch" "$moved_vuln_n" "$(safe_text "$t")" "$moved_vuln_1l"
+    fi
+    rm -f "$vuln_names_f_keep"
+
+    # 5d. A loose name@VERSION identity floor (T-0810).
+    #
+    # 5c covers the packages that decide the verdict, the way 5b does for
+    # presence. This covers the wholesale case the way check 5 does: a
+    # rebuild that keeps every name but replaces every version behind them.
+    # That image is not the baseline's dependency set under another label --
+    # it is a different set of code wearing the same names, and a finding
+    # absent from it is unobserved rather than fixed.
+    #
+    # Deliberately the SAME loose 50% as checks 4, 5 and 7, and for the same
+    # reason: a legitimate release really does move versions, and a tight
+    # floor here would block ordinary releases and get switched off.
+    # Measured on the real pairs -- v2.68.12 vs :stable retains 235/236
+    # gobinary and 32/32 alpine name@version pairs (99% / 100%), and the
+    # T-0592 security release, which is the heaviest real churn on record
+    # because it moved the whole alpine base to fix CVE-2026-4738, retains
+    # 28/32 alpine (87%) and 235/235 gobinary (100%). The wholesale swap
+    # retains 0/236. The separation between a legitimate release and the
+    # attack is the entire range, so a 50% floor sits in open space rather
+    # than on a boundary.
+    #
+    # This does NOT subsume 5c and 5c does not subsume this, for exactly the
+    # relationship check 4 and check 5 have: a ratio catches the wholesale
+    # replacement that 5c's narrow rule ignores, and 5c catches the targeted
+    # five-package swap that sits at 97% and clears any ratio.
+    # Named `.names` like every other scratch file here, NOT `.nv`, so the
+    # stale-output sweep at the top of the script clears them: that sweep
+    # globs "$OUT"/.cov-*.names, and a new suffix would silently fall outside
+    # it. A stale file would then be read back as this run's name@version list
+    # for this target -- the exact failure the sweep exists to prevent, and
+    # one that fails OPEN here, since a stale baseline list that happens to
+    # intersect would clear the floor.
+    old_nv_f="$OUT/.cov-old-nv-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    new_nv_f="$OUT/.cov-new-nv-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    pkg_vers_for_type "$old" "$t" > "$old_nv_f"
+    pkg_vers_for_type "$new" "$t" > "$new_nv_f"
+    old_nv=$(wc -l < "$old_nv_f"); old_nv=${old_nv//[[:space:]]/}
+
+    # A VERSION THAT DOES NOT SURVIVE TRUNCATION CANNOT BE COMPARED.
+    #
+    # See long_version_count. Checked on BOTH sides and before any floor is
+    # taken, because the plant must be accepted once before it can be used,
+    # and because a baseline already carrying one is a baseline whose version
+    # comparison is already blind for that row.
+    long_old=$(long_version_count "$old" "$t")
+    long_new=$(long_version_count "$new" "$t")
+    if [ "$long_old" -gt 0 ] || [ "$long_new" -gt 0 ]; then
+      rm -f "$old_nv_f" "$new_nv_f" "$old_names_f" "$new_names_f"
+      die "the '$(safe_text "$t")' scan of linux/$arch reports package version(s) longer than 120 characters (published: $long_old, rebuild: $long_new): versions are compared truncated to that length, so two versions agreeing only up to it are indistinguishable here and a later change beyond the cut would move a package without this check seeing it. A real module version or package revision is far shorter; refusing to compare one this long closes a laundering channel rather than widening the window."
+    fi
+
+    # THE DENOMINATOR MUST NOT BE ATTACKER-SHRINKABLE ACROSS RELEASES.
+    #
+    # `old_nv` counts only baseline rows that HAVE a readable version, and a
+    # published image becomes the next baseline. So stripping Version from
+    # just under half the packages each release clears the 50% floor every
+    # time while halving the denominator for the next one -- names stay
+    # untouched, so checks 4, 5, 5b and 7 never fire, and the standard walks
+    # down to a single pair. That is the same inherited-denominator ratchet
+    # that made fabricated NAMES dangerous (closed by 5b), one level down,
+    # and 5b does not cover it because a stripped version is not a missing
+    # package.
+    #
+    # So a baseline package that HAD a version and whose rebuild row no
+    # longer carries one counts as a LOST pair rather than as nothing to
+    # compare. That is the honest reading anyway: the version stopped being
+    # observable, and an unobservable version cannot establish that a finding
+    # was fixed. Legitimate cost is nil -- Trivy populates Version for every
+    # gobinary row but the synthetic root package, and for every alpine row,
+    # on both real pairs.
+    # Only packages the rebuild STILL REPORTS are asked this. One that is gone
+    # altogether is 5 and 5b's question, and counting it here as well would
+    # turn a legitimate plugin removal -- which both of those deliberately
+    # tolerate -- into a hard stop.
+    #
+    # The two name lists come from pkg_versioned_names_for_type, NOT from
+    # splitting the pairs on their last `@`. See that function: the version is
+    # attacker-chosen and the sanitizer permits `@`, so a split recovers the
+    # wrong name whenever the VERSION contains one, and the row then matches
+    # neither list and is never counted. Reading `.Name` directly has no parse
+    # step to confuse.
+    nv_names_f="$OUT/.cov-oldnv-names-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    nv_newnames_f="$OUT/.cov-newnv-names-$arch-$(printf '%s' "$t" | tr -c 'A-Za-z0-9._-' '_').names"
+    pkg_versioned_names_for_type "$old" "$t" > "$nv_names_f"
+    pkg_versioned_names_for_type "$new" "$t" > "$nv_newnames_f"
+    dropped_ver=$(LC_ALL=C comm -12 "$nv_names_f" "$new_names_f" \
+                  | LC_ALL=C comm -23 - "$nv_newnames_f" | wc -l)
+    dropped_ver=${dropped_ver//[[:space:]]/}
+    rm -f "$nv_names_f" "$nv_newnames_f"
+    if [ "$dropped_ver" -gt 0 ]; then
+      rm -f "$old_nv_f" "$new_nv_f" "$old_names_f" "$new_names_f"
+      die "the rebuild's '$(safe_text "$t")' scan of linux/$arch reports $dropped_ver package(s) WITHOUT a version that the published image reported WITH one, while still reporting the package itself: an unobservable version cannot establish that a finding against that package was fixed rather than substituted, and because a published image becomes the next baseline, accepting this would shrink the version floor's denominator for every later release. Re-scan, or rebase onto an image Trivy can read versions from."
+    fi
+
+    # A baseline carrying no readable versions cannot define a version floor.
+    # Skipped rather than fatal for the reason check 5 skips a nameless
+    # baseline: .Packages[].Version is guaranteed for neither every ecosystem
+    # nor every Trivy version, checks 4 and 5 have already measured this
+    # target, and this check is additive. The denominator ratchet above is
+    # what stops this skip from being walked toward deliberately.
+    if [ "$old_nv" -eq 0 ]; then
+      rm -f "$old_nv_f" "$new_nv_f"
+    else
+      nv_retained=$(LC_ALL=C comm -12 "$old_nv_f" "$new_nv_f" | wc -l)
+      nv_retained=${nv_retained//[[:space:]]/}
+      nv_floor=$(( (old_nv + 1) / 2 ))
+      rm -f "$old_nv_f" "$new_nv_f"
+      if [ "$nv_retained" -lt "$nv_floor" ]; then
+        rm -f "$old_names_f" "$new_names_f"
+        die "the rebuild's '$(safe_text "$t")' scan of linux/$arch retains only $nv_retained of the published image's $old_nv package name@version pair(s) (floor $nv_floor), though it retains $retained of $old_named package NAME(s): the names were kept while the versions behind them were replaced, so this is a different dependency set wearing the baseline's labels and its findings would read as fixed when they are merely unobserved. A package name is not a package version."
+      fi
+    fi
+
+    rm -f "$old_names_f" "$new_names_f"
   done
   # Restore globbing: the rest of the script relies on it (the summary's
   # `for _ in $ARCHES` and the module-diff paths), and a `die` above exits the
   # whole script anyway, so this only needs to cover the success path.
   set +f
 
+  # 5e. An ABSOLUTE floor, pinned to a committed fixture (T-0811).
+  #
+  # WHAT THIS IS FOR, AND WHY THE RELATIVE FLOORS ARE NOT ENOUGH.
+  # ------------------------------------------------------------
+  # Every floor above is RELATIVE to the baseline: the published image defines
+  # what "scanned properly" means. 5b and 5c anchor the findings-bearing
+  # packages to observed vulnerabilities, which closed the carry channel where
+  # fabricated names became next release's baseline names. What they do not
+  # anchor is the DENOMINATOR -- the 50% name floor and the count floor both
+  # take their scale from whatever :stable happens to report, so a baseline
+  # that is itself partially degraded permanently lowers the bar for every
+  # later release, and nothing above can see that it has happened.
+  #
+  # Measured under T-0811 against the real :stable scan, using checks 1-7 as
+  # they stand: each step keeping every findings-bearing package at its
+  # baseline VERSION (so 5b and 5c are satisfied honestly, not evaded) and the
+  # minimum number of others at their baseline name@version (so 5 and 5d are),
+  # then publishing and becoming the next baseline --
+  #
+  #   237 -> 119 -> 60 -> 30 -> 15 -> 8 -> 6 Go modules, in SIX releases,
+  #   rc=0 and "scan coverage OK" printed at every single step.
+  #
+  # The floor is multiplicative, so each step halves. And the end state buys
+  # real blindness: binary-searched, a healthy 237-package baseline accepts a
+  # smallest rebuild of 119 (49% may be unobserved), while the degraded
+  # 6-package baseline accepts 1 (83%). The SAME 6-package image is exit 2
+  # against the healthy baseline and "coverage OK" against the degraded one --
+  # the standard itself moved, which is precisely what no relative check can
+  # detect.
+  #
+  # A fixture stops that at step 2 outright: pinned at 237 names, the ratchet's
+  # steps are 50% / 25% / 12% / ... intersections against the fixture, so step 2
+  # (60/237 = 25%) blocks and step 1 (119/237 = 50%) is marginal. Nothing the
+  # rebuild fabricates can raise that number, because the fixture is not
+  # derived from the rebuild.
+  #
+  # WHY A COMMITTED FILE IS ACCEPTABLE HERE, GIVEN T-0638 DECLINED ONE.
+  # ------------------------------------------------------------------
+  # T-0638 rejected an absolute floor on the grounds that a file committed next
+  # to the Dockerfile "is editable by the same release it constrains", which is
+  # the actor the gate exists to constrain. That objection is real but it is
+  # comparative, and it comes out the other way: the edit is a REVIEWABLE DIFF
+  # in the PR Richard approves per release, whereas the baseline's erosion is
+  # invisible -- it happens in the published image, with no diff anywhere. A
+  # change that has to be shown to a human beats one that does not.
+  #
+  # THREE DELIBERATE SCOPINGS, each measured rather than assumed.
+  #
+  #   (1) `gobinary` ONLY; no OS-layer fixture. `apk upgrade --no-cache` is
+  #       unpinned by design and `FROM caddy:2.11.9-alpine` is a moving tag, so
+  #       the alpine name set legitimately drops to 65% on a minor bump -- the
+  #       3.23->3.24 figure measured under T-0810. A rule that blocks the
+  #       refresh it exists to protect gets switched off, which is the same
+  #       reason 5c is scoped the way it is. The OS layer keeps the relative
+  #       floors it already has. Enforced here by reading the fixture's own
+  #       declared `type` rather than by looping: a fixture that names a type
+  #       whose churn is legitimate is a mistake this check should not make
+  #       easy to write.
+  #
+  #   (2) NAMES, not versions, and not counts alone. Versions are 5c/5d's
+  #       business and churn legitimately every release. A raw COUNT floor --
+  #       the `gobinary >= 100` form T-0638's card proposed -- is the strictly
+  #       weaker shape, because a padded list of fabricated names clears it:
+  #       exactly the gap T-0638 closed for the relative checks, and it must
+  #       not be reintroduced here one level out.
+  #
+  #   (3) REFRESHED AT RELEASE, in the release PR. See the fixture's own
+  #       _comment field and the release runbook.
+  #
+  # HOW STALENESS BEHAVES, PRECISELY.
+  # ---------------------------------
+  # This is an INTERSECTION against an old set, so for a release that ADDS
+  # modules or only moves their VERSIONS, a fixture that is behind asserts
+  # LESS: names it does not know about cannot be missed from it. Those are the
+  # releases this image actually has, which is why the check is quiet.
+  #
+  # It is NOT unconditionally permissive, and an earlier version of this
+  # comment claimed it was. RENAMES AND REMOVALS ACCUMULATE against a fixture
+  # that is never refreshed, because each one permanently leaves the pinned
+  # set. Measured by the security review of this check, chaining honest
+  # rebuilds that each rename 30 more modules and publishing every step the
+  # RELATIVE checks accept:
+  #
+  #   cumulative renamed  relative checks   5e    fixture intersection
+  #    90                 pass              pass  147/237
+  #   120                 pass              BLOCK 117/237   <- 5e sole blocker
+  #   150                 pass              BLOCK  87/237
+  #
+  # At 120 the rebuild reports all 237 of its own modules and still carries
+  # both baseline findings -- genuinely observed, nothing hidden -- and 5e is
+  # the only thing stopping it. So the honest statement is: a stale fixture
+  # cannot be exploited to HIDE anything, and cannot block a release that adds
+  # or re-versions modules, but cumulative renames WILL eventually require a
+  # refresh. That is a release blocked by a stale fixture, which is the failure
+  # mode this check was argued into existence partly by denying.
+  #
+  # Two reasons it is still worth having in this shape. First, it fails in the
+  # SAFE direction: the block is loud, names the fixture, and says what to do,
+  # where the alternative is silent erosion nobody sees. Second, it is far
+  # away: real Go-module NAME retention on this image is 99-100% across 21
+  # captured pairs, so reaching 50% cumulative rename drift takes a sustained
+  # change of character in the dependency graph, not ordinary churn.
+  #
+  # The `captured` date is therefore printed on the PASS line as well, so a
+  # fixture drifting toward its floor is visible in the log of every green run
+  # rather than only in the run that finally fails.
+  #
+  # MEASURED COST, from every captured real pair on this host (21 pairs,
+  # v2.55-era through v2.68.12): Go-module NAME retention is 99-100%, with 20
+  # of 21 at exactly 100%; the widest span available (the 236-package era vs
+  # the current 237) is also 100%. The attack is 2% (6 of 237). So a 50% floor
+  # sits in open space rather than on a boundary: legitimate releases move
+  # module VERSIONS, not module NAMES.
+  #
+  # Compared PER TARGET, not per type, and against the fixture's declared
+  # target. Check 7 exists because `gobinary` is a type that can appear more
+  # than once, and a type-level intersection is payable with a decoy binary:
+  # ship usr/bin/caddy gutted to one package and a second Go binary elsewhere
+  # carrying all 237 fixture names, and a type-level 5e reads 237/237 while the
+  # binary the image actually runs is unobserved. That is the bypass check 7
+  # was written for, reproduced end to end against the real scan, and this
+  # check must not reopen it one level out.
+  if [ -n "$COVERAGE_FLOOR_FILE" ]; then
+    # -e, NOT -f, and the readability test is separate.
+    #
+    # `-f` is false for a DIRECTORY and for a DANGLING SYMLINK, so the first
+    # spelling of this treated both as "absent" and skipped -- fail-open on
+    # two states that are faults rather than configurations. Found by probing
+    # this check rather than by reading it: `COVERAGE_FLOOR_FILE=<a dir>` and a
+    # symlink to a deleted path both printed the skip NOTE and exited 0.
+    #
+    # A path that EXISTS but is not a readable regular file is therefore a hard
+    # stop, on the same reasoning as an unparseable document below: the caller
+    # named a floor, so silently not having one is the fail-open shape. Only a
+    # path that does not exist at all is the supported "no fixture" case.
+    if [ -e "$COVERAGE_FLOOR_FILE" ] || [ -L "$COVERAGE_FLOOR_FILE" ]; then
+      [ -f "$COVERAGE_FLOOR_FILE" ] \
+        || die "the coverage floor path $(safe_text "$COVERAGE_FLOOR_FILE") exists but is not a regular file (directory, dangling symlink or special file). A named floor that cannot be read asserts nothing while appearing to be configured. Point COVERAGE_FLOOR_FILE at the fixture, or set it empty to run without an absolute floor."
+      [ -r "$COVERAGE_FLOOR_FILE" ] \
+        || die "the coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") exists but is not readable. Refusing to continue without the absolute floor it names."
+    fi
+    if [ ! -e "$COVERAGE_FLOOR_FILE" ] && [ ! -L "$COVERAGE_FLOOR_FILE" ]; then
+      # WRONG CWD WITH THE DEFAULT PATH IS A FAULT, NOT AN ABSENCE (T-0811,
+      # review finding F4).
+      #
+      # The default is deliberately cwd-relative -- see the note at its
+      # assignment: both CI callers `cp` this script into $RUNNER_TEMP, so
+      # resolving against `dirname $0` would look in a temp directory holding
+      # one file and turn 5e permanently off on the exact path it guards.
+      # That makes cwd load-bearing, and a run from anywhere else silently
+      # degrades to "no fixture" -- the skip below reads identically to a
+      # legitimate one. Distinguish the two: if the default is in use and cwd
+      # is not a checkout of this repo, the fixture is not absent, it is
+      # UNREACHABLE, and that is a caller error worth failing on rather than
+      # noting. An explicit COVERAGE_FLOOR_FILE is never second-guessed here,
+      # and an empty one already returned above.
+      if [ "$COVERAGE_FLOOR_FILE" = scripts/fixtures/caddy-image-coverage-floor.json ] \
+         && [ ! -f scripts/caddy-image-gate.sh ]; then
+        die "the absolute coverage floor (check 5e) is using its default relative path $(safe_text "$COVERAGE_FLOOR_FILE"), but the current directory ($(safe_text "$PWD")) is not a checkout of this repo, so the fixture is unreachable rather than absent -- and an unreachable default would turn 5e off while every other check still printed OK. Run the gate from the repo root, or pass an absolute COVERAGE_FLOOR_FILE (both CI callers do), or set it empty to run deliberately without an absolute floor."
+      fi
+      # ABSENT is not a fault. The script is run by hand and from worktrees
+      # that predate the fixture, and every check above still ran. Noted
+      # rather than silent, so "5e did not run" is visible in the log and in
+      # the summary instead of being indistinguishable from "5e passed".
+      printf 'NOTE (linux/%s): no committed coverage floor at %s, so the absolute floor (check 5e) did not run; the relative floors above still did.\n' \
+        "$arch" "$(safe_text "$COVERAGE_FLOOR_FILE")"
+      # Wording asserted on by the test harness, which checks that this skip
+      # is VISIBLE rather than silent -- a silent skip reads exactly like a
+      # pass, and that is how a check stays off after someone moves the file.
+    else
+      # PRESENT BUT UNUSABLE IS A HARD STOP, unlike absent.
+      #
+      # The two cases are deliberately asymmetric. "No fixture" is a
+      # configuration this repo supports; "a fixture that cannot be read" is
+      # the fail-open shape this entire function exists to close, and it is
+      # the one an attacker reaches for -- truncate the file, or corrupt one
+      # byte of it, and a skip-on-error check turns itself off while still
+      # printing coverage OK. Validated as a whole document before any field
+      # is trusted.
+      local fx_type fx_target fx_pct fx_names_f fx_count fx_retained fx_floor
+      local fx_new_f fx_valid fx_dupes fx_captured
+      fx_valid="$(jq -r '
+        if (type == "object")
+           and ((.schema // 0) == 1)
+           and (((.type // "") | type) == "string") and ((.type // "") != "")
+           and (((.target // "") | type) == "string") and ((.target // "") != "")
+           and ((.floor_percent // null) | type == "number")
+           and ((.names | type) == "array")
+        then "ok" else "bad" end' "$COVERAGE_FLOOR_FILE" 2>/dev/null || echo bad)"
+      [ "$fx_valid" = ok ] \
+        || die "the committed coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") is not a readable schema-1 floor document (needs object with schema=1, non-empty string type and target, numeric floor_percent, array names). A floor that cannot be parsed asserts nothing while still appearing to be configured, which is the fail-open shape every check in this function exists to close. Fix or remove the file; do not leave it unparseable."
+
+      fx_type="$(jq -r '.type' "$COVERAGE_FLOOR_FILE")"
+      fx_target="$(jq -r '.target' "$COVERAGE_FLOOR_FILE")"
+      fx_pct="$(jq -r '.floor_percent | floor' "$COVERAGE_FLOOR_FILE")"
+      # Reported on the pass line, not just on failure: cumulative renames walk
+      # the intersection toward the floor over several releases, so the run that
+      # finally blocks is the LAST place this should become visible.
+      fx_captured="$(jq -r '.captured // "unknown"' "$COVERAGE_FLOOR_FILE")"
+
+      # Scoping (1), enforced rather than documented. An OS-layer fixture
+      # would block the base-image bump it exists to protect (alpine names
+      # drop to 65% on a legitimate minor bump), and the first time it did,
+      # the check would be switched off for everything.
+      [ "$fx_type" = gobinary ] \
+        || die "the committed coverage floor declares type '$(safe_text "$fx_type")', but this check is deliberately scoped to 'gobinary' only. The OS layer's package names legitimately drop to ~65% on an alpine minor bump because 'apk upgrade --no-cache' is unpinned by design and the base tag moves, so an absolute floor there would block the refresh it exists to protect. Keep the OS layer on the relative floors above."
+
+      [ "$fx_pct" -ge 1 ] && [ "$fx_pct" -le 100 ] \
+        || die "the committed coverage floor declares floor_percent=$(safe_text "$fx_pct"), which is outside 1-100. A floor of 0 asserts nothing and a floor above 100 can never be met; neither is a usable setting."
+
+      fx_names_f="$OUT/.cov-fixture-$arch.names"
+      # Sanitized and sorted through the SAME transformation as
+      # pkg_names_for_target, because the two outputs are fed to `comm`. A
+      # fixture rendered even slightly differently from the scan side would
+      # under-report the intersection and block legitimate releases -- the
+      # noisy-check failure mode that gets a check switched off. Same LC_ALL=C
+      # ordering, for the reason documented on pkg_names_for_type.
+      jq -r '[ .names[]? | select(. != null and . != "")
+               | tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160] ]
+             | unique | .[]' "$COVERAGE_FLOOR_FILE" | LC_ALL=C sort -u > "$fx_names_f" \
+        || die "could not write the coverage-floor name list to $(safe_text "$OUT") while running check 5e on linux/$arch. A floor that cannot be computed must not be reported as satisfied."
+      [ -r "$fx_names_f" ] \
+        || die "the coverage-floor name list for linux/$arch was not created in $(safe_text "$OUT"); check 5e could not be computed and must not be reported as satisfied."
+      fx_count=$(wc -l < "$fx_names_f")
+      fx_count=${fx_count//[[:space:]]/}
+
+      if [ "$fx_count" -eq 0 ]; then
+        # An EMPTY names array parses fine and asserts nothing, so it is the
+        # quietest possible way to disable this check while leaving a
+        # plausible-looking fixture committed. A caller that means to turn 5e
+        # off sets COVERAGE_FLOOR_FILE= explicitly, which is visible.
+        rm -f "$fx_names_f"
+        die "the committed coverage floor $(safe_text "$COVERAGE_FLOOR_FILE") lists zero package names, so it imposes no floor at all while still being present and parseable. To run without an absolute floor, unset the file or pass COVERAGE_FLOOR_FILE= explicitly; do not commit an empty one."
+      fi
+
+      # Per TARGET (see above), so a decoy Go binary at ANOTHER path cannot pay
+      # for the real one's coverage.
+      #
+      # ONE RESULT, NOT EVERY RESULT SHARING THE TARGET STRING.
+      # pkg_names_for_target aggregates `.Results[] | select(.Target == $tg)`,
+      # and .Target is attacker-chosen metadata rather than an identity: a scan
+      # may contain TWO gobinary results both claiming `usr/bin/caddy`. Probing
+      # this check found that payable -- gut the real result to its 2
+      # findings-bearing modules, append a second result with the same .Target
+      # carrying all 237, and the aggregate reads 237/237 while every finding
+      # vanishes. (That shape also defeats checks 5 and 7 as they stand, which
+      # is tracked separately; what matters here is that 5e, the one floor the
+      # rebuild cannot fabricate its way past, must not INHERIT it.)
+      #
+      # So require the target to be reported ONCE and compare that single
+      # result. A duplicate .Target is not a state any real Trivy scan of this
+      # image produces -- measured, both arches report exactly one
+      # `usr/bin/caddy` -- so refusing it costs nothing legitimate and removes
+      # the aggregation entirely rather than trusting a sum.
+      fx_dupes="$(jq -r --arg tg "$fx_target" \
+        '[ .Results[]? | select((.Target // "") == $tg) ] | length' "$new" 2>/dev/null || echo 0)"
+      case "$fx_dupes" in
+        ''|*[!0-9]*) fx_dupes=0 ;;
+      esac
+      if [ "$fx_dupes" -gt 1 ]; then
+        rm -f "$fx_names_f"
+        die "the rebuild's scan of linux/$arch reports $fx_dupes separate results for the target '$(safe_text "$fx_target")'. A real scan of this image reports exactly one, and .Target is metadata the submitted image controls, so two results sharing it would let a gutted binary's coverage be paid for by a second list filed under the same name. Refusing to sum them."
+      fi
+      fx_new_f="$OUT/.cov-fixnew-$arch.names"
+      pkg_names_for_target "$new" "$fx_target" > "$fx_new_f" \
+        || die "could not write the coverage-floor scratch list to $(safe_text "$OUT") while running check 5e on linux/$arch. A floor that cannot be computed must not be reported as satisfied."
+      # An UNWRITABLE $OUT is a hard stop, not a zero intersection and not a
+      # skip. Probing found this fail-open: with $OUT read-only the redirection
+      # above fails, `comm` reads nothing, and -- because the redirect's failure
+      # was unchecked and `wc -l` on an absent file still yields a number -- the
+      # count came out in a way that cleared the floor and printed coverage OK.
+      # Every other scratch write in this function sits inside a `die`-guarded
+      # path for the same reason.
+      [ -r "$fx_new_f" ] \
+        || die "the coverage-floor scratch list for linux/$arch was not created in $(safe_text "$OUT"); check 5e could not be computed and must not be reported as satisfied."
+      fx_retained=$(LC_ALL=C comm -12 "$fx_names_f" "$fx_new_f" | wc -l)
+      fx_retained=${fx_retained//[[:space:]]/}
+      # Rounded UP, for the reason check 4's floor is: rounded down, a small
+      # fixture yields floor 0 and "the rebuild retains none of them" would
+      # pass.
+      fx_floor=$(( (fx_count * fx_pct + 99) / 100 ))
+      rm -f "$fx_names_f" "$fx_new_f"
+
+      if [ "$fx_retained" -lt "$fx_floor" ]; then
+        die "the rebuild's '$(safe_text "$fx_target")' scan of linux/$arch retains only $fx_retained of the $fx_count Go module name(s) recorded at the last tagged release (floor $fx_floor = $fx_pct%), as pinned in $(safe_text "$COVERAGE_FLOOR_FILE"). Unlike the floors above, this one is NOT relative to the published baseline, so a baseline that has itself lost coverage cannot lower it. Either this rebuild sees far less of the shipped binary than the last release did, or the baseline it is being compared against has already degraded. If the drop is deliberate -- a plugin removed with its dependency subtree -- refresh the fixture in this release's PR so the change is reviewed as a diff."
+      fi
+      printf 'absolute floor (linux/%s): %s retains %s/%s pinned Go module name(s) (floor %s = %s%%, margin %s, fixture captured %s)\n' \
+        "$arch" "$(safe_text "$fx_target")" "$fx_retained" "$fx_count" "$fx_floor" "$fx_pct" \
+        "$(( fx_retained - fx_floor ))" "$(safe_text "$fx_captured")"
+    fi
+  fi
+
+  # 6. The scanned binary is the SHIPPED binary (T-0638).
+  #
+  # Checks 3-5 are per TYPE, and `gobinary` is a type that can legitimately
+  # appear more than once: Trivy emits one result per Go binary it finds, keyed
+  # by its path in .Target. So "a gobinary result exists" is not "the binary
+  # this image runs was scanned". A rebuild that leaves /usr/bin/caddy
+  # unreadable to Trivy -- stripped build info, moved, replaced after the
+  # scanner's walk -- but ships any OTHER Go binary at some other path still
+  # has a `gobinary` type present, and checks 3-5 then measure THAT binary's
+  # packages against the baseline's caddy packages.
+  #
+  # Asserted against the baseline's own gobinary targets rather than a
+  # hardcoded `usr/bin/caddy`, for the reason the whole function is relative:
+  # a hardcoded path would have to be edited by the release being gated. The
+  # baseline is a real scan of the image the fleet runs, and on the real
+  # :stable that path is exactly `usr/bin/caddy`, which is where
+  # Dockerfile.caddy's final `COPY --from=builder` puts it.
+  #
+  # Scoped to gobinary deliberately. OS results carry the image REFERENCE in
+  # .Target ("repo:tag (alpine 3.24.4)"), which differs between the two sides
+  # by definition, so comparing targets for every type would report drift on
+  # every run. Language results carry a PATH, which is the thing worth
+  # asserting on.
+  old_gotargets="$(jq -r '[.Results[]? | select(.Type == "gobinary") | .Target
+                           | select(. != null and . != "")] | unique | .[]' "$old")"
+
+  # "No Go binaries in the baseline" and "Go binaries whose paths were not
+  # recorded" are different states, and only the first is a safe skip.
+  #
+  # The jq above drops null and empty Targets, so a baseline with gobinary
+  # RESULTS but no usable .Target on any of them yields an empty list, which a
+  # bare `-n` test cannot distinguish from a baseline that simply has no Go
+  # binary at all. Skipping on that is the self-perpetuating shape already
+  # closed for check 4's zero-package baseline above: checks 3-5 still pass
+  # because the gobinary TYPE is present on both sides, so a rebuild that
+  # scans an entirely DIFFERENT binary goes unnoticed, and once such an image
+  # is published it IS the baseline and check 6 is disarmed from then on.
+  #
+  # Trivy 0.76.1 always populates .Target for a gobinary result, so this is
+  # defence in depth rather than a live bypass -- which is exactly what the
+  # old_pkgs -eq 0 case was when it was judged worth closing rather than
+  # tracking. Counted BEFORE the filter, so the two states are separable.
+  old_gocount="$(jq -r '[.Results[]? | select(.Type == "gobinary")] | length' "$old")"
+  if [ "$old_gocount" -gt 0 ] && [ -z "$old_gotargets" ]; then
+    die "the published image's scan of linux/$arch has $old_gocount gobinary result(s) but no usable .Target on any of them: the set of Go binaries the baseline covered cannot be established, so a rebuild that scans a DIFFERENT binary than the one this image runs could not be detected. Re-scan the baseline."
+  fi
+
+  if [ -n "$old_gotargets" ]; then
+    new_gotargets="$(jq -r '[.Results[]? | select(.Type == "gobinary") | .Target
+                             | select(. != null and . != "")] | unique | .[]' "$new")"
+    lost_go="$(LC_ALL=C comm -13 <(printf '%s\n' "$new_gotargets" | LC_ALL=C sort -u) \
+                                 <(printf '%s\n' "$old_gotargets" | LC_ALL=C sort -u))"
+    if [ -n "$lost_go" ]; then
+      local lost_1l old_go_1l new_go_1l
+      lost_1l="$(safe_text "$(printf '%s' "$lost_go"       | tr '\n' ' ')")";   lost_1l="${lost_1l% }"
+      old_go_1l="$(safe_text "$(printf '%s' "$old_gotargets" | tr '\n' ' ')")"; old_go_1l="${old_go_1l% }"
+      new_go_1l="$(safe_text "$(printf '%s' "$new_gotargets" | tr '\n' ' ')")"; new_go_1l="${new_go_1l% }"
+      die "the rebuild's scan of linux/$arch no longer covers the Go binary at: $lost_1l -- the gobinary TYPE is still present, so the per-type checks above compared a DIFFERENT binary against the published one's. The binary this image actually runs is therefore unobserved, and its findings would cancel out of the comparison. (published: $old_go_1l / rebuild: $new_go_1l)"
+    fi
+
+    # 7. PER-BINARY identity floor.
+    #
+    # Check 6 establishes the baseline's Go binaries are still SCANNED. It
+    # does not establish any of them was scanned usefully, because checks 4
+    # and 5 pool every gobinary result of the type together. A decoy binary
+    # therefore pays for the real one's coverage: gut usr/bin/caddy to one
+    # package, add usr/bin/helper carrying the baseline's 237 real module
+    # names, and the type-level count (238) and type-level intersection
+    # (237/237) both clear while the binary the image actually runs is
+    # entirely unobserved. Verified against the real :stable scan -- every
+    # earlier check passed and all 7 findings disappeared.
+    #
+    # So apply the same 50% identity floor AGAIN, per retained target. Same
+    # threshold and same intersection semantics as check 5: this narrows
+    # WHERE the floor is applied, not how strict it is, so it cannot block a
+    # release check 5 would have allowed on a single-binary image. On today's
+    # image the two are identical, because there is exactly one gobinary
+    # result.
+    # 7a. ONE RESULT PER gobinary TARGET, ON BOTH SIDES (T-0811).
+    #
+    # Checks 5, 7 and 5e all compare package names selected by `.Target`, and
+    # pkg_names_for_target aggregates EVERY result matching the string. But
+    # .Target is not an identity: for a gobinary result Trivy copies it from
+    # the path of a Go binary found in a submitter-controlled image, so two
+    # results can claim the SAME path. The decoy then does not need another
+    # path at all -- it is filed under the real binary's own -- and check 7,
+    # which exists precisely so one binary's coverage cannot be paid with
+    # another's, sums it into the same number.
+    #
+    # Reproduced end to end against the real :stable scan: gut usr/bin/caddy
+    # to its findings-bearing modules at their baseline versions, append a
+    # second gobinary result also at usr/bin/caddy carrying all 237 names, and
+    # checks 4, 5, 5b, 5c, 5d, 6 and 7 all pass -- type count 241, type
+    # intersection 237/237, per-target intersection also 237/237 because the
+    # two are pooled -- while both findings vanish and gate 1 reports
+    # `improved`.
+    #
+    # Asserted ONCE here rather than patched into each consumer, so a future
+    # check keyed on .Target inherits the guarantee instead of the gap. 5e
+    # carries its own narrower version of this for the fixture's target, which
+    # is deliberate redundancy: 5e must hold even if this loop is skipped.
+    #
+    # On BOTH sides. A duplicate in the BASELINE inflates the denominator the
+    # rebuild must match, which is a different failure (a release blocked by a
+    # bad baseline) but has the same cause and should be just as loud.
+    #
+    # Costs nothing legitimate: measured on the live image, both linux/amd64
+    # and linux/arm64 report exactly one `usr/bin/caddy` result, and Trivy
+    # 0.76.1 deduplicates hardlinks to one result per distinct path -- the
+    # security review of 5e could not produce a duplicate from a hostile
+    # Dockerfile at all, only by crafting the JSON. So this closes a channel
+    # that needs a compromised or buggy scanner, and refuses a scan shape the
+    # real one does not produce.
+    local dup_side dup_file dup_list
+    for dup_side in new old; do
+      if [ "$dup_side" = new ]; then dup_file="$new"; else dup_file="$old"; fi
+      dup_list="$(jq -r '
+        [ .Results[]? | select(.Type == "gobinary") | (.Target // "") ]
+        | group_by(.) | map(select(length > 1) | .[0])
+        | map(tostring | gsub("[^A-Za-z0-9._:/@+-]"; "?") | .[0:160])
+        | unique | join(" ")' "$dup_file" 2>/dev/null || echo PARSE_FAILED)"
+      [ "$dup_list" = PARSE_FAILED ] \
+        && die "could not enumerate the ${dup_side} scan's gobinary targets on linux/$arch to check for duplicates; refusing to apply per-binary floors to a result set that cannot be read."
+      if [ -n "$dup_list" ]; then
+        die "the ${dup_side} scan of linux/$arch reports more than one 'gobinary' result for the same target path: $(safe_text "$dup_list"). Every per-binary floor selects packages by .Target, so duplicate results under one path are POOLED -- which lets a gutted binary's coverage be paid for by a second package list filed under its own name, defeating this check and check 5. A real scan of this image reports exactly one result per path. Refusing to sum them."
+      fi
+    done
+
+    local gt gt_old_f gt_new_f gt_old_n gt_ret gt_floor
+    while IFS= read -r gt; do
+      [ -n "$gt" ] || continue
+      gt_old_f="$OUT/.cov-tgt-old-$arch-$(printf '%s' "$gt" | tr -c 'A-Za-z0-9._-' '_').names"
+      gt_new_f="$OUT/.cov-tgt-new-$arch-$(printf '%s' "$gt" | tr -c 'A-Za-z0-9._-' '_').names"
+      pkg_names_for_target "$old" "$gt" > "$gt_old_f"
+      pkg_names_for_target "$new" "$gt" > "$gt_new_f"
+      gt_old_n=$(wc -l < "$gt_old_f"); gt_old_n=${gt_old_n//[[:space:]]/}
+      if [ "$gt_old_n" -eq 0 ]; then
+        rm -f "$gt_old_f" "$gt_new_f"
+        continue
+      fi
+      gt_ret=$(LC_ALL=C comm -12 "$gt_old_f" "$gt_new_f" | wc -l); gt_ret=${gt_ret//[[:space:]]/}
+      gt_floor=$(( (gt_old_n + 1) / 2 ))
+      rm -f "$gt_old_f" "$gt_new_f"
+      if [ "$gt_ret" -lt "$gt_floor" ]; then
+        die "the rebuild's scan of the Go binary at '$(safe_text "$gt")' on linux/$arch retains only $gt_ret of the published image's $gt_old_n package name(s) for THAT BINARY (floor $gt_floor): the binary is still a scan target but its own contents were not retained, so its findings would cancel out of the comparison even though the type-level totals look healthy. Coverage of one binary cannot be paid for with another's."
+      fi
+    done <<EOF
+$old_gotargets
+EOF
+  fi
+
   printf 'scan coverage OK (linux/%s): os=%s, targets=%s\n' \
     "$arch" "$(safe_text "$os_family")" "$(safe_text "$(printf '%s' "$new_types" | tr '\n' ' ')")"
+}
+
+# The baseline must not be NEWER than the rebuild (T-0863).
+# ---------------------------------------------------------
+# Nothing else in this script has any notion of the two images' AGES, so
+# comparing a rebuild against a newer baseline -- which is caller error, not a
+# defect in the image -- presents as an ordinary gate 1 block. Measured on
+# `dd8b020` with the gate otherwise unmodified, `v2.68.12` vs `:stable` on
+# arm64 under `block`: rc=1, verdict=blocked, 15 added findings, 3 of them
+# go-jose. That is indistinguishable from "the new coverage floors broke a
+# legitimate release", and it cost one session a full control run against the
+# gate's own unmodified code to rule out. Gate 1 is set arithmetic on two
+# scans: run it backwards and every finding the baseline has FIXED since is
+# reported as newly ADDED, which is arithmetically correct and completely
+# misleading.
+#
+# So say it instead, before either scan is compared. This is a PRECONDITION in
+# the same sense as scan coverage -- it produces no verdict, it exits 2 ("the
+# gate could not run"), which all three call sites already treat as blocking.
+#
+# Three properties, each with a case in scripts/test-caddy-image-gate-age.sh:
+#
+#   1. AN UNREADABLE TIMESTAMP IS NOT A PASS. An absent, empty or unparseable
+#      `.Created` on either side exits 2. Skipping it silently is §3b's
+#      fail-open shape -- a skipped check and a passed check must not look the
+#      same -- and the comparison is cheap enough that there is no case for
+#      degrading instead of stopping.
+#
+#   2. EQUAL TIMESTAMPS PASS. `:stable` vs `:stable` is a legitimate degenerate
+#      call and is the free control this repo uses to prove the gate
+#      discriminates, so the test is STRICTLY newer, not newer-or-equal.
+#
+#   3. THE MESSAGE NAMES THE CAUSE, not the symptom, with both timestamps
+#      echoed so the reader does not re-derive them.
+#
+# WHY THE FORM IS VALIDATED BEFORE `date` SEES IT. `date -d` accepts relative
+# expressions -- `now`, `yesterday`, `@0` -- and `.Created` is part of the
+# image CONFIG, i.e. it comes out of the artefact under test on the rebuild
+# side. Handing such a string to `date` would make the check report the
+# current time for an image that declares a word, so only an absolute RFC3339
+# instant is accepted and anything else takes property 1's exit 2. The zero
+# time (0001-01-01, what a timestamp-rewriting reproducible build emits) is
+# refused by name rather than compared, because comparing it would block every
+# legitimate release with a message blaming the baseline. BOTH zero forms are
+# refused: buildkit with SOURCE_DATE_EPOCH=0 emits `1970-01-01T00:00:00Z`
+# (measured on buildx v0.38.1), and `0001-01-01T00:00:00Z` is Go's zero Time,
+# which an image config can declare directly. A reproducible build pinned to a
+# NON-zero epoch (a commit date, the other common setting) cannot be detected
+# by name at all -- it produces a plausible older timestamp -- so the
+# backwards-comparison message names that possibility rather than pretending
+# to rule it out.
+assert_baseline_not_newer() {
+  local new_created="$1" base_created="$2" arch="$3"
+  local new_epoch base_epoch
+
+  # RFC3339, as both docker spellings produce: a `Z` or a numeric offset, with
+  # or without fractional seconds. Matched against the WHOLE STRING -- an
+  # unanchored match finds the instant INSIDE a longer hostile string and
+  # `date` then reads the whole string.
+  #
+  # MATCHED WITH bash's `=~` AND NOT WITH `grep -Eq`, which is a real
+  # difference and not a style preference: grep anchors `^`/`$` PER LINE, so a
+  # two-line value whose first line is a valid instant and whose second is a
+  # GNU relative item ("+ 10 years") satisfied `grep` and was then shifted by
+  # `date` -- found in review, reproduced at rc=0 on a rebuild 12 days OLDER
+  # than its baseline. bash's ERE has no multiline mode, so `$` there means
+  # end of string. (Not reachable through a real image on docker 29.9.3, which
+  # refuses to load a config whose `created` is not parseable RFC3339 and
+  # re-marshals the value on inspect -- but the check must hold on its own.)
+  local rfc3339='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$'
+
+  local side ts
+  for side in rebuild baseline; do
+    if [ "$side" = rebuild ]; then ts="$new_created"; else ts="$base_created"; fi
+
+    [ -n "$ts" ] \
+      || die "the $side image for linux/$arch reports no creation timestamp, so the gate cannot tell which of the two images is newer. A gate 1 comparison run backwards reports every finding the baseline has since FIXED as newly ADDED, so this is refused rather than skipped: an unreadable precondition is not a passed one. Re-pull or rebuild the image, or check that \`docker image inspect --format '{{.Created}}'\` answers for it."
+
+    [[ "$ts" =~ $rfc3339 ]] \
+      || die "the $side image for linux/$arch reports a creation timestamp the gate will not read: '$(safe_text "$ts")'. Only an absolute RFC3339 instant is accepted, because \`date -d\` also resolves relative words like 'now' and this value comes out of the image's own config. Refused rather than skipped, for the same reason as an absent timestamp."
+
+    case "$ts" in
+      0001-01-01T*|1970-01-01T00:00:00Z|1970-01-01T00:00:00.*)
+        die "the $side image for linux/$arch declares a ZERO creation timestamp ($(safe_text "$ts")), which is what a build that rewrites timestamps for reproducibility emits -- buildkit with SOURCE_DATE_EPOCH=0 produces 1970-01-01T00:00:00Z, and 0001-01-01T00:00:00Z is Go's zero Time. The gate cannot order the two images by age on that, and comparing it would block this release while blaming the other image. Either keep real build timestamps on the gated image (the workflows build with provenance disabled and no SOURCE_DATE_EPOCH, which does), or this check needs a deliberate exemption -- do not make it skip silently." ;;
+    esac
+  done
+
+  # GNU coreutils `date` ONLY. `date -u -d <rfc3339> +%s` is a GNU extension:
+  # busybox answers `invalid date`, and on BSD/macOS `-d` is the DST flag
+  # entirely. Without this probe both conversions below come back empty and
+  # the guard after them fires -- which fails CLOSED, so it is not a hole, but
+  # it blocks a legitimate publish with a message blaming the two images for a
+  # defect in the toolchain. Found in review; reproduced with busybox date on
+  # a valid release pair. Probed here rather than beside the script's other
+  # dependency checks so the suite covering this function covers it too.
+  date -u -d '2026-01-01T00:00:00Z' +%s >/dev/null 2>&1 \
+    || die "the age preflight for linux/$arch needs GNU coreutils \`date\` (it converts the images' RFC3339 creation timestamps with \`date -u -d ... +%s\`, which busybox and BSD date do not support). This is a defect in the environment running the gate, NOT in either image; install coreutils or run the gate where GNU date is on PATH."
+
+  new_epoch="$(date -u -d "$new_created" +%s 2>/dev/null || true)"
+  base_epoch="$(date -u -d "$base_created" +%s 2>/dev/null || true)"
+
+  # Form-valid but still unparseable (a 13th month, a 32nd day) lands here.
+  # Guarded explicitly because `[ "" -gt "" ]` is a shell ERROR, and an error
+  # inside a `$(...)` elsewhere is exactly how a check turns into a no-op.
+  case "$new_epoch:$base_epoch" in
+    *[!0-9:]*|:*|*:)
+      die "the gate could not convert the creation timestamps for linux/$arch to a comparable non-negative instant (rebuild: '$(safe_text "$new_created")', published: '$(safe_text "$base_created")'), so it cannot tell which image is newer. A form-valid date that is not a real one (a 13th month) or predates 1970 lands here. Refused rather than skipped." ;;
+  esac
+
+  # THE ZERO INSTANT HAS MORE THAN ONE LEGAL SPELLING, and the by-name case
+  # above only knows two of them. `1970-01-01T00:00:00+00:00` is the SAME
+  # instant, is legal RFC3339, satisfies the form check, and converts cleanly
+  # to 0 -- so it fell past the by-name guard and died on the comparison below
+  # blaming the PUBLISHED image for being newer, which is the exact mis-blame
+  # the by-name case was added to prevent, for the exact class of input it was
+  # about. Found in review. Tested NUMERICALLY here, after conversion, so
+  # every spelling of the zero instant is covered at once rather than by an
+  # ever-growing pattern: no real image can be built at or before the epoch,
+  # so a non-positive value is a rewritten timestamp whichever way it is
+  # written. (A date that genuinely predates 1970 converts to a negative
+  # number and is caught one guard above, because `-` is not in [0-9:].)
+  local zside='' zts=''
+  if [ "$new_epoch" -le 0 ]; then zside=rebuild; zts="$new_created"
+  elif [ "$base_epoch" -le 0 ]; then zside=published; zts="$base_created"
+  fi
+  [ -z "$zside" ] \
+    || die "the $zside image for linux/$arch declares a ZERO creation timestamp ($(safe_text "$zts")), which is what a build that rewrites timestamps for reproducibility emits -- buildkit with SOURCE_DATE_EPOCH=0 produces the epoch, and this is the same instant however it is spelled (\`...00:00:00Z\`, \`...00:00:00.000Z\`, \`...00:00:00+00:00\`). The gate cannot order the two images by age on that, and comparing it would block this release while blaming the other image. Either keep real build timestamps on the gated image (the workflows build with provenance disabled and no SOURCE_DATE_EPOCH, which does), or this check needs a deliberate exemption -- do not make it skip silently."
+
+  [ "$base_epoch" -le "$new_epoch" ] \
+    || die "the PUBLISHED image is NEWER than the image being gated for linux/$arch (published: $(safe_text "$base_created"), rebuild: $(safe_text "$new_created")) -- the comparison is the wrong way round. This is caller error, not a defect in either image: gate 1 is set arithmetic over two scans, so run backwards it reports every finding the published image has FIXED since as newly ADDED by this build, and the run blocks for a reason that has nothing to do with the image under test. Gate the newer image against the older one, or refresh the baseline you are comparing to. One other cause reaches this message and is worth ruling out first: if the gated build rewrites its creation timestamp for reproducibility (SOURCE_DATE_EPOCH set to a commit date, say), that timestamp is not its build time, the two images cannot be ordered by age at all, and this check would need a deliberate exemption rather than a workaround."
+
+  printf 'age OK (linux/%s): published %s <= rebuild %s\n' \
+    "$arch" "$(safe_text "$base_created")" "$(safe_text "$new_created")"
 }
 
 # `caddy list-modules --versions` from inside the image. The image is
@@ -1135,10 +2830,81 @@ for arch in $ARCHES; do
   base_ref="$(resolve_ref "$BASELINE"  "$arch" baseline)"
   new_ref="$(resolve_ref "$NEW_IMAGE" "$arch" rebuild)"
 
-  trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
-    --format json --output "$OUT/new-$arch.json" "$new_ref"
-  trivy image --skip-db-update --scanners vuln --severity "$SEVERITY" \
-    --format json --output "$OUT/old-$arch.json" "$base_ref"
+  # Before either scan: the two images must be the right way round in time.
+  # Placed HERE, immediately after resolve_ref, because both images are local
+  # at the gated arch by this point -- so this needs no extra pull and no
+  # extra scan -- and because a backwards comparison should be named before
+  # two Trivy runs and a coverage assertion have produced a verdict-shaped
+  # answer to the wrong question. Reads the resolved per-arch refs, not the
+  # mutable tags, for the same reason gate 3 does.
+  assert_baseline_not_newer \
+    "$(docker image inspect --format '{{.Created}}' "$new_ref"  2>/dev/null || true)" \
+    "$(docker image inspect --format '{{.Created}}' "$base_ref" 2>/dev/null || true)" \
+    "$arch"
+
+  # THREE SCANNERS, and the second flag is not optional.
+  #
+  # `--scanners misconfig` alone finds NOTHING in an image: measured on the
+  # real :stable, it logs `Detected config files num=0` and emits no config
+  # result, because in image mode the misconfig scanner only reads config
+  # files found in the filesystem -- it does not look at the image's own
+  # build configuration. `--image-config-scanners misconfig,secret` is what
+  # turns the image CONFIG into a scan target, and with it the same image
+  # yields a `Class=config Type=dockerfile` result carrying DS-0002 ("Image
+  # user should not be 'root'") and DS-0026 ("No HEALTHCHECK defined").
+  #
+  # So the pair is what the card asked for; `--scanners` on its own would
+  # have shipped a gate that reports misconfig coverage it does not have --
+  # the precise fail-open shape the coverage precondition exists to prevent.
+  #
+  # Both sides get identical flags. They must: every gate here is set
+  # arithmetic between the two scans, so a flag present on one side and not
+  # the other manufactures a whole class of phantom added or removed findings.
+  TRIVY_SCANNERS='vuln,secret,misconfig'
+  TRIVY_IMAGE_CONFIG_SCANNERS='misconfig,secret'
+
+  # The ignore/config files are pinned to $TRIVY_NO_IGNOREFILE and
+  # $TRIVY_NO_CONFIG, created once near the top of this script. See the long
+  # note there before touching them: unpinned, Trivy reads `.trivyignore` and
+  # `trivy.yaml` from cwd, which on both call sites is the gated checkout, and
+  # a file committed at its root suppresses findings from BOTH scans at once
+  # (review finding B1 -- measured, all three classes, verdict `unchanged`).
+  # A NON-ZERO TRIVY EXIT IS A TOOLING FAILURE, NOT A VERDICT, so both calls
+  # `die` (exit 2, "the gate could not run") rather than letting `set -e`
+  # propagate Trivy's own status. Measured on 0.76.1: `--exit-code` is NOT
+  # passed by this script and defaults to 0, so a scan that FINDS things
+  # still exits 0 -- the only way these calls exit non-zero is a failure to
+  # scan, and that comes back as **1**, which is this gate's "blocked"
+  # status. Unguarded, a missing image or a bad flag therefore reached the
+  # release path as "the gate reported findings, go read them" over a run
+  # that compared nothing, defeating the exit-1-vs-exit-2 separation
+  # release-docker.yml is written around. Found in review; the checks-bundle
+  # prefetch above makes it easier to reach, since a registry hiccup now has
+  # a second place to happen.
+  trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
+    --ignorefile "$TRIVY_NO_IGNOREFILE" --config "$TRIVY_NO_CONFIG" --secret-config "" \
+    --scanners "$TRIVY_SCANNERS" \
+    --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
+    --severity "$SEVERITY" \
+    --format json --output "$OUT/new-$arch.json" "$new_ref" \
+    || die "trivy failed to scan the REBUILD image for linux/$arch ($(safe_text "$new_ref")): the scan did not complete, so there is nothing to compare. This is a failure of the gate or its environment, not a finding about the image -- \`--exit-code\` is not set, so a scan that finds vulnerabilities still exits 0 and only a failure to scan lands here. Exits 2 so it cannot be read as a 'blocked' verdict."
+  trivy image --skip-db-update "${CHECKS_PREFETCH_ARGS[@]}" \
+    --ignorefile "$TRIVY_NO_IGNOREFILE" --config "$TRIVY_NO_CONFIG" --secret-config "" \
+    --scanners "$TRIVY_SCANNERS" \
+    --image-config-scanners "$TRIVY_IMAGE_CONFIG_SCANNERS" \
+    --severity "$SEVERITY" \
+    --format json --output "$OUT/old-$arch.json" "$base_ref" \
+    || die "trivy failed to scan the PUBLISHED baseline image for linux/$arch ($(safe_text "$base_ref")): the scan did not complete, so there is nothing to compare against. This is a failure of the gate or its environment, not a finding about either image; see the rebuild-side message for why a non-zero exit here cannot mean 'found something'. Exits 2 so it cannot be read as a 'blocked' verdict."
+
+  # Trivy writes NO output file at all when a scan produces zero results
+  # (verified on 0.76.1: exit 0, no file). Every check below reads these
+  # paths with jq, which would report `Could not open file` and -- under the
+  # `|| true` idioms further down -- could degrade into an empty findings
+  # list, i.e. a clean verdict over a scan that did not land. Assert the
+  # files exist before anything reads them.
+  for f in "$OUT/new-$arch.json" "$OUT/old-$arch.json"; do
+    [ -s "$f" ] || die "trivy produced no scan output at $f for linux/$arch (exit status was 0, but the file is missing or empty): the scan did not land, so there is nothing to compare and an empty findings list must not be read as a clean image."
+  done
 
   # Before ANY comparison: prove the new scan actually looked at the image.
   # Gate 1 cannot tell an image with no vulnerabilities from an image Trivy
@@ -1613,6 +3379,8 @@ fi
   if [ "$added_total" -gt 0 ]; then
     echo "**Gate 1 FAILED — the rebuild introduces findings the published image does not have:**"
     echo
+    echo "Rows are prefixed by class: \`vuln:\` a vulnerability (id + package), \`secret:\` a credential detected in a layer (rule + file), \`misconfig:\` a failing image-configuration check (id + namespace)."
+    echo
     echo '```'
     for arch in $ARCHES; do
       while IFS=$'\t' read -r id pkg; do
@@ -1625,7 +3393,7 @@ fi
     if [ "$DRIFT_POLICY" = block ]; then
       echo "A refresh must only ever remove findings. Investigate before publishing."
     else
-      echo "A release may change the module set, but it must not introduce a vulnerability the published image does not already have. The immutable \`:vX.Y.Z\` tag exists; \`:stable\` and \`:latest\` were NOT moved. Investigate before moving them."
+      echo "A release may change the module set, but it must not introduce a vulnerability, an embedded secret or a failing image-configuration check that the published image does not already have. The immutable \`:vX.Y.Z\` tag exists; \`:stable\` and \`:latest\` were NOT moved. Investigate before moving them."
     fi
     echo
   fi
@@ -1802,6 +3570,13 @@ fi
     # a blanket "nothing changed" printed over an unmentioned change is a
     # reassurance the gate has not earned, and under `report` this summary is
     # the whole basis for approving the release.
+    #
+    # "finding" here spans all THREE scanners -- vulnerabilities, embedded
+    # secrets and failing image-configuration checks (T-0642). Saying "every
+    # vulnerability" understates what was actually compared, and on a gate
+    # whose summary is the reviewer's whole basis for approval, understating
+    # the scope of the comparison is the same class of unearned reassurance
+    # as the blanket wording above.
     quiet=""
     [ "$moddrift" -eq 0 ] && quiet="$quiet the module set,"
     # Named separately from "the image configuration" because it is checked
@@ -1824,7 +3599,36 @@ fi
     quiet="${quiet# }"; quiet="${quiet%,}"
     noisy="${noisy# }"; noisy="${noisy%,}"
 
-    printf '%s' "No new findings: every vulnerability in the rebuilt image is already present in the published image, against the same package."
+    # WHAT THIS SENTENCE MAY CLAIM, AND WHY IT IS NOT ONE FIXED STRING.
+    #
+    # The first wording after the secret and misconfig scanners were added
+    # asserted all three classes unconditionally -- "every vulnerability,
+    # embedded secret and failing image-configuration check". An independent
+    # review pointed out that this is the same unearned reassurance the
+    # quiet/noisy assembly above exists to avoid, one class down: the
+    # misconfig claim is safe because coverage check 3b now requires a
+    # `config` result on both scans outright, but NOTHING establishes that
+    # the SECRET scanner ran. It emits a result only when it finds something,
+    # so a clean scan and a disabled scanner are the same document.
+    #
+    # So the secret clause is printed only when a secret result actually
+    # appeared on one of the two scans, which is the only positive evidence
+    # available; otherwise the sentence says what was compared and the limit
+    # is stated rather than papered over. Read from the scan JSON the gates
+    # already used -- no extra scan, and it cannot describe a different run.
+    secret_seen=no
+    for a in $ARCHES; do
+      for f in "$OUT/new-$a.json" "$OUT/old-$a.json"; do
+        [ -s "$f" ] || continue
+        if scan_classes "$f" | grep -qx secret; then secret_seen=yes; fi
+      done
+    done
+
+    if [ "$secret_seen" = yes ]; then
+      printf '%s' "No new findings: every vulnerability, embedded secret and failing image-configuration check in the rebuilt image is already present in the published image, against the same package, file or rule."
+    else
+      printf '%s' "No new findings: every vulnerability and failing image-configuration check in the rebuilt image is already present in the published image, against the same package or rule. Neither scan reported an embedded secret — and because the secret scanner emits nothing at all when it finds nothing, that is **not** the same as having established that it ran; see below."
+    fi
     [ -n "$quiet" ] && printf ' Unchanged: %s.' "$quiet"
     [ -n "$noisy" ] && printf ' **Changed and diffed above, needs reading: %s.**' "$noisy"
     if [ "$FS_DELTA" != on ]; then
@@ -1880,6 +3684,8 @@ fi
     echo "  - For the \`--with\` plugin pins, the weekly pin watcher (\`check-pinned-modules.sh\`) asks that endpoint — read it, not this gate, for \"are there known advisories\"."
     echo "  - For CaddyUI's own \`go.mod\`, **nothing currently asks it.** Dependabot covers \`go.mod\` but keys on GitHub's *global* advisory index, which omits CVE-less records the same way OSV does. See \`SECURITY.md\` → \"How \`go.mod\` is watched for advisories\"."
     echo "- **This gate is a difference, not an audit.** A finding present on both images cancels out by construction, because a zero-findings standard could never publish anything. \`$verdict\` means *no worse than the image the fleet already runs* — which is the question it asks, and the only one it answers."
+    echo "  - That applies to the \`secret\` and \`misconfig\` scanners too, and they currently cancel something real: the published image **fails** \`DS-0002\` (\"Image user should not be 'root'\") and \`DS-0026\` (\"No HEALTHCHECK defined\"). Both sit on both sides, so neither blocks — a standing finding, not a clean bill. Fixing them is separate work."
+    echo "- **A quiet \`secret\` scanner and a clean one produce the same output, and this gate cannot tell them apart.** Trivy emits a \`secret\` result only when it finds a credential, so there is no positive signal for \"it ran and found nothing\" — unlike the misconfig scanner, whose \`config\` result is always present and is now required outright by the coverage precondition (check 3b). What stands in for it is that both scans are issued from the same two variables a few lines apart in this script, so an asymmetric edit is not expressible; a \`trivy.yaml\` in the working directory or a change to Trivy's defaults would turn it off for both scans at once and nothing here would notice. Read \"no embedded secret\" as \"neither scan reported one\"."
     echo
     echo "</details>"
     echo

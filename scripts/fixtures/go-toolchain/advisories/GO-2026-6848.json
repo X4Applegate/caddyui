@@ -1,0 +1,34 @@
+{
+  "id": "GO-2026-6848",
+  "summary": "Unexpected code execution via escaped quotes in //go:cgo_ldflag in cmd/go and cmd/compile",
+  "aliases": [
+    "CVE-2026-97043"
+  ],
+  "modified": "2026-11-11T02:51:11Z",
+  "affected": [
+    {
+      "package": {
+        "name": "toolchain"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "1.26.11"
+            },
+            {
+              "introduced": "1.27.0-0"
+            },
+            {
+              "fixed": "1.27.4"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

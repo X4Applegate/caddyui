@@ -162,14 +162,14 @@ func (s *Server) applyAnalyticsToggle(cfg analyticsConfig) error {
 	// via s.Caddy directly so the first-boot analytics enable still works.
 	if len(servers) == 0 {
 		if cfg.Enabled {
-			if err := s.Caddy.EnableAccessLogs(cfg.Target, caddy.AccessLogOptions{
+			if err := s.caddyClient().EnableAccessLogs(cfg.Target, caddy.AccessLogOptions{
 				SoftStart: cfg.SoftStart, DialTimeout: cfg.DialTimeout,
 			}); err != nil {
 				return fmt.Errorf("enable access logs: %w", err)
 			}
 			return nil
 		}
-		if err := s.Caddy.DisableAccessLogs(); err != nil {
+		if err := s.caddyClient().DisableAccessLogs(); err != nil {
 			return fmt.Errorf("disable access logs: %w", err)
 		}
 		return nil
@@ -237,7 +237,7 @@ func (s *Server) repairCaddyUIDefaultLoggers() error {
 		return fmt.Errorf("list caddy servers for logger repair: %w", err)
 	}
 	if len(servers) == 0 {
-		return s.Caddy.RepairDefaultLoggerOverrides(caddy.AccessLogLoggerName, fleetAccessLoggerName)
+		return s.caddyClient().RepairDefaultLoggerOverrides(caddy.AccessLogLoggerName, fleetAccessLoggerName)
 	}
 	var errMsgs []string
 	for _, server := range servers {

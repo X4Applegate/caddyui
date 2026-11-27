@@ -165,13 +165,35 @@ check "floors_acknowledged=0" "0"     "$(j .floors_acknowledged "$J")"
 
 echo
 echo "=== 9. an unknown directive kind is an ERROR, not a skip ==="
+# `ignore` is deliberately the example: an exclusion is the one thing this
+# mechanism must never grow, so the kind a future maintainer is most likely
+# to reach for is the kind that must fail loudest.
 mk_dockerfile "$WORK/Dockerfile.unknown" '# pin-watch: ignore reason=nope'
 J="$(run "$WORK/Dockerfile.unknown" "$WORK/fx.ack")"
 check "floors_acknowledged=0" "0" "$(j .floors_acknowledged "$J")"
 check "crowdsec still behind"  "1" "$(j .behind "$J")"
 check "rc=3"                   "3" "$(rc)"
-grep -q 'only .*floor.* is understood' "$(lastout)/report.md" \
+# Matches the message's STABLE half ("understood by this version") rather than
+# the list of kinds, which grew a second entry in T-0667 and will grow again.
+# A test pinned to the exact list fails on every new kind without anything
+# being wrong, which trains the next person to edit the assertion rather than
+# read it.
+grep -qE 'understood by this version' "$(lastout)/report.md" \
   && check "report names the unknown kind" y y || check "report names the unknown kind" y n
+
+echo
+echo "=== 9b. \`security\` is a KNOWN kind: recorded, not an error (T-0667) ==="
+# A security pin is asserted against the built binary by
+# assert-floor-versions.sh. It is not a floor and must not become one: the pin
+# stays subject to the staleness comparison it would otherwise escape.
+mk_dockerfile "$WORK/Dockerfile.seckind" '# pin-watch: security ref=T-0667 reason=CVE floor'
+J="$(run "$WORK/Dockerfile.seckind" "$WORK/fx.ack")"
+check "not counted as a floor"  "0" "$(j .floors_acknowledged "$J")"
+check "STILL counted as behind" "1" "$(j .behind "$J")"
+grep -qE 'understood by this version' "$(lastout)/report.md" \
+  && check "no unknown-kind error" n y || check "no unknown-kind error" n n
+check "recorded as a security pin" "1" \
+  "$(wc -l < "$(lastout)/security-pins.tsv" | tr -d ' ')"
 
 echo
 echo "=== 10. a directive matching no pin is an ERROR (stale after a re-pin) ==="
@@ -311,7 +333,20 @@ if grep -q 'pin-watch' "$LIVE_OUT/errors.txt" 2>/dev/null; then
 else
   check "no pin-watch error on the live Dockerfile" y y
 fi
-check "live Dockerfile declares exactly 1 floor" "1" \
+# The expected count is DERIVED FROM THE DOCKERFILE AT RUN TIME, never written here as a
+# constant. A hardcoded "1" was a frozen expectation: adding the route53 floor (T-0637) made
+# this fail while the parser worked perfectly, so the test reported a defect in the very thing
+# it certifies, and the only way to "fix" it would be to retype the number after each
+# legitimate floor. Counting the directives in the file keeps the test measuring the PARSER,
+# while still catching the failure that matters: a directive present in the Dockerfile but
+# missing from floors.tsv.
+LIVE_DF="$(cd "$(dirname "$0")/.." && pwd)/Dockerfile.caddy"
+expected_floors="$(grep -cE '^[[:space:]]*#[[:space:]]*pin-watch:[[:space:]]*floor([[:space:]]|$)' "$LIVE_DF")"
+# A pattern that silently matched nothing would make this assert 0 == 0 and pass while
+# measuring nothing -- the empty-input-reads-as-a-pass shape. Require a floor to exist first.
+check "live Dockerfile declares at least one floor to count" y \
+  "$( [ "$expected_floors" -ge 1 ] && echo y || echo n )"
+check "every floor directive in the live Dockerfile reached floors.tsv ($expected_floors)" "$expected_floors" \
   "$(wc -l < "$LIVE_OUT/floors.tsv" | tr -d ' ')"
 
 echo

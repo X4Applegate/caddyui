@@ -234,7 +234,7 @@ Per-host export also available from the proxy-host edit page.
 
 ## 🛡️ Other features at a glance
 
-- **OIDC / SSO login** *(v2.52)* — sign in through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP, with verified-email matching and opt-in auto-provisioning
+- **OIDC / SSO login** *(v2.52)* — sign in through an external identity provider (Authelia, Authentik, Keycloak, Google, …) alongside local password + TOTP, with verified-email matching and opt-in auto-provisioning. Every SSO sign-in, existing accounts included, requires a non-empty `email` and boolean `email_verified: true` — providers that don't send `email_verified` (e.g. Microsoft Entra ID) are not supported yet
 - **Scheduled off-host backups** *(v2.52)* — automatic SQLite snapshots to a directory on an interval, keeping the newest N, plus a **Back up now** button; point it at a mounted volume to keep copies off the host
 - **Per-host rate limiting** *(v2.51)* — cap a host at *N requests per M seconds, per client IP* (429 on excess), via the `caddy-ratelimit` module built into `Dockerfile.caddy`
 - **Per-host HTTP Basic Auth** *(v2.52.6)* — bcrypt-hashed accounts enforced by Caddy as the last gate before the upstream

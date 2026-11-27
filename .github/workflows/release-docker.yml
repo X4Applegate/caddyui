@@ -123,6 +123,7 @@ jobs:
       push: ${{ steps.p.outputs.push }}
       caddy: ${{ steps.p.outputs.caddy }}
       caddy_changed: ${{ steps.p.outputs.caddy_changed }}
+      caddy_reason: ${{ steps.p.outputs.caddy_reason }}
     steps:
       # Deliberately UNQUALIFIED, unlike the `ref` this job hands downstream.
       # This job must also accept a branch, because a branch dispatch is the
@@ -236,8 +237,18 @@ jobs:
           #                   that intends drift would let a re-resolved plugin
           #                   reach :stable with no reviewer, which is exactly
           #                   what caddy-image-refresh.yml blocks.
+          #
+          # caddy_reason    = WHY this run did or did not rebuild, in words, for
+          #                   the summary job at the end of this file. The skip
+          #                   used to be silent: the caddy job simply did not
+          #                   run, nothing was written to the run summary, and a
+          #                   green release looked identical whether the image
+          #                   had been rebuilt or not (T-0709). Three of the
+          #                   eight releases before v2.68.9 took that path. The
+          #                   decision is made here, so it is recorded here.
           caddy=false
           caddy_changed=false
+          caddy_reason=
           if [ "$kind" != none ]; then
             prev="$(git describe --tags --abbrev=0 "${version}^" 2>/dev/null || true)"
             if [ -z "$prev" ]; then
@@ -245,15 +256,24 @@ jobs:
               # newly defined rather than drifted.
               caddy=true
               caddy_changed=true
+              caddy_reason="no previous release tag to compare against; treating the module set as newly defined"
             elif ! git diff --quiet "$prev" "$version" -- Dockerfile.caddy; then
               caddy=true
               caddy_changed=true
+              caddy_reason="Dockerfile.caddy changed since ${prev}"
+            else
+              caddy_reason="Dockerfile.caddy unchanged since ${prev}"
             fi
+          else
+            caddy_reason="build-only run (no release tag), so nothing publishes"
           fi
           # Asked for by hand: rebuild, but do NOT inherit "drift is expected"
           # unless the diff above already established it.
           if [ "$WANT_CADDY" = "true" ]; then
             caddy=true
+            if [ "$caddy_changed" != true ]; then
+              caddy_reason="${caddy_reason}, but caddy=true was dispatched by hand"
+            fi
           fi
 
           # Only the version and release kind cross to the build jobs — never the
@@ -389,7 +409,22 @@ jobs:
             echo "caddy_changed=$caddy_changed"
           } >> "$GITHUB_OUTPUT"
 
+          # caddy_reason is PROSE, so it is written with a heredoc delimiter
+          # rather than as a bare name=value line. Its interpolated parts are
+          # tag names that the checks above have already constrained, but the
+          # same standard the forged-line guard above applies to raw input
+          # applies to any value whose shape is not a single bare token: a
+          # delimited block cannot append a second key whatever it contains.
+          # The delimiter is random so the value can never close it.
+          reason_eof="EOF_$(openssl rand -hex 8)"
+          {
+            echo "caddy_reason<<${reason_eof}"
+            echo "$caddy_reason"
+            echo "${reason_eof}"
+          } >> "$GITHUB_OUTPUT"
+
           echo "version=$version kind=$kind push=$push caddy=$caddy caddy_changed=$caddy_changed"
+          echo "caddy_reason=$caddy_reason"
 
   caddyui:
     name: applegater/caddyui
@@ -623,6 +658,30 @@ jobs:
       # refresh gate tells plugin bumps to take — so those runs get `report`:
       # drift is diffed and recorded, and the verdict is gate 1's alone.
       #
+      # WHAT ELSE THIS ONE VARIABLE RELAXES (T-0823). It is not only gates 2
+      # and 3. The scan-coverage precondition's hard-stop limbs -- checks 5b
+      # and 5c, which are what tie a VANISHED FINDING to the version of the
+      # package it was reported against -- read the same variable. So on a
+      # release that edits Dockerfile.caddy, the module-list gate and the
+      # scan's version checks degrade to advisory together, selected by the
+      # submitter's own change to the file being reviewed.
+      #
+      # That is deliberate, not an oversight, and must not be "fixed" by
+      # giving the coverage checks their own always-blocking policy: measured
+      # against the gate's own suite, an always-blocking 5c makes "a module
+      # upgraded and its advisory cleared" exit 2, which is the normal shape
+      # of every security release cut from this repo. It would forbid the
+      # release path rather than harden it.
+      #
+      # What carries the weight on this path instead: gate 1 still blocks any
+      # NEW vulnerability under either policy; gate 2 is the stronger of the
+      # relaxed pair because it executes the built binary; and the
+      # compensating control for both is review of the Dockerfile.caddy diff
+      # and the pin set, plus this path's human approval. Nothing automated
+      # here confirms that a version move was the move the pin edit asked
+      # for -- only the diff says that. Read neither relaxed check as cover
+      # for the other.
+      #
       # A release that did NOT touch Dockerfile.caddy gets `block`, the same
       # standard as the refresh. That covers the hand-dispatched `caddy=true`
       # rebuild of an unchanged file: nothing in the source asked the module
@@ -665,6 +724,24 @@ jobs:
           cp scripts/caddy-image-gate.sh "$RUNNER_TEMP/caddy-image-gate.sh"
           chmod +x "$RUNNER_TEMP/caddy-image-gate.sh"
 
+          # The absolute coverage floor (gate check 5e, T-0811) must be present
+          # on THIS path specifically, because this is the job that moves
+          # :stable and :latest -- the tags all six boxes pull.
+          #
+          # The gate treats an ABSENT fixture as a visible skip rather than a
+          # fault, which is right for a local run or an old worktree and wrong
+          # here: 5e is the only check that is not relative to the baseline, so
+          # losing it is exactly the silent degradation it exists to prevent,
+          # and a skip reads like a pass in the log. Asserted rather than
+          # trusted, for the same reason the gate script itself is above: a tag
+          # cut from before the fixture existed cannot be gated to this
+          # standard, so say so instead of publishing to a weaker one.
+          [ -r scripts/fixtures/caddy-image-coverage-floor.json ] || {
+            echo "::error::scripts/fixtures/caddy-image-coverage-floor.json is missing on ${VERSION}; the absolute coverage floor (gate check 5e) would silently skip, and this job moves :stable and :latest. Refusing to publish without it."
+            exit 1
+          }
+          cp scripts/fixtures/caddy-image-coverage-floor.json "$RUNNER_TEMP/caddy-image-coverage-floor.json"
+
       - name: Install Trivy
         if: needs.plan.outputs.push == 'true'
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
@@ -692,6 +769,9 @@ jobs:
           # same standard as the weekly refresh: the module set had no reason
           # to move, so if it moved that is a fault, not an intention.
           MODULE_DRIFT_POLICY: ${{ needs.plan.outputs.caddy_changed == 'true' && 'report' || 'block' }}
+          # Check 5e's committed floor, staged outside the tree alongside the
+          # gate script so this does not depend on cwd remaining the checkout.
+          COVERAGE_FLOOR_FILE: ${{ runner.temp }}/caddy-image-coverage-floor.json
         shell: bash
         run: |
           set -euo pipefail
@@ -838,6 +918,118 @@ jobs:
             release-gate-arm64/
             release-gate-combined.md
           retention-days: 90
+
+      # -----------------------------------------------------------------
+      # Reachability against the binary this release will publish (T-0746).
+      #
+      # WHY HERE AS WELL AS ON THE WEEKLY REFRESH. This workflow is the one
+      # that creates :vX.Y.Z and moves :stable and :latest, and a release
+      # EDITS Dockerfile.caddy, so it can change the Caddy module set
+      # arbitrarily. A check that only ran weekly would first see a new
+      # module one scheduled run AFTER the fleet was already pulling it.
+      # GO-2026-6865 (HIGH, klauspost/compress) is the measured case: Trivy
+      # could not name it because the advisory names the package
+      # `klauspost/compress/zstd` while the binary records the module
+      # `klauspost/compress`, and govulncheck found it where Trivy
+      # structurally could not (T-0729).
+      #
+      # REPORT-ONLY, AND IT DOES NOT GATE THE TAG. `continue-on-error`, and
+      # nothing downstream reads its result: the tag steps key off
+      # `steps.gate.outputs.passed` and are untouched by this. That is
+      # deliberate at this stage (T-0746 asks for report-only first) and it
+      # is also the honest position while binary mode reports symbols LINKED
+      # rather than called -- T-0729 measured govulncheck naming a symbol in
+      # a binary whose decoder the linker had dropped. Promoting this to a
+      # blocking check is a separate decision with the :stable move behind
+      # it, not something to switch on in passing.
+      #
+      # Runs only on a pushing run, because it reads the pushed digest.
+      # `setup-go` with `go-version-file: go.mod` then a fresh `go install`
+      # is what keeps the scanner from being older than what it scans
+      # (T-0740); the gate script asserts that pair itself as well.
+      - name: Set up Go for the reachability scan
+        if: needs.plan.outputs.push == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        if: needs.plan.outputs.push == 'true'
+        # PINNED, NOT `@latest` (measured 2026-11-25). `@latest` now resolves to
+        # v1.10.0, released 2026-11-17, and v1.10.0 CANNOT ANALYSE THIS TREE:
+        # its bundled type-checker does not yet accept go1.27 language
+        # features, so against this repo's `toolchain go1.27.4` it exits 1 with
+        # a `package patterns` load error and zero findings -- the exact T-0740
+        # shape, arriving from a scanner that is NEWER rather than older. The
+        # gate correctly turns that into exit 3 (unknown, never clean), which
+        # means an unpinned `@latest` would have made this check red on arrival
+        # rather than silently blind. Both measured on this tree:
+        #   v1.9.0  -> exit 1, 1 present (GO-2026-5932), 0 called
+        #   v1.10.0 -> exit 3, could not run
+        # The advisory DATABASE is still fetched live from vuln.go.dev at run
+        # time, so pinning the tool does not freeze the advisory data. Re-test
+        # with the live tree before raising this pin.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+      - name: Reachability of the pushed digest (report-only)
+        id: reachability
+        if: needs.plan.outputs.push == 'true'
+        continue-on-error: true
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          [ -x scripts/govulncheck-gate.sh ] || {
+            echo "::error::scripts/govulncheck-gate.sh is missing or not executable on this ref; the pushed binary is unscanned for reachability"
+            exit 1
+          }
+          [ -n "${DIGEST:-}" ] || { echo "::error::no pushed digest to scan"; exit 1; }
+          docker pull --quiet "${IMAGE}@${DIGEST}"
+          # The digest is a multi-arch manifest and `docker create` resolves
+          # to the runner's architecture, so this is an amd64 statement. The
+          # script says so in its summary rather than implying both arches;
+          # the Trivy gate above is the one that covers each arch separately.
+          ./scripts/govulncheck-gate.sh \
+            --binary "image:${IMAGE}@${DIGEST}" \
+            --out-dir reachability \
+            --label "${IMAGE}@${DIGEST} (/usr/bin/caddy, linux/amd64)"
+
+      - name: Upload the reachability report
+        if: always() && needs.plan.outputs.push == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: caddy-reachability-${{ needs.plan.outputs.version }}
+          path: reachability/
+          retention-days: 90
+          if-no-files-found: warn
+
+      # Restated outside the collapsed step, with the failure as the DEFAULT
+      # arm: a scan that could not run must not be indistinguishable from one
+      # that found nothing, which is the whole subject of T-0740.
+      - name: Flag the reachability result
+        if: always() && needs.plan.outputs.push == 'true'
+        env:
+          VERDICT: ${{ steps.reachability.outputs.verdict }}
+          CALLED: ${{ steps.reachability.outputs.called }}
+          OUTCOME: ${{ steps.reachability.outcome }}
+        shell: bash
+        run: |
+          case "$VERDICT" in
+            ok)
+              echo "::notice::no advisory matches a symbol linked into the caddy binary being published" ;;
+            attention)
+              echo "::warning::${CALLED:-some} advisory symbol(s) are linked into the caddy binary being published - report-only, and LINKED is not proven reachable; see the job summary" ;;
+            advisory)
+              echo "::error::linked findings on the caddy binary being published - see the job summary" ;;
+            unknown)
+              echo "::error::the reachability scan of the pushed digest COULD NOT RUN, so this release ships a binary whose reachability is unknown rather than clean" ;;
+            '')
+              echo "::error::the reachability scan produced no verdict (step outcome: $OUTCOME); the pushed binary was not checked" ;;
+            *)
+              echo "::error::the reachability scan returned an unrecognised verdict ($VERDICT); treat the pushed binary as unchecked" ;;
+          esac
 
       # THE VERSION TAG IS CREATED HERE, not by the build (T-0627).
       #
@@ -1135,3 +1327,150 @@ jobs:
           else
             echo "caddy image not rebuilt this release; caddyui-caddy overview left unchanged"
           fi
+
+  # Say, in the run summary, whether the Caddy image was rebuilt — and when it was NOT,
+  # whether that was safe.
+  #
+  # WHY THIS JOB EXISTS (T-0709). The rebuild above is conditional on Dockerfile.caddy having
+  # changed, and the skip was SILENT: the `caddy` job simply did not run, nothing was written
+  # to the run summary, and a green release looked identical whether the image had been
+  # rebuilt or not. That is not a corner case — v2.68.6, v2.68.7 and v2.68.8 all published
+  # that way, three of the eight releases before v2.68.9.
+  #
+  # Same family as T-0708 (the overview was a manual tail) and T-0690 (the recreate is a
+  # manual tail): each step in the chain is conditional in a way the preceding step's success
+  # does not reveal. The fix is the same shape — report the decision.
+  #
+  # TWO THINGS ARE REPORTED, and they are different questions:
+  #
+  #   1. WAS IT REBUILT, and why. Cheap, always correct, and on its own it removes the
+  #      silence, which is the actual defect. A reader of the run now sees "Caddy image: NOT
+  #      rebuilt, Dockerfile.caddy unchanged since vX.Y.Z" instead of seeing nothing at all.
+  #
+  #   2. SHOULD IT HAVE BEEN. The trigger (did a human edit Dockerfile.caddy?) is uncorrelated
+  #      with the need (did the base image gain CVE fixes?). Dockerfile.caddy pins its bases
+  #      by TAG — `caddy:2.11.9-alpine`, not a digest — and that tag is mutable upstream, so
+  #      Alpine can ship a security fix under the same name with nothing in this repository
+  #      changing. The workflow header already concedes this: "Alpine security fixes can sit
+  #      built-but-unshipped between releases."
+  #
+  # So on a skipped release this job resolves the pinned base tag NOW and compares it against
+  # the base the published image was actually built from. If they differ, the skip was a miss
+  # and the summary says so with the command that fixes it.
+  #
+  # ADVISORY, DELIBERATELY. This job does not fail the release and does not trigger a rebuild.
+  #
+  #   - It must not fail a release. The release itself is correct: CaddyUI shipped, its gate
+  #     passed, and the Caddy image was skipped by a documented rule. Turning a stale base
+  #     into a red release would make a green run mean "and the upstream base has not moved",
+  #     which no release can promise — the base can move an hour after a perfectly good run.
+  #     A release that is red for something it did not do is a release people learn to re-run.
+  #
+  #   - It must not silently rebuild either. A rebuild publishes to :stable and :latest for
+  #     six boxes, and caddy-image-refresh.yml exists precisely to put that behind a gate and
+  #     a human dispatch. This job reporting a moved base and that workflow publishing the
+  #     answer is the correct division; collapsing them would route an unreviewed base change
+  #     to the fleet from a job whose whole purpose is to notice things quietly.
+  #
+  # What it replaces is the silence, not the judgement. The weekly refresh does not close this
+  # on its own: its own header states that "publish is never reachable without a manual
+  # dispatch", so it builds and scans on a schedule but publishes only when a human asks. A
+  # moved base is therefore picked up automatically by neither path — this job is what makes
+  # the fact visible so the human knows to dispatch.
+  caddy-decision:
+    name: Caddy image decision
+    runs-on: ubuntu-latest
+    needs: [plan, caddy]
+    # Runs on EVERY release, including the one where `caddy` was skipped — that is the case it
+    # exists for. `always()` is what lets a skipped dependency still reach this job; the
+    # `caddy` job's own result is read below rather than assumed.
+    if: always() && needs.plan.result == 'success'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - name: Report whether the Caddy image was rebuilt
+        env:
+          CADDY_RESULT: ${{ needs.caddy.result }}
+          CADDY_PLANNED: ${{ needs.plan.outputs.caddy }}
+          CADDY_REASON: ${{ needs.plan.outputs.caddy_reason }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PUSH: ${{ needs.plan.outputs.push }}
+          IMAGE: applegater/caddyui-caddy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The headline. Four outcomes, and each is stated rather than implied by absence.
+          case "$CADDY_RESULT" in
+            success) headline="**Caddy image: REBUILT** and published as \`${IMAGE}:${VERSION}\`." ;;
+            failure) headline="**Caddy image: BUILD FAILED.** No tag was created — see the \`${IMAGE}\` job." ;;
+            cancelled) headline="**Caddy image: CANCELLED.**" ;;
+            *) headline="**Caddy image: NOT REBUILT** — ${CADDY_REASON}." ;;
+          esac
+
+          {
+            echo "## Caddy image"
+            echo
+            echo "$headline"
+            echo
+            echo "- Release: \`${VERSION}\`"
+            echo "- Decision: ${CADDY_REASON}"
+            echo "- Rebuild job: \`${CADDY_RESULT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "caddy result=$CADDY_RESULT planned=$CADDY_PLANNED reason=$CADDY_REASON"
+      # Only asked when the rebuild was skipped. When the image WAS rebuilt it was built from
+      # the current base by definition, so there is nothing to compare.
+      #
+      # ADVISORY, so a moved base cannot fail a release that was itself correct — see the long
+      # comment on this job. The script's own exit status distinguishes moved (1) from
+      # could-not-tell (2); --advisory collapses both to 0 for this caller AFTER writing the
+      # verdict to the summary and emitting a ::warning:: annotation, so the fact is reported
+      # on the run header without turning a correct release red.
+      - name: Check whether the pinned base image moved since the published build
+        id: drift
+        if: needs.caddy.result == 'skipped' && needs.plan.outputs.push == 'true'
+        env:
+          IMAGE: applegater/caddyui-caddy
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo
+            echo "### Base image"
+            echo
+            echo "The rebuild was skipped, so the published Caddy image still carries whatever base it was last built with. \`Dockerfile.caddy\` pins its base by TAG, and that tag is mutable upstream — Alpine can ship a security fix under the same name with nothing in this repository changing."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          scripts/caddy-base-drift.sh --advisory "${IMAGE}:stable" Dockerfile.caddy
+
+      # The remedy is a SEPARATE step keyed on the previous step's declared output, not a
+      # grep of $GITHUB_OUTPUT inside the same step.
+      #
+      # $GITHUB_OUTPUT is a fresh file per step, so reading it in-place only worked because
+      # the script happened to run in the same step that read it. That coupling is invisible
+      # and unenforced: inserting a step between them, or moving the script call, would make
+      # the read silently return nothing — printing a security warning with no instruction
+      # about what to do, on a green job. `steps.drift.outputs.drift` is the supported
+      # channel and survives reordering.
+      - name: How to publish a base refresh
+        if: needs.caddy.result == 'skipped' && steps.drift.outputs.drift == 'moved'
+        env:
+          IMAGE: applegater/caddyui-caddy
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo
+            echo "This is **not** a failure of this release, and nothing here is broken: CaddyUI published correctly, and the skip followed the documented rule. It is a prompt to publish a base refresh — \`caddy-image-refresh.yml\` builds and scans weekly but only publishes on a manual dispatch, so it needs a human:"
+            echo
+            echo '```sh'
+            echo "gh workflow run caddy-image-refresh.yml -f publish=true"
+            echo '```'
+            echo
+            echo "That publishes \`${IMAGE}:${VERSION}-pN\` and moves \`:stable\`/\`:latest\` to it, gated the same way a release is."
+          } >> "$GITHUB_STEP_SUMMARY"

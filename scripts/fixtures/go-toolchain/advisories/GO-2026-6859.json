@@ -1,0 +1,34 @@
+{
+  "id": "GO-2026-6859",
+  "summary": "HTTP/1 server crash due to MaxBytesReader header race in net/http",
+  "aliases": [
+    "CVE-2026-97054"
+  ],
+  "modified": "2026-11-11T02:51:11Z",
+  "affected": [
+    {
+      "package": {
+        "name": "stdlib"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "1.26.11"
+            },
+            {
+              "introduced": "1.27.0-0"
+            },
+            {
+              "fixed": "1.27.4"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

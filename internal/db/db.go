@@ -2313,6 +2313,23 @@ func migrate(db *sql.DB) error {
 	if !columnExists2(db, "raw_routes", "listen") {
 		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN listen TEXT NOT NULL DEFAULT ''`)
 	}
+	// Issue #184 round 13: rules_184 marks an Advanced route written by this
+	// version (created, saved again under today's rules, or handled by the
+	// upgrade migration), so the migration never takes such a row again;
+	// every row stored before the upgrade reads 0. held_json keeps, for an
+	// administrator only, the routes the upgrade migration took off a
+	// non-admin's row it held (never shown to the owner, the API or the
+	// export).
+	if !columnExists2(db, "raw_routes", "rules_184") {
+		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN rules_184 INTEGER NOT NULL DEFAULT 0`)
+	}
+	if !columnExists2(db, "raw_routes", "held_json") {
+		typ := "TEXT"
+		if BackendOf(db) == BackendMariaDB {
+			typ = "LONGTEXT"
+		}
+		migrationStep(db, `ALTER TABLE raw_routes ADD COLUMN held_json `+typ+` NOT NULL DEFAULT ''`)
+	}
 	// v2.9.230: redirect_strip_path_prefix — drop a leading path prefix from
 	// the request URI before composing the Location header. Mirrors the
 	// proxy-host strip_path_prefix option for redirects (e.g. on a partial
@@ -2511,6 +2528,18 @@ func migrate(db *sql.DB) error {
 	// SecurityHeaders bundle precedence) were moved onto the canonical field,
 	// so neither behaviour depends on the column this drains.
 	migrateStripResponseHeaders(db)
+
+	// Issue #164: optional operator-chosen log source ID per fleet server,
+	// carried by forwarded log lines as caddyui_source_id. Nullable with no
+	// default so every existing row reads as "not set" (NULL) and the unique
+	// index below admits any number of servers without one — on both SQLite
+	// and MariaDB, which each allow repeated NULLs in a UNIQUE index. VARCHAR
+	// rather than TEXT because MariaDB cannot index TEXT without a prefix
+	// length; 64 matches models.LogSourceIDMaxLen.
+	if !columnExists2(db, "caddy_servers", "log_source_id") {
+		migrationStep(db, `ALTER TABLE caddy_servers ADD COLUMN log_source_id VARCHAR(64)`)
+	}
+	migrationStep(db, `CREATE UNIQUE INDEX IF NOT EXISTS idx_caddy_servers_log_source_id ON caddy_servers(log_source_id)`)
 
 	// One loud summary rather than leaving the operator to spot individual
 	// failures scattered through a long startup log.

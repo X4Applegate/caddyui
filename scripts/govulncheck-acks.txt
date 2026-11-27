@@ -1,0 +1,43 @@
+# govulncheck acknowledgements — read by scripts/govulncheck-gate.sh
+#
+# ONE PURPOSE: hold the gate's urgent verdict for an advisory there is
+# genuinely nothing to do about yet. That is the case T-0744 named — a called
+# stdlib finding whose only fix is a Go release that does not exist. The
+# alternative is a gate that blocks every unrelated PR until upstream ships,
+# which is how a gate gets switched off, and a switched-off gate reports
+# nothing at all.
+#
+# AN ACKNOWLEDGEMENT DOES NOT HIDE A FINDING. The finding is still listed in
+# the report, still counted, and labelled `acknowledged` with this reason
+# beside it. What it suppresses is exit 2.
+#
+# FORMAT — one per line, `#` comments and blank lines ignored:
+#
+#   GO-YYYY-NNNN expires=YYYY-MM-DD [fixed_in=goX.Y.Z] [ref=T-xxxx] reason=<prose>
+#
+#   expires=   REQUIRED. There are no permanent acknowledgements here: an
+#              exclusion that cannot expire outlives the reasoning that
+#              justified it. Same discipline as the `# pin-watch: floor`
+#              directives in Dockerfile.caddy.
+#   fixed_in=  optional, and it RE-ARMS EARLY — the moment this tree's
+#              `toolchain` line reaches that version the fix is available, so
+#              the excuse is gone and the gate fires again whatever the date
+#              says. Use it for every stdlib advisory; it is the field that
+#              makes an acknowledgement self-healing rather than a timer.
+#   ref=       optional task id for the decision.
+#   reason=    REQUIRED, and LAST, because it is prose and runs to the end of
+#              the line. Write why there is nothing to take, not that the
+#              finding was reviewed.
+#
+# A malformed line is exit 3 (`could not run`), not a skipped line: a run that
+# cannot establish what is acknowledged cannot report on what is not. An
+# acknowledgement matching no finding is reported for removal.
+#
+# Example, kept as a comment so the file is empty in effect:
+#
+#   GO-2026-6859 expires=2026-12-15 fixed_in=go1.27.4 ref=T-0744 reason=HTTP/1 crash via a MaxBytesReader header race; called from this code and unfixed upstream until Go 1.27.4
+#
+# EMPTY ON PURPOSE as of 2026-11-25: measured on this tree, `govulncheck ./...`
+# reports 0 called findings and 1 present-but-uncalled residual
+# (GO-2026-5932, golang.org/x/crypto/openpgp), so nothing needs acknowledging
+# for the source gate to pass.
