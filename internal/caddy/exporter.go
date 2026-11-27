@@ -308,7 +308,12 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		}
 	}
 
-	fmt.Fprintf(&b, "%s {\n", strings.Join(domains, ", "))
+	siteAddrs := domains
+	if p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced {
+		// SSL off: served on :443 and, without a redirect, on :80 (T-0927).
+		siteAddrs = caddyfilePlainHTTPAddresses(domains)
+	}
+	fmt.Fprintf(&b, "%s {\n", strings.Join(siteAddrs, ", "))
 
 	// TLS block — cert source. Auto (ACME) is implicit when the site has a
 	// public hostname; we only need an explicit `tls` directive for custom
@@ -324,10 +329,9 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		default:
 			fmt.Fprintf(&b, "\t# Custom certificate ID %d (uploaded via CaddyUI; not represented in Caddyfile — Caddy will use its automatic cert resolution at runtime)\n", p.CertificateID)
 		}
-	} else if !p.SSLEnabled {
-		// SSL explicitly off — site listens on HTTP only.
-		b.WriteString("\ttls off\n")
 	}
+	// SSL off with no certificate is expressed by the site addresses above
+	// (caddyfilePlainHTTPAddresses); `tls off` is not a Caddy v2 form.
 
 	// v2.64.0 (discussion #137): client certificate authentication. Emitted
 	// as its own `tls` block rather than folded into the certificate line
