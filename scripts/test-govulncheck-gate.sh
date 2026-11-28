@@ -494,6 +494,50 @@ RC=$?
 want_rc 1 "34b a live ack with an unreached fixed_in is still honoured"
 want_in "acknowledged" "34c and is reported as acknowledged"
 
+# ---------------------------------------------------------------------------
+# 35. BINARY NEWER THAN THE TREE (T-0893). The caddy binary's Go comes from the
+#     upstream builder image, not go.mod. When it moves ahead, the stale-scanner
+#     verdict must name the BINARY's Go as the floor and must NOT prescribe
+#     `go-version-file: go.mod` -- that is what produced the stale scanner.
+# ---------------------------------------------------------------------------
+mkdir -p "$TMP/stub-split"
+cat > "$TMP/stub-split/go" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = version ] && [ "\$2" = -m ]; then
+  case "\$3" in
+    "$TMP/faketool") printf '%s: go1.27.4\n' "\$3" ;;
+    *)               printf '%s: go1.28.1\n' "\$3" ;;
+  esac
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMP/stub-split/go"
+: > "$TMP/fakebin"
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+PATH="$TMP/stub-split:$PATH" "$SCRIPT" --binary "$TMP/fakebin" --gomod "$TMP/go.mod" --acks none \
+  --out-dir "$TMP/o.$n" --offline-fixture "$FIX/binary-linked.json" \
+  --tool "$TMP/faketool" > "$OUT" 2>&1
+RC=$?
+want_rc 3 "35 a binary built on a newer Go than the tree refuses a tree-toolchain scanner"
+want_in "needs at least \`go1.28.1\`" "35a naming the binary's Go as the floor"
+want_in "the BINARY's Go, not this tree's" "35b and saying whose Go that is"
+want_in "go-version: stable" "35c with the remedy that actually tracks upstream"
+want_not_in "then \`go install\`)" "35d and NOT the circular go.mod remedy"
+
+# The same split with a scanner built on the binary's Go is accepted.
+cat > "$TMP/stub-split/go" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = version ] && [ "$2" = -m ]; then printf '%s: go1.28.1\n' "$3"; exit 0; fi
+exit 1
+EOF
+n=$((n+1)); OUT="$TMP/out.$n"; rm -rf "$TMP/o.$n"
+PATH="$TMP/stub-split:$PATH" "$SCRIPT" --binary "$TMP/fakebin" --gomod "$TMP/go.mod" --acks none \
+  --out-dir "$TMP/o.$n" --offline-fixture "$FIX/binary-linked.json" \
+  --tool "$TMP/faketool" > "$OUT" 2>&1
+RC=$?
+want_rc 1 "36 a scanner on the binary's (newer) Go scans it"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
