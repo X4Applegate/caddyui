@@ -126,8 +126,8 @@ func caddyfileAddressPort(a string) string {
 // refuses in a site that also listens on HTTP for the same reason (T-0978
 // review); the live route ignores those options, so the export keeps the
 // host HTTPS-only and lists the :80 difference in its notes.
-func caddyfileServesPlainHTTP(p models.ProxyHost, snippets map[string]string) bool {
-	return !p.SSLForced && !p.ClientAuthEnabled() && !caddyfileAdvancedHasSiteTLS(p.AdvancedConfig, snippets)
+func caddyfileServesPlainHTTP(p models.ProxyHost, advancedTLS bool) bool {
+	return !p.SSLForced && !p.ClientAuthEnabled() && !advancedTLS
 }
 
 // caddyfileAdvancedHasSiteTLS reports whether an Advanced config has a
@@ -136,7 +136,9 @@ func caddyfileServesPlainHTTP(p models.ProxyHost, snippets map[string]string) bo
 // true when the text does not lex, an import names no known snippet, or a
 // snippet places a directive from its arguments.
 func caddyfileAdvancedHasSiteTLS(adv string, snippets map[string]string) bool {
-	if strings.TrimSpace(adv) == "" {
+	// Cheap pre-check: every case below needs one of these words, and a
+	// large Advanced config is lexed by the exporter enough already.
+	if !strings.Contains(adv, "tls") && !strings.Contains(adv, "import") && !strings.Contains(adv, "{args") {
 		return false
 	}
 	toks, _, _, err := lexCaddyfileLenient(adv)
@@ -230,8 +232,8 @@ func caddyfileSSLOnPlainHTTPAddresses(addrs []string) []string {
 
 // caddyfileSiteCount is the number of sites renderProxyHostSite writes for
 // p: two when it adds a plain-HTTP twin, otherwise one.
-func caddyfileSiteCount(p models.ProxyHost, cert *models.Certificate, domains []string, snippets map[string]string) int {
-	if caddyfileServesPlainHTTP(p, snippets) && caddyfileTLSFileLine(p, cert) != "" && len(caddyfilePlainHTTPTwinAddresses(domains)) > 0 {
+func caddyfileSiteCount(p models.ProxyHost, cert *models.Certificate, domains []string, advancedTLS bool) int {
+	if caddyfileServesPlainHTTP(p, advancedTLS) && caddyfileTLSFileLine(p, cert) != "" && len(caddyfilePlainHTTPTwinAddresses(domains)) > 0 {
 		return 2
 	}
 	return 1
