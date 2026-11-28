@@ -1551,8 +1551,29 @@ func withDeployProblems(target string, problems []string) string {
 	}
 	reasons := strings.Join(problems, "; ")
 	reasons = strings.ToUpper(reasons[:1]) + reasons[1:]
-	msg := "Saved, but not deployed to every server. " + reasons + ". The Activity Log has the details."
+	msg := deployErrorPrefix + reasons + deployErrorSuffix
 	return target + sep + "deploy_error=" + url.QueryEscape(msg)
+}
+
+const (
+	deployErrorPrefix = "Saved, but not deployed to every server. "
+	deployErrorSuffix = ". The Activity Log has the details."
+)
+
+// deployErrorFor is a withDeployProblems notice as the requester may see it:
+// unchanged for an administrator; for anyone else each reason is cut like
+// any other Caddy error (tenantSafeMessage), so upstream addresses, quoted
+// config values and Caddy's JSON bodies from a target do not reach a tenant.
+func (s *Server) deployErrorFor(r *http.Request, msg string) string {
+	if msg == "" || isAdminUser(s.currentUser(r)) {
+		return msg
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(msg, deployErrorPrefix), deployErrorSuffix)
+	parts := strings.Split(body, "; ")
+	for i, p := range parts {
+		parts[i] = tenantSafeMessage(p)
+	}
+	return deployErrorPrefix + strings.Join(parts, "; ") + deployErrorSuffix
 }
 
 func (s *Server) syncDeployBatch(b deployBatch) {

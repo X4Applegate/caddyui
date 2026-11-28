@@ -1250,7 +1250,9 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	// says so on the page it lands on (withDeployProblems); the pages that
 	// receive those redirects render it with {{template "deployError" .}}.
 	if _, ok := data["DeployError"]; !ok && r != nil {
-		data["DeployError"] = r.URL.Query().Get("deploy_error")
+		// T-0946: a non-admin sees each reason reduced like any other Caddy
+		// message (tenantSafeMessage); the full text is in the Activity Log.
+		data["DeployError"] = s.deployErrorFor(r, r.URL.Query().Get("deploy_error"))
 	}
 	// v2.62.0 (issue #128): the page's language and the strings the browser-side
 	// scripts may need (window.CADDYUI_I18N in layout.html).

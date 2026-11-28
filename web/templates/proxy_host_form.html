@@ -1484,7 +1484,9 @@ document.addEventListener('DOMContentLoaded', function() {
             <select name="health_check_method" class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
               <option value="GET" {{if or (eq .Host.HealthCheckMethod "GET") (eq .Host.HealthCheckMethod "")}}selected{{end}}>GET</option>
               <option value="HEAD" {{if eq .Host.HealthCheckMethod "HEAD"}}selected{{end}}>HEAD</option>
+              {{if and .User (eq .User.Role "admin")}}
               <option value="POST" {{if eq .Host.HealthCheckMethod "POST"}}selected{{end}}>POST</option>
+              {{end}}
             </select>
           </div>
         </div>
@@ -1525,6 +1527,8 @@ document.addEventListener('DOMContentLoaded', function() {
             class="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm font-mono bg-white focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none transition">
           <p class="text-xs text-ink-500 mt-1">Go regexp that must match somewhere in the health-check response body. Leave blank to skip body check.</p>
         </div>
+        {{/* T-0946: non-admin accounts may only GET/HEAD without a body or redirects (refused on save) */}}
+        {{if and .User (eq .User.Role "admin")}}
         <!-- v2.9.75: health_check_body -->
         <div class="mb-4">
           <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Health Check Request Body</label>
@@ -1533,6 +1537,7 @@ document.addEventListener('DOMContentLoaded', function() {
             placeholder='{"status":"ok"}  (empty = no request body)'>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Request body sent with each active health check probe. Useful for GraphQL introspection or JSON health APIs that require a POST body.</p>
         </div>
+        {{end}}
         <!-- v2.9.85: health_check_content_type -->
         <div class="mb-4">
           <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Health Check Content-Type</label>
@@ -1582,11 +1587,13 @@ document.addEventListener('DOMContentLoaded', function() {
           </label>
           <p class="text-xs text-gray-500 dark:text-gray-400">Skip TLS certificate verification for active health check probe connections. Useful when backend has a self-signed certificate.</p>
         </div>
+        {{if and .User (eq .User.Role "admin")}}
         <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" name="health_check_follow_redirects" value="on" {{if .Host.HealthCheckFollowRedirects}}checked{{end}}
             class="w-4 h-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500 cursor-pointer">
           <span class="text-sm text-ink-700">Follow redirects during health check probes</span>
         </label>
+        {{end}}
       </div>
 
       {{/* Passive upstream health checks */}}
