@@ -2272,6 +2272,24 @@ if [ -n "$BINARY" ] && [ -z "$FIXTURE" ]; then
         echo "\`go version -m\` read no module graph out of '$(clean_scalar "$bin_path")' (not a Go binary, or stripped of build info); the graph was NOT swept" >> "$errors"
       else
         img_graph_state="ok"
+        # The PACKAGES the binary links, for advisory attribution rule 2 on
+        # graph rows (T-0951). `go list -deps` needs a module checkout, which
+        # an image does not have, and `go version -m` names modules, not
+        # packages. The runtime function table (pclntab) is NOT removed by
+        # `-s -w` and spells every linked function as `<pkg path>.<name>`, so
+        # the package set is read from there. Names are packed back to back,
+        # so a newline is put before every `github.com/` first: without it
+        # `.../service/sso` glued onto the next name and was lost, which would
+        # be a false clean for a package the binary does link. Only github.com
+        # packages are kept -- the only ones the sweep below asks about.
+        # Empty result -> no file -> rule 2 is skipped for graph rows (the
+        # old, conservative behaviour), never "nothing is linked".
+        LC_ALL=C grep -aoE 'github\.com/[A-Za-z0-9_.~/-]+' "$bin_path" 2>/dev/null \
+          | LC_ALL=C sed 's#\(.\)github\.com/#\1\ngithub.com/#g' \
+          | LC_ALL=C grep -E '^github\.com/[^/]+/[^/]+.*/[^./]+\.[A-Za-z_(*]|^github\.com/[^/]+/[^/.]+\.[A-Za-z_(*]' \
+          | LC_ALL=C sed -E 's#^(.*/[^./]+)\..*#\1#' \
+          | LC_ALL=C sort -u > "$OUT_DIR/binary-packages.txt" 2>/dev/null
+        [ -s "$OUT_DIR/binary-packages.txt" ] || rm -f "$OUT_DIR/binary-packages.txt"
         img_graph_total="$(awk '$1=="dep"||$1=="mod"{n++} END{print n+0}' "$graph_raw")"
         # Only github.com modules have a repo-scoped endpoint to ask, and only
         # a plain semver version can be range-compared. Everything else is
@@ -2400,14 +2418,18 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
   # version the root module has never had. Two narrowings, attribution only:
   #   1. a package belongs to the LONGEST swept module containing it, so a
   #      route53 row is judged against the route53 pin, never the root;
-  #   2. for go.mod rows, a package below the pinned module counts only if
-  #      `go list -deps ./...` says the build links it. No list, no rule 2.
+  #   2. a package below the pinned module counts only if the build links
+  #      it: for go.mod rows per `go list -deps ./...`, for image module-graph
+  #      rows per the binary's own function table (T-0951). No list, no
+  #      rule 2.
   # Exact module matches are untouched, so the CVE-less per-repository
   # coverage (GHSA-4v5x-9mc8-gr98 on go-sql-driver/mysql) is unchanged.
   # Pinned by scripts/test-pinned-module-attribution.sh.
   i_owners="$(cut -f1 "$img_targets" | sort -u)"
   i_linked=""
   [ -s "$OUT_DIR/gomod-packages.txt" ] && i_linked="$(cat "$OUT_DIR/gomod-packages.txt")"
+  i_binlinked=""
+  [ -s "$OUT_DIR/binary-packages.txt" ] && i_binlinked="$(cat "$OUT_DIR/binary-packages.txt")"
 
   i_gh_auth=()
   i_gh_tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
@@ -2462,8 +2484,12 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
     [ "$i_src" = "module graph" ] && img_graph_seen=$((img_graph_seen+1))
     [ "$i_src" = "go.mod" ] && gomod_seen=$((gomod_seen+1))
 
-    i_uselinked=0
-    [ "$i_src" = "go.mod" ] && [ -n "$i_linked" ] && i_uselinked=1
+    i_uselinked=0; i_lkset=""
+    if [ "$i_src" = "go.mod" ] && [ -n "$i_linked" ]; then
+      i_uselinked=1; i_lkset="$i_linked"
+    elif [ "$i_src" = "module graph" ] && [ -n "$i_binlinked" ]; then
+      i_uselinked=1; i_lkset="$i_binlinked"
+    fi
     while IFS= read -r -d '' i_rec; do
       case "$i_rec" in *$'\037'*) ;; *) continue ;; esac
       i_ghsa="${i_rec%%$'\037'*}";  i_rest="${i_rec#*$'\037'}"
@@ -2490,7 +2516,7 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
         "$(clean_scalar "${i_cve:-—}")" "$(clean_scalar "${i_sev:-?}")" \
         "$(clean_scalar "${i_range:-?}")" "$(clean_scalar "${i_patched:-—}")" >> "$img_extra"
     done < <(jq -j --arg mod "$i_mod" --arg owners "$i_owners" \
-                 --arg linked "$i_linked" --arg uselinked "$i_uselinked" '
+                 --arg linked "$i_lkset" --arg uselinked "$i_uselinked" '
       def pw_norm: ascii_downcase | gsub("\\s+$"; "") | sub("^https?://"; "") | sub("/+$"; "");
       def pw_is_modpath: test("^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]+)?/[^ ]+$");
       def pw_demaj: sub("/v[0-9]+$"; "");
@@ -2524,7 +2550,7 @@ if [ -s "$img_targets" ] && [ -z "$FIXTURE" ] && [ "${PINWATCH_SKIP_GITHUB:-0}" 
                 and ([ $own[] | select(length > ($m | length))
                        | select(. as $k | ($pname == $k) or ($pname | startswith($k + "/"))) ]
                      | length == 0)
-                # rule 2 (T-0889): go.mod rows need the package to be linked
+                # rule 2 (T-0889, T-0951): the package must be linked
                 and (($uselinked != "1")
                      or ([ $lk[] | select(. as $q | ($q == $pname) or ($q | startswith($pname + "/"))) ]
                          | length > 0)))
