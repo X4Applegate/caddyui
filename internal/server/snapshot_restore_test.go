@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/X4Applegate/caddyui/internal/caddy"
@@ -22,12 +23,17 @@ func TestRestoreSnapshotPreservesPreviousConfig(t *testing.T) {
 		name                                           string
 		fetchFails, saveFails, loadFails, autoDisabled bool
 		wantStatus, wantLoads                          int
+		wantAction, wantDetail                         string
 	}{
-		{name: "success", wantStatus: http.StatusSeeOther, wantLoads: 1},
-		{name: "fetch failure", fetchFails: true, wantStatus: http.StatusBadGateway},
-		{name: "snapshot write failure", saveFails: true, wantStatus: http.StatusInternalServerError},
-		{name: "Caddy rejects config", loadFails: true, wantStatus: http.StatusBadGateway, wantLoads: 1},
-		{name: "automatic snapshots disabled", autoDisabled: true, wantStatus: http.StatusSeeOther, wantLoads: 1},
+		{name: "success", wantStatus: http.StatusSeeOther, wantLoads: 1, wantAction: "snapshot_restored"},
+		{name: "fetch failure", fetchFails: true, wantStatus: http.StatusBadGateway,
+			wantAction: "snapshot_restore_failed", wantDetail: "cannot capture current Caddy config"},
+		{name: "snapshot write failure", saveFails: true, wantStatus: http.StatusInternalServerError,
+			wantAction: "snapshot_restore_failed", wantDetail: "test write failure"},
+		{name: "Caddy rejects config", loadFails: true, wantStatus: http.StatusBadGateway, wantLoads: 1,
+			wantAction: "snapshot_restore_failed", wantDetail: "invalid config"},
+		{name: "automatic snapshots disabled", autoDisabled: true, wantStatus: http.StatusSeeOther, wantLoads: 1,
+			wantAction: "snapshot_restored"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newCSRFTestServer(t)
@@ -107,6 +113,21 @@ func TestRestoreSnapshotPreservesPreviousConfig(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("live=%s, want %s", live, wantLive)
+			}
+			acts, err := models.ListActivity(s.DB, 1, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(acts) != 1 {
+				t.Fatalf("activity rows=%d, want 1: %+v", len(acts), acts)
+			}
+			a := acts[0]
+			wantSuccess := tc.wantAction == "snapshot_restored"
+			if a.Action != tc.wantAction || a.Success != wantSuccess || a.Target != "snapshot:"+strconv.FormatInt(id, 10) {
+				t.Errorf("activity=%+v, want action=%s success=%v", a, tc.wantAction, wantSuccess)
+			}
+			if !strings.Contains(a.Detail, tc.wantDetail) {
+				t.Errorf("activity detail=%q, want it to contain %q", a.Detail, tc.wantDetail)
 			}
 		})
 	}
