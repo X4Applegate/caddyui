@@ -4,6 +4,7 @@ package caddy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,7 +73,7 @@ func TestProbeLoadAlwaysRestoresTheOriginalConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeAdmin{live: probeOriginal}
 			c := newFakeAdmin(t, f)
-			err := c.ProbeLoad(tc.probe)
+			err := c.ProbeLoad(setKeys(tc.probe))
 			if tc.wantErr == "" && err != nil {
 				t.Fatalf("ProbeLoad: %v", err)
 			}
@@ -97,7 +98,7 @@ func TestProbeLoadAlwaysRestoresTheOriginalConfig(t *testing.T) {
 func TestProbeLoadReportsAFailedRestore(t *testing.T) {
 	f := &fakeAdmin{live: probeOriginal, failRestore: true}
 	c := newFakeAdmin(t, f)
-	err := c.ProbeLoad(map[string]any{"apps": map[string]any{}})
+	err := c.ProbeLoad(setKeys(map[string]any{"apps": map[string]any{}}))
 	if err == nil || !strings.Contains(err.Error(), "restoring the previous config failed") {
 		t.Fatalf("ProbeLoad error = %v, want a restore failure", err)
 	}
@@ -108,7 +109,7 @@ func TestProbeLoadReportsAFailedRestore(t *testing.T) {
 func TestProbeLoadRestoresAnEmptyConfig(t *testing.T) {
 	f := &fakeAdmin{live: "null"}
 	c := newFakeAdmin(t, f)
-	if err := c.ProbeLoad(map[string]any{"apps": map[string]any{"http": map[string]any{}}}); err != nil {
+	if err := c.ProbeLoad(setKeys(map[string]any{"apps": map[string]any{"http": map[string]any{}}})); err != nil {
 		t.Fatal(err)
 	}
 	if f.live != "{}" {
@@ -171,5 +172,40 @@ func TestHasCrowdSecModuleUsesAdaptAndNeverLoadsConfig(t *testing.T) {
 		if !strings.Contains(b, "crowdsec {") || !strings.Contains(b, "\t\tcrowdsec\n") {
 			t.Errorf("probe Caddyfile must use both the crowdsec global option and the handler directive:\n%s", b)
 		}
+	}
+}
+
+// setKeys returns a ProbeLoad mutation that sets each key of keys.
+func setKeys(keys map[string]any) func(map[string]any) {
+	return func(cfg map[string]any) {
+		for k, v := range keys {
+			cfg[k] = v
+		}
+	}
+}
+
+// T-0966: the probe is built from the same read the restore uses, and the
+// mutation gets a copy, not the original.
+func TestProbeLoadMutatesACopyOfTheLiveConfig(t *testing.T) {
+	f := &fakeAdmin{live: probeOriginal}
+	c := newFakeAdmin(t, f)
+	var seen map[string]any
+	if err := c.ProbeLoad(func(cfg map[string]any) { seen = cfg; cfg["extra"] = true }); err != nil {
+		t.Fatal(err)
+	}
+	if seen == nil || seen["extra"] != true {
+		t.Fatalf("mutation did not run on the probe config: %v", seen)
+	}
+	if f.loads[1] != probeOriginal {
+		t.Errorf("restore load = %s, want the untouched original %s", f.loads[1], probeOriginal)
+	}
+}
+
+func TestProbeLoadRestoreErrorIsTyped(t *testing.T) {
+	f := &fakeAdmin{live: probeOriginal, failRestore: true}
+	c := newFakeAdmin(t, f)
+	var re *RestoreError
+	if err := c.ProbeLoad(nil); !errors.As(err, &re) {
+		t.Fatalf("ProbeLoad error = %v, want a *RestoreError", err)
 	}
 }

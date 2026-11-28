@@ -219,6 +219,23 @@ func (c *Client) LoadConfig(cfg map[string]any) error {
 	return c.send(http.MethodPost, "/load", cfg)
 }
 
+// RestoreError reports that ProbeLoad could not put the original config back,
+// so the server may still be running the probe config. Probe is Caddy's
+// rejection of the probe, or nil when the probe was accepted.
+type RestoreError struct {
+	Probe   error
+	Restore error
+}
+
+func (e *RestoreError) Error() string {
+	if e.Probe != nil {
+		return fmt.Sprintf("%v; restoring the previous config also failed: %v", e.Probe, e.Restore)
+	}
+	return fmt.Sprintf("probe: restoring the previous config failed: %v", e.Restore)
+}
+
+func (e *RestoreError) Unwrap() []error { return []error{e.Probe, e.Restore} }
+
 // ProbeLoad asks the live Caddy to fully provision cfg and then puts the
 // config it was running back. It fetches the live config, sends /load with
 // cfg, and then ALWAYS sends /load with the original config again, whether
@@ -227,9 +244,13 @@ func (c *Client) LoadConfig(cfg map[string]any) error {
 // server may then be left running cfg.
 //
 // Use it only when a check really needs provisioning (an /adapt cannot tell
-// you whether a JSON field is known). While the probe runs, cfg is live for
-// a moment, so build cfg from the live config plus the one change to check.
-func (c *Client) ProbeLoad(cfg map[string]any) error {
+// you whether a JSON field is known). While the probe runs the probe config
+// is live for a moment. mutate receives a deep copy of the live config read
+// here and adds the one change to check, so the probe and the restore come
+// from the same read. Callers that share Caddy with a sync must hold the sync
+// lock for the whole call, or a sync landing between the read and the
+// restore would be rolled back.
+func (c *Client) ProbeLoad(mutate func(cfg map[string]any)) error {
 	original, _, err := c.FetchConfig()
 	if err != nil {
 		return fmt.Errorf("probe: fetch live config: %w", err)
@@ -237,12 +258,20 @@ func (c *Client) ProbeLoad(cfg map[string]any) error {
 	if original == nil {
 		original = map[string]any{}
 	}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		return fmt.Errorf("probe: copy live config: %w", err)
+	}
+	cfg := map[string]any{}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("probe: copy live config: %w", err)
+	}
+	if mutate != nil {
+		mutate(cfg)
+	}
 	probeErr := c.send(http.MethodPost, "/load", cfg)
 	if restoreErr := c.send(http.MethodPost, "/load", original); restoreErr != nil {
-		if probeErr != nil {
-			return fmt.Errorf("%w; restoring the previous config also failed: %v", probeErr, restoreErr)
-		}
-		return fmt.Errorf("probe: restoring the previous config failed: %w", restoreErr)
+		return &RestoreError{Probe: probeErr, Restore: restoreErr}
 	}
 	return probeErr
 }

@@ -415,15 +415,24 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 // cannot be reached — a save must not be blocked by an unrelated outage.
 //
 // This is a preview by apply, not a dry run (T-0965): Caddy ignores
-// validate_only, so an accepted config is live from here on. That matches
-// the sync the save runs right after; when the save fails instead, the
-// handler's previewResync syncs the database state back.
+// validate_only, so an accepted config is live from here on. The save's own
+// sync replaces it right after; when the save fails instead, the handler's
+// previewResync syncs the database state back. Because it is live, the
+// preview carries the same CrowdSec wrapping as syncCaddyInner, runs under
+// syncMu so it cannot interleave with a sync, and is skipped while the
+// server has a post-apply hold (the sync that would replace it is skipped
+// too) (T-0966).
 // v2.42.1 (issue #74): shared by the proxy host, redirection and certificate
 // forms as well as Advanced routes.
 func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
+	if s.syncHoldFor(serverID) != nil {
+		return ""
+	}
 	caddyCl := s.caddyForServer(serverID)
 	proxies = s.applyMiddlewareProfiles(proxies)                                 // v2.60.0 (issue #124)
 	proxies, redirs, raws = s.withoutForeignHostClaims(0, proxies, redirs, raws) // as syncCaddyInner
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
 	current, _, err := caddyCl.FetchConfig()
 	if err != nil {
 		return ""
@@ -436,6 +445,9 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	previewRoutes = sortRoutesBySpecificity(previewRoutes) // v2.61.3 (issue #129): wildcard certificate routes after exact hosts
 	previewRoutes = s.withFallbackRoute(previewRoutes)     // v2.59.4 (issue #123)
 	httpRoutes := s.buildHTTPRoutes(proxies, redirs, raws)
+	crowdSecCfg := loadCrowdSecConfig(s.DB) // as syncCaddyInner (T-0966)
+	previewRoutes = protectRoutesWithCrowdSec(previewRoutes, crowdSecCfg, serverID)
+	httpRoutes = protectRoutesWithCrowdSec(httpRoutes, crowdSecCfg, serverID)
 	// issue #100: mirror the global blocklist prepend so preview validation
 	// matches what sync would push.
 	if gb := caddy.BuildGlobalBlocklistRoute(mustGetSetting(s.DB, settingGlobalIPBlocklist)); gb != nil {
@@ -446,7 +458,14 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	}
 	applyRoutes(proposed, previewRoutes)
 	applyPlainHTTPServer(proposed, httpRoutes)
-	applyRawListenServers(proposed, s.buildRawListenServers(raws)) // v2.36.1 (issue #64)
+	rawListenServers := s.buildRawListenServers(raws)
+	for name, srv := range rawListenServers {
+		if routes, ok := srv["routes"].([]any); ok {
+			srv["routes"] = protectRoutesWithCrowdSec(routes, crowdSecCfg, serverID)
+		}
+		rawListenServers[name] = srv
+	}
+	applyRawListenServers(proposed, rawListenServers) // v2.36.1 (issue #64)
 	loadPEM, loadFiles := buildCertLoaders(certs)
 	applyCertLoaders(proposed, loadPEM, loadFiles)
 	applySkipCertificates(proposed, buildSkipCertificates(proxies, redirs, httpsRawRoutes(raws), certs))

@@ -261,7 +261,11 @@ type previewResync struct {
 }
 
 func (s *Server) resyncAfterPreview(serverID int64) *previewResync {
-	return &previewResync{sync: func(id int64) { s.trySyncCaddy(id, false) }, serverID: serverID}
+	// allowEmpty: the preview already replaced Caddy's routes with ones built
+	// from the database plus the unsaved change, so when the database holds
+	// nothing for this server the empty state is the truth to restore, not a
+	// wiped database to guard against (T-0966).
+	return &previewResync{sync: func(id int64) { s.trySyncCaddyAfterDelete(id, false) }, serverID: serverID}
 }
 
 // synced marks that the handler now runs its own sync of the saved state.

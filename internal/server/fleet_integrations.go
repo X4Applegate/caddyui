@@ -5,6 +5,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -532,21 +533,8 @@ func (s *Server) validatePrometheusMetricsServers(metricsCfg prometheusMetricsCo
 		if srv.Type == models.CaddyServerTypeExternal {
 			return fmt.Errorf("Prometheus metrics cannot be managed on read-only server %q", srv.Name)
 		}
-		client := newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
-		current, _, err := client.FetchConfig()
-		if err != nil {
-			return fmt.Errorf("check metrics support on %s: %w", srv.Name, err)
-		}
-		probe, err := deepCopyMap(current)
-		if err != nil {
-			return fmt.Errorf("build metrics check for %s: %w", srv.Name, err)
-		}
-		applyPrometheusMetrics(probe, metricsCfg, srv.ID)
-		if err := client.ProbeLoad(probe); err != nil {
-			if metricsCfg.ObserveCatchAllHost {
-				return fmt.Errorf("Caddy server %q rejected detailed metrics; observe_catchall_hosts requires Caddy 2.11 or newer: %w", srv.Name, err)
-			}
-			return fmt.Errorf("Caddy server %q rejected Prometheus metrics: %w", srv.Name, err)
+		if err := s.probePrometheusMetrics(srv, metricsCfg); err != nil {
+			return err
 		}
 	}
 	for id := range metricsCfg.ServerIDs {
@@ -555,6 +543,35 @@ func (s *Server) validatePrometheusMetricsServers(metricsCfg prometheusMetricsCo
 		}
 	}
 	return nil
+}
+
+// probePrometheusMetrics loads the live config plus the metrics block on one
+// server and restores it. It holds syncMu for the whole probe so a sync of a
+// save made at the same moment cannot land between the read and the restore
+// and be rolled back (T-0966). Nothing here calls syncCaddy, so the lock
+// cannot deadlock. When the restore itself fails the server is resynced from
+// the database after the lock is released.
+func (s *Server) probePrometheusMetrics(srv models.CaddyServer, metricsCfg prometheusMetricsConfig) error {
+	client := newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
+	var err error
+	func() {
+		s.syncMu.Lock()
+		defer s.syncMu.Unlock()
+		err = client.ProbeLoad(func(cfg map[string]any) {
+			applyPrometheusMetrics(cfg, metricsCfg, srv.ID)
+		})
+	}()
+	if err == nil {
+		return nil
+	}
+	var restoreErr *caddy.RestoreError
+	if errors.As(err, &restoreErr) {
+		s.trySyncCaddy(srv.ID, false)
+	}
+	if metricsCfg.ObserveCatchAllHost {
+		return fmt.Errorf("Caddy server %q rejected detailed metrics; observe_catchall_hosts requires Caddy 2.11 or newer: %w", srv.Name, err)
+	}
+	return fmt.Errorf("Caddy server %q rejected Prometheus metrics: %w", srv.Name, err)
 }
 
 func prometheusScrapeTarget(adminURL string) string {

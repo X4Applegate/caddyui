@@ -191,11 +191,16 @@ func (s *Server) previewLayer4Validate(serverID int64, p *models.Layer4Proxy) st
 	if !replaced {
 		proxies = append(proxies, *p)
 	}
+	if s.syncHoldFor(serverID) != nil {
+		return "" // the preview is live and the sync that replaces it is held (T-0966)
+	}
 	cl := s.caddyForServer(serverID)
 	app, err := layer4AppFor(cl, srv, proxies)
 	if err != nil {
 		return "Caddy rejected the layer4 configuration: " + err.Error()
 	}
+	s.syncMu.Lock() // a sync must not land between the read and the load (T-0966)
+	defer s.syncMu.Unlock()
 	current, _, err := cl.FetchConfig()
 	if err != nil {
 		return ""
