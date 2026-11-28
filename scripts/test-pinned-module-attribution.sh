@@ -74,6 +74,7 @@ SHIM
 case "\$*" in
   "list -m all")      cat "$WORK/modules.txt" ;;
   "list -deps ./...") [ "$3" = deps-ok ] && cat "$FIX/linked-packages.txt" || exit 1 ;;
+  "version -m "*)     cat "$WORK/graph.txt" ;;
   *) exit 1 ;;
 esac
 SHIM
@@ -163,6 +164,51 @@ t="$(run nodeps "$FIX" deps-fail)"
 check "6  without a package list, GHSA-xmrv-pmrh-hhx2 is kept on the root (fail-safe)" \
   "1" "$(rows "$t" "$ROOT" GHSA-xmrv-pmrh-hhx2)"
 check "6b mysql is still reported" "1" "$(rows "$t" "$MYSQL" GHSA-4v5x-9mc8-gr98)"
+
+echo
+echo "=== the image binary path: rule 2 from the binary's function table (T-0951) ==="
+# A `--binary` run has no `go list -deps`. Before T-0951 graph rows fell back
+# to prefix matching, so GHSA-3jcv (`< v1.108.8`, an rds range) and
+# GHSA-xmrv (eventstream) sat on the root pin of the published caddy image.
+# The fake binary carries the pclntab-style function names the real one does,
+# PACKED BACK TO BACK as Go stores them (the sso/github.com glue is real).
+printf 'mod\tcaddy\t(devel)\n' > "$WORK/graph.txt"
+awk 'NR>1 {printf "\tdep\t%s\t%s\th1:x=\n", $1, $2}' "$WORK/modules.txt" >> "$WORK/graph.txt"
+mkbin() { # $1 = out file, $2.. = function names
+  local f="$1"; shift
+  { printf '\x7fELF\0\0'; printf '%s' "$@"; printf '\0'; } > "$f"
+}
+mkbin "$WORK/caddy-bin" \
+  'github.com/aws/aws-sdk-go-v2/aws.Bool' \
+  'github.com/aws/aws-sdk-go-v2/aws/retry.NewStandard' \
+  'github.com/aws/aws-sdk-go-v2/service/route53.New' \
+  'github.com/aws/aws-sdk-go-v2/service/sso.New' \
+  'github.com/aws/aws-sdk-go-v2/service/sts.(*Client).AssumeRole' \
+  'github.com/go-sql-driver/mysql.(*mysqlConn).Close'
+runbin() { # $1 = name, $2 = advisory dir, $3 = binary
+  mkshims "$WORK/shim-$1" "$2" deps-fail
+  PATH="$WORK/shim-$1:$PATH" GH_TOKEN='' GITHUB_TOKEN='' bash "$SCRIPT" \
+    --dockerfile "$REPO_ROOT/Dockerfile.caddy" --binary "$3" \
+    --out-dir "$WORK/o-$1" >/dev/null 2>&1 || true
+  printf '%s' "$WORK/o-$1/image-extra.tsv"
+}
+t="$(runbin bin "$WORK/adv5" "$WORK/caddy-bin")"
+check "7  binary sweep ran (mysql is live on the graph row)" \
+  "1" "$(rows "$t" "$MYSQL" GHSA-4v5x-9mc8-gr98)"
+check "7b GHSA-3jcv-796g-cpjg (rds range) is NOT on the root graph row" \
+  "0" "$(rows "$t" "$ROOT" GHSA-3jcv-796g-cpjg)"
+check "7c GHSA-xmrv-pmrh-hhx2 (eventstream, unlinked) is NOT on the root graph row" \
+  "0" "$(rows "$t" "$ROOT" GHSA-xmrv-pmrh-hhx2)"
+check "7d a linked root package (aws/retry) still attributes to the root graph row" \
+  "1" "$(rows "$t" "$ROOT" GHSA-test-root-retry)"
+check "7e the binary's package list was written" \
+  "yes" "$(grep -qx 'github.com/aws/aws-sdk-go-v2/service/sso' "$WORK/o-bin/binary-packages.txt" 2>/dev/null && echo yes || echo no)"
+# Case 8. A binary with no readable function table: no package list, so rule
+# 2 is skipped and the unlinked advisory is KEPT on the root (fail-safe).
+mkbin "$WORK/bare-bin" 'nothing-here'
+t="$(runbin bare "$FIX" "$WORK/bare-bin")"
+check "8  no function table -> GHSA-xmrv-pmrh-hhx2 kept on the root graph row" \
+  "1" "$(rows "$t" "$ROOT" GHSA-xmrv-pmrh-hhx2)"
 
 echo
 echo "passed: $pass  failed: $fail"
