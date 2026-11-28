@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ## [Unreleased]
 
+## [2.68.21] - 2026-11-27 - Client-certificate hosts are never served over plain HTTP
+
 ### Security
 
 - **Client-certificate (mTLS) proxy hosts are no longer served over plain HTTP.** With Force SSL off, a host with client certificate auth (v2.64.0) was also proxied on CaddyUI's `:80` server, where there is no TLS handshake and so no certificate check: any client could reach the upstream over `http://` without a certificate. Such a host is now always treated as Force SSL — `:80` answers `308` to `https://` and the certificate is required there. Verified on Caddy v2.11.9. The proxy host form notes this beside Force SSL. **Behaviour change:** a client-auth host that was only used over plain HTTP (for example behind an external TLS terminator) now gets a 308 to HTTPS. [[T-0967]]
