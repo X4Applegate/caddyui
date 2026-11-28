@@ -304,7 +304,7 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		elided = append(elided, "path-based redirect rules")
 	}
 	if p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced && p.ClientAuthEnabled() {
-		elided = append(elided, "plain HTTP on :80 (with SSL off CaddyUI also serves this host on :80, where no client certificate can be asked for; this export serves it over HTTPS only, so the client certificate requirement holds)")
+		elided = append(elided, "plain HTTP on :80 (client certificate auth needs TLS, so this host is served over HTTPS only and :80 redirects to HTTPS)")
 	}
 	if p.OwnerEmail != "" {
 		fmt.Fprintf(&b, "# Owner: %s\n", caddyfileComment(p.OwnerEmail))
