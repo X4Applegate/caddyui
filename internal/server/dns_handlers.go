@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -2301,14 +2302,13 @@ func (s *Server) postTestWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postTestEmail(w http.ResponseWriter, r *http.Request) {
-	subject := "[CaddyUI] Test email"
-	body := fmt.Sprintf(
-		"This is a test notification from CaddyUI.\n\nIf you received this, your SMTP configuration is working correctly.\n\nSent at: %s\n",
-		time.Now().UTC().Format(time.RFC3339),
-	)
+	subject := mime.QEncoding.Encode("UTF-8", s.tr(r, "settings.smtp.test_mail.subject"))
+	body := s.tr(r, "settings.smtp.test_mail.body", "timestamp", time.Now().UTC().Format(time.RFC3339))
 	if err := sendEmail(s.DB, subject, body); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": false, "error": s.tr(r, "settings.smtp.test_mail.failed", "error", err.Error()),
+		})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
