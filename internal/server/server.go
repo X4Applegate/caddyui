@@ -4939,11 +4939,21 @@ func (s *Server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	if s.autoSnapshotsEnabled() {
 		_, cur, err := caddyCl.FetchConfig()
 		if err != nil || cur == "" || cur == "null" {
+			detail := "cannot capture current Caddy config; restore aborted"
+			if err != nil {
+				detail += ": " + err.Error()
+			} else {
+				detail += ": live config is empty"
+			}
+			_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "snapshot_restore_failed",
+				fmt.Sprintf("snapshot:%d", id), detail, false)
 			http.Error(w, "cannot capture current Caddy config; restore aborted", http.StatusBadGateway)
 			return
 		}
 		if _, err := models.CreateSnapshot(s.DB, s.currentServerID(r), models.SnapshotSourceAuto,
 			fmt.Sprintf("auto: before restoring snapshot #%d", id), cur); err != nil {
+			_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "snapshot_restore_failed",
+				fmt.Sprintf("snapshot:%d", id), "cannot save recovery snapshot; restore aborted: "+err.Error(), false)
 			http.Error(w, "cannot save recovery snapshot; restore aborted", http.StatusInternalServerError)
 			return
 		}
