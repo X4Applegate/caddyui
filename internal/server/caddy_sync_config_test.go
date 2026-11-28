@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -572,44 +573,47 @@ func TestHTTPRoutesRedirectClientAuthHostEvenWithoutForceSSL(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	s := &Server{DB: conn}
-	for _, mode := range []string{"request", "require", "verify_if_given", "require_and_verify"} {
-		t.Run(mode, func(t *testing.T) {
-			proxies := []models.ProxyHost{
-				{Domains: "mtls.test", Enabled: true, SSLEnabled: true, SSLForced: false, ClientAuthMode: mode, ForwardScheme: "http", ForwardHost: "app", ForwardPort: 8080},
-				{Domains: "open.example.com", Enabled: true, SSLEnabled: true, ForwardScheme: "http", ForwardHost: "app", ForwardPort: 8080},
-			}
-			routes := s.buildHTTPRoutes(proxies, nil, nil)
-			raw, _ := json.Marshal(routes)
-			var decoded []map[string]any
-			_ = json.Unmarshal(raw, &decoded)
-			redirected := false
-			for _, r := range decoded {
-				matches, _ := r["match"].([]any)
-				hosts := []any{}
-				for _, m := range matches {
-					if h, ok := m.(map[string]any)["host"].([]any); ok {
-						hosts = append(hosts, h...)
+	for _, sslOn := range []bool{true, false} {
+		for _, mode := range []string{"request", "require", "verify_if_given", "require_and_verify"} {
+			sslOn, mode := sslOn, mode
+			t.Run(fmt.Sprintf("%s/ssl=%v", mode, sslOn), func(t *testing.T) {
+				proxies := []models.ProxyHost{
+					{Domains: "mtls.test", Enabled: true, SSLEnabled: sslOn, SSLForced: false, ClientAuthMode: mode, ForwardScheme: "http", ForwardHost: "app", ForwardPort: 8080},
+					{Domains: "open.example.com", Enabled: true, SSLEnabled: true, ForwardScheme: "http", ForwardHost: "app", ForwardPort: 8080},
+				}
+				routes := s.buildHTTPRoutes(proxies, nil, nil)
+				raw, _ := json.Marshal(routes)
+				var decoded []map[string]any
+				_ = json.Unmarshal(raw, &decoded)
+				redirected := false
+				for _, r := range decoded {
+					matches, _ := r["match"].([]any)
+					hosts := []any{}
+					for _, m := range matches {
+						if h, ok := m.(map[string]any)["host"].([]any); ok {
+							hosts = append(hosts, h...)
+						}
 					}
-				}
-				hasMTLS := false
-				for _, h := range hosts {
-					if h == "mtls.test" {
-						hasMTLS = true
+					hasMTLS := false
+					for _, h := range hosts {
+						if h == "mtls.test" {
+							hasMTLS = true
+						}
 					}
+					if !hasMTLS {
+						continue
+					}
+					h := r["handle"].([]any)[0].(map[string]any)
+					if h["handler"] == "static_response" && h["status_code"] == float64(http.StatusPermanentRedirect) {
+						redirected = true
+						continue
+					}
+					t.Fatalf(":80 has a non-redirect route for client-auth host mtls.test: %s", raw)
 				}
-				if !hasMTLS {
-					continue
+				if !redirected {
+					t.Fatalf("mtls.test missing from the :80 HTTPS redirect: %s", raw)
 				}
-				h := r["handle"].([]any)[0].(map[string]any)
-				if h["handler"] == "static_response" && h["status_code"] == float64(http.StatusPermanentRedirect) {
-					redirected = true
-					continue
-				}
-				t.Fatalf(":80 has a non-redirect route for client-auth host mtls.test: %s", raw)
-			}
-			if !redirected {
-				t.Fatalf("mtls.test missing from the :80 HTTPS redirect: %s", raw)
-			}
-		})
+			})
+		}
 	}
 }
