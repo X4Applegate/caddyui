@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ## [Unreleased]
 
+## [2.68.22] - 2026-11-27 - Checking a config no longer changes the live Caddy config
+
+### Fixed
+
+- **"Validate" no longer applies config to Caddy.** The old `Client.Validate` POSTed `/load`, so every check pushed config live. The CrowdSec module check now uses `/adapt` (and sync removes a leftover `caddyui_crowdsec_probe` server), the metrics check uses `ProbeLoad`, which builds its test config and its restore from one snapshot and always restores, and the sync paths call the renamed `Client.LoadConfig`. Probes and save previews hold the sync lock, so they can no longer roll back a concurrent save; previews apply CrowdSec wrapping like sync does and are skipped during a post-apply hold; a save that fails after its preview resyncs Caddy from the database. [[T-0965]]
+
 ## [2.68.21] - 2026-11-27 - Client-certificate hosts are never served over plain HTTP
 
 ### Security
