@@ -9,6 +9,17 @@ import (
 	"testing/fstest"
 )
 
+func TestLoadReportsCatalogWithUTF8BOM(t *testing.T) {
+	files := fstest.MapFS{
+		"i18n/en.json": {Data: []byte("{}")},
+		"i18n/fr.json": {Data: []byte("\xef\xbb\xbf{}")},
+	}
+	_, err := Load(files, "i18n")
+	if err == nil || !strings.Contains(err.Error(), "fr.json") {
+		t.Fatalf("want error naming fr.json, got %v", err)
+	}
+}
+
 func testBundle(t *testing.T) *Bundle {
 	t.Helper()
 	fs := fstest.MapFS{
