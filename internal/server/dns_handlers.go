@@ -1609,21 +1609,25 @@ func (s *Server) postSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if crowdSecFormCfg.Enabled && (crowdSecConfigFingerprint(previousCrowdSec) != crowdSecConfigFingerprint(crowdSecFormCfg) || strings.TrimSpace(r.FormValue("crowdsec_api_key")) != "") {
-			if err := s.validateCrowdSecServers(crowdSecFormCfg); err != nil {
-				http.Error(w, "CrowdSec validation failed: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
 		previousMetrics := metricsFormCfg
 		metricsFormCfg, err = prometheusMetricsConfigFromForm(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// T-0965: the metrics check runs first. It is the one that briefly
+		// loads a config (ProbeLoad, which restores the live one); the
+		// CrowdSec check only asks /adapt, so neither can leave anything
+		// applied when the other then rejects the form.
 		if metricsFormCfg.Enabled && prometheusMetricsConfigFingerprint(previousMetrics) != prometheusMetricsConfigFingerprint(metricsFormCfg) {
 			if err := s.validatePrometheusMetricsServers(metricsFormCfg); err != nil {
 				http.Error(w, "Prometheus metrics validation failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		if crowdSecFormCfg.Enabled && (crowdSecConfigFingerprint(previousCrowdSec) != crowdSecConfigFingerprint(crowdSecFormCfg) || strings.TrimSpace(r.FormValue("crowdsec_api_key")) != "") {
+			if err := s.validateCrowdSecServers(crowdSecFormCfg); err != nil {
+				http.Error(w, "CrowdSec validation failed: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		}

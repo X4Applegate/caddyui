@@ -113,18 +113,31 @@ func TestPrometheusMetricsFormValidation(t *testing.T) {
 	}
 }
 
+// T-0965: the metrics check provisions the proposed config through
+// ProbeLoad, so Caddy checks its own schema, and then always loads the
+// original config back. Before T-0965 it posted /load?validate_only=true,
+// which Caddy ignores, so metrics stayed live before the settings were saved.
 func TestValidatePrometheusMetricsServersUsesCaddySchema(t *testing.T) {
-	var validated map[string]any
+	original := map[string]any{
+		"apps": map[string]any{"http": map[string]any{"servers": map[string]any{"srv0": map[string]any{}}}},
+	}
+	live := original
+	var loads []map[string]any
 	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/config/":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"apps": map[string]any{"http": map[string]any{"servers": map[string]any{"srv0": map[string]any{}}}},
-			})
-		case r.Method == http.MethodPost && r.URL.Path == "/load" && r.URL.Query().Get("validate_only") == "true":
-			if err := json.NewDecoder(r.Body).Decode(&validated); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(live)
+		case r.Method == http.MethodPost && r.URL.Path == "/load":
+			if r.URL.Query().Has("validate_only") {
+				t.Errorf("/load sent with validate_only; Caddy ignores it")
 			}
+			var cfg map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			loads = append(loads, cfg)
+			live = cfg
 		default:
 			http.NotFound(w, r)
 		}
@@ -148,9 +161,15 @@ func TestValidatePrometheusMetricsServersUsesCaddySchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metrics := validated["apps"].(map[string]any)["http"].(map[string]any)["metrics"].(map[string]any)
+	if len(loads) != 2 {
+		t.Fatalf("loads = %d, want 2 (probe, then restore)", len(loads))
+	}
+	metrics := loads[0]["apps"].(map[string]any)["http"].(map[string]any)["metrics"].(map[string]any)
 	if metrics["per_host"] != true || metrics["observe_catchall_hosts"] != true {
-		t.Fatalf("validated metrics = %#v", metrics)
+		t.Fatalf("probed metrics = %#v", metrics)
+	}
+	if !configValuesEqual(live, original) {
+		t.Fatalf("live config after the check = %#v, want the original %#v", live, original)
 	}
 }
 

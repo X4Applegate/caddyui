@@ -381,11 +381,16 @@ func buildLayer4App(caddyCl *caddy.Client, caddyfileSrc string) (map[string]any,
 	return extractAdaptedLayer4App(adapted.Result), nil
 }
 
-// previewRawRouteValidate simulates syncCaddy with rr swapped into the raw_routes
-// list (replacing the entry with the same ID, or appended if new) and calls
-// Caddy's /load?validate_only=true. Returns a non-empty message only when Caddy
-// would reject the resulting config — so callers can refuse to save instead of
-// committing a change that breaks the live config on next sync.
+// previewRawRouteValidate builds the config syncCaddy would push with rr
+// swapped into the raw_routes list (replacing the entry with the same ID, or
+// appended if new) and loads it into Caddy. Returns a non-empty message only
+// when Caddy rejects the resulting config — so callers can refuse to save
+// instead of committing a change that breaks the live config on next sync.
+//
+// An ACCEPTED preview is already live (Caddy ignores validate_only; T-0965),
+// before the row is saved. Callers must hold a previewResync from
+// s.resyncAfterPreview so Caddy is put back to the database state when the
+// save then fails.
 func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) string {
 	proxies, redirs, raws, certs, ok := s.serverResources(serverID)
 	if !ok {
@@ -406,8 +411,13 @@ func (s *Server) previewRawRouteValidate(serverID int64, rr *models.RawRoute) st
 }
 
 // validateProposedConfig builds the config a sync would push for these
-// resources and asks Caddy to validate it. Returns "" when Caddy accepts it
-// or cannot be reached — a save must not be blocked by an unrelated outage.
+// resources and loads it into Caddy. Returns "" when Caddy accepts it or
+// cannot be reached — a save must not be blocked by an unrelated outage.
+//
+// This is a preview by apply, not a dry run (T-0965): Caddy ignores
+// validate_only, so an accepted config is live from here on. That matches
+// the sync the save runs right after; when the save fails instead, the
+// handler's previewResync syncs the database state back.
 // v2.42.1 (issue #74): shared by the proxy host, redirection and certificate
 // forms as well as Advanced routes.
 func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute, certs []models.Certificate) string {
@@ -450,7 +460,8 @@ func (s *Server) validateProposedConfig(serverID int64, proxies []models.ProxyHo
 	// for real, otherwise a raw_route edit could validate clean here but
 	// fail with errors.routes rejection at sync time.
 	applyErrorPages(proposed)
-	if err := caddyCl.Validate(proposed); err != nil {
+	// Applies the config when Caddy accepts it (T-0965).
+	if err := caddyCl.LoadConfig(proposed); err != nil {
 		return "Caddy rejected the proposed config: " + friendlyCaddyError(err.Error())
 	}
 	return ""
@@ -475,6 +486,8 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	// v2.7.8: refuse to save a raw route whose first match.host doesn't live
 	// in the selected DNS zone. Same logic and rationale as the proxy-host
 	// path. Routes with no host matcher (path- or port-only) skip the check
@@ -513,6 +526,7 @@ func (s *Server) createRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.dnsCreateRecordForRaw(s.currentServerID(r), id, rr)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_create", fmt.Sprintf("raw:%d", id), rr.Label, true)
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), rr.CertificateID != 0)
 	// v2.27.0 (issue #38): "Also deploy to" parity with proxy/redirect hosts.
 	// rr.ID must be set so upsertFleetRawRoute can key the fleet mapping off
@@ -696,6 +710,8 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.renderRawRouteFormError(w, r, rr, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	if err := models.UpdateRawRoute(s.DB, rr); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -718,6 +734,7 @@ func (s *Server) updateRawRoute(w http.ResponseWriter, r *http.Request) {
 		s.dnsCreateRecordForRaw(s.currentServerID(r), rr.ID, rr)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "raw_update", fmt.Sprintf("raw:%d", id), rr.Label, true)
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	// v2.27.0 (issue #38): re-deploy the edited route to any selected targets.
 	var deployProblems []string
@@ -1028,8 +1045,9 @@ func (s *Server) pruneActivityLog() {
 //
 //  1. Reads the current live config and builds a "proposed" config with our routes,
 //     tls.certificates, and automatic_https.skip_certificates merged in.
-//  2. Validates the proposed config via /load?validate_only=true. Nothing is applied
-//     if validation fails — Caddy's diagnostic is surfaced to the caller.
+//  2. Loads the proposed config via /load (LoadConfig). This is the apply: Caddy
+//     ignores validate_only, so an accepted config goes live here (T-0965). A
+//     rejected config changes nothing — Caddy's diagnostic is surfaced to the caller.
 //  3. Snapshots the pre-change live config into config_snapshots (source='auto').
 //  4. Writes the three subtrees (routes, tls, automatic_https) via POST /config/....
 //     POST is Caddy's set-or-replace semantic; it leaves admin, acme, email,
@@ -1078,7 +1096,12 @@ func (s *Server) syncPrometheusMetricsOnly(serverID int64, metricsCfg prometheus
 		return fmt.Errorf("clone config for metrics: %w", err)
 	}
 	applyPrometheusMetrics(proposed, metricsCfg, serverID)
-	if err := s.caddyClient().Validate(proposed); err != nil {
+	if removeCrowdSecProbeServer(proposed) { // T-0965: leftover of the old CrowdSec check
+		log.Printf("sync(server=%d): removing leftover %s server", serverID, crowdSecProbeServerName)
+	}
+	// This /load is the apply (T-0965: it used to be called Validate). A
+	// rejected config changes nothing; the subtree writes below repeat it.
+	if err := s.caddyClient().LoadConfig(proposed); err != nil {
 		return fmt.Errorf("caddy rejected Prometheus metrics config: %w", err)
 	}
 	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
@@ -1116,7 +1139,12 @@ func (s *Server) syncLayer4Only(serverID int64, srv *models.CaddyServer, proxies
 	}
 	applyLayer4App(proposed, layer4App)
 	s.applyLayer4ListenerWrappers(proposed, serverID, proxies) // v2.61.0 (issue #126)
-	if err := s.caddyClient().Validate(proposed); err != nil {
+	if removeCrowdSecProbeServer(proposed) {                   // T-0965: leftover of the old CrowdSec check
+		log.Printf("sync(server=%d): removing leftover %s server", serverID, crowdSecProbeServerName)
+	}
+	// This /load is the apply (T-0965: it used to be called Validate). A
+	// rejected config changes nothing; the subtree writes below repeat it.
+	if err := s.caddyClient().LoadConfig(proposed); err != nil {
 		return fmt.Errorf("caddy rejected layer4 config: %w", err)
 	}
 	if s.autoSnapshotsEnabled() && currentJSON != "" && currentJSON != "null" {
@@ -1364,9 +1392,15 @@ func (s *Server) syncCaddyInner(serverID int64, forceTLS, allowEmpty bool) error
 	// users hitting a restart window see something nicer than Caddy's
 	// plaintext fallback and ops can correlate to access logs via {err.id}.
 	applyErrorPages(proposed)
+	if removeCrowdSecProbeServer(proposed) { // T-0965: leftover of the old CrowdSec check
+		log.Printf("sync(server=%d): removing leftover %s server", serverID, crowdSecProbeServerName)
+	}
 
-	// Validate before touching anything. Caddy runs full provisioning.
-	if err := s.caddyClient().Validate(proposed); err != nil {
+	// Apply the whole proposed config. This /load IS the apply: Caddy runs
+	// full provisioning and either switches to it or rejects it and changes
+	// nothing (T-0965: it used to be called Validate, but Caddy ignores
+	// validate_only). The subtree writes below then repeat the same values.
+	if err := s.caddyClient().LoadConfig(proposed); err != nil {
 		_ = models.LogActivity(s.DB, serverID, "system", "sync_validation_failed", "", err.Error(), false)
 		return fmt.Errorf("caddy rejected proposed config: %s", friendlyCaddyError(err.Error()))
 	}
