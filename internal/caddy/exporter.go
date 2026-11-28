@@ -157,7 +157,7 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 	if why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
-	if sites, err := checkCaddyfileSites(out, imports); err != nil || len(sites) != 1 {
+	if sites, err := checkCaddyfileSites(out, imports); err != nil || len(sites) != caddyfileSiteCount(p, cert, domains) {
 		return caddyfileFailClosedSite(domains, "the generated block would not stay self-contained (check the Advanced config)")
 	}
 	// Issue #184 review: every tenant host is re-checked by the server —
@@ -306,6 +306,12 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	if p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced && p.ClientAuthEnabled() {
 		elided = append(elided, "plain HTTP on :80 (client certificate auth needs TLS, so this host is served over HTTPS only and :80 redirects to HTTPS)")
 	}
+	if p.UpstreamKeepaliveProbes > 0 {
+		elided = append(elided, "upstream keep-alive probe count (Caddy has no such option)")
+	}
+	if p.UpstreamKeepaliveMaxLifetimeSec > 0 {
+		elided = append(elided, "upstream keep-alive max lifetime (Caddy has no such option)")
+	}
 	if p.OwnerEmail != "" {
 		fmt.Fprintf(&b, "# Owner: %s\n", caddyfileComment(p.OwnerEmail))
 	}
@@ -319,20 +325,35 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 		}
 	}
 
+	// Force SSL off: served on :443 and, without a redirect, on :80
+	// (T-0927, T-0947). A site with a `tls <cert> <key>` line cannot also
+	// listen on plain HTTP, so it gets a second, plain http:// site with the
+	// same body (caddyfilePlainHTTPTwin).
+	tlsLine := caddyfileTLSFileLine(p, cert)
 	siteAddrs := domains
+	var twinAddrs []string
 	if caddyfileServesPlainHTTP(p) {
-		// SSL off: served on :443 and, without a redirect, on :80 (T-0927).
-		siteAddrs = caddyfilePlainHTTPAddresses(domains)
+		switch {
+		case p.CertificateID == 0 && !p.SSLEnabled:
+			siteAddrs = caddyfilePlainHTTPAddresses(domains)
+		case tlsLine == "":
+			// SSL on: an address with a port or a scheme keeps it, as
+			// before (review finding 4 of T-0927 left that alone).
+			siteAddrs = caddyfileSSLOnPlainHTTPAddresses(domains)
+		default:
+			twinAddrs = caddyfilePlainHTTPTwinAddresses(domains)
+		}
 	}
 	fmt.Fprintf(&b, "%s {\n", strings.Join(siteAddrs, ", "))
+	bodyStart := b.Len()
 
 	// TLS block — cert source. Auto (ACME) is implicit when the site has a
 	// public hostname; we only need an explicit `tls` directive for custom
 	// certs or specific CA hints.
 	if p.CertificateID > 0 {
 		switch {
-		case cert != nil && cert.Source == models.CertSourcePath && cert.CertPath != "" && cert.KeyPath != "":
-			fmt.Fprintf(&b, "\ttls %s %s\n", caddyfileValue(cert.CertPath), caddyfileValue(cert.KeyPath))
+		case tlsLine != "":
+			b.WriteString(tlsLine)
 		case cert != nil && cert.Source == models.CertSourcePEM:
 			fmt.Fprintf(&b, "\t# tls: stored PEM certificate %q — CaddyUI loads it into Caddy's certificate pool directly (load_pem); a Caddyfile would need the files on disk\n", caddyfileComment(cert.Name))
 		case cert != nil && cert.Source == models.CertSourceManaged:
@@ -568,7 +589,15 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	}
 
 	b.WriteString("}\n")
-	return b.String(), ""
+	out := b.String()
+	if len(twinAddrs) > 0 {
+		body := out[bodyStart:]
+		if !strings.HasPrefix(body, tlsLine) {
+			return "", "the plain-HTTP site for Force SSL off could not be written"
+		}
+		out += fmt.Sprintf("%s {\n%s", strings.Join(twinAddrs, ", "), strings.TrimPrefix(body, tlsLine))
+	}
+	return out, ""
 }
 
 // RenderRedirectionCaddyfile emits a redirection host as a Caddyfile site

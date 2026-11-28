@@ -3,6 +3,7 @@
 package caddy
 
 import (
+	"fmt"
 	"net"
 	"strings"
 
@@ -113,11 +114,62 @@ func caddyfileAddressPort(a string) string {
 	return ""
 }
 
-// caddyfileServesPlainHTTP reports whether p is exported with http:// and
-// https:// addresses (T-0927): SSL off, no certificate, Force SSL off, and
-// no client-certificate auth, whose `tls { client_auth … }` block Caddy
-// refuses in a site that also listens on plain HTTP ("server listening on
-// [:80] is HTTP, but attempts to configure TLS connection policies").
+// caddyfileServesPlainHTTP reports whether p is exported as served on
+// plain HTTP as well as HTTPS: buildHTTPRoutes serves every host with
+// Force SSL off on :80 without a redirect, whether SSL is on or not
+// (T-0927, finding 10 of its review in T-0947). Not with client-certificate
+// auth: Caddy refuses its `tls { client_auth … }` block in a site that also
+// listens on plain HTTP ("server listening on [:80] is HTTP, but attempts
+// to configure TLS connection policies"), and a client-certificate host
+// must not be reachable without one (T-0967).
 func caddyfileServesPlainHTTP(p models.ProxyHost) bool {
-	return p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced && !p.ClientAuthEnabled()
+	return !p.SSLForced && !p.ClientAuthEnabled()
+}
+
+// caddyfileTLSFileLine returns the `tls <cert> <key>` line the export writes
+// for p's certificate files, or "" when it writes none.
+func caddyfileTLSFileLine(p models.ProxyHost, cert *models.Certificate) string {
+	if p.CertificateID > 0 && cert != nil && cert.Source == models.CertSourcePath && cert.CertPath != "" && cert.KeyPath != "" {
+		return fmt.Sprintf("\ttls %s %s\n", caddyfileValue(cert.CertPath), caddyfileValue(cert.KeyPath))
+	}
+	return ""
+}
+
+// caddyfilePlainHTTPTwinAddresses returns the http:// addresses of the
+// plain-HTTP twin site a host with certificate files gets when Force SSL is
+// off: one per address with no scheme and no port (an address with a port
+// already names its one listener).
+func caddyfilePlainHTTPTwinAddresses(addrs []string) []string {
+	var out []string
+	for _, a := range addrs {
+		if !strings.Contains(a, "://") && caddyfileAddressPort(a) == "" {
+			out = append(out, "http://"+a)
+		}
+	}
+	return out
+}
+
+// caddyfileSSLOnPlainHTTPAddresses returns the site addresses of a host
+// with SSL on and Force SSL off (finding 10 of the T-0927 review): each
+// address with no scheme and no port as http:// and https://, every other
+// address unchanged.
+func caddyfileSSLOnPlainHTTPAddresses(addrs []string) []string {
+	out := make([]string, 0, 2*len(addrs))
+	for _, a := range addrs {
+		if !strings.Contains(a, "://") && caddyfileAddressPort(a) == "" {
+			out = append(out, "http://"+a, "https://"+a)
+		} else {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// caddyfileSiteCount is the number of sites renderProxyHostSite writes for
+// p: two when it adds a plain-HTTP twin, otherwise one.
+func caddyfileSiteCount(p models.ProxyHost, cert *models.Certificate, domains []string) int {
+	if caddyfileServesPlainHTTP(p) && caddyfileTLSFileLine(p, cert) != "" && len(caddyfilePlainHTTPTwinAddresses(domains)) > 0 {
+		return 2
+	}
+	return 1
 }

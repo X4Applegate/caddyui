@@ -3869,6 +3869,8 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		ownerID = cu.ID
 	}
 
+	importSSL := readCaddyfileImportSSL(adaptedRoutes)
+	proxyFromRoute := map[int]bool{}
 	for idx, route := range routes {
 		hosts := hostsFromRoute(route)
 		var blockText string
@@ -3881,6 +3883,16 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 		label := strings.Join(hosts, ",")
 		if label == "" {
 			label = fmt.Sprintf("route[%d] (no host match)", idx)
+		}
+		// T-0947 (finding 12): the plain-HTTP twin of an HTTPS site is the
+		// host's Force SSL off, set on the host the other route makes.
+		if j, ok := importSSL.twinOf[idx]; ok && proxyFromRoute[j] {
+			results = append(results, caddyfileImportResult{
+				Head: label, Snippet: blockText, RouteIdx: idx,
+				Status:  "skipped",
+				Message: fmt.Sprintf("plain-HTTP copy of route %d: imported as Force SSL off on that host", j),
+			})
+			continue
 		}
 		// Skip if any host on this route is already claimed elsewhere (proxy,
 		// redirect, or another raw route). Report as "skipped" so the user can
@@ -3924,6 +3936,12 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 			if len(classified.Proxies) == 1 {
 				ph := classified.Proxies[0]
 				ph.Enabled = true
+				switch {
+				case importSSL.forceOff[idx]:
+					ph.SSLForced = false
+				case importSSL.plainOnly[idx]:
+					ph.SSLEnabled, ph.SSLForced = false, false
+				}
 				// GHSA-r4wm-rgc5-q834 (3rd finding) follow-up: ph.ForwardHost
 				// comes straight from the pasted Caddyfile block, so it needs
 				// the same non-admin upstream guard the REST/form create
@@ -3950,6 +3968,7 @@ func (s *Server) postCaddyfileImport(w http.ResponseWriter, r *http.Request) {
 				for _, h := range hosts {
 					taken[strings.ToLower(h)] = struct{}{}
 				}
+				proxyFromRoute[idx] = true
 				created++
 				results = append(results, caddyfileImportResult{
 					Head: label, Snippet: blockText, RouteIdx: idx,

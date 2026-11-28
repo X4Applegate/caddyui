@@ -177,8 +177,10 @@ func TestExportSSLOffHostHasNoTLSOff(t *testing.T) {
 	withCert := p
 	withCert.CertificateID = 3
 	out = RenderProxyHostCaddyfileWithCertificate(withCert, &models.Certificate{ID: 3, Source: models.CertSourcePath, CertPath: "/c.pem", KeyPath: "/k.pem"})
-	if strings.Contains(out, "http://") || !strings.Contains(out, "\ttls /c.pem /k.pem\n") {
-		t.Fatalf("SSL-off host with a certificate: want the certificate's tls line on the plain address:\n%s", out)
+	// Force SSL off: the HTTPS site keeps the tls line and a plain-HTTP
+	// twin serves :80 without it (T-0947, finding 10).
+	if !strings.HasPrefix(out, "plain.example.test {\n\ttls /c.pem /k.pem\n") || !strings.Contains(out, "}\nhttp://plain.example.test {\n") || strings.Count(out, "tls /c.pem") != 1 {
+		t.Fatalf("SSL-off host with a certificate: want the tls line on the HTTPS site and a plain-HTTP twin:\n%s", out)
 	}
 }
 

@@ -529,6 +529,10 @@ func TestRound7FalsePositivesExportAndServe(t *testing.T) {
 func exportedSite(export, site string) string {
 	i := strings.Index(export, "\n"+site+" {\n")
 	if i < 0 {
+		// Force SSL off: served on :80 too (T-0947, finding 10).
+		i = strings.Index(export, "\nhttp://"+site+", https://"+site+" {\n")
+	}
+	if i < 0 {
 		return ""
 	}
 	rest := export[i+1:]

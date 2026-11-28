@@ -493,7 +493,7 @@ func TestCaddyfileExportContainsUnsafeFieldValues(t *testing.T) {
 	ok.Domains = "*.sub.example.test, b.example.test:8443"
 	ok.AdvancedConfig = "encode gzip\nheader X-Frame-Options DENY"
 	okOut := RenderProxyHostCaddyfile(ok)
-	if !strings.Contains(okOut, "*.sub.example.test, b.example.test:8443 {") || !strings.Contains(okOut, "header_up X-Request-Source `caddyui {http.request.host}`") || strings.Contains(okOut, "respond 503") {
+	if !strings.Contains(okOut, "http://*.sub.example.test, https://*.sub.example.test, b.example.test:8443 {") || !strings.Contains(okOut, "header_up X-Request-Source `caddyui {http.request.host}`") || strings.Contains(okOut, "respond 503") {
 		t.Fatalf("safe values must render normally:\n%s", okOut)
 	}
 
@@ -514,7 +514,9 @@ func TestCaddyfileExportContainsUnsafeFieldValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapted, raw := caddyAdapt(t, caddyBin, file)
-	want := []string{"*.sub.example.test", "a.example.test", "b.example.test", "r.example.test"}
+	// Force SSL is off, so the two working hosts are served on :80 too
+	// (T-0947, finding 10); fail-closed sites stay HTTPS-only.
+	want := []string{"*.sub.example.test", "*.sub.example.test", "a.example.test", "a.example.test", "b.example.test", "r.example.test"}
 	for i := range failClosed {
 		want = append(want, fmt.Sprintf("fc%d.example.test", i))
 	}

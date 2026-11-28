@@ -11,10 +11,8 @@ import (
 
 // caddyfileTransportLines returns the `transport http` options the export
 // writes for p's own Upstream settings, one per line, unindented; nil when
-// none is set. These are the options the export has always written (the
-// keep-alive pool is only approximated: live sets keep_alive's per-host
-// limit and idle timeout); BuildProxyRoute generates more, which the export
-// leaves out. An https upstream is not verified unless
+// none is set. BuildProxyRoute generates more, which the export leaves out.
+// Keep-alive settings follow caddyfileKeepAliveLines (T-0947). An https upstream is not verified unless
 // SSL verify upstream is on (v2.9.9), so the export says so too: without
 // tls_insecure_skip_verify the exported proxy would refuse the self-signed
 // upstream the live route accepts (T-0931).
@@ -29,15 +27,55 @@ func caddyfileTransportLines(p models.ProxyHost) []string {
 	if p.UpstreamSNI != "" {
 		l = append(l, "tls_server_name "+caddyfileValue(p.UpstreamSNI))
 	}
-	if p.KeepaliveConns > 0 {
-		l = append(l, fmt.Sprintf("keepalive_idle_conns %d", p.KeepaliveConns))
-	}
+	l = append(l, caddyfileKeepAliveLines(p)...)
 	if p.UpstreamTimeoutSec > 0 {
 		l = append(l, fmt.Sprintf("dial_timeout %ds", p.UpstreamTimeoutSec))
 		l = append(l, fmt.Sprintf("response_header_timeout %ds", p.UpstreamTimeoutSec))
 	}
 	if p.DisableUpstreamCompression {
 		l = append(l, "compression off") // v2.12.52
+	}
+	return l
+}
+
+// caddyfileKeepAliveLines returns the `transport http` keep-alive options
+// that say what BuildProxyRoute's keep_alive says (T-0947):
+//   - Keep-alive conns and idle timeout -> `keepalive <idle>` (live's
+//     default is 90s) and `keepalive_idle_conns_per_host` (live sets
+//     max_idle_conns_per_host; the export used to write keepalive_idle_conns,
+//     which is the pool-wide limit).
+//   - Upstream max idle conns -> keepalive_idle_conns; probe interval ->
+//     keepalive_interval; max conns per host -> max_conns_per_host.
+//   - Keepalive disabled -> `keepalive off`, unless the pool settings above
+//     are set: live then replaces keep_alive with an enabled one.
+//
+// Keep-alive probe count and max lifetime have no Caddy option, so they are
+// not written (renderProxyHostSite notes them).
+func caddyfileKeepAliveLines(p models.ProxyHost) []string {
+	var l []string
+	pool := p.KeepaliveConns > 0 || p.KeepaliveIdleTimeoutSec > 0
+	if p.KeepaliveDisabled && !pool {
+		l = append(l, "keepalive off")
+	} else if pool {
+		idle := 90
+		if p.KeepaliveIdleTimeoutSec > 0 {
+			idle = p.KeepaliveIdleTimeoutSec
+		}
+		l = append(l, fmt.Sprintf("keepalive %ds", idle))
+		if p.KeepaliveConns > 0 {
+			l = append(l, fmt.Sprintf("keepalive_idle_conns_per_host %d", p.KeepaliveConns))
+		}
+	}
+	if !p.KeepaliveDisabled || pool {
+		if p.UpstreamMaxIdleConns > 0 {
+			l = append(l, fmt.Sprintf("keepalive_idle_conns %d", p.UpstreamMaxIdleConns))
+		}
+		if p.UpstreamKeepAliveProbeIntervalSec > 0 {
+			l = append(l, fmt.Sprintf("keepalive_interval %ds", p.UpstreamKeepAliveProbeIntervalSec))
+		}
+	}
+	if p.MaxConnsPerHost > 0 {
+		l = append(l, fmt.Sprintf("max_conns_per_host %d", p.MaxConnsPerHost))
 	}
 	return l
 }
