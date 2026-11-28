@@ -81,14 +81,24 @@ func advTLS(p models.ProxyHost) models.ProxyHost {
 }
 
 func TestCaddyfileAdvancedHasSiteTLS(t *testing.T) {
+	snips := map[string]string{
+		"cf":   "(cf) {\n\ttls {\n\t\tprotocols tls1.2\n\t}\n}",
+		"hdr":  "(hdr) {\n\theader X-A b\n}",
+		"args": "(args) {\n\t{args[0]} x\n}",
+	}
 	for adv, want := range map[string]bool{
 		"":             false,
 		"tls internal": true,
 		"header X-A b\ntls {\n\tprotocols tls1.2\n}":           true,
 		"reverse_proxy {\n\ttransport http {\n\t\ttls\n\t}\n}": false,
 		"header X-Tls \"tls\"":                                 false,
+		"import cf":                                            true,
+		"import hdr":                                           false,
+		"import args tls":                                      true,
+		"import unknown":                                       true,
+		"handle {\n\timport cf\n}":                             false,
 	} {
-		if got := caddyfileAdvancedHasSiteTLS(adv); got != want {
+		if got := caddyfileAdvancedHasSiteTLS(adv, snips); got != want {
 			t.Errorf("%q: got %v, want %v", adv, got, want)
 		}
 	}

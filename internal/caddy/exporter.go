@@ -153,11 +153,12 @@ func renderProxyHost(p models.ProxyHost, cert *models.Certificate, opts ExportOp
 	if why := opts.importProblem(p.AdvancedConfig, p.OwnerID); why != "" {
 		return caddyfileFailClosedSite(domains, "the Advanced config cannot be exported: "+why)
 	}
-	out, why := renderProxyHostSite(p, cert, domains, opts.importedMatcherNames(p.AdvancedConfig))
+	snippets, _ := opts.validSnippets()
+	out, why := renderProxyHostSite(p, cert, domains, opts.importedMatcherNames(p.AdvancedConfig), snippets)
 	if why != "" {
 		return caddyfileFailClosedSite(domains, why)
 	}
-	if sites, err := checkCaddyfileSites(out, imports); err != nil || len(sites) != caddyfileSiteCount(p, cert, domains) {
+	if sites, err := checkCaddyfileSites(out, imports); err != nil || len(sites) != caddyfileSiteCount(p, cert, domains, snippets) {
 		return caddyfileFailClosedSite(domains, "the generated block would not stay self-contained (check the Advanced config)")
 	}
 	// Issue #184 review: every tenant host is re-checked by the server —
@@ -268,7 +269,7 @@ func caddyfileFailClosedSite(domains []string, why string) string {
 // renderProxyHostSite writes the site block for a host whose values passed
 // proxyHostFieldsProblem. why is non-empty when the host still cannot be
 // represented.
-func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains []string, snippetMatchers map[string]bool) (string, string) {
+func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains []string, snippetMatchers map[string]bool, snippets map[string]string) (string, string) {
 	var b strings.Builder
 
 	// Note any non-roundtrippable settings up front so users see them.
@@ -306,7 +307,7 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	if p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced && p.ClientAuthEnabled() {
 		elided = append(elided, "plain HTTP on :80 (client certificate auth needs TLS, so this host is served over HTTPS only and :80 redirects to HTTPS)")
 	}
-	if !p.SSLForced && !p.ClientAuthEnabled() && caddyfileAdvancedHasSiteTLS(p.AdvancedConfig) {
+	if !p.SSLForced && !p.ClientAuthEnabled() && caddyfileAdvancedHasSiteTLS(p.AdvancedConfig, snippets) {
 		elided = append(elided, "plain HTTP on :80 (with Force SSL off CaddyUI also serves this host on :80 without a redirect; the Advanced config's tls directive cannot go in a site that listens on HTTP, so this export serves it over HTTPS only)")
 	}
 	if p.UpstreamKeepaliveProbes > 0 {
@@ -335,7 +336,7 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	tlsLine := caddyfileTLSFileLine(p, cert)
 	siteAddrs := domains
 	var twinAddrs []string
-	if caddyfileServesPlainHTTP(p) {
+	if caddyfileServesPlainHTTP(p, snippets) {
 		switch {
 		case p.CertificateID == 0 && !p.SSLEnabled:
 			siteAddrs = caddyfilePlainHTTPAddresses(domains)

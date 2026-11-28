@@ -126,18 +126,24 @@ func caddyfileAddressPort(a string) string {
 // refuses in a site that also listens on HTTP for the same reason (T-0978
 // review); the live route ignores those options, so the export keeps the
 // host HTTPS-only and lists the :80 difference in its notes.
-func caddyfileServesPlainHTTP(p models.ProxyHost) bool {
-	return !p.SSLForced && !p.ClientAuthEnabled() && !caddyfileAdvancedHasSiteTLS(p.AdvancedConfig)
+func caddyfileServesPlainHTTP(p models.ProxyHost, snippets map[string]string) bool {
+	return !p.SSLForced && !p.ClientAuthEnabled() && !caddyfileAdvancedHasSiteTLS(p.AdvancedConfig, snippets)
 }
 
 // caddyfileAdvancedHasSiteTLS reports whether an Advanced config has a
-// `tls` directive at its top level, or cannot be read (fail safe: true).
-func caddyfileAdvancedHasSiteTLS(adv string) bool {
+// `tls` directive at site level, written there or brought in by a top-level
+// `import` of one of snippets (name → `(name) { … }`). It fails safe to
+// true when the text does not lex, an import names no known snippet, or a
+// snippet places a directive from its arguments.
+func caddyfileAdvancedHasSiteTLS(adv string, snippets map[string]string) bool {
 	if strings.TrimSpace(adv) == "" {
 		return false
 	}
 	toks, _, _, err := lexCaddyfileLenient(adv)
 	if err != nil {
+		return true
+	}
+	if caddyfileHasTLSAtDepth(toks, 0) {
 		return true
 	}
 	depth := 0
@@ -148,7 +154,35 @@ func caddyfileAdvancedHasSiteTLS(adv string) bool {
 			depth++
 		case t.text == "}":
 			depth--
-		case depth == 0 && t.text == "tls" && cfIsNewLine(toks, i):
+		case depth == 0 && t.text == "import" && cfIsNewLine(toks, i):
+			if i+1 >= len(toks) || cfIsNewLine(toks, i+1) {
+				return true
+			}
+			body, ok := snippets[toks[i+1].text]
+			if !ok {
+				return true
+			}
+			stoks, _, _, err := lexCaddyfileLenient(body)
+			if err != nil || caddyfileHasTLSAtDepth(stoks, 1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// caddyfileHasTLSAtDepth reports whether toks has a `tls` directive (or a
+// directive taken from snippet arguments) at line start at brace depth d.
+func caddyfileHasTLSAtDepth(toks []cfToken, d int) bool {
+	depth := 0
+	for i, t := range toks {
+		switch {
+		case t.quoted || t.heredoc:
+		case t.text == "{":
+			depth++
+		case t.text == "}":
+			depth--
+		case depth == d && cfIsNewLine(toks, i) && (t.text == "tls" || strings.HasPrefix(t.text, "{args")):
 			return true
 		}
 	}
@@ -196,8 +230,8 @@ func caddyfileSSLOnPlainHTTPAddresses(addrs []string) []string {
 
 // caddyfileSiteCount is the number of sites renderProxyHostSite writes for
 // p: two when it adds a plain-HTTP twin, otherwise one.
-func caddyfileSiteCount(p models.ProxyHost, cert *models.Certificate, domains []string) int {
-	if caddyfileServesPlainHTTP(p) && caddyfileTLSFileLine(p, cert) != "" && len(caddyfilePlainHTTPTwinAddresses(domains)) > 0 {
+func caddyfileSiteCount(p models.ProxyHost, cert *models.Certificate, domains []string, snippets map[string]string) int {
+	if caddyfileServesPlainHTTP(p, snippets) && caddyfileTLSFileLine(p, cert) != "" && len(caddyfilePlainHTTPTwinAddresses(domains)) > 0 {
 		return 2
 	}
 	return 1
