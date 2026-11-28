@@ -2181,6 +2181,8 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	id, err := models.CreateProxyHost(s.DB, s.currentServerID(r), ownerID, p)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2207,6 +2209,7 @@ func (s *Server) createProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.dnsCreateRecord(s.currentServerID(r), id, p)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_create", fmt.Sprintf("proxy:%d", id), p.Domains, true)
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), p.CertificateID != 0)
 	{
 		// v2.12.51: sendNotification fans out to every configured channel
@@ -2405,6 +2408,8 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 		s.renderProxyHostFormError(w, r, p, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	if err := models.UpdateProxyHost(s.DB, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2435,6 +2440,7 @@ func (s *Server) updateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "proxy_update", fmt.Sprintf("proxy:%d", id), p.Domains, true)
 	forceTLS := old != nil && old.CertificateID != p.CertificateID
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	{
 		payload, _ := json.Marshal(map[string]any{

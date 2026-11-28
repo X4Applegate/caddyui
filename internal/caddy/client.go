@@ -205,17 +205,75 @@ func (c *Client) GetUpstreamHealth(ctx context.Context) ([]UpstreamStatus, error
 	return result, nil
 }
 
-// Validate POSTs the given config to /load?validate_only=true and returns nil if
-// Caddy accepts it, or an error with Caddy's diagnostic message if not.
+// LoadConfig POSTs a full config to /load. A config Caddy accepts is APPLIED
+// to the live server; a rejected config changes nothing and the error carries
+// Caddy's diagnostic.
 //
-// CAUTION: Caddy does not implement validate_only — it is ignored, so a config
-// Caddy ACCEPTS is also APPLIED (confirmed on Caddy 2.11.7; apiValidateRawRoute
-// documents the same finding). A rejected config changes nothing. Callers that
-// build the config from the database plus one pending change therefore apply that
-// change early; never send a partial or throwaway config here, and use /adapt
-// when you only need to ask whether a module exists (see HasWAFModule).
-func (c *Client) Validate(cfg map[string]any) error {
-	return c.send(http.MethodPost, "/load?validate_only=true", cfg)
+// This was named Validate and posted /load?validate_only=true until T-0965.
+// Caddy does not implement validate_only (it is ignored, confirmed on Caddy
+// 2.11.7), so every "validation" was really an apply. The name now says what
+// it does. Use it only for the config you mean to run. To test a config
+// without keeping it, use ProbeLoad; to ask whether a module exists, use
+// /adapt (see HasWAFModule and HasCrowdSecModule).
+func (c *Client) LoadConfig(cfg map[string]any) error {
+	return c.send(http.MethodPost, "/load", cfg)
+}
+
+// RestoreError reports that ProbeLoad could not put the original config back,
+// so the server may still be running the probe config. Probe is Caddy's
+// rejection of the probe, or nil when the probe was accepted.
+type RestoreError struct {
+	Probe   error
+	Restore error
+}
+
+func (e *RestoreError) Error() string {
+	if e.Probe != nil {
+		return fmt.Sprintf("%v; restoring the previous config also failed: %v", e.Probe, e.Restore)
+	}
+	return fmt.Sprintf("probe: restoring the previous config failed: %v", e.Restore)
+}
+
+func (e *RestoreError) Unwrap() []error { return []error{e.Probe, e.Restore} }
+
+// ProbeLoad asks the live Caddy to fully provision cfg and then puts the
+// config it was running back. It fetches the live config, sends /load with
+// cfg, and then ALWAYS sends /load with the original config again, whether
+// cfg was accepted or rejected. The returned error is Caddy's rejection of
+// cfg; if the restore itself fails that error is returned too, because the
+// server may then be left running cfg.
+//
+// Use it only when a check really needs provisioning (an /adapt cannot tell
+// you whether a JSON field is known). While the probe runs the probe config
+// is live for a moment. mutate receives a deep copy of the live config read
+// here and adds the one change to check, so the probe and the restore come
+// from the same read. Callers that share Caddy with a sync must hold the sync
+// lock for the whole call, or a sync landing between the read and the
+// restore would be rolled back.
+func (c *Client) ProbeLoad(mutate func(cfg map[string]any)) error {
+	original, _, err := c.FetchConfig()
+	if err != nil {
+		return fmt.Errorf("probe: fetch live config: %w", err)
+	}
+	if original == nil {
+		original = map[string]any{}
+	}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		return fmt.Errorf("probe: copy live config: %w", err)
+	}
+	cfg := map[string]any{}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("probe: copy live config: %w", err)
+	}
+	if mutate != nil {
+		mutate(cfg)
+	}
+	probeErr := c.send(http.MethodPost, "/load", cfg)
+	if restoreErr := c.send(http.MethodPost, "/load", original); restoreErr != nil {
+		return &RestoreError{Probe: probeErr, Restore: restoreErr}
+	}
+	return probeErr
 }
 
 // PutPath upserts the config value at the given path (e.g. "/config/apps/http/servers/srv0/routes").
@@ -4737,6 +4795,29 @@ const wafProbeCaddyfile = "{\n\torder coraza_waf first\n}\n:65530 {\n\tcoraza_wa
 // asked, in which case callers should not block on it.
 func (c *Client) HasWAFModule() (present, known bool) {
 	_, err := c.Adapt(wafProbeCaddyfile)
+	if err == nil {
+		return true, true
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "not a registered directive") || strings.Contains(msg, "unrecognized directive") || strings.Contains(msg, "unrecognized global option") {
+		return false, true
+	}
+	return false, false
+}
+
+// crowdSecProbeCaddyfile adapts only when the CrowdSec bouncer is compiled
+// in: the global option is the crowdsec app, the directive is
+// http.handlers.crowdsec. /adapt does not provision, so the placeholder LAPI
+// address is never contacted.
+const crowdSecProbeCaddyfile = "{\n\tcrowdsec {\n\t\tapi_url http://127.0.0.1:8080\n\t\tapi_key caddyui-module-probe\n\t}\n}\n:65531 {\n\troute {\n\t\tcrowdsec\n\t}\n}\n"
+
+// HasCrowdSecModule reports whether this Caddy has the CrowdSec app and HTTP
+// handler (T-0965). Like HasWAFModule it only uses /adapt, which never
+// applies anything. Before T-0965 the check loaded a throwaway
+// caddyui_crowdsec_probe server into the live config, where it stayed. known
+// is false when Caddy could not be asked.
+func (c *Client) HasCrowdSecModule() (present, known bool) {
+	_, err := c.Adapt(crowdSecProbeCaddyfile)
 	if err == nil {
 		return true, true
 	}

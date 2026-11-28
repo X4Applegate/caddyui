@@ -683,6 +683,8 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 		s.renderCertificateFormError(w, r, c, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	id, err := models.CreateCertificate(s.DB, s.currentServerID(r), ownerID, c)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -690,6 +692,7 @@ func (s *Server) createCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	c.ID = id
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_create", fmt.Sprintf("cert:%d", id), c.Name, true)
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
 	s.exportCertificateSoon(s.currentServerID(r), *c)
@@ -784,6 +787,8 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		s.renderCertificateFormError(w, r, c, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	if err := models.UpdateCertificate(s.DB, c); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -802,6 +807,7 @@ func (s *Server) updateCertificate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "cert_update", fmt.Sprintf("cert:%d", id), c.Name, true)
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), true)
 	s.probeCertificateSoon(s.currentServerID(r), *c)
 	s.exportCertificateSoon(s.currentServerID(r), *c)

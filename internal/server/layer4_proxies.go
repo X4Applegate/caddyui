@@ -167,10 +167,14 @@ func parseLayer4Form(r *http.Request) *models.Layer4Proxy {
 	}
 }
 
-// previewLayer4Validate asks Caddy to validate the config a sync would push
-// with p added or replaced, so a rejected proxy (for example a Caddy without
-// the caddy-l4 module) is refused at save time with Caddy's own message.
-// Returns "" when Caddy accepts it or cannot be reached.
+// previewLayer4Validate loads the config a sync would push with p added or
+// replaced, so a rejected proxy (for example a Caddy without the caddy-l4
+// module) is refused at save time with Caddy's own message. Returns "" when
+// Caddy accepts it or cannot be reached.
+//
+// An accepted preview is already live (Caddy ignores validate_only;
+// T-0965). The save handlers hold a previewResync so a failed save puts
+// Caddy back to the database state.
 func (s *Server) previewLayer4Validate(serverID int64, p *models.Layer4Proxy) string {
 	srv, err := models.GetCaddyServer(s.DB, serverID)
 	if err != nil {
@@ -187,11 +191,16 @@ func (s *Server) previewLayer4Validate(serverID int64, p *models.Layer4Proxy) st
 	if !replaced {
 		proxies = append(proxies, *p)
 	}
+	if s.syncHoldFor(serverID) != nil {
+		return "" // the preview is live and the sync that replaces it is held (T-0966)
+	}
 	cl := s.caddyForServer(serverID)
 	app, err := layer4AppFor(cl, srv, proxies)
 	if err != nil {
 		return "Caddy rejected the layer4 configuration: " + err.Error()
 	}
+	s.syncMu.Lock() // a sync must not land between the read and the load (T-0966)
+	defer s.syncMu.Unlock()
 	current, _, err := cl.FetchConfig()
 	if err != nil {
 		return ""
@@ -202,7 +211,8 @@ func (s *Server) previewLayer4Validate(serverID int64, p *models.Layer4Proxy) st
 	}
 	applyLayer4App(proposed, app)
 	s.applyLayer4ListenerWrappers(proposed, serverID, proxies) // v2.61.0 (issue #126)
-	if err := cl.Validate(proposed); err != nil {
+	// Applies the config when Caddy accepts it (T-0965).
+	if err := cl.LoadConfig(proposed); err != nil {
 		return "Caddy rejected this layer4 proxy: " + err.Error() + " (Layer4 needs a Caddy build with the caddy-l4 module, such as applegater/caddyui-caddy.)"
 	}
 	return ""
@@ -287,6 +297,8 @@ func (s *Server) createLayer4Proxy(w http.ResponseWriter, r *http.Request) {
 	if !s.saveLayer4Checks(w, r, p) {
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	sid := s.currentServerID(r)
 	id, err := models.CreateLayer4Proxy(s.DB, sid, p)
 	if err != nil {
@@ -295,6 +307,7 @@ func (s *Server) createLayer4Proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	p.ID, p.ServerID = id, sid
 	_ = models.LogActivity(s.DB, sid, s.currentUserEmail(r), "layer4_create", fmt.Sprintf("layer4:%d", id), p.Name+" "+p.ListenKey(), true)
+	resync.synced()
 	s.trySyncCaddy(sid, false)
 	if len(deployTo) > 0 {
 		s.crossDeployLayer4Proxy(s.currentUserEmail(r), sid, p, deployTo)
@@ -313,11 +326,14 @@ func (s *Server) updateLayer4Proxy(w http.ResponseWriter, r *http.Request) {
 	if !s.saveLayer4Checks(w, r, p) {
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	if err := models.UpdateLayer4Proxy(s.DB, p); err != nil {
 		s.renderLayer4Form(w, r, p, err.Error())
 		return
 	}
 	_ = models.LogActivity(s.DB, p.ServerID, s.currentUserEmail(r), "layer4_update", fmt.Sprintf("layer4:%d", p.ID), p.Name+" "+p.ListenKey(), true)
+	resync.synced()
 	s.trySyncCaddy(p.ServerID, false)
 	if len(deployTo) > 0 {
 		s.crossDeployLayer4Proxy(s.currentUserEmail(r), p.ServerID, p, deployTo)

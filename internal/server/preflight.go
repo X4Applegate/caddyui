@@ -47,9 +47,10 @@ func (s *Server) serverResources(serverID int64) (proxies []models.ProxyHost, re
 	return proxies, redirs, raws, certs, true
 }
 
-// previewProxyHostValidate simulates the sync with p saved (replacing the
-// row with the same ID, or added) and asks Caddy to validate the result.
-// Returns a message only when Caddy would reject it.
+// previewProxyHostValidate runs the sync with p saved (replacing the row
+// with the same ID, or added) and loads the result into Caddy. Returns a
+// message only when Caddy rejects it. An accepted preview is already live
+// (T-0965); see validateProposedConfig and previewResync.
 func (s *Server) previewProxyHostValidate(serverID int64, p *models.ProxyHost) string {
 	proxies, redirs, raws, certs, ok := s.serverResources(serverID)
 	if !ok {
@@ -237,4 +238,44 @@ func (s *Server) certificateForCaddyfile(certificateID int64) *models.Certificat
 		return nil
 	}
 	return c
+}
+
+// previewResync puts Caddy back to the database state when a save fails after
+// its preview was accepted (T-0965). The preview validators load the proposed
+// config into the live Caddy (validate_only is ignored), so an accepted
+// preview followed by a failed DB write or a later check rejecting the form
+// would otherwise leave Caddy serving a change the database never recorded,
+// until the next sync. Use it as
+//
+//	resync := s.resyncAfterPreview(serverID)
+//	defer resync.unlessSynced()
+//	...save...
+//	resync.synced()
+//	s.trySyncCaddy(serverID, ...)
+//
+// Every return between the preview and synced() resyncs.
+type previewResync struct {
+	sync     func(serverID int64)
+	serverID int64
+	done     bool
+}
+
+func (s *Server) resyncAfterPreview(serverID int64) *previewResync {
+	// allowEmpty: the preview already replaced Caddy's routes with ones built
+	// from the database plus the unsaved change, so when the database holds
+	// nothing for this server the empty state is the truth to restore, not a
+	// wiped database to guard against (T-0966).
+	return &previewResync{sync: func(id int64) { s.trySyncCaddyAfterDelete(id, false) }, serverID: serverID}
+}
+
+// synced marks that the handler now runs its own sync of the saved state.
+func (p *previewResync) synced() { p.done = true }
+
+// unlessSynced resyncs the database state unless synced() was called.
+func (p *previewResync) unlessSynced() {
+	if p.done {
+		return
+	}
+	p.done = true
+	p.sync(p.serverID)
 }

@@ -5,6 +5,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -503,11 +504,18 @@ func (s *Server) writePrometheusMetricsConfig(proposed map[string]any, metricsCf
 	return s.writeOptionalConfigValue("/config/apps/http/metrics", want)
 }
 
-// validatePrometheusMetricsServers lets each selected Caddy validate its own
+// validatePrometheusMetricsServers lets each selected Caddy check its own
 // schema before settings are persisted. In particular,
 // observe_catchall_hosts requires Caddy 2.11+, while per_host works on older
-// releases. Using /load?validate_only=true also supports custom builds without
-// relying on a manually-entered version string.
+// releases. Asking Caddy also supports custom builds without relying on a
+// manually-entered version string.
+//
+// T-0965: only provisioning can tell whether Caddy knows a JSON field (an
+// /adapt cannot), so this uses ProbeLoad, which puts the live config back
+// afterwards whether the probe was accepted or not. Before T-0965 it used a
+// /load?validate_only=true that Caddy ignores, so metrics went live on every
+// node it checked before the settings were even saved, and stayed live on
+// nodes 1..N-1 when node N rejected them.
 func (s *Server) validatePrometheusMetricsServers(metricsCfg prometheusMetricsConfig) error {
 	if !metricsCfg.Enabled {
 		return nil
@@ -525,21 +533,8 @@ func (s *Server) validatePrometheusMetricsServers(metricsCfg prometheusMetricsCo
 		if srv.Type == models.CaddyServerTypeExternal {
 			return fmt.Errorf("Prometheus metrics cannot be managed on read-only server %q", srv.Name)
 		}
-		client := newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
-		current, _, err := client.FetchConfig()
-		if err != nil {
-			return fmt.Errorf("check metrics support on %s: %w", srv.Name, err)
-		}
-		probe, err := deepCopyMap(current)
-		if err != nil {
-			return fmt.Errorf("build metrics check for %s: %w", srv.Name, err)
-		}
-		applyPrometheusMetrics(probe, metricsCfg, srv.ID)
-		if err := client.Validate(probe); err != nil {
-			if metricsCfg.ObserveCatchAllHost {
-				return fmt.Errorf("Caddy server %q rejected detailed metrics; observe_catchall_hosts requires Caddy 2.11 or newer: %w", srv.Name, err)
-			}
-			return fmt.Errorf("Caddy server %q rejected Prometheus metrics: %w", srv.Name, err)
+		if err := s.probePrometheusMetrics(srv, metricsCfg); err != nil {
+			return err
 		}
 	}
 	for id := range metricsCfg.ServerIDs {
@@ -548,6 +543,35 @@ func (s *Server) validatePrometheusMetricsServers(metricsCfg prometheusMetricsCo
 		}
 	}
 	return nil
+}
+
+// probePrometheusMetrics loads the live config plus the metrics block on one
+// server and restores it. It holds syncMu for the whole probe so a sync of a
+// save made at the same moment cannot land between the read and the restore
+// and be rolled back (T-0966). Nothing here calls syncCaddy, so the lock
+// cannot deadlock. When the restore itself fails the server is resynced from
+// the database after the lock is released.
+func (s *Server) probePrometheusMetrics(srv models.CaddyServer, metricsCfg prometheusMetricsConfig) error {
+	client := newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
+	var err error
+	func() {
+		s.syncMu.Lock()
+		defer s.syncMu.Unlock()
+		err = client.ProbeLoad(func(cfg map[string]any) {
+			applyPrometheusMetrics(cfg, metricsCfg, srv.ID)
+		})
+	}()
+	if err == nil {
+		return nil
+	}
+	var restoreErr *caddy.RestoreError
+	if errors.As(err, &restoreErr) {
+		s.trySyncCaddy(srv.ID, false)
+	}
+	if metricsCfg.ObserveCatchAllHost {
+		return fmt.Errorf("Caddy server %q rejected detailed metrics; observe_catchall_hosts requires Caddy 2.11 or newer: %w", srv.Name, err)
+	}
+	return fmt.Errorf("Caddy server %q rejected Prometheus metrics: %w", srv.Name, err)
 }
 
 func prometheusScrapeTarget(adminURL string) string {
@@ -843,6 +867,13 @@ func configValuesEqual(a, b any) bool {
 	return errA == nil && errB == nil && string(aJSON) == string(bJSON)
 }
 
+// validateCrowdSecServers checks that each selected Caddy has the CrowdSec
+// app and HTTP handler before the settings are saved. T-0965: it asks
+// through /adapt (HasCrowdSecModule), which never changes the live config.
+// It used to /load the current config plus the unsaved CrowdSec app and a
+// throwaway caddyui_crowdsec_probe server; Caddy ignores validate_only, so
+// both went live and the probe server stayed (removeCrowdSecProbeServer
+// cleans it up on the next sync).
 func (s *Server) validateCrowdSecServers(crowd crowdSecConfig) error {
 	if !crowd.Enabled {
 		return nil
@@ -861,26 +892,12 @@ func (s *Server) validateCrowdSecServers(crowd crowdSecConfig) error {
 			return fmt.Errorf("CrowdSec cannot be enabled on read-only server %q", srv.Name)
 		}
 		client := newCaddyClient(srv.AdminURL, srv.AdminUsername, srv.AdminPassword)
-		current, _, err := client.FetchConfig()
-		if err != nil {
-			return fmt.Errorf("check CrowdSec modules on %s: %w", srv.Name, err)
+		present, known := client.HasCrowdSecModule()
+		if !known {
+			return fmt.Errorf("check CrowdSec modules on %s: Caddy could not be asked (is its admin API reachable?)", srv.Name)
 		}
-		probe, err := deepCopyMap(current)
-		if err != nil {
-			return fmt.Errorf("build CrowdSec module check for %s: %w", srv.Name, err)
-		}
-		apps := ensureMap(probe, "apps")
-		apps["crowdsec"] = crowd.app()
-		httpApp := ensureMap(apps, "http")
-		httpServers := ensureMap(httpApp, "servers")
-		httpServers["caddyui_crowdsec_probe"] = map[string]any{
-			"listen": []any{"127.0.0.1:0"},
-			"routes": []any{map[string]any{
-				"handle": []any{map[string]any{"handler": "crowdsec"}},
-			}},
-		}
-		if err := client.Validate(probe); err != nil {
-			return fmt.Errorf("Caddy server %q does not accept the CrowdSec app and http.handlers.crowdsec modules: %w", srv.Name, err)
+		if !present {
+			return fmt.Errorf("Caddy server %q does not have the CrowdSec app and http.handlers.crowdsec modules; use a Caddy build with the CrowdSec bouncer, such as applegater/caddyui-caddy", srv.Name)
 		}
 	}
 	for id := range crowd.ServerIDs {
@@ -889,6 +906,26 @@ func (s *Server) validateCrowdSecServers(crowd crowdSecConfig) error {
 		}
 	}
 	return nil
+}
+
+// crowdSecProbeServerName is the throwaway server the pre-T-0965 CrowdSec
+// check loaded into the live config.
+const crowdSecProbeServerName = "caddyui_crowdsec_probe"
+
+// removeCrowdSecProbeServer drops the leftover caddyui_crowdsec_probe server
+// from a config a sync is about to /load (T-0965). Installs that ran the old
+// CrowdSec check still have it in their live config and in Caddy's
+// autosave.json; every sync path does a full /load, so removing it from the
+// proposed config removes it from Caddy. Reports whether it was there.
+func removeCrowdSecProbeServer(cfg map[string]any) bool {
+	apps, _ := cfg["apps"].(map[string]any)
+	httpApp, _ := apps["http"].(map[string]any)
+	servers, _ := httpApp["servers"].(map[string]any)
+	if _, ok := servers[crowdSecProbeServerName]; !ok {
+		return false
+	}
+	delete(servers, crowdSecProbeServerName)
+	return true
 }
 
 func (s *Server) postTestCrowdSec(w http.ResponseWriter, r *http.Request) {

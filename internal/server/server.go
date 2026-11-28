@@ -3295,6 +3295,8 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	id, err := models.CreateRedirectionHost(s.DB, s.currentServerID(r), rhOwnerID, rh)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -3306,6 +3308,7 @@ func (s *Server) createRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.dnsCreateRecordForRedirection(s.currentServerID(r), id, rh)
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_create", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), rh.CertificateID != 0)
 	var deployProblems []string
 	if len(deployTo) > 0 {
@@ -3405,6 +3408,8 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 		s.renderRedirectionHostFormError(w, r, rh, errMsg)
 		return
 	}
+	resync := s.resyncAfterPreview(s.currentServerID(r)) // T-0965: an accepted preview is already live
+	defer resync.unlessSynced()
 	if err := models.UpdateRedirectionHost(s.DB, rh); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -3442,6 +3447,7 @@ func (s *Server) updateRedirectionHost(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = models.LogActivity(s.DB, s.currentServerID(r), s.currentUserEmail(r), "redirect_update", fmt.Sprintf("redirect:%d", id), rh.Domains, true)
 	forceTLS := old != nil && old.CertificateID != rh.CertificateID
+	resync.synced()
 	s.trySyncCaddy(s.currentServerID(r), forceTLS)
 	var deployProblems []string
 	if len(deployTo) > 0 {
