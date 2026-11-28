@@ -122,8 +122,37 @@ func caddyfileAddressPort(a string) string {
 // listens on plain HTTP ("server listening on [:80] is HTTP, but attempts
 // to configure TLS connection policies"), and a client-certificate host
 // must not be reachable without one (T-0967).
+// Nor with a site-level `tls` directive in the Advanced config, which Caddy
+// refuses in a site that also listens on HTTP for the same reason (T-0978
+// review); the live route ignores those options, so the export keeps the
+// host HTTPS-only and lists the :80 difference in its notes.
 func caddyfileServesPlainHTTP(p models.ProxyHost) bool {
-	return !p.SSLForced && !p.ClientAuthEnabled()
+	return !p.SSLForced && !p.ClientAuthEnabled() && !caddyfileAdvancedHasSiteTLS(p.AdvancedConfig)
+}
+
+// caddyfileAdvancedHasSiteTLS reports whether an Advanced config has a
+// `tls` directive at its top level, or cannot be read (fail safe: true).
+func caddyfileAdvancedHasSiteTLS(adv string) bool {
+	if strings.TrimSpace(adv) == "" {
+		return false
+	}
+	toks, _, _, err := lexCaddyfileLenient(adv)
+	if err != nil {
+		return true
+	}
+	depth := 0
+	for i, t := range toks {
+		switch {
+		case t.quoted || t.heredoc:
+		case t.text == "{":
+			depth++
+		case t.text == "}":
+			depth--
+		case depth == 0 && t.text == "tls" && cfIsNewLine(toks, i):
+			return true
+		}
+	}
+	return false
 }
 
 // caddyfileTLSFileLine returns the `tls <cert> <key>` line the export writes

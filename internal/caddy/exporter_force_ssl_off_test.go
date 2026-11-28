@@ -32,12 +32,21 @@ func TestExportForceSSLOffServesPlainHTTP(t *testing.T) {
 		{"ACME, Force SSL on", host(true, 0), nil, "on.example.test {\n", false},
 		{"certificate files, Force SSL off", host(false, 4), cert, "on.example.test {\n\ttls /c.pem /k.pem\n", true},
 		{"certificate files, Force SSL on", host(true, 4), cert, "on.example.test {\n\ttls /c.pem /k.pem\n", false},
+		// T-0978 review: Caddy refuses TLS options in a site on :80, so an
+		// Advanced `tls` directive keeps the host HTTPS-only.
+		{"ACME, Force SSL off, Advanced tls", advTLS(host(false, 0)), nil, "on.example.test {\n", false},
+		{"certificate files, Force SSL off, Advanced tls", advTLS(host(false, 4)), cert, "on.example.test {\n\ttls /c.pem /k.pem\n", false},
+		{"SSL off, Advanced tls", advTLS(models.ProxyHost{ID: 71, Domains: "on.example.test", ForwardScheme: "http", ForwardHost: "203.0.113.30", ForwardPort: 8080, Enabled: true}), nil, "on.example.test {\n", false},
 	}
 	bin := lookCaddy(t)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out := RenderProxyHostCaddyfileWithCertificate(tc.p, tc.cert)
-			if !strings.HasPrefix(out, tc.wantHead) || strings.Contains(out, "respond 503") {
+			head := out
+			for strings.HasPrefix(head, "#") {
+				head = head[strings.Index(head, "\n")+1:]
+			}
+			if !strings.HasPrefix(head, tc.wantHead) || strings.Contains(out, "respond 503") {
 				t.Fatalf("want a site starting %q:\n%s", tc.wantHead, out)
 			}
 			if tc.cert != nil && strings.Count(out, "tls /c.pem") != 1 {
@@ -63,5 +72,24 @@ func TestExportForceSSLOffServesPlainHTTP(t *testing.T) {
 				t.Fatalf("served on plain :80 = %v, want %v:\n%s", served80, tc.plain80, raw)
 			}
 		})
+	}
+}
+
+func advTLS(p models.ProxyHost) models.ProxyHost {
+	p.AdvancedConfig = "tls {\n\tprotocols tls1.2\n}"
+	return p
+}
+
+func TestCaddyfileAdvancedHasSiteTLS(t *testing.T) {
+	for adv, want := range map[string]bool{
+		"":             false,
+		"tls internal": true,
+		"header X-A b\ntls {\n\tprotocols tls1.2\n}":           true,
+		"reverse_proxy {\n\ttransport http {\n\t\ttls\n\t}\n}": false,
+		"header X-Tls \"tls\"":                                 false,
+	} {
+		if got := caddyfileAdvancedHasSiteTLS(adv); got != want {
+			t.Errorf("%q: got %v, want %v", adv, got, want)
+		}
 	}
 }

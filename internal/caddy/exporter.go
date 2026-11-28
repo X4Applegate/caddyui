@@ -306,6 +306,9 @@ func renderProxyHostSite(p models.ProxyHost, cert *models.Certificate, domains [
 	if p.CertificateID == 0 && !p.SSLEnabled && !p.SSLForced && p.ClientAuthEnabled() {
 		elided = append(elided, "plain HTTP on :80 (client certificate auth needs TLS, so this host is served over HTTPS only and :80 redirects to HTTPS)")
 	}
+	if !p.SSLForced && !p.ClientAuthEnabled() && caddyfileAdvancedHasSiteTLS(p.AdvancedConfig) {
+		elided = append(elided, "plain HTTP on :80 (with Force SSL off CaddyUI also serves this host on :80 without a redirect; the Advanced config's tls directive cannot go in a site that listens on HTTP, so this export serves it over HTTPS only)")
+	}
 	if p.UpstreamKeepaliveProbes > 0 {
 		elided = append(elided, "upstream keep-alive probe count (Caddy has no such option)")
 	}
