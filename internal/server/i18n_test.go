@@ -54,7 +54,10 @@ func TestEveryTranslationKeyUsedExistsInEnglish(t *testing.T) {
 
 // A translation may only use keys English has, and must keep the same {placeholders}.
 func TestEveryCatalogMatchesEnglishKeysAndPlaceholders(t *testing.T) {
-	b := translations()
+	b, err := i18n.Load(web.FS, "i18n")
+	if err != nil {
+		t.Fatal(err)
+	}
 	en := b.Catalog("en")
 	for _, l := range b.Locales() {
 		if l.Code == "en" {
