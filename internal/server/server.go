@@ -5930,7 +5930,8 @@ func applySkipCertificates(cfg map[string]any, skipList []any) {
 
 // buildHTTPRoutes returns the complete route set for CaddyUI's explicit :80
 // server. Hosts with Force SSL off keep their normal handlers; hosts with
-// Force SSL on receive an HTTPS redirect. Owning both cases lets CaddyUI disable
+// Force SSL on, or with client-certificate auth (T-0967), receive an HTTPS
+// redirect. Owning both cases lets CaddyUI disable
 // Caddy's generated redirect listener, avoiding two servers competing for :80.
 func (s *Server) buildHTTPRoutes(proxies []models.ProxyHost, redirs []models.RedirectionHost, raws []models.RawRoute) []any {
 	httpProxies := make([]models.ProxyHost, 0)
@@ -5939,7 +5940,11 @@ func (s *Server) buildHTTPRoutes(proxies []models.ProxyHost, redirs []models.Red
 		if !p.Enabled {
 			continue
 		}
-		if !p.SSLForced {
+		// T-0967: client-certificate auth is enforced only in srv0's TLS
+		// connection policies; plain :80 has no handshake to ask for a
+		// certificate. A client-auth host is therefore always redirected,
+		// whatever Force SSL says, so it is never proxied without the cert.
+		if !p.SSLForced && !p.ClientAuthEnabled() {
 			httpProxies = append(httpProxies, p)
 		} else {
 			forcedDomains = append(forcedDomains, p.DomainList()...)

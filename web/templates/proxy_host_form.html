@@ -301,6 +301,7 @@ document.addEventListener('DOMContentLoaded', function() {
     <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="enabled" {{if .Host.Enabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Enabled</label>
     <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_enabled" {{if .Host.SSLEnabled}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Auto SSL (Let's Encrypt)</label>
     <label class="flex items-center gap-2.5 text-sm text-ink-700 cursor-pointer"><input type="checkbox" name="ssl_forced" {{if .Host.SSLForced}}checked{{end}} class="rounded border-ink-300 text-brand-600 focus:ring-brand-500" /> Force SSL (HTTPS redirect)</label>
+    {{if .Host.ClientAuthEnabled}}<p class="sm:col-span-2 text-xs text-ink-500">Client certificate auth is on, so plain HTTP always redirects to HTTPS for this host, even with Force SSL off. A certificate can only be checked over TLS.</p>{{end}}
   </div>
 
   {{/* v2.11.7: Managed DNS + TLS Certificate hoisted to the top alongside
