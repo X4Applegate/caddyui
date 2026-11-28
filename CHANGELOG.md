@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versi
 
 ## [Unreleased]
 
+## [2.68.20] - 2026-11-27 - Non-admin accounts: refused health-check options hidden, cross-server deploy errors reduced
+
+### Security
+
+- **Non-admin accounts no longer see the health-check POST method, request body or follow-redirects fields on the proxy-host form.** Saving them was already refused for non-admins since v2.68.18; the form now matches. Admins see all three. [[T-0946]]
+- **The "Saved, but not deployed to every server" notice is reduced for non-admins.** Each per-server reason now goes through the same tenant-safe message filter as other errors, so addresses, quoted configuration values and Caddy's raw error detail are no longer shown to non-admin accounts. Admins still see the full text. [[T-0946]]
+
+### Changed
+
+- CI: the binary govulncheck scan installs the scanner under stable Go rather than the `go.mod` toolchain; Dependabot waits 7 days before proposing Go module updates.
+
 ## [2.68.19] - 2026-11-27 - The Caddy image gets a HEALTHCHECK; why it runs as root, documented
 
 ### Added
